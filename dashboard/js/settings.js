@@ -51,12 +51,13 @@ async function openSettings() {
       settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
       settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Auto-dispatch fix agents when a PR build fails') +
       settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Auto-dispatch fix agents when a PR has merge conflicts') +
+      settingsToggle('Auto-complete PRs', 'set-autoCompletePrs', !!e.autoCompletePrs, 'Auto-merge PRs when builds pass and review is approved (opt-in)') +
       settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status and comments each tick (reconciliation always runs)') +
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      settingsField('ADO Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll ADO PR build/review/merge status every N ticks (~6 min at default tick rate)') +
-      settingsField('ADO Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll ADO PR human comments every N ticks (~12 min at default tick rate)') +
+      settingsField('PR Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~6 min at default tick rate)') +
+      settingsField('PR Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
@@ -65,6 +66,18 @@ async function openSettings() {
       settingsField('Agent Busy Reassign', 'set-agentBusyReassignMs', e.agentBusyReassignMs || 600000, 'ms', 'Reassign work to another agent after it waits this long on a busy agent') +
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
       settingsField('Ignored Comment Authors', 'set-ignoredCommentAuthors', (e.ignoredCommentAuthors || []).join(', '), '', 'Comma-separated usernames — comments auto-closed, never trigger fixes') +
+    '</div>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Projects</h3>' +
+    '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">' +
+    (data.projects || []).map(function(p) {
+      return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
+        '<div style="font-size:12px;font-weight:600;margin-bottom:8px">' + escHtml(p.name) + '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+        settingsToggle('Discover from PRs', 'set-ws-prs-' + p.name, p.workSources.pullRequests.enabled, 'Auto-discover work from open pull requests') +
+        settingsToggle('Discover from Work Items', 'set-ws-wi-' + p.name, p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
+        '</div></div>';
+    }).join('') +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Max Turns by Task Type</h3>' +
@@ -242,6 +255,7 @@ async function saveSettings() {
       autoArchive: document.getElementById('set-autoArchive').checked,
       autoFixBuilds: document.getElementById('set-autoFixBuilds').checked,
       autoFixConflicts: document.getElementById('set-autoFixConflicts').checked,
+      autoCompletePrs: document.getElementById('set-autoCompletePrs').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,
       adoPollStatusEvery: document.getElementById('set-adoPollStatusEvery').value,
@@ -291,10 +305,20 @@ async function saveSettings() {
       agentsPayload[id][field] = el.value;
     });
 
+    const projectsPayload = (data.projects || []).map(function(p) {
+      return {
+        name: p.name,
+        workSources: {
+          pullRequests: { enabled: document.getElementById('set-ws-prs-' + p.name)?.checked ?? true },
+          workItems: { enabled: document.getElementById('set-ws-wi-' + p.name)?.checked ?? true }
+        }
+      };
+    });
+
     // Save config
     const res = await fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload, teams: teamsPayload })
+      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload, teams: teamsPayload, projects: projectsPayload })
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error);

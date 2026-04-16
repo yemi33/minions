@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
+const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS,
   FAILURE_CLASS } = shared;
 const queries = require('./engine/queries');
@@ -241,8 +241,8 @@ function _maxTurnsForType(type, engineConfig) {
   // Priority: per-type config override → global config override → built-in per-type default → global default
   const perType = engineConfig.maxTurnsByType || {};
   if (perType[type]) return perType[type];
-  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
-  return globalOverride || _MAX_TURNS_BY_TYPE[type] || DEFAULTS.maxTurns;
+  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== ENGINE_DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
+  return globalOverride || _MAX_TURNS_BY_TYPE[type] || ENGINE_DEFAULTS.maxTurns;
 }
 
 // Resolve dependency plan item IDs to their PR branches
@@ -373,8 +373,8 @@ async function spawnAgent(dispatchItem, config) {
   let cwd = rootDir;
   let worktreePath = null;
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
-  const worktreeCreateTimeout = Math.max(60000, Number(engineConfig.worktreeCreateTimeout) || DEFAULTS.worktreeCreateTimeout);
-  const worktreeCreateRetries = Math.max(0, Math.min(3, Number(engineConfig.worktreeCreateRetries) || DEFAULTS.worktreeCreateRetries));
+  const worktreeCreateTimeout = Math.max(60000, Number(engineConfig.worktreeCreateTimeout) || ENGINE_DEFAULTS.worktreeCreateTimeout);
+  const worktreeCreateRetries = Math.max(0, Math.min(3, Number(engineConfig.worktreeCreateRetries) || ENGINE_DEFAULTS.worktreeCreateRetries));
   const _gitOpts = { stdio: 'pipe', timeout: 30000, windowsHide: true, env: shared.gitEnv() };
   const _worktreeGitOpts = { ..._gitOpts, timeout: worktreeCreateTimeout };
 
@@ -1021,7 +1021,7 @@ async function spawnAgent(dispatchItem, config) {
       // Build resume args
       const resumeArgs = [
         '--output-format', claudeConfig?.outputFormat || 'stream-json',
-        '--max-turns', String(engineConfig?.maxTurns || DEFAULTS.maxTurns),
+        '--max-turns', String(engineConfig?.maxTurns || ENGINE_DEFAULTS.maxTurns),
         '--verbose',
         '--permission-mode', claudeConfig?.permissionMode || 'bypassPermissions',
         '--resume', steerSessionId,
@@ -1427,7 +1427,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 
     let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
     if (!exactPr) {
-      const linkedPrId = Object.keys(prLinks).find(prId => prLinks[prId] === wi.id);
+      const linkedPrId = Object.keys(prLinks).find(prId => (prLinks[prId] || []).includes(wi.id));
       if (linkedPrId) exactPr = allPrs.find(pr => pr.id === linkedPrId) || { id: linkedPrId };
     }
     // Branch-based matching: PR branch contains the work item ID (e.g. work/P-k7m2v9a1)
@@ -1878,7 +1878,7 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   try {
     const prsPath = projectPrPath(projectMeta);
     mutatePullRequests(prsPath, prs => {
-      const target = prs.find(p => p.id === prId);
+      const target = shared.findPrRecord(prs, prId, projectMeta);
       if (!target?.humanFeedback?.pendingFix) return;
       target.humanFeedback.pendingFix = false;
     });
@@ -1892,21 +1892,38 @@ async function discoverFromPrs(config, project) {
   const src = project?.workSources?.pullRequests || config.workSources?.pullRequests;
   if (!src?.enabled) return [];
 
-  const prs = safeJson(projectPrPath(project)) || [];
+  const prs = queries.getPrs(project);
   const cooldownMs = (src.cooldownMinutes || 30) * 60 * 1000;
   const newWork = [];
 
   const projMeta = { name: project?.name, localPath: project?.localPath };
+  const projectsByName = new Map(shared.getProjects(config).map(p => [p.name, p]));
+
+  // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
+  const isAdoProject = project?.repoHost !== 'github';
+  const pollEnabled = isAdoProject
+    ? (config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled)
+    : (config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled);
+  const evalLoopEnabled = config.engine?.evalLoop !== false;
 
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
   const activePrIds = new Set(
-    (dispatch.active || []).filter(d => d.meta?.pr?.id).map(d => d.meta.pr.id)
+    (dispatch.active || [])
+      .filter(d => d.meta?.pr?.id)
+      .map(d => {
+        const dispatchProject = d.meta?.project?.name
+          ? (projectsByName.get(d.meta.project.name) || d.meta.project)
+          : (d.meta?.project || null);
+        return shared.getCanonicalPrId(dispatchProject, d.meta.pr, d.meta.pr?.url || '');
+      })
+      .filter(Boolean)
   );
 
   const knownAgents = new Set(Object.keys(config.agents || {}));
   for (const pr of prs) {
     if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
+    const prDisplayId = shared.getPrDisplayId(pr);
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
@@ -1918,7 +1935,7 @@ async function discoverFromPrs(config, project) {
     const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || pr._autoObserve;
     if (!isAgentPr) continue;
 
-    const prNumber = (pr.id || '').replace(/^PR-/, '');
+    const prNumber = shared.getPrNumber(pr);
     // Use reviewStatus as single source of truth (synced from ADO/GitHub votes)
     // minionsReview tracks metadata (reviewer, note) but not the authoritative status
     const reviewStatus = pr.reviewStatus || 'pending';
@@ -1928,29 +1945,29 @@ async function discoverFromPrs(config, project) {
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
     // Review→fix cycle cap — stop review/fix dispatch after N iterations, but allow build fixes and conflict fixes
-    const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
+    const evalMax = config.engine?.evalMaxIterations ?? ENGINE_DEFAULTS.evalMaxIterations;
     const evalCycles = pr._reviewFixCycles || 0;
     const evalEscalated = evalCycles >= evalMax;
     if (evalEscalated && !pr._evalEscalated) {
-      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
         `# Review Loop Escalation\n\n**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
         `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
         `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
       try {
         mutatePullRequests(projectPrPath(project), prs => {
-          const target = prs.find(p => p.id === pr.id);
+          const target = shared.findPrRecord(prs, pr, project);
           if (target) target._evalEscalated = true;
         });
       } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
       log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
     }
 
-    // PRs needing review: pending review status and not already reviewed without new commits
-    const autoReview = config.engine?.autoReview !== false;
+    // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
+    const reviewEnabled = evalLoopEnabled && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
+    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
-      const key = `review-${project?.name || 'default'}-${pr.id}`;
+      const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
@@ -1965,14 +1982,14 @@ async function discoverFromPrs(config, project) {
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
-              const target = data.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(data, pr, project);
               if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
               return data;
             });
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
@@ -1988,10 +2005,10 @@ async function discoverFromPrs(config, project) {
     // or when no minions review has completed yet (e.g. human-feedback-only fix path).
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
-    const needsReReview = autoReview && reviewStatus === 'waiting' &&
+    const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !evalEscalated;
     if (needsReReview) {
-      const key = `rereview-${project?.name || 'default'}-${pr.id}`;
+      const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (isOnCooldown(key, cooldownMs)) continue;
@@ -2006,14 +2023,14 @@ async function discoverFromPrs(config, project) {
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
-              const target = data.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(data, pr, project);
               if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
               return data;
             });
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
@@ -2026,9 +2043,10 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
+    // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
     let fixDispatched = false;
-    if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
-      const key = `fix-${project?.name || 'default'}-${pr.id}`;
+    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
+      const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
@@ -2042,7 +2060,7 @@ async function discoverFromPrs(config, project) {
         // Increment review→fix cycle counter
         try {
           mutatePullRequests(projectPrPath(project), prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
           });
         } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
@@ -2050,7 +2068,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with pending human feedback (skip if review-fix already dispatched above)
-    const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
+    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
     if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
       const key = humanFixKey;
@@ -2091,17 +2109,17 @@ async function discoverFromPrs(config, project) {
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
-    const autoFixBuilds = config.engine?.autoFixBuilds ?? DEFAULTS.autoFixBuilds;
+    const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
         if (!pr.buildFixEscalated) {
-          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
             `# Build Fix Escalation\n\n` +
             `**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
             `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
@@ -2110,7 +2128,7 @@ async function discoverFromPrs(config, project) {
           try {
             const prPath = projectPrPath(project);
             mutatePullRequests(prPath, prs => {
-              const target = prs.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(prs, pr, project);
               if (target) target.buildFixEscalated = true;
             });
           } catch (e) { log('warn', 'mark build fix escalated: ' + e.message); }
@@ -2119,7 +2137,7 @@ async function discoverFromPrs(config, project) {
         continue;
       }
 
-      const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
+      const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
@@ -2139,7 +2157,7 @@ async function discoverFromPrs(config, project) {
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) {
               target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
               target._buildFixPushedAt = ts();
@@ -2159,12 +2177,12 @@ async function discoverFromPrs(config, project) {
           alertBody += `**Error preview:**\n\`\`\`\n${logPreview}\n\`\`\`\n\n`;
         }
         alertBody += `A fix agent has been dispatched to address this. Review the fix when complete.\n`;
-        writeInboxAlert(`build-fail-${pr.agent}-${pr.id}`, alertBody);
+        writeInboxAlert(`build-fail-${pr.agent}-${prDisplayId}`, alertBody);
         // Mark notified to prevent duplicate alerts
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) {
               target._buildFailNotified = true;
             }
@@ -2174,9 +2192,9 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
-    const autoFixConflicts = config.engine?.autoFixConflicts ?? DEFAULTS.autoFixConflicts;
+    const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
     if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
-      const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
+      const key = `conflict-fix-${project?.name || 'default'}-${prDisplayId}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
@@ -2195,7 +2213,7 @@ async function discoverFromPrs(config, project) {
             // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
             try {
               mutatePullRequests(projectPrPath(project), prs => {
-                const target = prs.find(p => p.id === pr.id);
+                const target = shared.findPrRecord(prs, pr, project);
                 if (target) target._conflictFixedAt = new Date().toISOString();
               });
             } catch (e) { log('warn', `conflict-fix timestamp: ${e.message}`); }
@@ -2800,7 +2818,7 @@ function discoverCentralWorkItems(config) {
           meta: {
             dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
             branch: fanBranch,
-            deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || DEFAULTS.agentTimeout)
+            deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout)
           }
         });
       }
@@ -3073,18 +3091,24 @@ async function discoverWork(config) {
     } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
   }
 
-  // Gate reviews and fixes: do not dispatch until all implement items are complete
+  // Gate reviews and fixes: only when at max concurrency — idle agents should pick up reviews
+  // even if implement items are in progress (implements get priority via sort order, not by blocking)
   const hasIncompleteImplements = queries.getWorkItems(config).some(i =>
     ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement')
   );
   if (hasIncompleteImplements) {
-    if (allReviews.length > 0) {
-      log('info', `Gating ${allReviews.length} reviews — implement items still in progress`);
-      allReviews = [];
-    }
-    if (allFixes.length > 0) {
-      log('info', `Gating ${allFixes.length} fixes — implement items still in progress`);
-      allFixes = [];
+    const activeCount = (getDispatch().active || []).length;
+    const maxConcurrent = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
+    const freeSlots = Math.max(0, maxConcurrent - activeCount);
+    if (freeSlots === 0) {
+      if (allReviews.length > 0) {
+        log('info', `Gating ${allReviews.length} reviews — implement items in progress and no free slots`);
+        allReviews = [];
+      }
+      if (allFixes.length > 0) {
+        log('info', `Gating ${allFixes.length} fixes — implement items in progress and no free slots`);
+        allFixes = [];
+      }
     }
   }
 
@@ -3181,11 +3205,12 @@ async function tickInner() {
   if (tickCount % 3 === 0) {
     safe('checkWatches', () => {
       const { checkWatches } = require('./engine/watches');
-      const pullRequests = PROJECTS.flatMap(p => {
+      const projects = getProjects(config);
+      const pullRequests = projects.flatMap(p => {
         const prPath = path.join(MINIONS_DIR, 'projects', p.name, 'pull-requests.json');
         return safeJson(prPath) || [];
       });
-      const workItems = PROJECTS.flatMap(p => {
+      const workItems = projects.flatMap(p => {
         const wiPath = path.join(MINIONS_DIR, 'projects', p.name, 'work-items.json');
         return safeJson(wiPath) || [];
       });
@@ -3195,10 +3220,10 @@ async function tickInner() {
     });
   }
 
-  const adoPollEnabled = config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled;
-  const ghPollEnabled = config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled;
-  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || DEFAULTS.adoPollStatusEvery);
-  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || DEFAULTS.adoPollCommentsEvery);
+  const adoPollEnabled = config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled;
+  const ghPollEnabled = config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled;
+  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || ENGINE_DEFAULTS.adoPollStatusEvery);
+  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || ENGINE_DEFAULTS.adoPollCommentsEvery);
 
   // 2.6. Poll PR status: build, review, merge (every adoPollStatusEvery ticks, default ~6 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
@@ -3401,7 +3426,7 @@ async function tickInner() {
     if (busyAgents.has(item.agent)) {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
-      const reassignMs = config.engine?.agentBusyReassignMs ?? DEFAULTS.agentBusyReassignMs;
+      const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
       const isExplicitReassign = !!item.meta?.item?.agent;
       if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();

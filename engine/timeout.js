@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -131,11 +131,11 @@ function checkTimeouts(config) {
   const { completeDispatch } = dispatch();
   const { runPostCompletionHooks } = require('./lifecycle');
 
-  const timeout = config.engine?.agentTimeout || DEFAULTS.agentTimeout;
-  const defaultHeartbeatTimeout = config.engine?.heartbeatTimeout || DEFAULTS.heartbeatTimeout;
+  const timeout = config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout;
+  const defaultHeartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
 
   // Per-type heartbeat timeouts: merge ENGINE_DEFAULTS ← config overrides
-  const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+  const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
 
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {
@@ -389,7 +389,7 @@ function checkTimeouts(config) {
           (dispatchData.active || []).some(d => d.meta?.item?.id === item.id);
         if (!isActive) {
           const retries = (item._retryCount || 0);
-          const maxRetries = DEFAULTS.maxRetries;
+          const maxRetries = ENGINE_DEFAULTS.maxRetries;
           if (retries < maxRetries) {
             log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/${maxRetries}`);
             item.status = WI_STATUS.PENDING;

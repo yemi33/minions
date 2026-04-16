@@ -248,7 +248,7 @@ function ccShowAllConversations() {
 function ccRenderTabBar() {
   var bar = document.getElementById('cc-tab-bar');
   if (!bar) return;
-  var html = '';
+  var html = '<div class="cc-tab-scroll">';
   for (var i = 0; i < _ccTabs.length; i++) {
     var t = _ccTabs[i];
     var isActive = t.id === _ccActiveTabId;
@@ -258,8 +258,9 @@ function ccRenderTabBar() {
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
   }
-  html += '<div class="cc-tab" onclick="ccNewTab()" title="New tab" style="color:var(--muted);padding:4px 8px">+</div>';
-  html += '<button id="cc-all-btn" onclick="ccShowAllConversations()" style="background:none;border:none;color:var(--muted);font-size:11px;padding:4px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;margin-left:auto" title="All conversations">&#x25BC;</button>';
+  html += '<div class="cc-tab cc-tab-new" onclick="ccNewTab()" title="New tab">+</div>';
+  html += '</div>';
+  html += '<div class="cc-tab-actions"><button id="cc-all-btn" class="cc-all-btn" onclick="ccShowAllConversations()" title="All conversations">&#x25BC;</button></div>';
   bar.innerHTML = html;
 }
 
@@ -857,6 +858,13 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/work-items/delete', { id: action.id, source: action.source || '' });
         status.innerHTML = '&#10003; Deleted work item: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--orange)';
+        break;
+      }
+      case 'cancel-work-item': {
+        await _ccFetch('/api/work-items/cancel', { id: action.id, source: action.source || '', reason: action.reason || 'cc' });
+        status.innerHTML = '&#10003; Cancelled work item: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--orange)';
+        wakeEngine();
         break;
       }
       case 'plan-edit': {

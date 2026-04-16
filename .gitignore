@@ -16,6 +16,7 @@ engine/schedule-runs.json
 engine/test-results.json
 engine/kb-checkpoint.json
 engine/pipeline-runs.json
+engine/pending-rebases.json
 engine/pr-links.json
 engine/kb-swept.json
 engine/watches.json
@@ -54,8 +55,11 @@ notes/inbox/*
 notes/archive/*
 !notes/archive/.gitkeep
 notes.md
-projects/
+projects/*
+!projects/*/
+projects/*/*
 !projects/*/playbooks/
+projects/*/playbooks/*
 !projects/*/playbooks/*.md
 work-items.json
 work-items-archive.json
@@ -116,4 +120,3 @@ node_modules/
 agents/ralph/next-action.json
 agents/ralph/loop.log
 sessions/
-

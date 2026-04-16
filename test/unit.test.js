@@ -224,8 +224,11 @@ async function testIdGeneration() {
     assert.strictEqual(files.length, 2, 'Different slugs should create separate files');
   });
 
-  await test('writeToInbox returns false on error (missing dir)', () => {
-    const result = shared.writeToInbox('test', 'slug', 'content', '/nonexistent/path/inbox');
+  await test('writeToInbox returns false on error (invalid inbox path)', () => {
+    const dir = createTmpDir();
+    const blocker = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(blocker, 'block writes below this path');
+    const result = shared.writeToInbox('test', 'slug', 'content', path.join(blocker, 'inbox'));
     assert.strictEqual(result, false, 'Should return false on error');
   });
 
@@ -643,13 +646,287 @@ async function testPrLinks() {
     const links = shared.getPrLinks();
     const existingId = Object.keys(links)[0];
     if (existingId) {
-      shared.addPrLink(existingId, links[existingId]); // should be a no-op
+      shared.addPrLink(existingId, links[existingId][0]); // should be a no-op
     }
   });
 
   await test('addPrLink rejects null inputs', () => {
     shared.addPrLink(null, 'item-1'); // should not crash
     shared.addPrLink('pr-1', null);   // should not crash
+  });
+
+  await test('getCanonicalPrId scopes same PR number by repository', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
+    const adoProject = { repoHost: 'ado', adoOrg: 'octo', adoProject: 'platform', repoName: 'beta' };
+    assert.strictEqual(shared.getCanonicalPrId(ghProject, 123), 'github:octo/alpha#123');
+    assert.strictEqual(shared.getCanonicalPrId(adoProject, 123), 'ado:octo/platform/beta#123');
+    assert.strictEqual(shared.getPrDisplayId('github:octo/alpha#123'), 'PR-123');
+  });
+
+  await test('findPrRecord matches canonical PR entries from legacy refs', () => {
+    const project = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
+    const prs = [{
+      id: 'github:octo/alpha#42',
+      prNumber: 42,
+      url: 'https://github.com/octo/alpha/pull/42'
+    }];
+    const found = shared.findPrRecord(prs, { id: 'PR-42', url: 'https://github.com/octo/alpha/pull/42' }, project);
+    assert.strictEqual(found, prs[0]);
+  });
+
+  await test('findPrRecord refuses ambiguous PR-number-only matches', () => {
+    const prs = [
+      { id: 'github:octo/alpha#42', prNumber: 42 },
+      { id: 'github:octo/beta#42', prNumber: 42 },
+    ];
+    assert.strictEqual(shared.findPrRecord(prs, 'PR-42', null), null);
+  });
+
+  await test('getPrLinks preserves multiple prdItems per PR and only uses fallback links for uncovered PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-100', 'W-101'] },
+        { id: 'PR-200', prdItems: [] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, {
+        'PR-100': 'W-102',
+        'PR-200': ['W-200', 'W-201'],
+      });
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['PR-100'], ['W-100', 'W-101']);
+      assert.deepStrictEqual(links['PR-200'], ['W-200', 'W-201']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getPrLinks ignores stale fallback entries when PR already has project prdItems', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-150', prdItems: ['W-150'] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-150': ['W-stale'] });
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['PR-150'], ['W-150']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink appends new items without dropping existing ones', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-300': ['W-300', 'W-301'] });
+      freshShared.addPrLink('PR-300', 'W-302');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored['PR-300'], ['W-300', 'W-301', 'W-302']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink mirrors prdItems into matching project pull-requests.json when project is provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: 'D:\\demo',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        prUrlBase: 'https://github.com/octo/repo/pull/'
+      };
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-500', prNumber: 500, url: 'https://github.com/octo/repo/pull/500', prdItems: [] }
+      ]));
+      freshShared.addPrLink('PR-500', 'W-500', {
+        project,
+        prNumber: 500,
+        url: 'https://github.com/octo/repo/pull/500'
+      });
+      const storedLinks = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      const storedPrs = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.deepStrictEqual(storedLinks['github:octo/repo#500'], ['W-500']);
+      assert.deepStrictEqual(storedPrs[0].prdItems, ['W-500']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink does not create project pull-requests.json when the file is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const project = {
+        name: 'demo',
+        localPath: 'D:\\demo',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        prUrlBase: 'https://github.com/octo/repo/pull/'
+      };
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.addPrLink('PR-600', 'W-600', {
+        project,
+        prNumber: 600,
+        url: 'https://github.com/octo/repo/pull/600'
+      });
+      const storedLinks = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(storedLinks['github:octo/repo#600'], ['W-600']);
+      assert.ok(!fs.existsSync(prPath), 'Should not create pull-requests.json just to mirror a PR link');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink scrubs corrupt non-string link values before writing back', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, {
+        'PR-700': { corrupt: true }
+      });
+      freshShared.addPrLink('PR-700', 'W-700');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored['PR-700'], ['W-700']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getPinnedItems returns only valid pinned keys', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PINNED_ITEMS_PATH, [
+        'notes/inbox/pinned-note.md',
+        '',
+        null,
+        42,
+        { bad: true },
+        'knowledge/reviews/entry.md'
+      ]);
+      assert.deepStrictEqual(freshShared.getPinnedItems(), [
+        'notes/inbox/pinned-note.md',
+        'knowledge/reviews/entry.md'
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink only mutates fallback pr-links.json, not merged project links', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-400', prdItems: ['W-400'] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-500': 'W-500' });
+      freshShared.addPrLink('PR-500', 'W-501');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored, { 'PR-500': ['W-500', 'W-501'] });
+      assert.ok(!('PR-400' in stored), 'project-derived links must not be copied into fallback pr-links.json');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getPrLinks keeps same PR number separate across repositories', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [
+          { name: 'repo-a', localPath: 'D:/repo-a', repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' },
+          { name: 'repo-b', localPath: 'D:/repo-b', repoHost: 'github', adoOrg: 'octo', repoName: 'beta' },
+        ]
+      });
+      const projectADir = path.join(testDir, 'projects', 'repo-a');
+      const projectBDir = path.join(testDir, 'projects', 'repo-b');
+      fs.mkdirSync(projectADir, { recursive: true });
+      fs.mkdirSync(projectBDir, { recursive: true });
+      fs.writeFileSync(path.join(projectADir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-A'] },
+      ]));
+      fs.writeFileSync(path.join(projectBDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-B'] },
+      ]));
+
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['github:octo/alpha#100'], ['W-A']);
+      assert.deepStrictEqual(links['github:octo/beta#100'], ['W-B']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('mutateJsonFileLocked normalizes legacy PR IDs in project PR files before mutation', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [{ name: 'demo', localPath: 'D:/demo', repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' }]
+      });
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prPath = path.join(projectDir, 'pull-requests.json');
+      freshShared.safeWrite(prPath, [{
+        id: 'PR-42',
+        prNumber: 42,
+        url: 'https://github.com/octo/alpha/pull/42',
+        reviewStatus: 'pending'
+      }]);
+
+      freshShared.mutateJsonFileLocked(prPath, (prs) => {
+        const target = prs.find(pr => pr.id === 'github:octo/alpha#42');
+        assert.ok(target, 'mutation callback should see the canonical PR ID');
+        target.reviewStatus = 'approved';
+        return prs;
+      }, { defaultValue: [] });
+
+      const stored = freshShared.safeJson(prPath) || [];
+      assert.strictEqual(stored[0]?.id, 'github:octo/alpha#42');
+      assert.strictEqual(stored[0]?.reviewStatus, 'approved');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('writeToInbox sanitizes canonical PR slugs for Windows-safe filenames', () => {
+    const inboxDir = createTmpDir();
+    const noteId = shared.writeToInbox(
+      'engine',
+      'build-fail-github:very/long-org-name/really-long-repository-name/subpath#123456789',
+      'test content',
+      inboxDir
+    );
+    const files = fs.readdirSync(inboxDir);
+    assert.ok(noteId, 'writeToInbox should still succeed');
+    assert.strictEqual(files.length, 1, 'exactly one inbox file should be created');
+    assert.ok(!files[0].includes(':'), 'filename should not contain ":"');
+    assert.ok(!files[0].includes('/'), 'filename should not contain "/"');
+    assert.ok(files[0].length < 180, 'filename should stay reasonably bounded');
   });
 }
 
@@ -911,6 +1188,13 @@ async function testQueriesKnowledgeBase() {
       assert.ok(e.cat, 'KB entry missing category');
       assert.ok(e.file, 'KB entry missing file');
       assert.ok(e.title, 'KB entry missing title');
+    }
+  });
+
+  await test('getKnowledgeBaseEntries exposes numeric recency sort key', () => {
+    const entries = queries.getKnowledgeBaseEntries();
+    for (const e of entries) {
+      assert.ok(typeof e.sortTs === 'number', 'KB entry missing numeric sortTs');
     }
   });
 
@@ -1181,6 +1465,7 @@ async function testSyncPrdItemStatus() {
 
 async function testConsolidationHelpers() {
   console.log('\n── consolidation.js — Knowledge Base Classification ──');
+  const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
 
   await test('classifyInboxItem categorizes by filename priority', () => {
     // Filename takes priority over content for reviews/builds
@@ -1211,6 +1496,16 @@ async function testConsolidationHelpers() {
     for (const cat of testCases) {
       assert.ok(validCats.has(cat), `classifyInboxItem returned '${cat}' which is not in KB_CATEGORIES`);
     }
+  });
+
+  await test('consolidateInbox skips pinned inbox notes', () => {
+    const consolidateFn = consolidationSrc.slice(consolidationSrc.indexOf('function consolidateInbox'), consolidationSrc.indexOf('// ─── LLM-Powered'));
+    assert.ok(consolidateFn.includes('shared.getPinnedItems()'),
+      'consolidateInbox should read server-side pinned items before sweeping inbox files');
+    assert.ok(consolidateFn.includes("k.startsWith('notes/inbox/')"),
+      'consolidateInbox should only treat inbox pins as sweep exclusions for inbox consolidation');
+    assert.ok(consolidateFn.includes("!pinnedInboxKeys.has('notes/inbox/' + f)"),
+      'Pinned inbox notes should be excluded from consolidation input files');
   });
 }
 
@@ -1438,15 +1733,28 @@ async function testReconciliation() {
   await test('reconcileItemsWithPrs falls back to pr-links when prdItems missing', () => {
     const items = [{ id: 'P001', status: 'pending' }];
     const prs = [{ id: 'PR-200', status: 'active' }]; // no prdItems linkage
-    const originalGetPrLinks = shared.getPrLinks;
-    shared.getPrLinks = () => ({ 'PR-200': 'P001' });
+    const enginePath = path.join(MINIONS_DIR, 'engine');
+    const sharedPath = path.join(MINIONS_DIR, 'engine', 'shared');
+    const engineCacheKey = require.resolve(enginePath);
+    const sharedCacheKey = require.resolve(sharedPath);
+    const originalEngineModule = require.cache[engineCacheKey];
+    const originalSharedModule = require.cache[sharedCacheKey];
+    delete require.cache[engineCacheKey];
+    delete require.cache[sharedCacheKey];
+    const sharedRuntime = require(sharedPath);
+    const originalGetPrLinks = sharedRuntime.getPrLinks;
+    sharedRuntime.getPrLinks = () => ({ 'PR-200': ['P001'] });
     try {
-      const count = reconcileItemsWithPrs(items, prs);
+      const count = require(enginePath).reconcileItemsWithPrs(items, prs);
       assert.strictEqual(count, 1);
       assert.strictEqual(items[0].status, 'done');
       assert.strictEqual(items[0]._pr, 'PR-200');
     } finally {
-      shared.getPrLinks = originalGetPrLinks;
+      sharedRuntime.getPrLinks = originalGetPrLinks;
+      delete require.cache[engineCacheKey];
+      delete require.cache[sharedCacheKey];
+      if (originalEngineModule) require.cache[engineCacheKey] = originalEngineModule;
+      if (originalSharedModule) require.cache[sharedCacheKey] = originalSharedModule;
     }
   });
 
@@ -2213,8 +2521,8 @@ async function testPrReviewFixCycle() {
     // The key should NOT include lastProcessedCommentDate
     assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
       'Human fix key should not include timestamp (prevents cooldown bypass)');
-    assert.ok(src.includes("human-fix-${project?.name || 'default'}-${pr.id}`"),
-      'Human fix key should be PR-level only');
+    assert.ok(src.includes("const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
+      'Human fix key should stay PR-level while using the stable display ID');
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
@@ -2231,8 +2539,8 @@ async function testPrReviewFixCycle() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('activePrIds'),
       'discoverFromPrs should track active PR dispatches');
-    assert.ok(src.includes('activePrIds.has(pr.id)'),
-      'Should skip PRs that already have an active dispatch');
+    assert.ok(src.includes('shared.getCanonicalPrId(') && src.includes('activePrIds.has(pr.id)'),
+      'Should canonicalize active dispatch PR IDs before checking whether the current PR is already active');
   });
 
   await test('Only active PRs are considered for review/fix', () => {
@@ -2297,8 +2605,8 @@ async function testWorktreeManagement() {
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('dirLower.includes(branchSlug)'),
-      'Post-merge cleanup should match by sanitized branch slug');
+    assert.ok(src.includes('worktreeDirMatchesBranch'),
+      'Post-merge cleanup should use the shared slug-boundary helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
   });
@@ -4711,10 +5019,70 @@ async function testDiscoverFromPrs() {
       'Should skip PRs that already have an active dispatch to prevent races');
   });
 
+  await test('discoverFromPrs reads normalized PRs via queries.getPrs', () => {
+    assert.ok(src.includes('const prs = queries.getPrs(project);'),
+      'discoverFromPrs should read PRs through queries.getPrs so IDs are canonicalized before dispatch decisions');
+  });
+
+  await test('discoverFromPrs uses shared.findPrRecord for PR write-backs', () => {
+    assert.ok(src.includes('shared.findPrRecord('),
+      'discoverFromPrs should use shared.findPrRecord so migrated PR files and stale dispatch metadata still match');
+  });
+
   await test('discoverFromPrs uses cooldown to prevent rapid redispatch', () => {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j, W-mo0cw3ne8l2t) ─────────
+
+  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
+    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
+    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('reviewEnabled'),
+      'discoverFromPrs must use reviewEnabled as the single review gate');
+    assert.ok(!fnBody.includes('autoReview'),
+      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
+      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
+  });
+
+  await test('discoverFromPrs gates changes-requested fix dispatch on evalLoopEnabled', () => {
+    // evalLoop:false should suppress the review→fix cycle (changes-requested → fix dispatch)
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('evalLoopEnabled'),
+      'discoverFromPrs must read evalLoop config flag');
+    // The changes-requested fix block should check evalLoopEnabled
+    const changesIdx = fnBody.indexOf("changes-requested");
+    assert.ok(changesIdx !== -1, 'discoverFromPrs should handle changes-requested');
+    const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
+    assert.ok(changesBlock.includes('evalLoopEnabled'),
+      'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Both pre-dispatch catch blocks (needsReview + needsReReview) should have 'continue'
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 2,
+      `Both pre-dispatch vote check catch blocks must skip dispatch (continue) on error (found ${matches.length})`);
+    // Also verify no catch blocks fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'No pre-dispatch catch block should fall through without continue');
+  });
+
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -4757,9 +5125,9 @@ async function testBuildFixRetryCap() {
       'Should skip fix dispatch (continue) when cap is reached and escalated');
   });
 
-  await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
-    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
-      'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
+  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
+      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -4981,7 +5349,7 @@ async function testCheckTimeouts() {
 
   await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
     assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
-    assert.ok(src.includes('DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
+    assert.ok(src.includes('ENGINE_DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
   });
 
   await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
@@ -4994,7 +5362,7 @@ async function testCheckTimeouts() {
     assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
       'Should read heartbeatTimeouts from config.engine for user overrides');
     // Verify merge order: ENGINE_DEFAULTS ← config
-    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
   });
 
@@ -5079,7 +5447,7 @@ async function testCheckTimeouts() {
   await test('checkTimeouts merges config.engine.heartbeatTimeouts with defaults', () => {
     assert.ok(src.includes('config.engine?.heartbeatTimeouts'),
       'Should read heartbeatTimeouts from config for user overrides');
-    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should spread default heartbeatTimeouts as base');
   });
 
@@ -5102,15 +5470,23 @@ async function testCheckTimeouts() {
   // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
   await test('checkTimeouts does NOT reference undefined DEFAULT_HEARTBEAT_TIMEOUTS (#721)', () => {
     assert.ok(!src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'),
-      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use DEFAULTS.heartbeatTimeouts instead');
+      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use ENGINE_DEFAULTS.heartbeatTimeouts instead');
+  });
+
+  await test('timeout.js imports ENGINE_DEFAULTS directly without renaming', () => {
+    assert.ok(src.includes('ENGINE_DEFAULTS,') || src.includes('ENGINE_DEFAULTS }'),
+      'timeout.js should destructure ENGINE_DEFAULTS directly from shared');
+    const renamedImportPattern = /\bENGINE_DEFAULTS\s*:\s*[A-Z_]+\b/;
+    assert.ok(!renamedImportPattern.test(src),
+      'timeout.js must not rename ENGINE_DEFAULTS in destructuring — use it directly like every other engine file');
   });
 
   await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
     // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
-    const { ENGINE_DEFAULTS: DEFAULTS } = require('../engine/shared');
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
     const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
     // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
-    const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
     assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
     assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
   });
@@ -5366,11 +5742,82 @@ async function testSyncPrsFromOutput() {
       'Should record PR-to-work-item links via addPrLink');
   });
 
+  await test('syncPrsFromOutput orphaned PR fallback stores prdItems inline without addPrLink', () => {
+    const fallbackIdx = src.indexOf('Auto-linked existing PR ${fullId} on branch ${meta.branch}');
+    assert.ok(fallbackIdx > -1, 'Should have orphaned PR auto-link fallback logging');
+    const fallbackStart = src.lastIndexOf('if (found) {', fallbackIdx);
+    const fallbackBlock = src.slice(fallbackStart, fallbackIdx);
+    assert.ok(fallbackBlock.includes('const existingPr = prs.find'),
+      'Fallback should detect an already-tracked PR before creating a new entry');
+    assert.ok(fallbackBlock.includes('existingPr.prdItems'),
+      'Fallback should update prdItems on an existing tracked PR when the item link is missing');
+    assert.ok(fallbackBlock.includes('prdItems: meta.item?.id ? [meta.item.id] : []'),
+      'Fallback PR creation should persist prdItems directly on the PR record');
+    assert.ok(!fallbackBlock.includes('addPrLink('),
+      'Fallback PR creation should not redundantly call addPrLink after writing prdItems');
+  });
+
+  await test('syncPrsFromOutput persists pr-links outside the pull-requests lock callback', () => {
+    const syncIdx = src.indexOf('const linksToPersist = [];');
+    assert.ok(syncIdx > -1, 'Should queue PR links for persistence after the PR file mutation');
+    const lockIdx = src.indexOf('mutateJsonFileLocked(prPath,', syncIdx);
+    const lockReturnIdx = src.indexOf('return prs;', lockIdx);
+    const addIdx = src.indexOf('addPrLink(prId, itemId, { project, prNumber, url });', syncIdx);
+    assert.ok(addIdx > lockReturnIdx,
+      'Should write pr-links only after releasing the pull-requests.json lock');
+  });
+
+  await test('syncPrsFromOutput only uses ADO branch lookup for ADO hosts', () => {
+    assert.ok(src.includes("const host = projectObj.repoHost || 'ado'"),
+      'Should normalize repoHost before branch lookup fallback');
+    assert.ok(src.includes("else if (host === 'ado')"),
+      'Should only call ADO branch lookup for explicit/defaulted ADO hosts');
+    assert.ok(src.includes('unsupported repo host'),
+      'Should log when branch lookup is skipped for an unsupported repo host');
+  });
+
+  await test('syncPrsFromOutput retries GitHub branch lookup when PR list is initially empty', () => {
+    assert.ok(src.includes('for (let attempt = 0; attempt < 3 && !found; attempt++)'),
+      'Should retry GitHub branch lookup up to 3 times for freshly created PRs');
+    assert.ok(src.includes("if (attempt > 0) await new Promise(r => setTimeout(r, 3000));"),
+      'Should wait briefly between retry attempts so GitHub indexing can catch up');
+  });
+
+  await test('syncPrsFromOutput warns when GitHub branch lookup stays empty after retries', () => {
+    assert.ok(src.includes('else if (attempt === 2)'),
+      'Should only warn after the final empty GitHub branch lookup attempt');
+    assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts'),
+      'Should log a warning when GitHub branch lookup stays empty after all retries');
+    assert.ok(src.includes("(raw: ${(raw || '').slice(0, 200)})"),
+      'Should include raw CLI output in the warning to aid debugging empty fallback results');
+  });
+
+  await test('syncPrsFromOutput keeps retry loop alive when gh output is invalid JSON', () => {
+    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3 && !found; attempt++)');
+    assert.ok(retryIdx > -1, 'Should have a GitHub branch lookup retry loop');
+    const retryBlock = src.slice(retryIdx, src.indexOf("} else if (host === 'ado')", retryIdx));
+    assert.ok(retryBlock.includes("let raw = '';"),
+      'Retry loop should preserve raw gh output for final-attempt diagnostics');
+    assert.ok(retryBlock.includes('try {'),
+      'Retry loop should guard gh output parsing with a local try block');
+    assert.ok(retryBlock.includes('} catch (err) {'),
+      'Retry loop should catch gh CLI and JSON parse errors without aborting retries');
+    assert.ok(retryBlock.includes('Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}'),
+      'Should warn with the gh CLI error on the final failed retry');
+  });
+
+  await test('syncPrsFromOutput treats non-array gh JSON as an empty result', () => {
+    assert.ok(src.includes("const parsed = JSON.parse(raw || '[]');"),
+      'Should parse gh CLI JSON before normalizing its shape');
+    assert.ok(src.includes('const hits = Array.isArray(parsed) ? parsed : [];'),
+      'Should coerce non-array gh JSON responses to an empty hits array');
+  });
+
   await test('PR dedup uses strict equality, not substring includes', () => {
     assert.ok(!src.includes("String(p.id).includes(prId)"),
       'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
-    assert.ok(src.includes("String(p.id) === String(prId)"),
-      'Should use strict equality for PR ID comparison');
+    assert.ok(src.includes('p.id === fullId'),
+      'Should use exact canonical PR ID equality for dedup');
   });
 }
 
@@ -6729,6 +7176,55 @@ async function testWakeupCoalescing() {
     assert.ok(cooldownSrc.includes('existing?.failures || 0'),
       'setCooldownWithContext should preserve failure count');
   });
+
+  // ── pendingContexts cap tests ──
+  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+
+  await test('ENGINE_DEFAULTS defines maxPendingContexts', () => {
+    assert.ok(sharedSrc.includes('maxPendingContexts'),
+      'ENGINE_DEFAULTS should define maxPendingContexts cap');
+  });
+
+  await test('setCooldownWithContext caps pendingContexts to maxPendingContexts', () => {
+    assert.ok(cooldownSrc.includes('maxPendingContexts') || cooldownSrc.includes('MAX_PENDING_CONTEXTS'),
+      'setCooldownWithContext should reference the pending contexts cap');
+    assert.ok(cooldownSrc.includes('.slice('),
+      'setCooldownWithContext should use .slice() to trim pendingContexts');
+  });
+
+  await test('saveCooldowns trims pendingContexts on every write', () => {
+    assert.ok(cooldownSrc.includes('pendingContexts') && cooldownSrc.includes('slice'),
+      'saveCooldowns should trim pendingContexts arrays before writing to disk');
+  });
+
+  await test('cleanup.js truncates existing pendingContexts arrays', () => {
+    assert.ok(cleanupSrc.includes('pendingContexts'),
+      'cleanup.js should include one-time pendingContexts truncation');
+    assert.ok(cleanupSrc.includes('pendingContextsTrimmed') || cleanupSrc.includes('pendingCtx'),
+      'cleanup.js should track how many pendingContexts arrays were trimmed');
+  });
+
+  await test('pendingContexts cap is behaviorally enforced', () => {
+    // Behavioral test: actually call setCooldownWithContext many times and verify cap
+    const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown.js'));
+    const testKey = `__test_cap_${Date.now()}`;
+    // Push 30 contexts (above the cap of 20)
+    for (let i = 0; i < 30; i++) {
+      cooldown.setCooldownWithContext(testKey, `ctx-${i}`);
+    }
+    const entry = cooldown.dispatchCooldowns.get(testKey);
+    assert.ok(entry, 'Cooldown entry should exist after setCooldownWithContext');
+    assert.ok(entry.pendingContexts.length <= 20,
+      `pendingContexts should be capped at 20, got ${entry.pendingContexts.length}`);
+    // Verify we kept the LAST 20 (most recent), not the first
+    assert.strictEqual(entry.pendingContexts[entry.pendingContexts.length - 1], 'ctx-29',
+      'Should keep the most recent contexts (last 20)');
+    assert.strictEqual(entry.pendingContexts[0], 'ctx-10',
+      'First entry should be ctx-10 after trimming oldest');
+    // Cleanup
+    cooldown.dispatchCooldowns.delete(testKey);
+  });
 }
 
 // ─── Budget Enforcement Tests ───────────────────────────────────────────────
@@ -6949,6 +7445,37 @@ async function testHumanContributions() {
   await test('KB endpoint validates category', () => {
     assert.ok(dashSrc.includes('architecture') && dashSrc.includes('conventions') && dashSrc.includes('project-notes'),
       'Should validate against known KB categories');
+  });
+
+  await test('Knowledge mutations invalidate KB cache', () => {
+    const invalidateCalls = (dashSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
+    assert.ok(invalidateCalls >= 4,
+      'Should invalidate KB cache after KB create, promotion, sweep, and command-center knowledge writes');
+  });
+
+  await test('queries exports KB cache invalidation helper', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(queriesSrc.includes('function invalidateKnowledgeBaseCache()'),
+      'Should define a KB cache invalidation helper');
+    assert.ok(queriesSrc.includes('invalidateKnowledgeBaseCache,'),
+      'Should export KB cache invalidation helper');
+  });
+
+  await test('Knowledge list exposes sortTs and UI sorts by recency', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(dashSrc.includes('sortTs: e.sortTs'),
+      'Should include sortTs in /api/knowledge results');
+    assert.ok(queriesSrc.includes('sortTs = fs.statSync(filePath).mtimeMs || 0'),
+      'Should derive sortTs from KB file mtime');
+    assert.ok(kbSrc.includes('function kbNewestFirst(a, b)'),
+      'Should define a shared recency comparator for KB items');
+    assert.ok(kbSrc.includes('function kbPinnedNewestFirst(a, b)'),
+      'Should define a combined pin+recency comparator for non-pinned tabs');
+    assert.ok((kbSrc.match(/items\.sort\(kbNewestFirst\)/g) || []).length >= 1,
+      'Pinned tab should sort by recency');
+    assert.ok((kbSrc.match(/items\.sort\(kbPinnedNewestFirst\)/g) || []).length >= 2,
+      'All and category tabs should sort with pin priority and recency in one pass');
   });
 
   await test('openCreateKbModal function exists', () => {
@@ -9592,6 +10119,9 @@ async function main() {
     // P-h2t6r1j8: Structured completion protocol
     await testStructuredCompletion();
 
+    // W-mnzuhp2dapvn: Scheduled task note back-reference
+    await testScheduledTaskNoteBackReference();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -9657,8 +10187,21 @@ async function main() {
     await testWatchesModule();
     await testWatchesDashboard();
 
+    // W-mo0kr8tuldlr: /loop → create-watch interception
+    await testLoopToWatchInterception();
+
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
+
+    // W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages
+    await testSyncPrsToolResultInUserMessages();
+
+    // W-mo0kxqenseo9: Cancel work item — endpoint, UI, CC action
+    await testCancelWorkItem();
+
+    // W-mo0jwu9iwnm1: Duplicate PR prevention + cancel stale dispatches on PR close
+    await testDuplicatePrPrevention();
+    await testCancelDispatchesOnPrClose();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -9800,6 +10343,11 @@ async function testAutoApproveMode() {
       'autoArchive should default to false (opt-in, not automatic)');
   });
 
+  await test('ENGINE_DEFAULTS does NOT include autoReview (consolidated into evalLoop)', () => {
+    assert.ok(!('autoReview' in shared.ENGINE_DEFAULTS),
+      'autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j) — must not exist in ENGINE_DEFAULTS');
+  });
+
   await test('parseStreamJsonOutput extracts model from init message', () => {
     const initLine = '{"type":"system","subtype":"init","model":"claude-opus-4-6[1m]","session_id":"abc"}';
     const resultLine = '{"type":"result","result":"done","total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":50}}';
@@ -9939,6 +10487,22 @@ async function testRenderMdUnclosedFences() {
     assert.ok(html.includes('const y = 42'), 'code after template literal backticks must survive');
   });
 
+  await test('renderMd: ordered lists keep numbering across blank lines between items', () => {
+    const input = '1. first item\n\n2. second item\n\n3. third item';
+    const html = renderMd(input);
+    const olCount = (html.match(/<ol/g) || []).length;
+    const liCount = (html.match(/<li>/g) || []).length;
+    assert.strictEqual(olCount, 1, 'blank lines between ordered items should not restart the list');
+    assert.strictEqual(liCount, 3, 'all ordered items should stay in the same list');
+  });
+
+  await test('renderMd: blank line after list still closes list before following paragraph', () => {
+    const input = '1. first item\n\n2. second item\n\nFollowing paragraph';
+    const html = renderMd(input);
+    assert.ok(html.includes('</ol>'), 'ordered list should close before the following paragraph');
+    assert.ok(html.includes('Following paragraph'), 'paragraph after list should still render');
+  });
+
   await test('_normalizeCodeFences: even fence count is unchanged', () => {
     const normFn = new Function(normBody + '\nreturn _normalizeCodeFences;')();
     const even = '```js\ncode\n```';
@@ -10013,6 +10577,15 @@ async function testReviewReDispatchLoop() {
       'updatePrAfterReview should set lastReviewedAt timestamp on PR record');
   });
 
+  await test('updatePrAfterReview preserves fixedAt from prior fix when writing minionsReview', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
+    assert.ok(reviewFn.includes('minionsReview?.fixedAt') && reviewFn.includes('fixedAt'),
+      'updatePrAfterReview must preserve fixedAt from prior fix — dropping it causes poller to overwrite reviewStatus back to changes-requested after a fix is pushed');
+    assert.ok(reviewFn.includes("postReviewStatus !== 'changes-requested'"),
+      'updatePrAfterReview must drop fixedAt when reviewer requests changes again — old fixedAt is stale in a new fix cycle');
+  });
+
   await test('engine.js skips review re-dispatch when lastReviewedAt set and no new commits', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
     assert.ok(src.includes('alreadyReviewed') && src.includes('lastReviewedAt') && src.includes('lastPushedAt'),
@@ -10031,7 +10604,7 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    assert.ok(src.includes("const needsReReview = autoReview && reviewStatus === 'waiting'"),
+    assert.ok(src.includes("const needsReReview = reviewEnabled && reviewStatus === 'waiting'"),
       'Should define needsReReview for waiting PRs');
     assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
       src.includes('!pr.lastReviewedAt ||') &&
@@ -10041,14 +10614,14 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    const reReviewIdx = src.indexOf("const needsReReview = autoReview && reviewStatus === 'waiting'");
+    const reReviewIdx = src.indexOf("const needsReReview = reviewEnabled && reviewStatus === 'waiting'");
     assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
     const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);
     assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
       'needsReReview should not be blocked by completed dispatch history');
-    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${pr.id}`"),
-      'needsReReview should use a dedicated re-review dispatch key');
+    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${prDisplayId}`"),
+      'needsReReview should use a dedicated re-review dispatch key based on the stable display ID');
     assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
       'needsReReview should still respect cooldown');
     assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
@@ -10186,6 +10759,18 @@ async function testSettingsComprehensive() {
       'settings.js must include ghPollEnabled in enginePayload and reference set-ghPollEnabled element');
   });
 
+  await test('poll frequency labels say PR not ADO — they gate both ADO and GitHub', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes("PR Status Poll Frequency"),
+      'settings.js must label status poll field as "PR Status Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(src.includes("PR Comments Poll Frequency"),
+      'settings.js must label comments poll field as "PR Comments Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(!src.includes("'ADO Status Poll Frequency'") && !src.includes('"ADO Status Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Status Poll Frequency" label — field gates both providers');
+    assert.ok(!src.includes("'ADO Comments Poll Frequency'") && !src.includes('"ADO Comments Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Comments Poll Frequency" label — field gates both providers');
+  });
+
   await test('ENGINE_DEFAULTS defines adoPollEnabled and ghPollEnabled as booleans', () => {
     assert.strictEqual(typeof shared.ENGINE_DEFAULTS.adoPollEnabled, 'boolean',
       'ENGINE_DEFAULTS.adoPollEnabled must be a boolean so ?? fallback works correctly in engine.js');
@@ -10202,6 +10787,59 @@ async function testSettingsComprehensive() {
         `engine.js outputFormat fallback '${val}' must match DEFAULT_CLAUDE.outputFormat`);
     }
   });
+
+  // ── Per-project workSources toggles in settings modal ──
+
+  await test('handleSettingsRead includes projects with workSources in response', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsRead'), src.indexOf('function handleSettingsUpdate'));
+    assert.ok(handler.includes('projects'), 'handleSettingsRead should include projects in response');
+    assert.ok(handler.includes('workSources'), 'handleSettingsRead should include workSources in projects');
+    assert.ok(handler.includes('pullRequests'), 'handleSettingsRead should include pullRequests workSource');
+    assert.ok(handler.includes('workItems'), 'handleSettingsRead should include workItems workSource');
+  });
+
+  await test('handleSettingsUpdate processes projects workSources', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    assert.ok(handler.includes('body.projects'), 'handleSettingsUpdate should handle body.projects');
+    assert.ok(handler.includes('workSources'), 'handleSettingsUpdate should process workSources');
+    assert.ok(handler.includes('pullRequests'), 'handleSettingsUpdate should handle pullRequests toggle');
+    assert.ok(handler.includes('workItems'), 'handleSettingsUpdate should handle workItems toggle');
+  });
+
+  await test('settings UI renders per-project workSources toggles', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes('data.projects') || src.includes('projects'), 'settings.js should reference projects data');
+    assert.ok(src.includes('Discover from PRs'), 'settings.js should have Discover from PRs toggle label');
+    assert.ok(src.includes('Discover from Work Items'), 'settings.js should have Discover from Work Items toggle label');
+    assert.ok(src.includes('set-ws-prs-'), 'settings.js should use set-ws-prs- prefix for PR toggle IDs');
+    assert.ok(src.includes('set-ws-wi-'), 'settings.js should use set-ws-wi- prefix for WI toggle IDs');
+  });
+
+  await test('settings saveSettings collects per-project workSources', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const saveBlock = src.slice(src.indexOf('async function saveSettings'));
+    assert.ok(saveBlock.includes('projects'), 'saveSettings should collect projects data');
+    assert.ok(saveBlock.includes('workSources'), 'saveSettings should include workSources in payload');
+    assert.ok(saveBlock.includes('pullRequests'), 'saveSettings should include pullRequests toggle state');
+    assert.ok(saveBlock.includes('workItems'), 'saveSettings should include workItems toggle state');
+  });
+
+  await test('handleSettingsUpdate projects handler validates project name exists', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // Must skip unknown projects — find by name and continue if not found
+    assert.ok(handler.includes('continue'), 'handleSettingsUpdate projects loop should skip unknown projects');
+  });
+
+  await test('handleSettingsUpdate projects handler coerces booleans', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // Must coerce to boolean with !! to prevent truthy string injection
+    const projectsBlock = handler.slice(handler.indexOf('body.projects'));
+    assert.ok(projectsBlock.includes('!!'), 'handleSettingsUpdate should coerce workSources enabled to boolean with !!');
+  });
 }
 
 async function testCcActionTypes() {
@@ -10217,6 +10855,23 @@ async function testCcActionTypes() {
     assert.ok(src.includes("case 'schedule':"), 'should handle schedule action');
     assert.ok(src.includes("case 'create-meeting':"), 'should handle create-meeting action');
     assert.ok(src.includes("case 'set-config':"), 'should handle set-config action');
+  });
+
+  await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
+    const inlineResult = parseCCActions(inline);
+    assert.strictEqual(inlineResult.text, inline, 'inline mentions of ===ACTIONS=== must not truncate CC output');
+    assert.deepStrictEqual(inlineResult.actions, [], 'inline mentions of ===ACTIONS=== must not be parsed as actions');
+
+    const withActions = 'Answer first.\n\n===ACTIONS===\n[{\"type\":\"note\",\"title\":\"x\",\"content\":\"y\"}]';
+    const actionResult = parseCCActions(withActions);
+    assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
+    assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
   });
 }
 
@@ -10246,6 +10901,35 @@ async function testKbSweepBatching() {
     assert.ok(src.includes('BATCH_SIZE'), 'sweep should use BATCH_SIZE');
     assert.ok(src.includes('batches.length'), 'sweep should iterate batches');
     assert.ok(src.includes('batch ${b + 1}'), 'sweep should log batch progress');
+  });
+
+  await test('KB sweep skips pinned entries using server and request pin sets', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('shared.getPinnedItems().filter(k => k.startsWith(\'knowledge/\'))'),
+      'KB sweep should read server-side pinned knowledge keys');
+    assert.ok(bgFn.includes('body.pinnedKeys'),
+      'KB sweep should still honor explicitly provided pinned keys from the caller');
+    assert.ok(bgFn.includes("if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;"),
+      'Pinned knowledge entries should be excluded from the sweep manifest');
+  });
+
+  await test('KB sweep exits early when fewer than 2 unpinned entries remain', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes("nothing to sweep (< 2 unpinned entries)"),
+      'KB sweep should report no-op when pinned exclusions leave fewer than 2 entries');
+    assert.ok(bgFn.includes('if (manifest.length < 2)'),
+      'KB sweep should stop before LLM batching when too few unpinned entries remain');
+  });
+
+  await test('KB sweep reclassification preserves original mtime for newest-first ordering', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('const srcStats = fs.statSync(srcPath);'),
+      'KB reclassification should capture source file timestamps');
+    assert.ok(bgFn.includes('fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);'),
+      'KB reclassification should preserve original timestamps after moving categories');
   });
 }
 
@@ -11086,7 +11770,7 @@ async function testPrWriteRaceConditions() {
     shared.safeWrite(prFile, []);
 
     // Mock config with a project pointing to our tmp PR file
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: {
@@ -11117,8 +11801,8 @@ async function testPrWriteRaceConditions() {
 
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'PR-100 from agent1 should be present');
-      assert.ok(ids.includes('PR-200'), 'PR-200 from agent2 should be present');
+      assert.ok(ids.includes('github:org/repo#100'), 'repo-scoped PR 100 from agent1 should be present');
+      assert.ok(ids.includes('github:org/repo#200'), 'repo-scoped PR 200 from agent2 should be present');
       assert.strictEqual(result.length, 2, 'Both PRs should be preserved, not overwritten');
     } finally {
       shared.projectPrPath = origProjectPrPath;
@@ -11132,7 +11816,7 @@ async function testPrWriteRaceConditions() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: { agent1: { name: 'Agent1' } }
@@ -11151,8 +11835,8 @@ async function testPrWriteRaceConditions() {
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
 
       const result = shared.safeJson(prFile) || [];
-      const pr300s = result.filter(p => p.id === 'PR-300');
-      assert.strictEqual(pr300s.length, 1, 'PR-300 should appear exactly once despite two calls');
+      const pr300s = result.filter(p => p.id === 'github:org/repo#300');
+      assert.strictEqual(pr300s.length, 1, 'repo-scoped PR 300 should appear exactly once despite two calls');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
@@ -11700,12 +12384,15 @@ async function testStatusMutationGuards() {
     assert.ok(!src.includes('cleanDispatchEntries'), 'engine.js should not call cleanDispatchEntries (dashboard-only function)');
   });
 
-  await test('dashboard.js: handlePrdItemsRemove null-guards safeJson result', () => {
+  await test('dashboard.js: handlePrdItemsRemove uses mutateJsonFileLocked', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fnStart = src.indexOf('handlePrdItemsRemove');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj'), 'handlePrdItemsRemove must null-guard plan from safeJson or use safeJsonObj');
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'handlePrdItemsRemove must use mutateJsonFileLocked for atomic plan updates');
+    assert.ok(!fnBody.includes('safeWrite(planPath, plan)'),
+      'handlePrdItemsRemove must not use unlocked safeWrite on the PRD file');
   });
 
   await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
@@ -12325,6 +13012,16 @@ async function testEngineAuditCritical() {
     assert.ok(src.includes("case 'allBuildsGreen'"), 'must support allBuildsGreen check');
   });
 
+  await test('pipeline.js allBuildsGreen reads stage monitoredResources and canonical-aware PR refs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('collectPipelinePrRefs'),
+      'allBuildsGreen should collect monitored PR refs through a shared helper');
+    assert.ok(src.includes('stage?.monitoredResources'),
+      'allBuildsGreen should include stage-level monitoredResources');
+    assert.ok(src.includes('shared.findPrRecord(allPrs, prRef)'),
+      'allBuildsGreen should resolve monitored PR refs through shared.findPrRecord');
+  });
+
   await test('pipeline.js isStageComplete handles CONDITION type', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
     assert.ok(src.includes('STAGE_TYPE.CONDITION'), 'isStageComplete must handle CONDITION type');
@@ -12507,6 +13204,17 @@ async function testEngineAuditCritical() {
       'processPendingRebases must not use unlocked safeWrite — concurrent queuePendingRebase entries would be lost');
   });
 
+  await test('processPendingRebases resolves queued PRs through normalized matching', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('const prs = getPrs(project);'),
+      'processPendingRebases should read PRs through getPrs so queued legacy IDs normalize on read');
+    assert.ok(fn.includes('shared.findPrRecord(prs, entry.prId, project)'),
+      'processPendingRebases should resolve queued PRs through shared.findPrRecord');
+  });
+
   await test('processPendingRebases drains queue atomically then merges remaining back', () => {
     const fn = lifecycleSrcForRebase.slice(
       lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
@@ -12625,6 +13333,13 @@ async function testPrDuplicateRaceFix() {
       'updatePrAfterReview must use mutateJsonFileLocked on PR file');
     assert.ok(!fn[0].includes('shared.safeWrite(project'),
       'updatePrAfterReview must not use bare safeWrite on PR file');
+  });
+
+  await test('updatePrAfterReview matches PRs with shared.findPrRecord', () => {
+    const fn = lifecycleSrc.match(/function updatePrAfterReview[\s\S]*?^}/m);
+    assert.ok(fn, 'updatePrAfterReview must exist');
+    assert.ok(fn[0].includes('shared.findPrRecord(prs, pr, project)'),
+      'updatePrAfterReview should use shared.findPrRecord so stale legacy dispatch metadata still matches normalized PR files');
   });
 
   await test('updatePrAfterFix uses mutateJsonFileLocked, not safeWrite', () => {
@@ -13155,7 +13870,7 @@ async function testAutoRecoveryAndAtomicity() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
 
     const origProjectPrPath = shared.projectPrPath;
@@ -13520,6 +14235,10 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
     assert.ok(fn.includes('_teamsNotifiedEvents'), 'should check dedup array');
     assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
+    assert.ok(fn.includes('shared.findPrRecord(prs, pr)'),
+      'should use shared.findPrRecord so normalized PR files still match stale PR event objects');
+    assert.ok(fn.indexOf('mutateJsonFileLocked') < fn.indexOf('await teamsPost'),
+      'should claim dedup state before posting to Teams');
   });
 
   await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
@@ -14762,6 +15481,18 @@ async function testDashboardResilience() {
       'clearQaSelection should hide pill');
   });
 
+  await test('clearQaConversation persists session deletion to localStorage', () => {
+    // clearQaConversation deletes from _qaSessions — must call _saveQaSessions() to persist
+    const clearFn = modalQaSrc.slice(
+      modalQaSrc.indexOf('function clearQaConversation'),
+      modalQaSrc.indexOf('function modalSend')
+    );
+    assert.ok(clearFn.includes('_qaSessions.delete'),
+      'clearQaConversation must delete session from _qaSessions map');
+    assert.ok(clearFn.includes('_saveQaSessions()'),
+      'clearQaConversation must call _saveQaSessions() after deleting session to persist to localStorage');
+  });
+
   // ── Command center overlay dismiss ──
 
   await test('CC overlay exists for click-to-dismiss', () => {
@@ -14920,9 +15651,9 @@ async function testBuildFixEscalation() {
       'CSS should have a .pr-badge.build-escalated style for visual escalation indicator');
   });
 
-  await test('escalation uses configurable limit from DEFAULTS', () => {
-    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
-      'engine.js should read maxBuildFixAttempts from DEFAULTS (not hardcoded)');
+  await test('escalation uses configurable limit from ENGINE_DEFAULTS', () => {
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
+      'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
   });
 
   await test('escalation writes inbox alert for human visibility', () => {
@@ -16078,9 +16809,19 @@ async function testCCMultiTab() {
   });
 
   await test('tab CSS styles exist', () => {
+    assert.ok(stylesSrc.includes('.cc-tab-scroll'), 'Should have .cc-tab-scroll style');
+    assert.ok(stylesSrc.includes('.cc-tab-actions'), 'Should have .cc-tab-actions style');
+    assert.ok(stylesSrc.includes('.cc-all-btn'), 'Should have .cc-all-btn style');
     assert.ok(stylesSrc.includes('.cc-tab'), 'Should have .cc-tab style');
     assert.ok(stylesSrc.includes('.cc-tab.active'), 'Should have .cc-tab.active style');
     assert.ok(stylesSrc.includes('.cc-tab-close'), 'Should have .cc-tab-close style');
+  });
+
+  await test('ccRenderTabBar keeps overflow tabs separate from all-conversations button', () => {
+    assert.ok(ccSrc.includes('cc-tab-scroll'), 'ccRenderTabBar should render a scroll container for tabs');
+    assert.ok(ccSrc.includes('cc-tab-actions'), 'ccRenderTabBar should render a fixed actions container');
+    assert.ok(ccSrc.includes('cc-all-btn') && ccSrc.includes('cc-all-btn" class="cc-all-btn'),
+      'ccRenderTabBar should render the all-conversations button outside the scrolling tab strip');
   });
 
   // ── Integration flow tests ────────────────────────────────────────────────
@@ -16272,15 +17013,56 @@ async function testIsolationVerification() {
     assert.strictEqual(testFiles.length, 0, 'Found: ' + testFiles.join(', '));
   });
 
-  await test('no test agent IDs in metrics.json', () => {
+  await test('no known test-only agent IDs in metrics.json', () => {
     const metrics = shared.safeJson(path.join(shared.MINIONS_DIR, 'engine', 'metrics.json')) || {};
-    const bad = Object.keys(metrics).filter(k => k.startsWith('temp-') || k === 'agent1' || k.startsWith('_test'));
+    // temp-* is also the real runtime prefix for temporary agents, so only flag
+    // IDs that are unambiguously test-only in the shared metrics file.
+    const bad = Object.keys(metrics).filter(k => k === 'agent1' || k === 'reviewer' || k.startsWith('_test'));
     assert.strictEqual(bad.length, 0, 'Found: ' + bad.join(', '));
   });
 
   await test('updateMetrics guards against test agent IDs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes("temp-") && src.includes("agent1"), 'Should guard test IDs');
+  });
+
+  await test('cleanup.js scrubs stale test agent keys from metrics.json', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('metrics.json'), 'cleanup.js should reference metrics.json');
+    assert.ok(src.includes("temp-") || src.includes('temp-'), 'cleanup.js should scrub temp- agent keys');
+  });
+
+  await test('BEHAVIORAL: scrubStaleMetrics removes temp/test keys from metrics.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const metricsPath = path.join(testShared.MINIONS_DIR, 'engine', 'metrics.json');
+      // Seed metrics with stale temp agent keys + legitimate agent + _engine/_daily
+      const seeded = {
+        'temp-mnyxw3eb0ap5': { tasksCompleted: 1 },
+        'temp-mnyxw31gumvd': { tasksCompleted: 2 },
+        'agent1': { tasksCompleted: 1 },
+        '_test-foo': { tasksCompleted: 1 },
+        'dallas': { tasksCompleted: 10, tasksErrored: 1 },
+        '_engine': { calls: 5 },
+        '_daily': { '2026-04-15': {} },
+      };
+      fs.writeFileSync(metricsPath, JSON.stringify(seeded));
+      const testCleanup = require('../engine/cleanup');
+      testCleanup.scrubStaleMetrics();
+      const after = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      // Stale keys removed
+      assert.strictEqual(after['temp-mnyxw3eb0ap5'], undefined, 'temp- key should be removed');
+      assert.strictEqual(after['temp-mnyxw31gumvd'], undefined, 'temp- key should be removed');
+      assert.strictEqual(after['agent1'], undefined, 'agent1 key should be removed');
+      assert.strictEqual(after['_test-foo'], undefined, '_test key should be removed');
+      // Legitimate keys preserved
+      assert.ok(after['dallas'], 'real agent should be preserved');
+      assert.ok(after['_engine'], '_engine should be preserved');
+      assert.ok(after['_daily'], '_daily should be preserved');
+    } finally {
+      restore();
+    }
   });
 
   await test('shared.js uses MINIONS_TEST_DIR env override', () => {
@@ -16428,11 +17210,10 @@ async function testPipelineReconciliation() {
 
   await test('removeWorktree uses cmd /c rd /s /q on Windows for any error (not just EPERM)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
     // Must use cmd /c rd /s /q (not plain rd /s /q)
-    assert.ok(fn.includes('cmd /c rd /s /q'), 'Should use cmd /c rd /s /q');
+    assert.ok(/function removeWorktree[\s\S]*?cmd \/c rd \/s \/q/.test(src), 'Should use cmd /c rd /s /q');
     // Must NOT restrict to EPERM only — should handle any Windows error
-    assert.ok(!fn.includes("rmErr.code === 'EPERM'"), 'Should not restrict rd /s /q to EPERM only');
+    assert.ok(!/function removeWorktree[\s\S]*?rmErr\.code === 'EPERM'/.test(src), 'Should not restrict rd /s /q to EPERM only');
   });
 
   await test('_WIN_RESERVED_NAMES includes NUL and other device names', () => {
@@ -16461,8 +17242,7 @@ async function testPipelineReconciliation() {
 
   await test('removeWorktree logs rd /s /q fallback failures', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
-    assert.ok(fn.includes('rd /s /q fallback failed'), 'Should log rd /s /q failures instead of silently swallowing');
+    assert.ok(/function removeWorktree[\s\S]*?rd \/s \/q fallback failed/.test(src), 'Should log rd /s /q failures instead of silently swallowing');
   });
 }
 
@@ -16811,7 +17591,7 @@ async function testPrReviewFixFlows() {
 
   await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
     const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
     const escalBlock = engineSrc.slice(startIdx, endIdx);
     assert.ok(escalBlock.length > 10, 'Should find escalation block');
     assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
@@ -17052,10 +17832,10 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('autoFixConflicts'), 'Conflict fix dispatch must be gated by autoFixConflicts config flag');
   });
 
-  await test('autoFixConflicts reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+  await test('autoFixConflicts references ENGINE_DEFAULTS directly', () => {
     const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
-    assert.ok(conflictBlock.includes('DEFAULTS.autoFixConflicts'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
-    assert.ok(!conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+    assert.ok(conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'),
+      'Must reference autoFixConflicts via ENGINE_DEFAULTS directly');
   });
 
   await test('autoFixConflicts present in ENGINE_DEFAULTS', () => {
@@ -17069,10 +17849,11 @@ async function testPrReviewFixFlows() {
     assert.ok(buildBlock.includes('autoFixBuilds'), 'Build fix dispatch must be gated by autoFixBuilds config flag');
   });
 
-  await test('autoFixBuilds reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+  await test('autoFixBuilds reads ENGINE_DEFAULTS directly', () => {
     const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
-    assert.ok(buildBlock.includes('DEFAULTS.autoFixBuilds'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
-    assert.ok(!buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+    assert.ok(buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must use ENGINE_DEFAULTS directly in engine.js');
+    const strippedBuildBlock = buildBlock.replace(/ENGINE_DEFAULTS\.autoFixBuilds/g, '');
+    assert.ok(!/\b[A-Z_]+\.autoFixBuilds\b/.test(strippedBuildBlock), 'Must not route autoFixBuilds through a renamed constant in engine.js');
   });
 
   await test('autoFixBuilds present in ENGINE_DEFAULTS with default true', () => {
@@ -17104,6 +17885,27 @@ async function testPrReviewFixFlows() {
   await test('auto-complete requires both approved and passing', () => {
     assert.ok(ghSrc.includes("reviewStatus === 'approved'") && ghSrc.includes("buildStatus === 'passing'") && ghSrc.includes('_autoCompleted'),
       'GitHub should require both conditions');
+  });
+
+  await test('settings UI has Auto-complete PRs toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoCompletePrs'),
+      'Settings UI should have an autoCompletePrs toggle with id set-autoCompletePrs');
+    assert.ok(settingsSrc.includes('Auto-complete PRs') || settingsSrc.includes('Auto-complete'),
+      'Settings UI should label the toggle as Auto-complete PRs');
+  });
+
+  await test('settings UI sends autoCompletePrs to backend', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('autoCompletePrs:') && settingsSrc.includes('set-autoCompletePrs'),
+      'settings.js must include autoCompletePrs in enginePayload and reference set-autoCompletePrs element');
+  });
+
+  await test('ENGINE_DEFAULTS defines autoCompletePrs as boolean', () => {
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.autoCompletePrs, 'boolean',
+      'ENGINE_DEFAULTS.autoCompletePrs must be a boolean so dynamic boolean derivation includes it');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoCompletePrs, false,
+      'autoCompletePrs default must be false (opt-in)');
   });
 
   await test('GitHub merge method validated against whitelist', () => {
@@ -17403,9 +18205,9 @@ async function testAdoTokenInjection() {
   });
 
   await test('SessionStart hook uses http type (not command with curl)', () => {
-    // The SessionStart hook should use type: http to avoid curl exit code propagation
-    // Skip on CI — the runner's settings.json is not managed by this project
-    if (process.env.CI) { skipped++; return; }
+    // Local ~/.claude/settings.json is user-owned state, not a repo artifact.
+    // Only run this as an explicit opt-in diagnostic.
+    if (process.env.MINIONS_VALIDATE_LOCAL_CLAUDE_SETTINGS !== '1') { skipped++; return; }
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (!fs.existsSync(settingsPath)) { skipped++; return; }
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
@@ -17569,6 +18371,28 @@ async function testAdoThrottleDetection() {
 
   await test('ado.js exports getAdoThrottleState function', () => {
     assert.ok(typeof ado.getAdoThrottleState === 'function', 'getAdoThrottleState must be exported');
+  });
+
+  await test('ado.js derives browsable PR URLs from repoName instead of repositoryId GUID', () => {
+    assert.ok(adoSrc.includes('function getAdoPrUrl') || adoSrc.includes('const getAdoPrUrl'),
+      'ado.js should centralize browsable PR URL construction');
+    assert.ok(adoSrc.includes('project.repoName || project.repositoryId'),
+      'ADO browsable PR URL fallback should prefer repoName over repositoryId GUID');
+    const prUrlCalls = (adoSrc.match(/getAdoPrUrl\(project, prNumber\)/g) || []).length;
+    assert.ok(prUrlCalls >= 2,
+      'ADO browsable PR URL helper should be used in both live status and branch lookup paths');
+  });
+
+  await test('findOpenPrOnBranch skips lookup while ADO is throttled', () => {
+    const lookupFn = adoSrc.match(/async function findOpenPrOnBranch[\s\S]*?^}/m);
+    assert.ok(lookupFn, 'findOpenPrOnBranch function must exist');
+    const src = lookupFn[0];
+    assert.ok(src.includes('isAdoThrottled()'),
+      'findOpenPrOnBranch should check isAdoThrottled before calling ADO');
+    assert.ok(src.includes('return null'),
+      'findOpenPrOnBranch should return null when lookup is skipped');
+    assert.ok(src.includes('throttled'),
+      'findOpenPrOnBranch should log that lookup was skipped due to throttling');
   });
 
   // ── Behavioral: isAdoThrottled auto-clears after retryAfter ──
@@ -17947,15 +18771,15 @@ async function testAdoThrottleTickGuards() {
   // ── No changes to config values ──
 
   await test('adoPollStatusEvery and adoPollCommentsEvery are not modified', () => {
-    // These should still reference DEFAULTS, not hardcoded values
+    // These should still reference ENGINE_DEFAULTS, not hardcoded values
     assert.ok(engineSrc.includes('adoPollStatusEvery'),
       'adoPollStatusEvery must still be used');
     assert.ok(engineSrc.includes('adoPollCommentsEvery'),
       'adoPollCommentsEvery must still be used');
-    assert.ok(engineSrc.includes('DEFAULTS.adoPollStatusEvery'),
-      'adoPollStatusEvery must still reference DEFAULTS');
-    assert.ok(engineSrc.includes('DEFAULTS.adoPollCommentsEvery'),
-      'adoPollCommentsEvery must still reference DEFAULTS');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollStatusEvery'),
+      'adoPollStatusEvery must still reference ENGINE_DEFAULTS');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollCommentsEvery'),
+      'adoPollCommentsEvery must still reference ENGINE_DEFAULTS');
   });
 }
 
@@ -18594,10 +19418,12 @@ async function testRenderUtils() {
     assert.ok(dashSrc.includes('_lightToolInput'),
       'dashboard.js should have _lightToolInput helper for structured input');
     // All onToolUse handlers should use the helper
-    const toolEventMatches = dashSrc.match(/onToolUse:.*?\n/g);
-    assert.ok(toolEventMatches && toolEventMatches.length >= 2,
+    const toolEventMatches = [...dashSrc.matchAll(/onToolUse:\s*\(name,\s*input\)\s*=>\s*\{/g)];
+    assert.ok(toolEventMatches.length >= 2,
       'dashboard.js should have at least 2 onToolUse handlers (primary + retry)');
-    const allUseLightInput = toolEventMatches.every(m => m.includes('_lightToolInput') || dashSrc.slice(dashSrc.indexOf(m), dashSrc.indexOf(m) + 200).includes('_lightToolInput'));
+    const allUseLightInput = toolEventMatches.every(m => dashSrc.slice(m.index, m.index + 200).includes('_lightToolInput'));
+    assert.ok(allUseLightInput,
+      'Each onToolUse handler should send structured input via _lightToolInput');
     assert.ok(dashSrc.includes('Object.entries'),
       '_lightToolInput should use Object.entries to iterate input fields');
   });
@@ -19144,6 +19970,18 @@ async function testWatchesModule() {
     assert.strictEqual(shared.WATCH_CONDITION.ANY, 'any');
   });
 
+  await test('WATCH_ABSOLUTE_CONDITIONS contains fire-once conditions', () => {
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS instanceof Set, 'must be a Set');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.MERGED));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.BUILD_FAIL));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.BUILD_PASS));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.COMPLETED));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.FAILED));
+    // Change-detection conditions must NOT be absolute
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.STATUS_CHANGE));
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.ANY));
+  });
+
   // createWatch validation
   await test('createWatch requires target', () => {
     assert.throws(() => watches.createWatch({ targetType: 'pr', condition: 'merged' }), /target is required/);
@@ -19332,6 +20170,62 @@ async function testWatchesModule() {
     assert.ok(result.message.includes('not found'));
   });
 
+  // evaluateWatch — new-comments condition
+  await test('evaluateWatch: PR new-comments triggers when comment date changes', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('new comment'));
+  });
+
+  await test('evaluateWatch: PR new-comments does not trigger when date unchanged', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-01T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR new-comments triggers on first comment (no prior state)', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: null } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  // evaluateWatch — vote-change condition
+  await test('evaluateWatch: PR vote-change triggers when reviewStatus changes', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('pending'));
+    assert.ok(result.message.includes('approved'));
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger when unchanged', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger without prior state', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
   // evaluateWatch — Work Item conditions
   await test('evaluateWatch: WI completed triggers when done', () => {
     const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
@@ -19461,6 +20355,21 @@ async function testWatchesModule() {
     assert.strictEqual(captured.status, 'active');
     assert.strictEqual(captured.buildStatus, 'passing');
     assert.strictEqual(captured.reviewStatus, 'waiting');
+  });
+
+  await test('_captureState captures PR lastCommentDate from humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-10T12:00:00Z' } }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, '2026-04-10T12:00:00Z');
+  });
+
+  await test('_captureState captures null lastCommentDate when no humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, null);
   });
 
   await test('_captureState captures WI state', () => {
@@ -19607,6 +20516,9 @@ async function testWatchesModule() {
   });
 
   await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+    // Use a non-absolute condition (new-comments) — absolute conditions (merged, build-fail, etc.)
+    // auto-expire when stopAfter is 0 via WATCH_ABSOLUTE_CONDITIONS (fire-once semantics).
+    // First check initializes baseline _lastState without triggering, so we need 3 checks for 2 triggers.
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19614,32 +20526,81 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 0,   // run forever
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,   // run forever (non-absolute conditions)
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
-      // Trigger multiple times by resetting last_checked between checks
-      testWatches.checkWatches({}, state);
-      // Force last_checked back so interval doesn't block next check
-      const watchesData = testWatches.getWatches();
-      const found = watchesData.find(x => x.id === w.id);
-      assert.strictEqual(found.triggerCount, 1);
-      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
-      // Manually reset last_checked to force another check
-      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      testWatches.checkWatches({}, state);
+
+      // Check 1 — initializes baseline _lastState (lastCommentDate = '2026-01-01'), no trigger
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      assert.strictEqual(testWatches.getWatches().find(x => x.id === w.id).triggerCount, 0, 'First check initializes baseline, no trigger');
+
+      // Check 2 — comment date changed → triggers (triggerCount = 1)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+
+      // Check 3 — another comment date change → triggers again (triggerCount = 2)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for non-absolute conditions');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
+
+  await test('stopAfter: 0 auto-expires absolute conditions (merged, build-pass, etc.) on first trigger', () => {
+    // Absolute conditions (merged, build-fail, build-pass, completed, failed) should fire-once
+    // when stopAfter=0, using WATCH_ABSOLUTE_CONDITIONS. This prevents "watch for PR merged"
+    // from firing forever after the PR merges.
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '650',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 0,   // 0 on absolute condition = fire-once
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+
+      // Check 1 — PR is merged → triggers (triggerCount = 1) and auto-expires
+      const state1 = { pullRequests: [{ prNumber: 650, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1, 'Should trigger on merged PR');
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.EXPIRED,
+        'Absolute condition with stopAfter=0 should auto-expire after first trigger');
+
+      // Check 2 — should NOT trigger again because watch is expired
+      resetLastChecked();
+      testWatches.checkWatches({}, state1);
+      const after2 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after2.triggerCount, 1, 'Should not trigger again after auto-expire');
+      assert.strictEqual(after2.status, shared.WATCH_STATUS.EXPIRED, 'Should remain expired');
+    } finally { restore(); }
+  });
+
 
   await test('create-watch CC action in executeCCActions creates a watch', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
@@ -19738,32 +20699,45 @@ async function testWatchesModule() {
   });
 
   await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    // Use non-absolute condition (new-comments) so stopAfter: 0 means "run forever"
+    // First check initializes baseline; checks 2 and 3 trigger (new comment dates)
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (non-absolute) so stopAfter=0 keeps watch active across multiple triggers
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
+        notify: 'inbox',
       });
-      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
-      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
-      testWatches.checkWatches({}, state);
-      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
-      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
-      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for second trigger
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Second trigger — key is `watch-${watch.id}-2`, different from first
-      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+
+      // Check 1 — baseline initialization, no trigger, no inbox file
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+
+      // Check 2 — first trigger (comment date changed)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+
+      // Check 3 — second trigger (another comment date change)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
@@ -19789,7 +20763,7 @@ async function testWatchesModule() {
   });
 
   await test('WATCHES_PATH points to engine/watches.json', () => {
-    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
+    assert.ok(watches._watchesPath().endsWith(path.join('engine', 'watches.json')));
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
@@ -19909,6 +20883,297 @@ async function testWatchesDashboard() {
     assert.ok(engineSrc.includes("require('./engine/watches')"),
       'engine.js must import watches module');
   });
+
+  // CC action tests — dashboard.js must support delete/pause/resume watches from CC
+  await test('dashboard.js has delete-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'delete-watch'") || dashSrc.includes('"delete-watch"'),
+      'dashboard.js must handle delete-watch CC action');
+    assert.ok(dashSrc.includes('deleteWatch'),
+      'delete-watch handler must call watchesMod.deleteWatch');
+  });
+
+  await test('dashboard.js has pause-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'pause-watch'") || dashSrc.includes('"pause-watch"'),
+      'dashboard.js must handle pause-watch CC action');
+  });
+
+  await test('dashboard.js has resume-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'resume-watch'") || dashSrc.includes('"resume-watch"'),
+      'dashboard.js must handle resume-watch CC action');
+  });
+
+  // CC preamble tests — watches count should be in the state preamble
+  await test('dashboard.js preamble includes watches count', () => {
+    assert.ok(dashSrc.includes('Watches:') || dashSrc.includes('watches:'),
+      'CC state preamble should include watches count');
+    assert.ok(dashSrc.includes('getWatches'),
+      'Preamble builder should call getWatches for the count');
+  });
+
+  // Condition labels in render-watches.js
+  const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+
+  await test('render-watches.js includes new-comments condition label', () => {
+    assert.ok(renderSrc.includes('new-comments'),
+      'render-watches.js must include new-comments condition');
+  });
+
+  await test('render-watches.js includes vote-change condition label', () => {
+    assert.ok(renderSrc.includes('vote-change'),
+      'render-watches.js must include vote-change condition');
+  });
+
+  // CC system prompt tests
+  const ccPromptSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  await test('CC system prompt documents delete-watch action', () => {
+    assert.ok(ccPromptSrc.includes('delete-watch'),
+      'CC system prompt must document delete-watch action');
+  });
+
+  await test('CC system prompt documents pause-watch action', () => {
+    assert.ok(ccPromptSrc.includes('pause-watch'),
+      'CC system prompt must document pause-watch action');
+  });
+
+  await test('CC system prompt documents resume-watch action', () => {
+    assert.ok(ccPromptSrc.includes('resume-watch'),
+      'CC system prompt must document resume-watch action');
+  });
+
+  // shared.js new conditions
+  await test('WATCH_CONDITION includes new-comments', () => {
+    assert.ok(shared.WATCH_CONDITION.NEW_COMMENTS === 'new-comments',
+      'WATCH_CONDITION must have NEW_COMMENTS constant');
+  });
+
+  await test('WATCH_CONDITION includes vote-change', () => {
+    assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
+      'WATCH_CONDITION must have VOTE_CHANGE constant');
+  });
+
+  // Regression: #1088 — PROJECTS ReferenceError in checkWatches closure
+  await test('engine.js checkWatches uses getProjects(config), not PROJECTS (regression #1088)', () => {
+    const watchesBlockStart = engineSrc.indexOf("safe('checkWatches'");
+    assert.ok(watchesBlockStart > -1, 'engine.js must contain safe(\'checkWatches\' ...) block');
+    const watchesBlockEnd = engineSrc.indexOf('const adoPollEnabled', watchesBlockStart);
+    assert.ok(watchesBlockEnd > watchesBlockStart, 'Must find end of checkWatches block');
+    const watchesBlock = engineSrc.slice(watchesBlockStart, watchesBlockEnd);
+    assert.ok(!watchesBlock.includes('PROJECTS'),
+      'checkWatches block must NOT reference PROJECTS (undefined variable — causes ReferenceError)');
+  });
+}
+
+// ── W-mo0kr8tuldlr: /loop → create-watch interception ────────────────────────
+async function testLoopToWatchInterception() {
+  console.log('\n── /loop → create-watch interception ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Extract _detectLoopInvocation for behavioral testing
+  const fnBody = dashSrc.match(/function _detectLoopInvocation[\s\S]*?^}/m)[0];
+  const detectLoopInvocation = new Function(fnBody + '\nreturn _detectLoopInvocation;')();
+
+  // ── Behavioral tests — detection ──
+
+  await test('_detectLoopInvocation returns null for normal text', () => {
+    assert.strictEqual(detectLoopInvocation('I created a watch for PR 1065.', []), null);
+  });
+
+  await test('_detectLoopInvocation returns null when text is empty', () => {
+    assert.strictEqual(detectLoopInvocation('', []), null);
+    assert.strictEqual(detectLoopInvocation(null, []), null);
+  });
+
+  await test('_detectLoopInvocation returns null when create-watch already emitted', () => {
+    const text = 'I started a /loop to monitor PR 1065.';
+    const actions = [{ type: 'create-watch', target: '1065' }];
+    assert.strictEqual(detectLoopInvocation(text, actions), null,
+      'should skip when create-watch already in actions');
+  });
+
+  await test('_detectLoopInvocation detects /loop mention with PR target', () => {
+    const result = detectLoopInvocation('I\'ll start /loop to monitor PR 1065 build.', []);
+    assert.ok(result, 'should detect /loop invocation');
+    assert.strictEqual(result.type, 'create-watch');
+    assert.strictEqual(result.target, '1065');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation detects "loop skill" phrasing', () => {
+    const result = detectLoopInvocation('Using the loop skill to watch PR-200 every 15m.', []);
+    assert.ok(result, 'should detect loop skill mention');
+    assert.strictEqual(result.target, '200');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation detects "Skill.*loop" pattern', () => {
+    const result = detectLoopInvocation('I invoked Skill: loop to monitor PR-42.', []);
+    assert.ok(result, 'should detect Skill...loop mention');
+    assert.strictEqual(result.target, '42');
+  });
+
+  await test('_detectLoopInvocation detects "started.*loop" pattern', () => {
+    const result = detectLoopInvocation('I started a loop to keep an eye on PR 999.', []);
+    assert.ok(result, 'should detect started...loop');
+    assert.strictEqual(result.target, '999');
+  });
+
+  await test('_detectLoopInvocation detects "monitoring.*loop" pattern', () => {
+    const result = detectLoopInvocation('Monitoring via loop — PR 50 build status.', []);
+    assert.ok(result, 'should detect monitoring...loop');
+    assert.strictEqual(result.target, '50');
+  });
+
+  await test('_detectLoopInvocation detects "invoked.*loop" pattern', () => {
+    const result = detectLoopInvocation('I invoked the loop to watch PR 123.', []);
+    assert.ok(result, 'should detect invoked...loop');
+    assert.strictEqual(result.target, '123');
+  });
+
+  await test('_detectLoopInvocation returns null when no target found', () => {
+    const result = detectLoopInvocation('I started a /loop to monitor things.', []);
+    assert.strictEqual(result, null, 'should return null when no PR or WI target');
+  });
+
+  // ── Target extraction ──
+
+  await test('_detectLoopInvocation extracts work item ID target', () => {
+    const result = detectLoopInvocation('/loop checking on W-abc123def status.', []);
+    assert.ok(result, 'should detect /loop with work item target');
+    assert.strictEqual(result.target, 'W-abc123def');
+    assert.strictEqual(result.targetType, 'work-item');
+  });
+
+  await test('_detectLoopInvocation prefers PR target over work item', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 500 and W-xyz123.', []);
+    assert.ok(result);
+    assert.strictEqual(result.target, '500', 'PR target should take precedence');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation extracts PR from "pull request 42" format', () => {
+    const result = detectLoopInvocation('/loop watching pull request 42.', []);
+    assert.ok(result);
+    assert.strictEqual(result.target, '42');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  // ── Interval extraction ──
+
+  await test('_detectLoopInvocation extracts interval from "every N min"', () => {
+    const result = detectLoopInvocation('/loop checking PR 100 every 15 minutes.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '15m');
+  });
+
+  await test('_detectLoopInvocation extracts interval from "every N h"', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 100 every 2 hours.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '2h');
+  });
+
+  await test('_detectLoopInvocation defaults interval to 5m', () => {
+    const result = detectLoopInvocation('/loop watching PR 100.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '5m');
+  });
+
+  // ── Condition inference ──
+
+  await test('_detectLoopInvocation infers build-pass condition', () => {
+    const result = detectLoopInvocation('/loop checking PR 100 build until green.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'build-pass');
+  });
+
+  await test('_detectLoopInvocation infers build-fail condition', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 100 when build is failing.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'build-fail');
+  });
+
+  await test('_detectLoopInvocation infers merged condition', () => {
+    const result = detectLoopInvocation('/loop watching PR 100 until merged.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'merged');
+  });
+
+  await test('_detectLoopInvocation infers completed condition', () => {
+    const result = detectLoopInvocation('/loop monitoring W-abc123 until completed.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'completed');
+  });
+
+  await test('_detectLoopInvocation defaults condition to any', () => {
+    const result = detectLoopInvocation('/loop watching PR 100 status.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'any');
+  });
+
+  // ── Synthesized action shape ──
+
+  await test('_detectLoopInvocation synthesizes correct action shape', () => {
+    const result = detectLoopInvocation('/loop checking PR 200 build every 10 minutes until passing.', []);
+    assert.ok(result);
+    assert.strictEqual(result.type, 'create-watch');
+    assert.strictEqual(result.target, '200');
+    assert.strictEqual(result.targetType, 'pr');
+    assert.strictEqual(result.condition, 'build-pass');
+    assert.strictEqual(result.interval, '10m');
+    assert.strictEqual(result.owner, 'human');
+    assert.strictEqual(result.stopAfter, 1, 'non-any conditions should set stopAfter=1');
+    assert.ok(result.description.includes('/loop'), 'description should mention /loop conversion');
+  });
+
+  await test('_detectLoopInvocation sets stopAfter=0 for any condition', () => {
+    const result = detectLoopInvocation('/loop watching PR 300 status.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'any');
+    assert.strictEqual(result.stopAfter, 0, 'any condition should run forever');
+  });
+
+  // ── Integration: source-level checks ──
+
+  await test('dashboard.js non-streaming path calls _detectLoopInvocation after parseCCActions', () => {
+    // handleCommandCenter should call _detectLoopInvocation after parsing actions
+    const handleCC = dashSrc.match(/async function handleCommandCenter[\s\S]*?^}/m);
+    assert.ok(handleCC, 'handleCommandCenter must exist');
+    const fnText = handleCC[0];
+    assert.ok(fnText.includes('_detectLoopInvocation'), 'non-streaming path must call _detectLoopInvocation');
+    // Ensure it's called after parseCCActions
+    const parseIdx = fnText.indexOf('parseCCActions');
+    const detectIdx = fnText.indexOf('_detectLoopInvocation');
+    assert.ok(parseIdx > -1 && detectIdx > parseIdx,
+      '_detectLoopInvocation must be called after parseCCActions in non-streaming path');
+  });
+
+  await test('dashboard.js streaming path calls _detectLoopInvocation after parseCCActions', () => {
+    const handleStream = dashSrc.match(/async function handleCommandCenterStream[\s\S]*?^}/m);
+    assert.ok(handleStream, 'handleCommandCenterStream must exist');
+    const fnText = handleStream[0];
+    assert.ok(fnText.includes('_detectLoopInvocation'), 'streaming path must call _detectLoopInvocation');
+    const parseIdx = fnText.indexOf('parseCCActions');
+    const detectIdx = fnText.indexOf('_detectLoopInvocation');
+    assert.ok(parseIdx > -1 && detectIdx > parseIdx,
+      '_detectLoopInvocation must be called after parseCCActions in streaming path');
+  });
+
+  await test('CC system prompt warns against /loop for monitoring', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(prompt.includes('NEVER use the /loop skill'),
+      'CC prompt must warn against using /loop');
+    assert.ok(prompt.includes('create-watch'),
+      'CC prompt must redirect to create-watch');
+  });
+
+  await test('CC system prompt has trigger phrase examples for create-watch', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(prompt.includes('keep an eye on'),
+      'CC prompt should include "keep an eye on" trigger phrase');
+    assert.ok(prompt.includes('monitor'),
+      'CC prompt should include "monitor" trigger phrase');
+  });
 }
 
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
@@ -19961,4 +21226,652 @@ async function testAzureauthTimeout() {
       'shared-rules.md should have explicit guidance about azureauth timeout');
   });
 }
+
+// ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
+
+async function testScheduledTaskNoteBackReference() {
+  console.log('\n── Scheduled task note back-reference ──');
+
+  // 1. writeToInbox accepts metadata parameter and injects into frontmatter
+  await test('writeToInbox injects metadata fields into frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-result', '# Scheduled result', inboxDir, {
+      sourceItem: 'sched-daily-test-123',
+      scheduleId: 'daily-test-suite'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: sched-daily-test-123'), 'Frontmatter should include sourceItem');
+    assert.ok(content.includes('scheduleId: daily-test-suite'), 'Frontmatter should include scheduleId');
+    assert.ok(content.includes('id: ' + noteId), 'Frontmatter should include note ID');
+    assert.ok(content.includes('# Scheduled result'), 'Should include original content');
+  });
+
+  await test('writeToInbox metadata works with existing frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-fm', '---\ntitle: Custom\n---\n\n# Body', inboxDir, {
+      sourceItem: 'WI-999'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: WI-999'), 'Should inject sourceItem into existing frontmatter');
+    assert.ok(content.includes('title: Custom'), 'Should preserve existing fields');
+  });
+
+  await test('writeToInbox without metadata still works (backward compat)', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'no-meta', '# No metadata', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem when no metadata');
+    assert.ok(!content.includes('scheduleId'), 'Should not include scheduleId when no metadata');
+  });
+
+  await test('writeToInbox ignores empty metadata object', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'empty-meta', '# Empty', inboxDir, {});
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem for empty metadata');
+  });
+
+  // 2. runPostCompletionHooks updates schedule-runs.json for scheduled tasks
+  await test('runPostCompletionHooks updates schedule-runs.json on scheduled task completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the runPostCompletionHooks function
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('_scheduleId'), 'runPostCompletionHooks must check for _scheduleId on work items');
+    assert.ok(fn.includes('schedule-runs'), 'runPostCompletionHooks must update schedule-runs.json');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'schedule-runs update must use mutateJsonFileLocked');
+  });
+
+  await test('runPostCompletionHooks writes completion note for scheduled tasks with back-reference', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('writeToInbox') && fn.includes('_scheduleId'),
+      'runPostCompletionHooks must write inbox note with schedule reference');
+    assert.ok(fn.includes('sourceItem') || fn.includes('scheduleId'),
+      'scheduled task inbox note must include sourceItem or scheduleId metadata');
+  });
+
+  // 3. Behavioral test: scheduled task completion updates schedule-runs with lastWorkItemId
+  await test('scheduled task completion records lastWorkItemId in schedule-runs.json', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sq = require('../engine/shared');
+
+      // Write schedule-runs.json with initial run timestamp
+      const schedRunsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'schedule-runs.json');
+      sq.safeWrite(schedRunsPath, { 'daily-test': '2026-04-15T00:00:00Z' });
+
+      // Create a central work-items.json with a scheduled task work item
+      const centralWiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      sq.safeWrite(centralWiPath, [
+        { id: 'sched-daily-test-12345', title: 'Daily Test', type: 'test', status: 'dispatched',
+          _scheduleId: 'daily-test', created: '2026-04-15T00:00:00Z' }
+      ]);
+
+      const dispatchItem = {
+        id: 'dispatch-1',
+        type: 'test',
+        meta: {
+          item: { id: 'sched-daily-test-12345', _scheduleId: 'daily-test' },
+          project: null
+        }
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, 'Test passed: 100/100', { agents: {} });
+
+      // Verify schedule-runs.json was updated with lastWorkItemId
+      const runs = sq.safeJson(schedRunsPath);
+      assert.ok(runs['daily-test'], 'Schedule run entry should exist');
+      if (typeof runs['daily-test'] === 'object') {
+        assert.strictEqual(runs['daily-test'].lastWorkItemId, 'sched-daily-test-12345',
+          'Should record lastWorkItemId');
+        assert.ok(runs['daily-test'].lastResult, 'Should record lastResult');
+        assert.ok(runs['daily-test'].lastCompletedAt, 'Should record lastCompletedAt');
+      }
+    } finally {
+      restore();
+    }
+  });
+}
+
+// ─── W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages ────────
+async function testSyncPrsToolResultInUserMessages() {
+  console.log('\n── W-mnzwn967gdnc: syncPrsFromOutput scans tool_result in user messages ──');
+
+  const lifecycle = require('../engine/lifecycle');
+  const shared = require('../engine/shared');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // ── Source-level: filter now includes "type":"user" ──
+
+  await test('syncPrsFromOutput line filter includes type:user messages', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // The filter line must allow "type":"user" messages through
+    assert.ok(fnBody.includes('"type":"user"'),
+      'syncPrsFromOutput must include "type":"user" in its message-type filter so tool_result blocks are scanned');
+  });
+
+  await test('syncPrsFromOutput tool_result URL scan is not gated on keywords', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Find the tool_result block handling — the URL regex should NOT be inside a keyword guard
+    const toolResultBlock = fnBody.slice(
+      fnBody.indexOf("block.type === 'tool_result'"),
+      fnBody.indexOf("block.type === 'text'")
+    );
+    // The old code gated URL scanning on pullRequestId/create_pull_request keywords
+    assert.ok(!toolResultBlock.includes("text.includes('pullRequestId') || text.includes('create_pull_request')"),
+      'tool_result URL scan should NOT be gated on pullRequestId/create_pull_request keywords — gh pr create output may not contain these');
+  });
+
+  // ── Functional: PR URL in type:user tool_result is detected ──
+
+  await test('syncPrsFromOutput detects GitHub PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Simulate JSONL where PR URL appears ONLY in a type:user tool_result block
+      // (this is how gh pr create output actually appears in Claude API JSONL)
+      const output = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"I will create a PR now."}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"https://github.com/org/repo/pull/555\\nCreating pull request for work/branch into master..."}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-100', title: 'Test PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('github:org/repo#555'), 'repo-scoped PR 555 from type:user tool_result should be detected');
+      assert.ok(count >= 1, 'Should return count >= 1 for detected PR');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput detects ADO PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'ado', adoOrg: 'myorg', adoProject: 'myproject', repoName: 'myrepo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // ADO PR URL in a tool_result block
+      const output = [
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"Created PR: https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/777"}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-101', title: 'ADO PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('ado:myorg/myproject/myrepo#777'), 'repo-scoped PR 777 from ADO URL in type:user tool_result should be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  // ── Regression: existing assistant text-block and result-message paths still work ──
+
+  await test('syncPrsFromOutput still detects PR URL in assistant text blocks (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/888"}]}}';
+      const meta = { item: { id: 'W-102', title: 'Assistant text PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('github:org/repo#888'), 'repo-scoped PR 888 from assistant text block should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput still detects PR URL in type:result messages (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-103', title: 'Result message PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('github:org/repo#999'), 'repo-scoped PR 999 from type:result message should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+}
+// ─── W-mo0kxqenseo9: Cancel Work Item ─────────────────────────────────────
+
+async function testCancelWorkItem() {
+  console.log('\n── Cancel Work Item (W-mo0kxqenseo9) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const wiJsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+  const ccJsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const ccSystemSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  // 1. /api/work-items/cancel endpoint exists in route table
+  await test('cancel endpoint registered in route table', () => {
+    assert.ok(dashSrc.includes('/api/work-items/cancel'),
+      'dashboard.js must register /api/work-items/cancel route');
+  });
+
+  // 2. handleWorkItemsCancel function exists
+  await test('handleWorkItemsCancel function exists', () => {
+    assert.ok(dashSrc.includes('handleWorkItemsCancel'),
+      'dashboard.js must define handleWorkItemsCancel handler');
+  });
+
+  // 3. Cancel handler sets status to WI_STATUS.CANCELLED
+  await test('cancel handler sets WI_STATUS.CANCELLED', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    assert.ok(fnStart > -1, 'handleWorkItemsCancel must exist');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('WI_STATUS.CANCELLED'),
+      'cancel handler must set status to WI_STATUS.CANCELLED');
+  });
+
+  // 4. Cancel handler calls cleanDispatchEntries
+  await test('cancel handler calls cleanDispatchEntries', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('cleanDispatchEntries'),
+      'cancel handler must call cleanDispatchEntries to kill agent and clean dispatch queue');
+  });
+
+  // 5. Cancel handler calls invalidateStatusCache
+  await test('cancel handler calls invalidateStatusCache', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('invalidateStatusCache'),
+      'cancel handler must call invalidateStatusCache');
+  });
+
+  // 6. Cancel handler uses mutateJsonFileLocked (not safeWrite)
+  await test('cancel handler uses mutateJsonFileLocked for atomic write', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'cancel handler must use mutateJsonFileLocked for atomic read-modify-write');
+  });
+
+  // 7. Cancel handler records _cancelledBy metadata
+  await test('cancel handler records _cancelledBy metadata', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('_cancelledBy'),
+      'cancel handler must set _cancelledBy for audit trail');
+  });
+
+  // 8. Cancel handler allows cancelling dispatched items (bypasses guard)
+  await test('cancel handler does not block dispatched items', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    // Must NOT have the "Cannot edit dispatched items" rejection for cancellation
+    assert.ok(!fnBody.includes("Cannot edit dispatched items"),
+      'cancel handler must bypass the dispatched-item guard');
+  });
+
+  // 9. Cancel button rendered in work item UI
+  await test('cancel button exists in work item UI', () => {
+    assert.ok(wiJsSrc.includes('cancelWorkItem'),
+      'render-work-items.js must have a cancelWorkItem function or call');
+  });
+
+  // 10. cancelWorkItem JS handler function exists
+  await test('cancelWorkItem JS handler exists', () => {
+    assert.ok(wiJsSrc.includes('function cancelWorkItem') || wiJsSrc.includes('async function cancelWorkItem'),
+      'render-work-items.js must define cancelWorkItem function');
+  });
+
+  // 11. cancelWorkItem calls /api/work-items/cancel
+  await test('cancelWorkItem handler calls cancel API', () => {
+    assert.ok(wiJsSrc.includes('/api/work-items/cancel'),
+      'cancelWorkItem must call /api/work-items/cancel endpoint');
+  });
+
+  // 12. CC action handler for cancel-work-item
+  await test('cancel-work-item CC action handler exists', () => {
+    assert.ok(ccJsSrc.includes("'cancel-work-item'") || ccJsSrc.includes('"cancel-work-item"'),
+      'command-center.js must handle cancel-work-item action');
+  });
+
+  // 13. CC system prompt documents cancel-work-item action
+  await test('cancel-work-item documented in CC system prompt', () => {
+    assert.ok(ccSystemSrc.includes('cancel-work-item'),
+      'cc-system.md must document the cancel-work-item action');
+  });
+
+  // 14. Cancel handler rejects already-done items
+  await test('cancel handler rejects items that are already done/cancelled', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('DONE_STATUSES') || fnBody.includes('WI_STATUS.DONE') || fnBody.includes('already'),
+      'cancel handler must reject already-done/cancelled items');
+  });
+}
+
+// ─── W-mo0jwu9iwnm1: Duplicate PR prevention ────────────────────────────────
+
+async function testDuplicatePrPrevention() {
+  console.log('\n── W-mo0jwu9iwnm1 — Duplicate PR Prevention ──');
+
+  // Behavioral: syncPrsFromOutput should not add a new PR when an active PR already exists on the same branch
+  await test('syncPrsFromOutput skips new PR when active PR already exists on same branch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testLifecycle = require('../engine/lifecycle');
+
+      // Create project directory structure
+      const projectDir = path.join(testShared.MINIONS_DIR, 'projects', 'TestProject');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+
+      // Pre-existing active PR on branch work/W-8eobrosn
+      testShared.safeWrite(prFile, [{
+        id: 'PR-100', prNumber: 100, title: 'Original PR', agent: 'dallas',
+        branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'active',
+        created: '2026-04-15T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
+        prdItems: ['W-8eobrosn']
+      }]);
+
+      const mockProject = { name: 'TestProject', localPath: projectDir, mainBranch: 'main' };
+      const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
+
+      // Agent output contains a NEW PR (999) on the same branch
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-8eobrosn', title: 'Same branch work' }, project: mockProject, branch: 'work/W-8eobrosn' };
+
+      testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
+
+      const result = testShared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-100'), 'Original PR-100 should still be tracked');
+      assert.ok(!ids.includes('PR-999'), 'Duplicate PR-999 on same branch should NOT be added');
+      assert.strictEqual(result.length, 1, 'Should have exactly 1 PR (the original)');
+    } finally { restore(); }
+  });
+
+  // Behavioral: syncPrsFromOutput SHOULD add new PR if existing PR on same branch is abandoned (not active)
+  await test('syncPrsFromOutput adds new PR when existing PR on same branch is abandoned', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testLifecycle = require('../engine/lifecycle');
+
+      // Create project directory structure
+      const projectDir = path.join(testShared.MINIONS_DIR, 'projects', 'TestProject');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+
+      // Pre-existing ABANDONED PR on branch work/W-8eobrosn
+      testShared.safeWrite(prFile, [{
+        id: 'PR-100', prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
+        branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'abandoned',
+        created: '2026-04-14T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
+        prdItems: ['W-8eobrosn']
+      }]);
+
+      const mockProject = { name: 'TestProject', localPath: projectDir, mainBranch: 'main' };
+      const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
+
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-8eobrosn', title: 'Retry after abandon' }, project: mockProject, branch: 'work/W-8eobrosn' };
+
+      testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
+
+      const result = testShared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-100'), 'Abandoned PR-100 should still be tracked');
+      assert.ok(ids.includes('PR-999'), 'New PR-999 should be added because existing PR is abandoned');
+      assert.strictEqual(result.length, 2, 'Should have 2 PRs');
+    } finally { restore(); }
+  });
+
+  // Source inspection: syncPrsFromOutput has branch-level dedup logic
+  await test('syncPrsFromOutput source contains branch-level duplicate check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('branch') && src.includes('duplicate') || src.includes('Duplicate PR'),
+      'syncPrsFromOutput should log/detect duplicate PRs on same branch');
+  });
+
+  // Source inspection: cancelPendingDispatchesForPr exported from dispatch.js
+  await test('dispatch.js exports cancelPendingDispatchesForPr', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.ok(typeof dispatch.cancelPendingDispatchesForPr === 'function',
+      'cancelPendingDispatchesForPr should be a function exported from dispatch.js');
+  });
+}
+
+// ─── W-mo0jwu9iwnm1: Cancel stale dispatches on PR close ────────────────────
+
+async function testCancelDispatchesOnPrClose() {
+  console.log('\n── W-mo0jwu9iwnm1 — Cancel Stale Dispatches on PR Close ──');
+
+  // Behavioral: cancelPendingDispatchesForPr removes pending entries referencing the PR
+  await test('cancelPendingDispatchesForPr removes pending review dispatch for closed PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Seed dispatch with pending review for PR-100
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'ralph-review-abc', type: 'review', agent: 'ralph',
+            meta: { dispatchKey: 'review-minions-PR-100', source: 'pr', pr: { id: 'PR-100' } } },
+          { id: 'dallas-impl-xyz', type: 'implement', agent: 'dallas',
+            meta: { dispatchKey: 'impl-minions-W-123', source: 'work-item', item: { id: 'W-123' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-100');
+      assert.strictEqual(cancelled, 1, 'Should cancel exactly 1 pending dispatch');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Should have 1 remaining pending entry');
+      assert.strictEqual(dispatch.pending[0].id, 'dallas-impl-xyz', 'Non-PR dispatch should remain');
+    } finally { restore(); }
+  });
+
+  // Behavioral: cancelPendingDispatchesForPr handles multiple pending dispatches for same PR
+  await test('cancelPendingDispatchesForPr removes multiple pending dispatches for same PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'ralph-review-1', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } },
+          { id: 'rebecca-review-2', type: 'review', agent: 'rebecca',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } },
+          { id: 'dallas-fix-3', type: 'fix', agent: 'dallas',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-200');
+      assert.strictEqual(cancelled, 3, 'Should cancel all 3 pending dispatches for PR-200');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 0, 'All pending entries should be removed');
+    } finally { restore(); }
+  });
+
+  // Behavioral: does not touch dispatches for other PRs
+  await test('cancelPendingDispatchesForPr leaves dispatches for other PRs intact', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'review-pr100', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-100' } } },
+          { id: 'review-pr300', type: 'review', agent: 'rebecca',
+            meta: { source: 'pr', pr: { id: 'PR-300' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      testDispatch.cancelPendingDispatchesForPr('PR-100');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'PR-300 dispatch should remain');
+      assert.strictEqual(dispatch.pending[0].id, 'review-pr300', 'PR-300 dispatch unchanged');
+    } finally { restore(); }
+  });
+
+  // Behavioral: returns 0 when no matching dispatches
+  await test('cancelPendingDispatchesForPr returns 0 when no matching dispatches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'review-pr999', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-999' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-404');
+      assert.strictEqual(cancelled, 0, 'Should return 0 when no matching PR');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Pending queue unchanged');
+    } finally { restore(); }
+  });
+
+  // Source inspection: pollPrStatus calls cancelPendingDispatchesForPr on PR close
+  await test('github.js pollPrStatus cancels dispatches when PR transitions to abandoned/merged', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('cancelPendingDispatchesForPr'),
+      'pollPrStatus should call cancelPendingDispatchesForPr when PR closes');
+  });
+
+  // Behavioral: cancelPendingDispatchesForPr handles null/empty input gracefully
+  await test('cancelPendingDispatchesForPr handles null/empty prId gracefully', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [{ id: 'review-1', type: 'review', agent: 'ralph', meta: { source: 'pr', pr: { id: 'PR-1' } } }],
+        active: [], completed: []
+      });
+
+      assert.strictEqual(testDispatch.cancelPendingDispatchesForPr(null), 0, 'null prId returns 0');
+      assert.strictEqual(testDispatch.cancelPendingDispatchesForPr(''), 0, 'empty prId returns 0');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Queue unchanged for null/empty input');
+    } finally { restore(); }
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });

@@ -20,6 +20,14 @@ function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watche
 // so watches are checked every N ticks where N = ceil(interval / tickInterval).
 const DEFAULT_WATCH_INTERVAL = 300000;
 
+/** Find a PR by target (prNumber, canonical ID, or display ID). */
+function findPrByTarget(pullRequests, target) {
+  const t = String(target);
+  return (pullRequests || []).find(p =>
+    String(p.prNumber) === t || p.id === t || shared.getPrDisplayId(p) === t
+  );
+}
+
 /**
  * Read all watches from disk.
  * @returns {Array<object>}
@@ -131,9 +139,7 @@ function evaluateWatch(watch, state) {
   const { target, targetType, condition } = watch;
 
   if (targetType === WATCH_TARGET_TYPE.PR) {
-    const pr = (state.pullRequests || []).find(p =>
-      String(p.prNumber) === String(target) || p.id === target
-    );
+    const pr = findPrByTarget(state.pullRequests, target);
     if (!pr) return { triggered: false, message: `PR ${target} not found` };
 
     // Store previous state for status-change detection
@@ -157,6 +163,16 @@ function evaluateWatch(watch, state) {
           prevState.reviewStatus !== pr.reviewStatus
         );
         return { triggered: anyChanged, message: anyChanged ? `PR ${target} changed` : '' };
+      }
+      case WATCH_CONDITION.NEW_COMMENTS: {
+        const lastCommentDate = pr.humanFeedback?.lastProcessedCommentDate || null;
+        const prevCommentDate = prevState.lastCommentDate || null;
+        const hasNew = lastCommentDate && lastCommentDate !== prevCommentDate;
+        return { triggered: !!hasNew, message: hasNew ? `PR ${target} has a new comment (${lastCommentDate})` : '' };
+      }
+      case WATCH_CONDITION.VOTE_CHANGE: {
+        const changed = prevState.reviewStatus !== undefined && prevState.reviewStatus !== pr.reviewStatus;
+        return { triggered: changed, message: changed ? `PR ${target} vote changed: ${prevState.reviewStatus} → ${pr.reviewStatus}` : '' };
       }
       default:
         return { triggered: false, message: `Unknown condition: ${condition}` };
@@ -237,15 +253,14 @@ function checkWatches(config, state) {
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Expire: absolute conditions auto-expire when stopAfter is 0 (fire-once semantics),
-          // change-based conditions (status-change, any) respect stopAfter literally (0 = run forever).
+          // Expire when stopAfter > 0 and trigger count reaches the limit.
+          // Absolute conditions (merged, build-pass, etc.) auto-expire on first trigger
+          // when stopAfter=0 — fire-once semantics. Change-based conditions run forever.
           const isAbsolute = WATCH_ABSOLUTE_CONDITIONS.has(watch.condition);
-          if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
+          if ((watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) ||
+              (watch.stopAfter === 0 && isAbsolute)) {
             watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
-          } else if (isAbsolute && watch.stopAfter === 0) {
-            watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (absolute condition auto-expire): ${watch.id}`);
+            log('info', `Watch expired (${isAbsolute && watch.stopAfter === 0 ? 'absolute condition fire-once' : 'stopAfter limit reached'}): ${watch.id}`);
           }
         } else if (watch.onNotMet === 'notify' && watch.owner) {
           // Queue per-poll notification when condition is not yet met — unique key per poll
@@ -281,10 +296,8 @@ function checkWatches(config, state) {
  */
 function _captureState(watch, state) {
   if (watch.targetType === WATCH_TARGET_TYPE.PR) {
-    const pr = (state.pullRequests || []).find(p =>
-      String(p.prNumber) === String(watch.target) || p.id === watch.target
-    );
-    if (pr) return { status: pr.status, buildStatus: pr.buildStatus, reviewStatus: pr.reviewStatus };
+    const pr = findPrByTarget(state.pullRequests, watch.target);
+    if (pr) return { status: pr.status, buildStatus: pr.buildStatus, reviewStatus: pr.reviewStatus, lastCommentDate: pr.humanFeedback?.lastProcessedCommentDate || null };
   }
   if (watch.targetType === WATCH_TARGET_TYPE.WORK_ITEM) {
     const wi = (state.workItems || []).find(w => w.id === watch.target);

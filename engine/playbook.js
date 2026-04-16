@@ -283,11 +283,13 @@ function resolvePlaybookPath(projectName, playbookType) {
     const localPath = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks', `${playbookType}.md`);
     try {
       fs.accessSync(localPath, fs.constants.R_OK);
+      log('info', `Using project-local playbook: projects/${projectName}/playbooks/${playbookType}.md`);
       return localPath;
     } catch { /* no local override — fall through to global */ }
   }
   return path.join(PLAYBOOKS_DIR, `${playbookType}.md`);
 }
+
 
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
@@ -593,8 +595,8 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 }
 
 module.exports = {
-  renderPlaybook,
   resolvePlaybookPath,
+  renderPlaybook,
   validatePlaybookVars,
   PLAYBOOK_REQUIRED_VARS,
   PLAYBOOK_OPTIONAL_VARS,

@@ -202,6 +202,17 @@ function _renderMdCore(s) {
   var listType = '';
 
   function closeList() { if (inList) { out.push(listType === 'ol' ? '</ol>' : '</ul>'); inList = false; } }
+  function nextNonEmptyLine(startIdx) {
+    for (var ni = startIdx; ni < lines.length; ni++) {
+      if (lines[ni].trim()) return lines[ni];
+    }
+    return '';
+  }
+  function continuesCurrentList(nextLine) {
+    if (!inList || !nextLine) return false;
+    if (listType === 'ol') return /^(\s*)\d+\.\s+(.+)/.test(nextLine);
+    return /^(\s*)[-*]\s+(.+)/.test(nextLine);
+  }
   function openList(type) {
     if (inList && listType !== type) closeList();
     if (!inList) {
@@ -291,11 +302,16 @@ function _renderMdCore(s) {
       continue;
     }
 
+    // Blank line → spacer
+    if (!line.trim()) {
+      if (continuesCurrentList(nextNonEmptyLine(i + 1))) continue;
+      closeList();
+      out.push('<div style="height:4px"></div>');
+      continue;
+    }
+
     // Non-list line — close any open list
     closeList();
-
-    // Blank line → spacer
-    if (!line.trim()) { out.push('<div style="height:4px"></div>'); continue; }
 
     out.push('<div>' + line + '</div>');
   }

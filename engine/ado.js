@@ -16,7 +16,16 @@ function engine() {
   return _engine;
 }
 
+// Lazy require for dispatch module (avoids circular dependency via engine)
+let _dispatch = null;
+function dispatchModule() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
+
 const stripRefsHeads = s => (s || '').replace('refs/heads/', '');
+const getAdoPrUrl = (project, prNumber) => {
+  if (project.prUrlBase) return `${project.prUrlBase}${prNumber}`;
+  const repoPath = encodeURIComponent(project.repoName || project.repositoryId || '');
+  return `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${repoPath}/pullrequest/${prNumber}`;
+};
 
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
 
@@ -250,7 +259,7 @@ async function forEachActivePr(config, token, callback) {
     for (let i = 0; i < activePrs.length; i += CONCURRENCY) {
       const batch = activePrs.slice(i, i + CONCURRENCY);
       const results = await Promise.allSettled(batch.map(async (pr) => {
-        const prNum = (pr.id || '').replace('PR-', '');
+        const prNum = shared.getPrNumber(pr);
         if (!prNum) return false;
         return callback(project, pr, prNum, orgBase);
       }));
@@ -341,6 +350,10 @@ async function pollPrStatus(config) {
           delete pr.buildFixAttempts;
           delete pr.buildFixEscalated;
         }
+        // Cancel any pending review/fix dispatches — they're stale now that the PR is closed
+        try {
+          dispatchModule().cancelPendingDispatchesForPr(pr.id);
+        } catch (e) { log('warn', `Cancel dispatches for ${pr.id}: ${e.message}`); }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
     }
@@ -675,6 +688,7 @@ async function reconcilePrs(config) {
 
     const prPath = shared.projectPrPath(project);
     const existingPrs = shared.safeJson(prPath) || [];
+    shared.normalizePrRecords(existingPrs, project);
     const existingIds = new Set(existingPrs.map(p => p.id));
     let projectAdded = 0;
 
@@ -687,7 +701,8 @@ async function reconcilePrs(config) {
 
     let projectUpdated = 0;
     for (const adoPr of adoPrs) {
-      const prId = `PR-${adoPr.pullRequestId}`;
+      const prUrl = getAdoPrUrl(project, adoPr.pullRequestId);
+      const prId = shared.getCanonicalPrId(project, adoPr.pullRequestId, prUrl);
       const branch = stripRefsHeads(adoPr.sourceRefName);
       const title = adoPr.title || '';
       // Extract item ID from branch name or PR title (e.g., feat(P-2cafdc2a): ...)
@@ -705,7 +720,7 @@ async function reconcilePrs(config) {
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId);
+          addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -720,7 +735,6 @@ async function reconcilePrs(config) {
       // are human-authored and should not be auto-tracked or auto-reviewed.
       if (!confirmedItemId) continue;
 
-      const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
         prNumber: adoPr.pullRequestId,
@@ -733,7 +747,7 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: [confirmedItemId],
       });
-      addPrLink(prId, confirmedItemId);
+      addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
@@ -742,22 +756,13 @@ async function reconcilePrs(config) {
     // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
     for (const pr of existingPrs) {
       if (pr.prNumber == null) {
-        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        const derived = shared.getPrNumber(pr);
         if (derived) pr.prNumber = derived;
       }
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
-    const prLinks = shared.getPrLinks();
-    let backfilled = 0;
-    for (const pr of existingPrs) {
-      const linked = prLinks[pr.id];
-      if (linked && !(pr.prdItems || []).includes(linked)) {
-        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
-        pr.prdItems.push(linked);
-        backfilled++;
-      }
-    }
+    const backfilled = shared.backfillPrPrdItems(existingPrs, shared.getPrLinks());
 
     if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
       mutateJsonFileLocked(prPath, (currentPrs) => {
@@ -790,7 +795,8 @@ async function checkLiveReviewStatus(pr, project) {
     const token = await getAdoToken();
     if (!token) return null;
     const orgBase = shared.getAdoOrgBase(project);
-    const prNum = (pr.id || '').replace(/^PR-/, '');
+    const prNum = shared.getPrNumber(pr);
+    if (!prNum) return null;
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
     const result = await execAsync(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
     const prData = JSON.parse(result);
@@ -855,7 +861,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
       }));
       const logParts = [];
       const seenBuildIds = new Set();
-      const pr = { id: `PR-${prNumber}`, branch: stripRefsHeads(prData.sourceRefName) };
+      const pr = { id: shared.getCanonicalPrId(project, prNumber, getAdoPrUrl(project, prNumber)), branch: stripRefsHeads(prData.sourceRefName) };
       for (const fb of failedBuilds.slice(0, 3)) {
         const errorLog = await fetchAdoBuildErrorLog(orgBase, project, fb, token, pr, seenBuildIds);
         if (errorLog) logParts.push(errorLog);
@@ -865,7 +871,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   }
 
   const votes = (prData.reviewers || []).map(r => r.vote);
-  const prUrl = `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
+  const prUrl = getAdoPrUrl(project, prNumber);
 
   return {
     prNumber,
@@ -890,6 +896,33 @@ const isAdoThrottled = () => _adoThrottle.isThrottled();
 /** Returns a snapshot of the current throttle state. Calls isAdoThrottled() for a fresh value. */
 const getAdoThrottleState = () => _adoThrottle.getState();
 
+/**
+ * Query ADO for an open PR on a specific branch.
+ * Used as a last-resort fallback when an agent completes without logging a PR URL
+ * but a PR may already exist from a prior orphaned dispatch.
+ * @param {object} project — project config with adoOrg, adoProject, repositoryId, prUrlBase
+ * @param {string} branch — source branch name (without refs/heads/ prefix)
+ * @returns {{ prNumber: number, url: string }|null}
+ */
+async function findOpenPrOnBranch(project, branch) {
+  if (!project.adoOrg || !project.adoProject || !project.repositoryId || !branch) return null;
+  if (isAdoThrottled()) {
+    log('debug', `[ado] Skipping branch PR lookup for ${project.name || project.repoName || 'unknown project'}:${branch} — throttled`);
+    return null;
+  }
+  const token = await getAdoToken();
+  if (!token) return null;
+  const orgBase = shared.getAdoOrgBase(project);
+  const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
+  const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${sourceRef}&api-version=7.1`;
+  const data = await adoFetch(url, token);
+  const pr = (data.value || [])[0];
+  if (!pr) return null;
+  const prNumber = pr.pullRequestId;
+  const prUrl = getAdoPrUrl(project, prNumber);
+  return { prNumber, url: prUrl };
+}
+
 /** Reset throttle state — exported for testing only. */
 function _resetAdoThrottle() {
   _adoThrottle._reset();
@@ -913,7 +946,7 @@ module.exports = {
   getAdoThrottleState,
   fetchAdoPrMetadata,
   fetchSinglePrBuildStatus,
+  findOpenPrOnBranch,
   _resetAdoThrottle, // exported for testing
   _setAdoThrottleForTest, // exported for testing
 };
-

@@ -5,9 +5,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
+const PINNED_ITEMS_PATH = path.join(MINIONS_DIR, 'engine', 'kb-pins.json');
 const LOG_PATH = path.join(MINIONS_DIR, 'engine', 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -244,6 +246,9 @@ function mutateJsonFileLocked(filePath, mutateFn, {
     // Back up last-known-good state before mutation (best-effort)
     const backupPath = filePath + '.backup';
     try { if (fs.existsSync(filePath)) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
+    if (path.basename(filePath) === 'pull-requests.json' && Array.isArray(data)) {
+      normalizePrRecords(data, resolveProjectForPrPath(filePath));
+    }
     const next = mutateFn(data);
     const finalData = next === undefined ? data : next;
     safeWrite(filePath, finalData);
@@ -295,18 +300,23 @@ function parseNoteId(content) {
   return m ? m[1] : null;
 }
 
-function writeToInbox(agentId, slug, content, _inboxDir) {
+function writeToInbox(agentId, slug, content, _inboxDir, metadata) {
   try {
     const inboxDir = _inboxDir || path.join(MINIONS_DIR, 'notes', 'inbox');
-    const prefix = `${agentId}-${slug}-${dateStamp()}`;
+    const safeSlug = safeSlugComponent(slug, 80);
+    const prefix = `${agentId}-${safeSlug}-${dateStamp()}`;
     const existing = safeReadDir(inboxDir).find(f => f.startsWith(prefix));
     if (existing) return false;
     const noteId = `NOTE-${uid()}`;
+    // Build optional metadata lines for frontmatter injection
+    const metaLines = (metadata && typeof metadata === 'object')
+      ? Object.entries(metadata).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${v}`).join('\n')
+      : '';
     // Inject structured ID as YAML frontmatter if content doesn't already have it
     const hasFrontmatter = /^\s*---[\r\n]/.test(content);
     const tagged = hasFrontmatter
-      ? content.replace(/^\s*---[\r\n]+/, `---\nid: ${noteId}\n`)
-      : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n---\n\n${content}`;
+      ? content.replace(/^\s*---[\r\n]+/, `---\nid: ${noteId}\n${metaLines ? metaLines + '\n' : ''}`)
+      : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n${metaLines ? metaLines + '\n' : ''}---\n\n${content}`;
     const filePath = path.join(inboxDir, `${prefix}.md`);
     safeWrite(filePath, tagged);
     return noteId;
@@ -532,7 +542,6 @@ const ENGINE_DEFAULTS = {
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
   autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
-  autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
   autoFixConflicts: true, // auto-dispatch fix agents when a PR has merge conflicts
   autoFixBuilds: true, // auto-dispatch fix agents when a PR build fails
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
@@ -560,6 +569,7 @@ const ENGINE_DEFAULTS = {
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
+  maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
@@ -617,7 +627,13 @@ const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
 // Watch statuses — engine-level persistent watches that survive restarts
 const WATCH_STATUS = { ACTIVE: 'active', PAUSED: 'paused', TRIGGERED: 'triggered', EXPIRED: 'expired' };
 const WATCH_TARGET_TYPE = { PR: 'pr', WORK_ITEM: 'work-item' };
-const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any' };
+const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any', NEW_COMMENTS: 'new-comments', VOTE_CHANGE: 'vote-change' };
+// Absolute conditions auto-expire on first trigger when stopAfter=0 (fire-once semantics).
+// Change-based conditions (status-change, any) run forever when stopAfter=0.
+const WATCH_ABSOLUTE_CONDITIONS = new Set([
+  WATCH_CONDITION.MERGED, WATCH_CONDITION.BUILD_FAIL, WATCH_CONDITION.BUILD_PASS,
+  WATCH_CONDITION.COMPLETED, WATCH_CONDITION.FAILED,
+]);
 
 /** Update per-agent review metrics (prsApproved/prsRejected). Only writes for configured agents. */
 function trackReviewMetric(pr, newReviewStatus, config) {
@@ -729,6 +745,7 @@ const DEFAULT_CLAUDE = {
 // ── Project Helpers ──────────────────────────────────────────────────────────
 
 function getProjects(config) {
+  if (!config) config = safeJson(path.join(MINIONS_DIR, 'config.json')) || {};
   if (config && config.projects && Array.isArray(config.projects)) {
     return config.projects.filter(p => {
       if (!p || typeof p !== 'object') return false;
@@ -760,6 +777,14 @@ function projectWorkItemsPath(project) {
 
 function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
+}
+
+function resolveProjectForPrPath(filePath, config = null) {
+  const resolvedPath = path.resolve(filePath);
+  for (const project of getProjects(config)) {
+    if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
+  }
+  return null;
 }
 
 // ── ID Generation ────────────────────────────────────────────────────────────
@@ -850,40 +875,275 @@ function parseSkillFrontmatter(content, filename) {
 // Stable single-writer file: maps PR IDs → PRD item IDs.
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
+function normalizePrScopeSegment(value) {
+  return String(value || '').trim().replace(/^\/+|\/+$/g, '').toLowerCase();
+}
+
+function parseCanonicalPrId(value) {
+  const match = String(value || '').trim().match(/^(github|ado):(.+?)#(\d+)$/i);
+  if (!match) return null;
+  const scope = `${match[1].toLowerCase()}:${match[2].split('/').map(normalizePrScopeSegment).join('/')}`;
+  return { scope, prNumber: parseInt(match[3], 10) };
+}
+
+function parseGitHubPrUrl(url) {
+  const match = String(url || '').match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i);
+  if (!match) return null;
+  return {
+    scope: `github:${normalizePrScopeSegment(match[1])}/${normalizePrScopeSegment(match[2])}`,
+    prNumber: parseInt(match[3], 10),
+  };
+}
+
+function parseAdoPrUrl(url) {
+  const devAzure = String(url || '').match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/i);
+  if (devAzure) {
+    return {
+      scope: `ado:${normalizePrScopeSegment(devAzure[1])}/${normalizePrScopeSegment(devAzure[2])}/${normalizePrScopeSegment(decodeURIComponent(devAzure[3]))}`,
+      prNumber: parseInt(devAzure[4], 10),
+    };
+  }
+  const visualStudio = String(url || '').match(/https?:\/\/([^/.]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/i);
+  if (!visualStudio) return null;
+  return {
+    scope: `ado:${normalizePrScopeSegment(visualStudio[1])}/${normalizePrScopeSegment(visualStudio[2])}/${normalizePrScopeSegment(decodeURIComponent(visualStudio[3]))}`,
+    prNumber: parseInt(visualStudio[4], 10),
+  };
+}
+
+function getProjectPrScope(project) {
+  if (!project) return '';
+  const host = String(project.repoHost || '').toLowerCase();
+  if (host === 'github') {
+    const parsed = parseGitHubPrUrl(project.prUrlBase || '');
+    if (parsed?.scope) return parsed.scope;
+    const owner = normalizePrScopeSegment(project.adoOrg);
+    const repo = normalizePrScopeSegment(project.repoName);
+    return owner && repo ? `github:${owner}/${repo}` : '';
+  }
+  if (host === 'ado' || !host) {
+    const parsed = parseAdoPrUrl(project.prUrlBase || '');
+    if (parsed?.scope) return parsed.scope;
+    const org = normalizePrScopeSegment(project.adoOrg);
+    const adoProject = normalizePrScopeSegment(project.adoProject);
+    const repo = normalizePrScopeSegment(project.repoName || project.repositoryId);
+    return org && adoProject && repo ? `ado:${org}/${adoProject}/${repo}` : '';
+  }
+  return '';
+}
+
+function getPrNumber(value) {
+  if (value && typeof value === 'object') {
+    if (value.prNumber != null && /^\d+$/.test(String(value.prNumber))) {
+      return parseInt(String(value.prNumber), 10);
+    }
+    return getPrNumber(value.id || value.url || '');
+  }
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const canonical = parseCanonicalPrId(raw);
+  if (canonical) return canonical.prNumber;
+  const parsedUrl = parseGitHubPrUrl(raw) || parseAdoPrUrl(raw);
+  if (parsedUrl) return parsedUrl.prNumber;
+  const legacy = raw.match(/^PR-(\d+)$/i) || raw.match(/^(\d+)$/);
+  return legacy ? parseInt(legacy[1], 10) : null;
+}
+
+function getPrDisplayId(value, fallbackPrNumber = null) {
+  const prNumber = getPrNumber(value) ?? getPrNumber(fallbackPrNumber);
+  if (prNumber != null) return `PR-${prNumber}`;
+  return typeof value === 'object' ? String(value?.id || '') : String(value || '');
+}
+
+function getCanonicalPrId(project, prRef, url = '') {
+  const isObjectRef = !!prRef && typeof prRef === 'object';
+  const rawId = isObjectRef ? (prRef.id || '') : String(prRef || '');
+  const canonical = parseCanonicalPrId(rawId);
+  if (canonical) return `${canonical.scope}#${canonical.prNumber}`;
+  const parsedUrl = parseGitHubPrUrl(url || (isObjectRef ? prRef.url || '' : ''))
+    || parseAdoPrUrl(url || (isObjectRef ? prRef.url || '' : ''));
+  const prNumber = getPrNumber(isObjectRef ? (prRef.prNumber ?? prRef.id ?? prRef.url) : prRef);
+  if (prNumber == null) return rawId;
+  const scope = getProjectPrScope(project) || parsedUrl?.scope || '';
+  return scope ? `${scope}#${prNumber}` : `PR-${prNumber}`;
+}
+
+function findPrRecord(prs, prRef, project = null) {
+  if (!Array.isArray(prs) || !prRef) return null;
+  const isObjectRef = typeof prRef === 'object';
+  const rawId = isObjectRef ? String(prRef.id || '') : String(prRef || '');
+  const refUrl = isObjectRef ? String(prRef.url || '') : '';
+  const canonicalId = getCanonicalPrId(project, prRef, refUrl);
+  if (canonicalId) {
+    const canonicalMatch = prs.find(pr => pr?.id === canonicalId);
+    if (canonicalMatch) return canonicalMatch;
+  }
+  if (rawId) {
+    const rawMatch = prs.find(pr => pr?.id === rawId);
+    if (rawMatch) return rawMatch;
+  }
+  if (refUrl) {
+    const urlMatch = prs.find(pr => pr?.url === refUrl);
+    if (urlMatch) return urlMatch;
+  }
+  const refNumber = getPrNumber(isObjectRef ? (prRef.prNumber ?? prRef.id ?? prRef.url) : prRef);
+  if (refNumber == null) return null;
+  const numberMatches = prs.filter(pr => getPrNumber(pr) === refNumber);
+  return numberMatches.length === 1 ? numberMatches[0] : null;
+}
+
+function normalizePrRecord(pr, project = null) {
+  if (!pr || typeof pr !== 'object') return false;
+  let changed = false;
+  const prNumber = getPrNumber(pr.prNumber ?? pr.id ?? pr.url);
+  if (prNumber != null && pr.prNumber !== prNumber) {
+    pr.prNumber = prNumber;
+    changed = true;
+  }
+  const canonicalId = getCanonicalPrId(project, pr, pr.url || '');
+  if (canonicalId && pr.id !== canonicalId) {
+    pr.id = canonicalId;
+    changed = true;
+  }
+  return changed;
+}
+
+function normalizePrRecords(prs, project = null) {
+  if (!Array.isArray(prs)) return 0;
+  let changed = 0;
+  for (const pr of prs) {
+    if (normalizePrRecord(pr, project)) changed++;
+  }
+  return changed;
+}
+
+function normalizePrLinkItems(value) {
+  const items = Array.isArray(value) ? value : [value];
+  return [...new Set(items.filter(item => typeof item === 'string' && item))];
+}
+
+function mergePrLinkItems(links, prId, itemIds) {
+  if (!prId) return;
+  const merged = new Set([...(links[prId] || []), ...normalizePrLinkItems(itemIds)]);
+  if (merged.size > 0) links[prId] = [...merged];
+}
+
 function getPrLinks() {
   const links = {};
+  const knownPrIdsByDisplay = new Map();
+  const registerPrId = (pr) => {
+    if (!pr?.id) return;
+    const displayId = getPrDisplayId(pr);
+    if (!displayId) return;
+    if (!knownPrIdsByDisplay.has(displayId)) knownPrIdsByDisplay.set(displayId, new Set());
+    knownPrIdsByDisplay.get(displayId).add(pr.id);
+  };
   // Primary source: derive from all projects/*/pull-requests.json prdItems
   const projectsDir = path.join(MINIONS_DIR, 'projects');
+  const projectsByName = new Map(getProjects().map(project => [project.name || path.basename(project.localPath || ''), project]));
   try {
     for (const d of fs.readdirSync(projectsDir, { withFileTypes: true })) {
       if (!d.isDirectory()) continue;
       try {
         const prs = JSON.parse(fs.readFileSync(path.join(projectsDir, d.name, 'pull-requests.json'), 'utf8'));
+        const project = projectsByName.get(d.name) || null;
+        normalizePrRecords(prs, project);
         for (const pr of prs) {
           if (!pr.id) continue;
-          for (const itemId of (pr.prdItems || [])) {
-            if (itemId) links[pr.id] = itemId;
-          }
+          registerPrId(pr);
+          mergePrLinkItems(links, pr.id, pr.prdItems || []);
         }
       } catch { /* missing or invalid */ }
     }
   } catch { /* projects dir missing */ }
+  try {
+    const centralPrs = JSON.parse(fs.readFileSync(path.join(MINIONS_DIR, 'pull-requests.json'), 'utf8'));
+    normalizePrRecords(centralPrs, null);
+    for (const pr of centralPrs) {
+      if (!pr.id) continue;
+      registerPrId(pr);
+      mergePrLinkItems(links, pr.id, pr.prdItems || []);
+    }
+  } catch { /* central file optional */ }
   // Fallback: static pr-links.json for entries not covered above
   try {
     const static_ = JSON.parse(fs.readFileSync(PR_LINKS_PATH, 'utf8'));
     for (const [k, v] of Object.entries(static_)) {
-      if (!links[k]) links[k] = v;
+      const canonical = parseCanonicalPrId(k);
+      let normalizedKey = canonical ? `${canonical.scope}#${canonical.prNumber}` : k;
+      if (!canonical) {
+        const candidates = knownPrIdsByDisplay.get(getPrDisplayId(k));
+        if (candidates?.size === 1) normalizedKey = [...candidates][0];
+        else if (candidates?.size > 1) {
+          log('warn', `Skipping ambiguous legacy PR link "${k}" — multiple canonical PR IDs share display ID ${getPrDisplayId(k)}`);
+          continue;
+        }
+      }
+      if (!links[normalizedKey]) mergePrLinkItems(links, normalizedKey, v);
     }
   } catch { /* missing */ }
   return links;
 }
 
-function addPrLink(prId, itemId) {
-  if (!prId || !itemId) return;
-  const links = getPrLinks();
-  if (links[prId] === itemId) return; // already correct, no write needed
-  links[prId] = itemId;
-  safeWrite(PR_LINKS_PATH, links);
+function backfillPrPrdItems(prs, prLinks) {
+  let backfilled = 0;
+  for (const pr of prs) {
+    const linkedItems = prLinks[pr.id] || [];
+    if (linkedItems.length > 0) {
+      pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
+      for (const linked of linkedItems) {
+        if (!pr.prdItems.includes(linked)) {
+          pr.prdItems.push(linked);
+          backfilled++;
+        }
+      }
+    }
+  }
+  return backfilled;
+}
+
+function addPrLink(prId, itemId, { project = null, url = '', prNumber = null } = {}) {
+  const canonicalPrId = getCanonicalPrId(project, prNumber ?? prId, url);
+  const effectivePrId = canonicalPrId || prId;
+  if (!effectivePrId || !itemId) return;
+  const legacyPrId = String(prId || '');
+  mutateJsonFileLocked(PR_LINKS_PATH, (links) => {
+    if (!links || Array.isArray(links) || typeof links !== 'object') links = {};
+    const mergedCurrent = new Set(normalizePrLinkItems(links[effectivePrId]));
+    if (legacyPrId && legacyPrId !== effectivePrId && links[legacyPrId]) {
+      for (const linkedItem of normalizePrLinkItems(links[legacyPrId])) mergedCurrent.add(linkedItem);
+      delete links[legacyPrId];
+    }
+    if (!mergedCurrent.has(itemId)) mergedCurrent.add(itemId);
+    links[effectivePrId] = [...mergedCurrent];
+    return links;
+  }, { defaultValue: {} });
+
+  if (!project) return;
+  const prPath = projectPrPath(project);
+  const effectivePrNumber = getPrNumber(prNumber ?? effectivePrId);
+  const prLockPath = `${prPath}.lock`;
+  withFileLock(prLockPath, () => {
+    if (!fs.existsSync(prPath)) return;
+    let prs = safeJson(prPath);
+    if (!Array.isArray(prs)) prs = [];
+    normalizePrRecords(prs, project);
+    const existingPr = prs.find(pr =>
+      pr?.id === effectivePrId
+      || (url && pr?.url === url)
+      || (effectivePrNumber != null && getPrNumber(pr) === effectivePrNumber)
+    );
+    if (!existingPr) return;
+    const backupPath = prPath + '.backup';
+    try { if (fs.existsSync(prPath)) fs.copyFileSync(prPath, backupPath); } catch { /* backup is best-effort */ }
+    existingPr.prdItems = Array.isArray(existingPr.prdItems) ? existingPr.prdItems : [];
+    if (existingPr.prdItems.includes(itemId)) return;
+    existingPr.prdItems.push(itemId);
+    safeWrite(prPath, prs);
+  }, {
+    retries: ENGINE_DEFAULTS.lockRetries,
+    retryBackoffMs: ENGINE_DEFAULTS.lockRetryBackoffMs
+  });
 }
 
 // ─── Cross-Platform Process Kill Helpers ─────────────────────────────────────
@@ -1053,8 +1313,22 @@ function slugify(text, maxLen = 50) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, maxLen);
 }
 
+function safeSlugComponent(text, maxLen = 80) {
+  const raw = String(text || '').trim();
+  if (!raw) return 'item';
+  if (/^[A-Za-z0-9._-]+$/.test(raw) && raw.length <= maxLen) return raw;
+  const hash = crypto.createHash('md5').update(raw).digest('hex').slice(0, 8);
+  const base = slugify(raw, Math.max(8, maxLen - 9)) || 'item';
+  return `${base}-${hash}`.slice(0, maxLen);
+}
+
 function formatTranscriptEntry(t) {
   return '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '');
+}
+
+function getPinnedItems() {
+  const pins = safeJson(PINNED_ITEMS_PATH);
+  return Array.isArray(pins) ? pins.filter(item => typeof item === 'string' && item) : [];
 }
 
 // ── Throttle Tracker Factory ────────────────────────────────────────────────
@@ -1113,6 +1387,7 @@ function createThrottleTracker({ label, baseBackoffMs = 60000, maxBackoffMs = 32
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
+  PINNED_ITEMS_PATH,
   LOG_PATH,
   ts,
   logTs,
@@ -1144,7 +1419,7 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION,
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,
@@ -1157,6 +1432,14 @@ module.exports = {
   projectPrPath,
   getPrLinks,
   addPrLink,
+  parseCanonicalPrId,
+  getProjectPrScope,
+  getPrNumber,
+  getPrDisplayId,
+  getCanonicalPrId,
+  findPrRecord,
+  normalizePrRecord,
+  normalizePrRecords,
   nextWorkItemId,
   getAdoOrgBase,
   sanitizePath,
@@ -1172,8 +1455,10 @@ module.exports = {
   LOCK_STALE_MS,
   flushLogs,
   slugify,
+  safeSlugComponent,
   formatTranscriptEntry,
+  getPinnedItems,
   _logBuffer, // exported for testing
   createThrottleTracker,
+  backfillPrPrdItems,
 };
-
