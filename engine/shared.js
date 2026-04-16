@@ -162,6 +162,118 @@ function safeUnlink(p) {
   try { fs.unlinkSync(p); } catch { /* cleanup */ }
 }
 
+// ── Dispatch Prompt Sidecar (#1167) ─────────────────────────────────────────
+// Large prompts (PR diffs, build error logs, coalesced human feedback) inlined
+// into dispatch.json caused hundreds-of-MB bloat per entry and eventual V8 OOM
+// at startup. Sidecar files keep dispatch.json small while preserving full
+// content for the agent at spawn time.
+
+// Resolve lazily so MINIONS_TEST_DIR overrides work in tests.
+function _promptContextsDir() {
+  return path.join(MINIONS_DIR, 'engine', 'contexts');
+}
+// Keep the constant for callers that expect a stable export; callers that need
+// the current value (tests) should call _promptContextsDir().
+const PROMPT_CONTEXTS_DIR = _promptContextsDir();
+
+/** Absolute path to the sidecar prompt file for a given dispatch id. */
+function dispatchPromptSidecarPath(dispatchId) {
+  if (!dispatchId) return null;
+  const safeId = String(dispatchId).replace(/[^a-zA-Z0-9._-]/g, '-');
+  return path.join(_promptContextsDir(), `${safeId}.md`);
+}
+
+/**
+ * If the dispatch item's prompt exceeds thresholdBytes, write the full prompt
+ * to engine/contexts/<id>.md and replace `item.prompt` with a short stub
+ * + `_promptFile` reference. Mutates item in place and returns true when
+ * sidecaring happened, false otherwise.
+ */
+function sidecarDispatchPrompt(item, thresholdBytes) {
+  if (!item || typeof item.prompt !== 'string') return false;
+  const threshold = Number(thresholdBytes) > 0
+    ? Number(thresholdBytes)
+    : ENGINE_DEFAULTS.maxDispatchPromptBytes;
+  const byteLen = Buffer.byteLength(item.prompt, 'utf8');
+  if (byteLen <= threshold) return false;
+  if (!item.id) return false; // can't sidecar without a stable id
+  try {
+    const ctxDir = _promptContextsDir();
+    if (!fs.existsSync(ctxDir)) fs.mkdirSync(ctxDir, { recursive: true });
+    const sidecar = dispatchPromptSidecarPath(item.id);
+    safeWrite(sidecar, item.prompt);
+    const relPath = path.relative(MINIONS_DIR, sidecar).replace(/\\/g, '/');
+    item._promptFile = relPath;
+    item._promptBytes = byteLen;
+    item.prompt = `[Prompt sidecarred to ${relPath} — ${Math.round(byteLen / 1024)} KB. The engine reads the sidecar when spawning this agent.]`;
+    try { log('warn', `Sidecarred oversized dispatch prompt: ${item.id} (${Math.round(byteLen / 1024)} KB → ${relPath})`); } catch { /* logger may not be ready */ }
+    return true;
+  } catch (e) {
+    try { log('warn', `sidecarDispatchPrompt failed for ${item.id}: ${e.message}`); } catch { /* cleanup */ }
+    return false;
+  }
+}
+
+/**
+ * Read the effective prompt for a dispatch item. Prefers the sidecar file when
+ * `_promptFile` is set so spawnAgent always sees the full prompt even though
+ * dispatch.json only stores a small stub.
+ */
+function resolveDispatchPrompt(item) {
+  if (!item) return '';
+  if (item._promptFile) {
+    const candidates = [
+      path.isAbsolute(item._promptFile) ? item._promptFile : path.resolve(MINIONS_DIR, item._promptFile),
+      dispatchPromptSidecarPath(item.id),
+    ].filter(Boolean);
+    for (const c of candidates) {
+      try {
+        const content = fs.readFileSync(c, 'utf8');
+        if (content) return content;
+      } catch { /* try next candidate */ }
+    }
+  }
+  return item.prompt || '';
+}
+
+/** Remove the sidecar prompt file for a completed/cancelled dispatch. */
+function deleteDispatchPromptSidecar(item) {
+  if (!item) return;
+  const paths = new Set();
+  if (item._promptFile) {
+    paths.add(path.isAbsolute(item._promptFile) ? item._promptFile : path.resolve(MINIONS_DIR, item._promptFile));
+  }
+  const idPath = dispatchPromptSidecarPath(item.id);
+  if (idPath) paths.add(idPath);
+  for (const p of paths) safeUnlink(p);
+}
+
+/**
+ * Startup guard: throw a clear error when a state file has grown past
+ * maxStateFileBytes. Without this the dashboard silently OOMs on JSON.parse
+ * (seen on a 491 MB dispatch.json + 509 MB cooldowns.json — #1167).
+ * The thrown error points at the bloated file so operators can act instead
+ * of chasing V8 heap traces.
+ */
+function assertStateFileSize(filePath, maxBytes) {
+  const limit = Number(maxBytes) > 0 ? Number(maxBytes) : ENGINE_DEFAULTS.maxStateFileBytes;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > limit) {
+      throw new Error(
+        `State file too large: ${filePath} is ${Math.round(stat.size / (1024 * 1024))} MB ` +
+        `(limit ${Math.round(limit / (1024 * 1024))} MB). ` +
+        `This usually means dispatch prompts or cooldown contexts were inlined and not sidecarred. ` +
+        `Inspect/trim the file manually, then restart. See engine/contexts/ for sidecar files.`
+      );
+    }
+  } catch (e) {
+    if (e.code === 'ENOENT') return; // file absent is fine
+    if (e.message && e.message.startsWith('State file too large:')) throw e;
+    // Other stat errors (permission etc.) — do not block startup
+  }
+}
+
 function sleepMs(ms) {
   try {
     const ab = new SharedArrayBuffer(4);
@@ -571,6 +683,9 @@ const ENGINE_DEFAULTS = {
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
   maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
+  maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
+  maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
+  maxStateFileBytes: 100 * 1024 * 1024, // 100 MB — fail startup with a clear error when dispatch.json / cooldowns.json exceed this, rather than silently OOMing on JSON.parse (#1167)
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
@@ -1399,6 +1514,12 @@ module.exports = {
   safeJson, safeJsonObj, safeJsonArr,
   safeWrite,
   safeUnlink,
+  PROMPT_CONTEXTS_DIR,
+  dispatchPromptSidecarPath,
+  sidecarDispatchPrompt,
+  resolveDispatchPrompt,
+  deleteDispatchPromptSidecar,
+  assertStateFileSize,
   withFileLock,
   mutateJsonFileLocked,
   mutateWorkItems,
