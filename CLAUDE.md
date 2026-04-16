@@ -53,6 +53,8 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 
 ### Key Modules
 
+Primary modules (the ones you'll touch most often):
+
 | Module | Role |
 |--------|------|
 | `engine.js` | Orchestrator: spawn agents, manage dispatch queue, dependency resolution |
@@ -63,8 +65,8 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/dispatch.js` | Dispatch queue: add, complete, retry logic, failure alerts |
 | `engine/consolidation.js` | Haiku-powered inbox → notes.md merging, KB classification |
 | `engine/ado.js` | Azure DevOps: token cache, PR polling, comment polling, reconciliation |
-| `engine/cli.js` | CLI handlers: start, stop, status, spawn, add project |
 | `engine/github.js` | GitHub: PR polling, comment polling, reconciliation (parallel to ado.js) |
+| `engine/cli.js` | CLI handlers: start, stop, status, spawn, add project |
 | `engine/preflight.js` | Prerequisite checks: Node, Git, Claude CLI, API key. Powers `minions doctor` |
 | `engine/scheduler.js` | Cron-style scheduled task discovery from `config.schedules` |
 | `engine/pipeline.js` | Multi-stage pipeline execution (e.g. daily-arch-improvement) |
@@ -73,6 +75,20 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/timeout.js` | Timeout detection, steering, and idle threshold checks |
 | `engine/llm.js` | Claude CLI invocation wrapper for consolidation/CC (direct spawn for CC/doc-chat, indirect via spawn-agent for engine agents) |
 | `engine/watches.js` | Persistent watch jobs: monitor PRs/work items for conditions, fire inbox notifications when triggered |
+| `engine/cleanup.js` | Worktree, temp file, and zombie process cleanup (every 10 ticks) |
+| `engine/routing.js` | `routing.md` parsing, agent resolution, temp agent spawning |
+| `engine/playbook.js` | Playbook loading, template variable substitution, project-local overrides |
+| `engine/recovery.js` | Re-attach to surviving agents after engine restart (grace period, PID scan) |
+
+Support scripts (rarely edited directly):
+
+| Module | Role |
+|--------|------|
+| `engine/spawn-agent.js` | Wrapper process that resolves the `claude` CLI path and invokes it with the correct flags |
+| `engine/ado-mcp-wrapper.js` | Authentication shim for the ADO MCP server |
+| `engine/ado-status.js` | CLI for querying PR status (cached or live); safe alternative to raw `curl` |
+| `engine/check-status.js` | Fast status snapshot used by `minions status` |
+| `engine/teams.js`, `engine/teams-cards.js` | Microsoft Teams notification integration |
 
 ### State Files (all runtime, gitignored)
 
@@ -317,7 +333,7 @@ Key engine config flags:
 
 ## Playbooks
 
-Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, `decompose.md`, `meeting-investigate.md`, `meeting-debate.md`, `meeting-conclude.md`, etc.) with `{{template_variables}}` filled at dispatch time. These define what agents actually do.
+Templates in `playbooks/` with `{{template_variables}}` filled at dispatch time. These define what agents actually do. Current set: `work-item.md` (shared fallback), `shared-rules.md` (auto-injected into every playbook), `implement.md`, `implement-shared.md`, `review.md`, `fix.md`, `explore.md`, `ask.md`, `test.md`, `build-and-test.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, `decompose.md`, `meeting-investigate.md`, `meeting-debate.md`, `meeting-conclude.md`. Extra snippets live in `playbooks/templates/` (e.g. `verify-guide.md`).
 
 Playbooks must be **platform-agnostic** — never hardcode build commands, languages, or frameworks. Agents should read project docs (CLAUDE.md, README, package.json, Makefile, etc.) to determine how to build/test/run.
 
@@ -363,7 +379,7 @@ Token via `azureauth ado token --mode iwa --mode broker --output token --timeout
 
 ## Dashboard
 
-The dashboard is assembled from fragments in `dashboard/` at startup: `styles.css`, `layout.html`, page HTML fragments in `pages/`, and JS modules in `js/`. Assembled into one HTML string and served as a single-page app. Sidebar navigation with URL routing (`/work`, `/prd`, `/prs`, `/plans`, `/inbox`, `/schedule`, `/engine`).
+The dashboard is assembled from fragments in `dashboard/` at startup: `styles.css`, `layout.html`, page HTML fragments in `dashboard/pages/`, and JS modules in `dashboard/js/`. Assembled into one HTML string and served as a single-page app. Sidebar navigation uses the page list defined in `dashboard.js` — currently: `home`, `work`, `prs`, `plans`, `inbox`, `tools`, `schedule`, `watches`, `pipelines`, `meetings`, `engine` (search `dashboard.js` for `const pages =` if this drifts).
 
 ## Command Center & Doc-Chat
 
@@ -380,11 +396,11 @@ User types message → ccCall() → buildPrompt() → llm.callLLM({ direct: true
   → parseCCActions() extracts ===ACTIONS=== → actions executed (dispatch, note, pin, etc.)
 ```
 
-**System prompt:** `CC_STATIC_SYSTEM_PROMPT` (~14KB) — defines guardrails, filesystem map, delegation rules, action types, domain terminology. Hashed via `_ccPromptHash` for session invalidation on code changes.
+**System prompt:** `CC_STATIC_SYSTEM_PROMPT` — loaded from `prompts/cc-system.md` (~11KB) with `{{minions_dir}}` substituted in. Defines guardrails, filesystem map, delegation rules, action types, domain terminology. Hashed via `_ccPromptHash` for session invalidation on prompt changes.
 
 **State preamble:** `buildCCStatePreamble()` — lightweight snapshot of agents, dispatch, PR/WI counts, project list, schedule/pipeline counts. Cached with 10s TTL. Skipped on session resume (session already has context).
 
-**Sessions:** Single global CC session (`ccSession`), persisted to `engine/cc-session.json`. Expires after 2 hours (`CC_SESSION_EXPIRY_MS`). No turn limit (`CC_SESSION_MAX_TURNS = Infinity`). Resume via `--resume` flag. System prompt change (detected via `_ccPromptHash`) forces new session.
+**Sessions:** Single global CC session (`ccSession`), persisted to `engine/cc-session.json`. No time-based expiry and no turn limit (`CC_SESSION_MAX_TURNS = Infinity`). Resume via `--resume` flag. The session is invalidated (forcing a fresh start) only when the system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. Per-tab sessions (streaming path) don't mutate the global `ccSession`.
 
 **Model/effort:** Configurable via `config.engine.ccModel` (sonnet/haiku/opus) and `config.engine.ccEffort` (null/low/medium/high). Applied to all CC and doc-chat calls.
 
@@ -499,7 +515,7 @@ CC Actions `create-watch` / `delete-watch` / `pause-watch` / `resume-watch` mana
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 1400+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 2200+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 
