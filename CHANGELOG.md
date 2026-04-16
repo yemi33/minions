@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1016 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
 ## 0.1.1015 (2026-04-16)
 
 ### Fixes
