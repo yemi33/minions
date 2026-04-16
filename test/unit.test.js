@@ -23954,4 +23954,101 @@ async function testStatusGzipCache() {
   });
 }
 
+// ─── P-a5e9c1d7: Split getStatus() into fast/slow state tiers ───────────────
+
+async function testStatusCacheTiers() {
+  console.log('\n── Status Cache Tiers (fast/slow) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Tier variables and TTLs exist ──
+
+  await test('dashboard.js has _fastState and _slowState cache variables', () => {
+    assert.ok(dashSrc.includes('let _fastState'), '_fastState variable must exist');
+    assert.ok(dashSrc.includes('let _slowState'), '_slowState variable must exist');
+    assert.ok(dashSrc.includes('let _fastStateTs'), '_fastStateTs timestamp must exist');
+    assert.ok(dashSrc.includes('let _slowStateTs'), '_slowStateTs timestamp must exist');
+  });
+
+  await test('FAST_STATE_TTL is 10s and SLOW_STATE_TTL is 60s', () => {
+    assert.ok(dashSrc.includes('FAST_STATE_TTL = 10000'), 'FAST_STATE_TTL must be 10000ms (10s)');
+    assert.ok(dashSrc.includes('SLOW_STATE_TTL = 60000'), 'SLOW_STATE_TTL must be 60000ms (60s)');
+  });
+
+  // ── Fast state contains the right keys ──
+
+  await test('fast state includes frequently-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // These must appear in the _fastState assignment
+    assert.ok(body.includes('_fastState'), 'getStatus must build _fastState');
+    for (const key of ['agents:', 'inbox:', 'pullRequests:', 'dispatch:', 'metrics:', 'workItems:', 'watches:', 'meetings:', 'adoThrottle:', 'ghThrottle:', 'engineLog:']) {
+      assert.ok(body.includes(key), `fast state must include ${key}`);
+    }
+  });
+
+  // ── Slow state contains the right keys ──
+
+  await test('slow state includes rarely-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    assert.ok(body.includes('_slowState'), 'getStatus must build _slowState');
+    for (const key of ['skills:', 'prdProgress:', 'mcpServers:', 'pinned:', 'projects:', 'autoMode:', 'version:', 'schedules:']) {
+      assert.ok(body.includes(key), `slow state must include ${key}`);
+    }
+  });
+
+  // ── invalidateStatusCache invalidates fast state only ──
+
+  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    const body = fn[0];
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
+    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+  });
+
+  // ── mtime tracking applies to fast state only ──
+
+  await test('mtime-based validation applies only to fast-state TTL check', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The mtime check should be near _fastState logic, not _slowState
+    const fastIdx = body.indexOf('_fastState');
+    const mtimeIdx = body.indexOf('_mtimesChanged');
+    const slowIdx = body.indexOf('_slowState');
+    assert.ok(fastIdx > 0 && mtimeIdx > 0 && slowIdx > 0, 'all three markers must exist');
+    // mtime check should appear before or near fast state, not after slow state assignment
+    assert.ok(mtimeIdx < slowIdx, 'mtime validation must appear before slow state building (applies to fast tier only)');
+  });
+
+  // ── getStatus merges both tiers ──
+
+  await test('getStatus merges fast and slow state into combined _statusCache', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The final _statusCache should spread both tiers
+    assert.ok(body.includes('..._fastState') && body.includes('..._slowState'),
+      'getStatus must merge _fastState and _slowState via spread into _statusCache');
+    assert.ok(body.includes('timestamp:'), 'merged status must include timestamp');
+  });
+
+  // ── Slow state is NOT rebuilt when only fast state changes ──
+
+  await test('slow state rebuild is gated by SLOW_STATE_TTL only (no mtime check)', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The slowStale check should reference SLOW_STATE_TTL, not _mtimesChanged
+    assert.ok(body.includes('SLOW_STATE_TTL'), 'slow state staleness must be gated by SLOW_STATE_TTL');
+    // Extract the slowStale logic — it should be a simple TTL check
+    const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
+    assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });
