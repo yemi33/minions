@@ -12010,6 +12010,48 @@ async function testDashboardBugFixes() {
       'Should only rotate when file has meaningful content (above sparse threshold)');
   });
 
+  // W-mo248lkjwgsu: stub live-output.log BEFORE child process spawn so orphan
+  // detector can distinguish "spawn call threw" (no file) from "process crashed
+  // at startup" (stub-only) from "process running but hung" (stub + content).
+  await test('engine.js stamps live-output.log stub BEFORE spawning child process', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const spawnFn = engineSrc.slice(
+      engineSrc.indexOf('async function spawnAgent('),
+      engineSrc.indexOf('\nasync function onAgentClose')
+    );
+    assert.ok(spawnFn.length > 0, 'Should find spawnAgent function body');
+
+    // The safeWrite(liveOutputPath, ...) call that creates the header/stub
+    // must precede the runFile(process.execPath, spawnArgs, ...) call.
+    const stubIdx = spawnFn.indexOf('safeWrite(liveOutputPath');
+    const spawnIdx = spawnFn.indexOf('runFile(process.execPath, spawnArgs');
+    assert.ok(stubIdx > 0, 'spawnAgent should call safeWrite(liveOutputPath, ...) to stamp the log');
+    assert.ok(spawnIdx > 0, 'spawnAgent should call runFile(process.execPath, spawnArgs, ...)');
+    assert.ok(stubIdx < spawnIdx,
+      'Log stub must be written BEFORE the child process is spawned so orphan detection can distinguish spawn failure from startup crash');
+
+    // The stub line must record agent + item IDs for the audit trail.
+    assert.ok(/\[.*toISOString.*\] spawn: agent=/.test(spawnFn) || spawnFn.includes('] spawn: agent='),
+      'Stub should include "[<iso>] spawn: agent=..." marker for diagnostics');
+    assert.ok(spawnFn.includes('item=${id}') || spawnFn.includes('item=' + '$' + '{id}'),
+      'Stub should include "item=<dispatch id>" marker');
+  });
+
+  // W-mo248lkjwgsu: orphan detection should capture log-file state so we can
+  // distinguish spawn failure (no file) from early crash (stub-only) from hang.
+  await test('timeout.js orphan detection logs live-output.log file state (exists + size)', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // Find the orphan branch: `log('warn', `Orphan detected...`)`
+    const orphanIdx = timeoutSrc.indexOf('Orphan detected:');
+    assert.ok(orphanIdx > 0, 'Should have "Orphan detected:" log line');
+    // Slice a window around the orphan log — must include file state annotation
+    // (logFile=... or live-output.log= reference) before the kill/cleanup.
+    const window = timeoutSrc.slice(Math.max(0, orphanIdx - 800), orphanIdx + 800);
+    assert.ok(
+      window.includes('logFile=') || window.includes('logExists=') || window.includes('logSize='),
+      'Orphan warn should annotate log-file state (logFile=..., logExists=..., or logSize=...)');
+  });
+
   await test('dashboard.js falls back to live-output-prev.log when current is sparse', () => {
     assert.ok(src.includes('live-output-prev.log'),
       'Dashboard should reference live-output-prev.log for fallback');

@@ -871,25 +871,16 @@ async function spawnAgent(dispatchItem, config) {
   const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
   const spawnArgs = [spawnScript, promptPath, sysPromptPath, ...args];
 
-  const proc = runFile(process.execPath, spawnArgs, {
-    cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: childEnv,
-  });
-
-  const MAX_OUTPUT = 1024 * 1024; // 1MB
-  let stdout = '';
-  let stderr = '';
-  let lastOutputAt = Date.now();
-  let heartbeatTimer = null;
-  let _trustCheckDone = false;
-  const _spawnTime = Date.now();
-
-  // Live output file — written as data arrives so dashboard can tail it
+  // Live output file — stamped BEFORE child process is spawned (#W-mo248lkjwgsu).
+  // Writing the stub pre-spawn lets the orphan detector distinguish three failure modes
+  // that otherwise look identical:
+  //   1. No log file          → spawn call itself threw before reaching this line
+  //   2. Log has stub only    → process started but died before its first write
+  //   3. Log has stub + ...   → process alive but hung (the only case that warrants orphan kill+retry)
   const liveOutputPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
 
   // Rotate previous live output to preserve session history (fixes #543: orphan recovery overwrites)
-  // Only rotate if the existing file has meaningful content (beyond just the header)
+  // Only rotate if the existing file has meaningful content (beyond just the header stub)
   const LIVE_OUTPUT_SPARSE_THRESHOLD = 500; // bytes — header + init JSON is typically < 500
   try {
     if (fs.existsSync(liveOutputPath)) {
@@ -901,7 +892,37 @@ async function spawnAgent(dispatchItem, config) {
     }
   } catch { /* rotation is best-effort — overwrite still happens below */ }
 
-  safeWrite(liveOutputPath, `# Live output for ${agentId} — ${id}\n# Started: ${startedAt}\n# Task: ${dispatchItem.task}\n\n`);
+  // Stamp the log synchronously before spawn. If the synchronous write throws,
+  // we still attempt to spawn (log-file stamp failure must not block the agent),
+  // but we note it so the diagnostic trail isn't silent either.
+  try {
+    safeWrite(liveOutputPath, `# Live output for ${agentId} — ${id}\n# Started: ${startedAt}\n# Task: ${dispatchItem.task}\n[${new Date().toISOString()}] spawn: agent=${agentId} item=${id}\n\n`);
+  } catch (stubErr) {
+    log('warn', `Failed to stamp live-output stub for ${agentId} (${id}): ${stubErr.message}`);
+  }
+
+  let proc;
+  try {
+    proc = runFile(process.execPath, spawnArgs, {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: childEnv,
+    });
+  } catch (spawnErr) {
+    // Synchronous spawn failure — record it to the (already-stamped) log so the
+    // orphan detector's "logSize > stub-only" check can tell this apart from a
+    // hung process. Then rethrow so the dispatch loop handles it normally.
+    try { fs.appendFileSync(liveOutputPath, `[${new Date().toISOString()}] spawn-failed: ${spawnErr.message}\n[process-exit] spawn-failed\n`); } catch { /* cleanup-only best effort */ }
+    throw spawnErr;
+  }
+
+  const MAX_OUTPUT = 1024 * 1024; // 1MB
+  let stdout = '';
+  let stderr = '';
+  let lastOutputAt = Date.now();
+  let heartbeatTimer = null;
+  let _trustCheckDone = false;
+  const _spawnTime = Date.now();
 
   // Keep live log active even when the agent produces no stdout/stderr for long stretches.
   // This makes "silent but running" states visible in the dashboard tail view.
