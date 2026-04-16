@@ -27,6 +27,19 @@ async function refreshKnowledgeBase() {
   } catch (e) { console.error('kb refresh:', e.message); }
 }
 
+function kbNewestFirst(a, b) {
+  return (b.sortTs || 0) - (a.sortTs || 0) ||
+    (b.date || '').localeCompare(a.date || '') ||
+    (a.title || '').localeCompare(b.title || '');
+}
+
+function kbPinnedNewestFirst(a, b) {
+  const aPinned = isPinned(kbPinKey(a.category, a.file));
+  const bPinned = isPinned(kbPinKey(b.category, b.file));
+  if (aPinned !== bPinned) return aPinned ? -1 : 1;
+  return kbNewestFirst(a, b);
+}
+
 function renderKnowledgeBase() {
   _syncPinsFromServer();
   const tabsEl = document.getElementById('kb-tabs');
@@ -74,18 +87,13 @@ function renderKnowledgeBase() {
   let items;
   if (_kbActiveTab === 'pinned') {
     items = allItems.filter(i => isPinned(kbPinKey(i.category, i.file)));
+    items.sort(kbNewestFirst);
   } else if (_kbActiveTab === 'all') {
     items = allItems.slice();
-    items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    items.sort(kbPinnedNewestFirst);
   } else {
     items = allItems.filter(i => i.category === _kbActiveTab);
-  }
-
-  // Stable sort — pinned items float to top (skip on pinned tab where all are pinned)
-  if (_kbActiveTab !== 'pinned') {
-    items.sort(function(a, b) {
-      return (isPinned(kbPinKey(a.category, a.file)) ? 0 : 1) - (isPinned(kbPinKey(b.category, b.file)) ? 0 : 1);
-    });
+    items.sort(kbPinnedNewestFirst);
   }
 
   if (items.length === 0) {
