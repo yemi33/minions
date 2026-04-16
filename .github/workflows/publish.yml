@@ -110,26 +110,16 @@ jobs:
           # Publish
           npm publish --access public
 
-          # Commit version bump + changelog via PR
+          # Commit version bump + changelog directly to master.
+          # Using a PR doesn't work because GITHUB_TOKEN can't trigger downstream
+          # workflows (PR Tests), and without the required status check the PR can't merge.
+          # Direct push with [skip ci] prevents re-triggering the publish workflow.
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
           git diff --cached --quiet && echo "No changes to commit" || {
-            BRANCH="chore/publish-$NEXT"
-            git checkout -b "$BRANCH"
-            git commit -m "chore: publish $NEXT — changelog updated"
-            git push origin "$BRANCH"
-            gh pr create --title "chore: publish $NEXT" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
-
-            # Close any stale publish PRs left over from previous runs (before merge so cleanup runs even if merge fails)
-            gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
-              gh pr close "$pr" --delete-branch 2>/dev/null || true
-            done
-
-            # Auto-merge once CI passes. Squash merge with explicit [skip ci] in the
-            # commit message so the landed commit won't re-trigger the publish workflow.
-            # The branch commit does NOT have [skip ci] so PR Tests runs on the PR.
-            gh pr merge "$BRANCH" --auto --squash --delete-branch --subject "chore: publish $NEXT [skip ci]"
+            git commit -m "chore: publish $NEXT [skip ci]"
+            git push origin HEAD:master
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
