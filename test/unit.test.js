@@ -10206,6 +10206,8 @@ async function main() {
     // W-8eobrosn: GitHub poller maxBuffer fix
     await testGhMaxBuffer();
 
+    // W-mo1jw240a0gn: engine/cli.js command handler behavioral coverage
+    await testCliCommandHandlers();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -22026,6 +22028,496 @@ async function testGhMaxBuffer() {
   });
 
   delete require.cache[require.resolve(ghPath)];
+}
+
+// ─── engine/cli.js — Command Handlers (behavioral) ───────────────────────────
+
+async function testCliCommandHandlers() {
+  console.log('\n── engine/cli.js — Command Handlers (behavioral) ──');
+
+  const CLI_PATH = path.join(MINIONS_DIR, 'engine', 'cli.js');
+  const ENGINE_PATH = path.join(MINIONS_DIR, 'engine.js');
+  const PREFLIGHT_PATH = path.join(MINIONS_DIR, 'engine', 'preflight.js');
+  const DISPATCH_MOD_PATH = path.join(MINIONS_DIR, 'engine', 'dispatch.js');
+
+  // Shared modules that capture MINIONS_DIR at require time — bust so the harness dir wins.
+  const CACHE_BUST = [
+    '../engine/shared', '../engine/queries', '../engine/dispatch',
+    '../engine/cleanup', '../engine/timeout', '../engine/pipeline',
+    '../engine/meeting', '../engine/consolidation', '../engine/llm',
+    '../engine/watches', '../engine/cooldown', '../engine/routing',
+    '../engine/lifecycle', '../engine/playbook', '../engine/cli',
+  ];
+  const ABS_ENGINE = require.resolve(ENGINE_PATH);
+  const ABS_CLI = require.resolve(CLI_PATH);
+  const ABS_PREFLIGHT = require.resolve(PREFLIGHT_PATH);
+  const ABS_DISPATCH = require.resolve(DISPATCH_MOD_PATH);
+
+  function bustModuleCache() {
+    for (const m of CACHE_BUST) {
+      try { delete require.cache[require.resolve(m)]; } catch {}
+    }
+    delete require.cache[ABS_ENGINE];
+    delete require.cache[ABS_CLI];
+    delete require.cache[ABS_PREFLIGHT];
+  }
+
+  // Minimal engine stub so cli.js's lazy `require('../engine')` returns spies
+  // instead of loading the real ~3500-line engine.js (which spawns workers, etc.).
+  function makeEngineStub(dispatchMod) {
+    const calls = { spawnAgent: [], updateWorkItemStatus: [], tick: [], completeDispatch: [], log: [] };
+    return {
+      _calls: calls,
+      ts: () => '2026-04-16T00:00:00.000Z',
+      dateStamp: () => '2026-04-16',
+      log: (level, msg) => { calls.log.push({ level, msg }); },
+      activeProcesses: new Map(),
+      realActivityMap: new Map(),
+      engineRestartGraceExempt: new Set(),
+      engineRestartGraceUntil: null,
+      mutateDispatch: dispatchMod.mutateDispatch,
+      addToDispatch: dispatchMod.addToDispatch,
+      completeDispatch: (...args) => { calls.completeDispatch.push(args); },
+      updateWorkItemStatus: (meta, status, reason) => {
+        calls.updateWorkItemStatus.push({ meta, status, reason });
+      },
+      spawnAgent: (item, cfg) => { calls.spawnAgent.push({ item, config: cfg }); },
+      validateConfig: () => {},
+      loadCooldowns: () => {},
+      resolveAgent: (type, cfg) => Object.keys(cfg.agents || {})[0] || null,
+      renderPlaybook: () => 'rendered',
+      tick: () => { calls.tick.push(Date.now()); },
+    };
+  }
+
+  function setupHarness({ config, control, dispatch, workItems, pidFiles, preflight } = {}) {
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+
+    if (config !== undefined) {
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
+    }
+    if (control !== undefined) {
+      fs.writeFileSync(path.join(testDir, 'engine', 'control.json'), JSON.stringify(control));
+    }
+    if (dispatch !== undefined) {
+      fs.writeFileSync(path.join(testDir, 'engine', 'dispatch.json'), JSON.stringify(dispatch));
+    }
+    if (workItems !== undefined) {
+      fs.writeFileSync(path.join(testDir, 'work-items.json'), JSON.stringify(workItems));
+    }
+    if (pidFiles) {
+      for (const [name, pid] of Object.entries(pidFiles)) {
+        fs.writeFileSync(path.join(testDir, 'engine', name), String(pid));
+      }
+    }
+
+    bustModuleCache();
+
+    // Stub preflight so runPreflight is instant and silent
+    const preflightStub = preflight || {
+      runPreflight: () => ({ results: [] }),
+      printPreflight: () => {},
+      doctor: async () => true,
+    };
+    require.cache[ABS_PREFLIGHT] = {
+      id: ABS_PREFLIGHT, filename: ABS_PREFLIGHT, loaded: true,
+      exports: preflightStub, children: [], paths: [],
+    };
+
+    // Force dispatch.js to resolve against the test dir (bust any cached copy)
+    delete require.cache[ABS_DISPATCH];
+    const dispatchMod = require(DISPATCH_MOD_PATH);
+
+    const engineStub = makeEngineStub(dispatchMod);
+    require.cache[ABS_ENGINE] = {
+      id: ABS_ENGINE, filename: ABS_ENGINE, loaded: true,
+      exports: engineStub, children: [], paths: [],
+    };
+
+    const cli = require(CLI_PATH);
+
+    return {
+      cli,
+      testDir,
+      engineStub,
+      calls: engineStub._calls,
+      readControl: () => JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'control.json'), 'utf8')),
+      readDispatch: () => JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'dispatch.json'), 'utf8')),
+      readWorkItems: () => JSON.parse(fs.readFileSync(path.join(testDir, 'work-items.json'), 'utf8')),
+      restore: () => {
+        delete require.cache[ABS_CLI];
+        delete require.cache[ABS_ENGINE];
+        delete require.cache[ABS_PREFLIGHT];
+        delete require.cache[ABS_DISPATCH];
+        restore();
+      },
+    };
+  }
+
+  function withCapture(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    try { fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    if (threw) throw threw;
+    return { logs, errs, exits };
+  }
+
+  // ── handleCommand routing ────────────────────────────────────────────────
+
+  await test('handleCommand: unknown command prints error and exits 1', () => {
+    const h = setupHarness();
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('frobnicate', []));
+      assert.ok(cap.logs.some(l => l.includes('Unknown command: frobnicate')),
+        `expected "Unknown command: frobnicate" in logs, got: ${cap.logs.join(' | ')}`);
+      assert.ok(cap.logs.some(l => l.includes('Commands:')), 'should print commands list');
+      assert.deepStrictEqual(cap.exits, [1], 'must exit with code 1');
+    } finally { h.restore(); }
+  });
+
+  await test('handleCommand: empty cmd delegates to commands.start', () => {
+    // Early-return path: engine already running with alive PID (our own process)
+    const h = setupHarness({
+      control: { state: 'running', pid: process.pid },
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } }, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('', []));
+      // Early-return path prints "already running" and does not advance to tick/setInterval
+      assert.ok(cap.logs.some(l => l.includes('already running')),
+        `empty cmd should delegate to start — expected "already running" in logs, got: ${cap.logs.join(' | ')}`);
+      assert.deepStrictEqual(cap.exits, [], 'early-return path must not call process.exit');
+      // Tick must not have fired (early return is before tick)
+      assert.strictEqual(h.calls.tick.length, 0, 'tick should not be called on early-return');
+    } finally { h.restore(); }
+  });
+
+  await test('handleCommand: known command invokes handler with args (stop)', () => {
+    const h = setupHarness({
+      control: { state: 'running', pid: null },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('stop', []));
+      const ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopped', `stop should write state=stopped, got ${ctrl.state}`);
+      assert.ok(ctrl.stopped_at, 'stop should record stopped_at timestamp');
+    } finally { h.restore(); }
+  });
+
+  await test('handleCommand: known command receives extra args (spawn forwards multi-word prompt)', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } }, engine: {} },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('spawn', ['dallas', 'hello', 'world']));
+      assert.strictEqual(h.calls.spawnAgent.length, 1,
+        'spawnAgent should be invoked exactly once on a successful spawn call');
+      // spawn joins promptParts with a space — multi-word args must round-trip verbatim
+      assert.strictEqual(h.calls.spawnAgent[0].item.prompt, 'hello world',
+        `expected prompt "hello world", got "${h.calls.spawnAgent[0].item.prompt}"`);
+    } finally { h.restore(); }
+  });
+
+  // ── commands.start ───────────────────────────────────────────────────────
+
+  await test('commands.start: early-returns when engine is already running (alive PID)', () => {
+    const h = setupHarness({
+      control: { state: 'running', pid: process.pid },
+      config: { projects: [], agents: { dallas: { name: 'D', role: 'E' } }, engine: {} },
+    });
+    try {
+      const beforeCtrl = h.readControl();
+      const cap = withCapture(() => h.cli.handleCommand('start', []));
+      assert.ok(cap.logs.some(l => l.includes('already running')),
+        'should print "already running" banner');
+      // Must not rewrite control.json
+      const afterCtrl = h.readControl();
+      assert.strictEqual(afterCtrl.state, beforeCtrl.state,
+        'early-return must not mutate control.state');
+      assert.strictEqual(afterCtrl.pid, beforeCtrl.pid,
+        'early-return must not mutate control.pid');
+      // No tick, no config validation, no cooldown load
+      assert.strictEqual(h.calls.tick.length, 0, 'tick must not be called');
+    } finally { h.restore(); }
+  });
+
+  await test('commands.start: already-running banner includes the stale PID', () => {
+    const h = setupHarness({
+      control: { state: 'running', pid: process.pid },
+      config: { projects: [], agents: { dallas: { name: 'D', role: 'E' } }, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', []));
+      assert.ok(cap.logs.some(l => l.includes(`PID ${process.pid}`)),
+        `banner should reference PID ${process.pid}, got: ${cap.logs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  // ── commands.stop ────────────────────────────────────────────────────────
+
+  await test('commands.stop: writes state=stopped to control.json', () => {
+    const h = setupHarness({
+      control: { state: 'running', pid: null },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('stop', []));
+      const ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopped');
+      assert.ok(typeof ctrl.stopped_at === 'string' && ctrl.stopped_at.length > 0,
+        'stopped_at should be a non-empty ISO string');
+    } finally { h.restore(); }
+  });
+
+  await test('commands.stop: prints per-agent warning when dispatch.active is non-empty', () => {
+    const h = setupHarness({
+      dispatch: {
+        pending: [],
+        active: [
+          { id: 'd1', agent: 'dallas', agentName: 'Dallas', task: 'implement feature X' },
+          { id: 'd2', agent: 'ripley', agentName: 'Ripley', task: 'review PR #999' },
+        ],
+        completed: [],
+      },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('stop', []));
+      assert.ok(cap.logs.some(l => l.includes('2 agent(s) are still working')),
+        `expected count warning, got: ${cap.logs.join(' | ')}`);
+      assert.ok(cap.logs.some(l => l.includes('Dallas') && l.includes('implement feature X')),
+        'must list Dallas task');
+      assert.ok(cap.logs.some(l => l.includes('Ripley') && l.includes('review PR #999')),
+        'must list Ripley task');
+      // Still writes stopped state despite warning
+      assert.strictEqual(h.readControl().state, 'stopped');
+    } finally { h.restore(); }
+  });
+
+  await test('commands.stop: skips kill when control.pid is null (no throw)', () => {
+    const h = setupHarness({
+      control: { state: 'running', pid: null },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      // Must not throw even though there is no PID to kill
+      assert.doesNotThrow(() => withCapture(() => h.cli.handleCommand('stop', [])));
+      assert.strictEqual(h.readControl().state, 'stopped');
+    } finally { h.restore(); }
+  });
+
+  // ── commands.kill ────────────────────────────────────────────────────────
+
+  await test('commands.kill: on empty state reports "0 dispatches killed"', () => {
+    const h = setupHarness({
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('kill', []));
+      assert.ok(cap.logs.some(l => /0 dispatches killed/.test(l)),
+        `expected "0 dispatches killed", got: ${cap.logs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.kill: clears dispatch.active atomically', () => {
+    const h = setupHarness({
+      dispatch: {
+        pending: [],
+        active: [
+          { id: 'a1', agent: 'dallas', task: 't1', meta: {} },
+          { id: 'a2', agent: 'ripley', task: 't2', meta: {} },
+        ],
+        completed: [],
+      },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('kill', []));
+      const d = h.readDispatch();
+      assert.deepStrictEqual(d.active, [], 'dispatch.active must be empty after kill');
+      assert.ok(cap.logs.some(l => /2 dispatches killed/.test(l)),
+        `expected "2 dispatches killed", got: ${cap.logs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.kill: resets work items from dispatched to pending and strips dispatch metadata', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      dispatch: {
+        pending: [],
+        active: [{
+          id: 'a1',
+          agent: 'dallas',
+          task: 'do a thing',
+          meta: {
+            source: 'central-work-item',
+            item: { id: 'W001' },
+            project: { name: 'minions', localPath: null },
+          },
+        }],
+        completed: [],
+      },
+      workItems: [
+        {
+          id: 'W001',
+          title: 'do a thing',
+          status: shared.WI_STATUS.DISPATCHED,
+          dispatched_at: '2026-01-01T00:00:00Z',
+          dispatched_to: 'dallas',
+          failReason: 'stale',
+          failedAt: '2025-12-31T00:00:00Z',
+        },
+        {
+          id: 'W002',
+          title: 'untouched',
+          status: shared.WI_STATUS.PENDING,
+        },
+      ],
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('kill', []));
+      const items = h.readWorkItems();
+      const w1 = items.find(i => i.id === 'W001');
+      const w2 = items.find(i => i.id === 'W002');
+      assert.strictEqual(w1.status, shared.WI_STATUS.PENDING,
+        `W001 should be reset to pending, got ${w1.status}`);
+      assert.strictEqual(w1.dispatched_at, undefined, 'dispatched_at must be removed');
+      assert.strictEqual(w1.dispatched_to, undefined, 'dispatched_to must be removed');
+      assert.strictEqual(w1.failReason, undefined, 'failReason must be removed');
+      assert.strictEqual(w1.failedAt, undefined, 'failedAt must be removed');
+      // Unrelated items stay intact
+      assert.strictEqual(w2.status, shared.WI_STATUS.PENDING);
+      assert.strictEqual(w2.title, 'untouched');
+      // updateWorkItemStatus also called with PENDING (engine's WI updater)
+      assert.strictEqual(h.calls.updateWorkItemStatus.length, 1);
+      assert.strictEqual(h.calls.updateWorkItemStatus[0].status, shared.WI_STATUS.PENDING);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.kill: deletes pid-* files from engine/', () => {
+    const h = setupHarness({
+      dispatch: { pending: [], active: [], completed: [] },
+      pidFiles: {
+        // Use a PID that's almost certainly dead so process.kill throws (harmlessly)
+        'pid-ghost.pid': 99999999,
+      },
+    });
+    try {
+      const pidPath = path.join(h.testDir, 'engine', 'pid-ghost.pid');
+      assert.ok(fs.existsSync(pidPath), 'pre-check: pid file should exist before kill');
+      withCapture(() => h.cli.handleCommand('kill', []));
+      assert.ok(!fs.existsSync(pidPath),
+        'pid file should be unlinked after kill even when the target PID is already dead');
+    } finally { h.restore(); }
+  });
+
+  // ── commands.spawn ───────────────────────────────────────────────────────
+
+  await test('commands.spawn: prints usage when agentId is missing', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Eng' } }, engine: {} },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('spawn', []));
+      assert.ok(cap.logs.some(l => l.includes('Usage:') && l.includes('spawn')),
+        `expected usage message, got: ${cap.logs.join(' | ')}`);
+      assert.strictEqual(h.calls.spawnAgent.length, 0, 'spawnAgent must not be called');
+      // No dispatch added
+      assert.deepStrictEqual(h.readDispatch().pending, []);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.spawn: prints usage when prompt is missing (agent only)', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Eng' } }, engine: {} },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('spawn', ['dallas']));
+      assert.ok(cap.logs.some(l => l.includes('Usage:')),
+        'usage should be printed when prompt is empty');
+      assert.strictEqual(h.calls.spawnAgent.length, 0);
+      assert.deepStrictEqual(h.readDispatch().pending, []);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.spawn: rejects unknown agent with available-list hint', () => {
+    const h = setupHarness({
+      config: {
+        projects: [],
+        agents: {
+          dallas: { name: 'Dallas', role: 'Eng' },
+          ripley: { name: 'Ripley', role: 'QA' },
+        },
+        engine: {},
+      },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('spawn', ['nobody', 'do a thing']));
+      const allLogs = cap.logs.join(' | ');
+      assert.ok(/Unknown agent: nobody/.test(allLogs),
+        `expected "Unknown agent: nobody" in logs, got: ${allLogs}`);
+      assert.ok(allLogs.includes('dallas') && allLogs.includes('ripley'),
+        'should list available agents');
+      assert.strictEqual(h.calls.spawnAgent.length, 0);
+      assert.deepStrictEqual(h.readDispatch().pending, []);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.spawn: happy path queues dispatch with type=manual and invokes spawnAgent', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } }, engine: {} },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('spawn', ['dallas', 'fix', 'the', 'thing']));
+      assert.strictEqual(h.calls.spawnAgent.length, 1,
+        'spawnAgent should be invoked exactly once');
+      const call = h.calls.spawnAgent[0];
+      assert.strictEqual(call.item.agent, 'dallas');
+      assert.strictEqual(call.item.agentName, 'Dallas');
+      assert.strictEqual(call.item.agentRole, 'Engineer');
+      assert.strictEqual(call.item.type, 'manual');
+      assert.strictEqual(call.item.prompt, 'fix the thing',
+        'prompt must be space-joined from promptParts');
+      // Dispatch id should exist on the item
+      assert.ok(call.item.id, 'spawned item must carry a dispatch id');
+      // Task is truncated to 100 chars — here prompt is short so it matches verbatim
+      assert.strictEqual(call.item.task, 'fix the thing');
+    } finally { h.restore(); }
+  });
+
+  await test('commands.spawn: truncates task preview to 100 chars (dispatch UX guarantee)', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } }, engine: {} },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const longWord = 'x'.repeat(250);
+      withCapture(() => h.cli.handleCommand('spawn', ['dallas', longWord]));
+      assert.strictEqual(h.calls.spawnAgent.length, 1);
+      const item = h.calls.spawnAgent[0].item;
+      assert.strictEqual(item.task.length, 100, 'task preview is capped at 100 chars');
+      assert.strictEqual(item.prompt.length, 250, 'full prompt is preserved');
+    } finally { h.restore(); }
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
