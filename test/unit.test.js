@@ -21678,8 +21678,11 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'Original PR-100 should still be tracked');
-      assert.ok(!ids.includes('PR-999'), 'Duplicate PR-999 on same branch should NOT be added');
+      // mutateJsonFileLocked runs normalizePrRecords which canonicalizes PR-100 → github:org/repo#100
+      const canonicalId100 = testShared.getCanonicalPrId(null, { id: 'PR-100', prNumber: 100, url: 'https://github.com/org/repo/pull/100' }, 'https://github.com/org/repo/pull/100');
+      const canonicalId999 = testShared.getCanonicalPrId(null, '999', 'https://github.com/org/repo/pull/999');
+      assert.ok(ids.includes(canonicalId100), 'Original PR-100 (canonicalized) should still be tracked');
+      assert.ok(!ids.includes(canonicalId999), 'Duplicate PR-999 on same branch should NOT be added');
       assert.strictEqual(result.length, 1, 'Should have exactly 1 PR (the original)');
     } finally { restore(); }
   });
@@ -21714,8 +21717,11 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'Abandoned PR-100 should still be tracked');
-      assert.ok(ids.includes('PR-999'), 'New PR-999 should be added because existing PR is abandoned');
+      // mutateJsonFileLocked runs normalizePrRecords which canonicalizes IDs using the URL
+      const canonicalId100 = testShared.getCanonicalPrId(null, { id: 'PR-100', prNumber: 100, url: 'https://github.com/org/repo/pull/100' }, 'https://github.com/org/repo/pull/100');
+      const canonicalId999 = testShared.getCanonicalPrId(null, '999', 'https://github.com/org/repo/pull/999');
+      assert.ok(ids.includes(canonicalId100), 'Abandoned PR-100 (canonicalized) should still be tracked');
+      assert.ok(ids.includes(canonicalId999), 'New PR-999 should be added because existing PR is abandoned');
       assert.strictEqual(result.length, 2, 'Should have 2 PRs');
     } finally { restore(); }
   });
