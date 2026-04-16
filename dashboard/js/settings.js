@@ -1,14 +1,18 @@
 // settings.js — Settings panel functions extracted from dashboard.html
 
+let _settingsData = null;
+
 async function openSettings() {
   document.getElementById('modal-title').textContent = 'Settings';
   document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
   document.getElementById('modal').classList.add('open');
 
+  _settingsData = null;
   let data;
   try {
     const res = await fetch('/api/settings');
     data = await res.json();
+    _settingsData = data;
   } catch (e) { showToast('cmd-toast', 'Failed to load settings: ' + e.message, false); return; }
 
   const e = data.engine || {};
@@ -56,8 +60,8 @@ async function openSettings() {
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      settingsField('PR Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~6 min at default tick rate)') +
-      settingsField('PR Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
+      settingsField('PR Status Poll Frequency', 'set-prPollStatusEvery', e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
+      settingsField('PR Comments Poll Frequency', 'set-prPollCommentsEvery', e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
@@ -258,8 +262,8 @@ async function saveSettings() {
       autoCompletePrs: document.getElementById('set-autoCompletePrs').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,
-      adoPollStatusEvery: document.getElementById('set-adoPollStatusEvery').value,
-      adoPollCommentsEvery: document.getElementById('set-adoPollCommentsEvery').value,
+      prPollStatusEvery: document.getElementById('set-prPollStatusEvery').value,
+      prPollCommentsEvery: document.getElementById('set-prPollCommentsEvery').value,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
@@ -305,7 +309,8 @@ async function saveSettings() {
       agentsPayload[id][field] = el.value;
     });
 
-    const projectsPayload = (data.projects || []).map(function(p) {
+    const currentProjects = (_settingsData && Array.isArray(_settingsData.projects)) ? _settingsData.projects : [];
+    const projectsPayload = currentProjects.map(function(p) {
       return {
         name: p.name,
         workSources: {

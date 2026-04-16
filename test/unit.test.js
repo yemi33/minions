@@ -969,6 +969,65 @@ async function testQueriesCore() {
     assert.ok(typeof config === 'object');
   });
 
+  await test('getConfig one-time migrates deprecated adoPoll keys to prPoll keys on disk', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const configPath = path.join(testDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({
+        projects: [],
+        agents: {},
+        engine: { adoPollStatusEvery: 9, adoPollCommentsEvery: 4 }
+      }, null, 2));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      const config = freshQueries.getConfig();
+      assert.strictEqual(config.engine.prPollStatusEvery, 9);
+      assert.strictEqual(config.engine.prPollCommentsEvery, 4);
+      assert.ok(!('adoPollStatusEvery' in config.engine), 'returned config should not expose deprecated adoPollStatusEvery');
+      assert.ok(!('adoPollCommentsEvery' in config.engine), 'returned config should not expose deprecated adoPollCommentsEvery');
+
+      const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      assert.strictEqual(onDisk.engine.prPollStatusEvery, 9);
+      assert.strictEqual(onDisk.engine.prPollCommentsEvery, 4);
+      assert.ok(!('adoPollStatusEvery' in onDisk.engine), 'config.json should be rewritten without deprecated adoPollStatusEvery');
+      assert.ok(!('adoPollCommentsEvery' in onDisk.engine), 'config.json should be rewritten without deprecated adoPollCommentsEvery');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getConfig migration preserves explicit prPoll keys over deprecated adoPoll values', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const configPath = path.join(testDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify({
+        projects: [],
+        agents: {},
+        engine: {
+          prPollStatusEvery: 12,
+          prPollCommentsEvery: 15,
+          adoPollStatusEvery: 3,
+          adoPollCommentsEvery: 5
+        }
+      }, null, 2));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      const config = freshQueries.getConfig();
+      assert.strictEqual(config.engine.prPollStatusEvery, 12);
+      assert.strictEqual(config.engine.prPollCommentsEvery, 15);
+
+      const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      assert.strictEqual(onDisk.engine.prPollStatusEvery, 12);
+      assert.strictEqual(onDisk.engine.prPollCommentsEvery, 15);
+      assert.ok(!('adoPollStatusEvery' in onDisk.engine), 'deprecated adoPollStatusEvery should be removed after migration');
+      assert.ok(!('adoPollCommentsEvery' in onDisk.engine), 'deprecated adoPollCommentsEvery should be removed after migration');
+    } finally {
+      restore();
+    }
+  });
+
   await test('getControl returns object with state', () => {
     const control = queries.getControl();
     assert.ok(typeof control === 'object');

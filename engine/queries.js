@@ -9,7 +9,7 @@ const path = require('path');
 const os = require('os');
 const shared = require('./shared');
 
-const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
+const { safeRead, safeReadDir, safeJson, safeWrite, getProjects, mutateJsonFileLocked,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
   WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, ENGINE_DEFAULTS } = shared;
 
@@ -99,7 +99,49 @@ function timeSince(ms) {
 
 // ── Core State Readers ──────────────────────────────────────────────────────
 
+let _configPollKeyMigrationChecked = false;
+
+function migrateDeprecatedConfigPollKeysOnce() {
+  if (_configPollKeyMigrationChecked) return;
+  const initial = safeJson(CONFIG_PATH);
+  if (!initial || typeof initial !== 'object' || Array.isArray(initial)) {
+    _configPollKeyMigrationChecked = true;
+    return;
+  }
+  const engine = initial.engine;
+  if (!engine || typeof engine !== 'object' || Array.isArray(engine)) {
+    _configPollKeyMigrationChecked = true;
+    return;
+  }
+  const hasOldStatus = engine.adoPollStatusEvery !== undefined;
+  const hasOldComments = engine.adoPollCommentsEvery !== undefined;
+  if (!hasOldStatus && !hasOldComments) {
+    _configPollKeyMigrationChecked = true;
+    return;
+  }
+  try {
+    mutateJsonFileLocked(CONFIG_PATH, (config) => {
+      if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+      const nextEngine = config.engine;
+      if (!nextEngine || typeof nextEngine !== 'object' || Array.isArray(nextEngine)) return config;
+      if (nextEngine.prPollStatusEvery === undefined && nextEngine.adoPollStatusEvery !== undefined) {
+        nextEngine.prPollStatusEvery = nextEngine.adoPollStatusEvery;
+      }
+      if (nextEngine.prPollCommentsEvery === undefined && nextEngine.adoPollCommentsEvery !== undefined) {
+        nextEngine.prPollCommentsEvery = nextEngine.adoPollCommentsEvery;
+      }
+      delete nextEngine.adoPollStatusEvery;
+      delete nextEngine.adoPollCommentsEvery;
+      return config;
+    });
+    _configPollKeyMigrationChecked = true;
+  } catch (e) {
+    console.warn('[config] one-time prPoll migration failed:', e.message);
+  }
+}
+
 function getConfig() {
+  migrateDeprecatedConfigPollKeysOnce();
   return safeJson(CONFIG_PATH) || {};
 }
 

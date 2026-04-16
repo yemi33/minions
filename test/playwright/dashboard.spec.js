@@ -987,6 +987,28 @@ test.describe('Settings', () => {
     }
     await page.keyboard.press('Escape');
   });
+
+  test('settings save succeeds without data-is-not-defined error', async ({ page }) => {
+    const pageErrors = [];
+    const consoleErrors = [];
+    page.on('pageerror', err => pageErrors.push(String(err)));
+    page.on('console', msg => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+
+    await load(page);
+    const settingsBtn = page.locator('button[onclick*="openSettings"], button:has-text("Settings")').first();
+    await settingsBtn.click();
+    await page.waitForSelector('#modal-body:visible', { timeout: 3000 });
+
+    const saveBtn = page.locator('#modal-settings-save').first();
+    await expect(saveBtn).toBeVisible();
+    await saveBtn.click();
+
+    await expect(page.locator('#settings-status')).toContainText('Saved', { timeout: 5000 });
+    expect(pageErrors.some(msg => msg.includes('data is not defined'))).toBeFalsy();
+    expect(consoleErrors.some(msg => msg.includes('data is not defined'))).toBeFalsy();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

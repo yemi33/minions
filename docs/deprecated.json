@@ -14,5 +14,13 @@
     "reason": "Redundant with evalLoop; evalLoop is the single gate for the review+fix cycle",
     "locations": ["engine/shared.js ENGINE_DEFAULTS.autoReview", "engine.js discoverFromPrs autoReview variable"],
     "cleanup": "Removed from ENGINE_DEFAULTS, removed autoReview variable from engine.js, replaced with reviewEnabled = evalLoopEnabled && pollEnabled"
+  },
+  {
+    "id": "ado-poll-frequency-keys",
+    "summary": "adoPollStatusEvery and adoPollCommentsEvery renamed to prPollStatusEvery and prPollCommentsEvery",
+    "deprecated": "2026-04-16",
+    "reason": "These cadence settings gate both ADO and GitHub PR polling, so the ADO-prefixed names are misleading.",
+    "locations": ["engine.js read-side fallback from config.engine.adoPollStatusEvery/adoPollCommentsEvery", "dashboard.js handleSettingsRead/handleSettingsUpdate alias fallback for old keys"],
+    "cleanup": "Remove the adoPoll* alias fallback reads after existing configs have been migrated to prPollStatusEvery/prPollCommentsEvery."
   }
 ]

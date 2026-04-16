@@ -3226,13 +3226,19 @@ async function tickInner() {
 
   const adoPollEnabled = config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled;
   const ghPollEnabled = config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled;
-  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || ENGINE_DEFAULTS.adoPollStatusEvery);
-  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || ENGINE_DEFAULTS.adoPollCommentsEvery);
+  const prPollStatusEvery = Math.max(
+    1,
+    Number(config.engine?.prPollStatusEvery ?? config.engine?.adoPollStatusEvery) || ENGINE_DEFAULTS.prPollStatusEvery
+  );
+  const prPollCommentsEvery = Math.max(
+    1,
+    Number(config.engine?.prPollCommentsEvery ?? config.engine?.adoPollCommentsEvery) || ENGINE_DEFAULTS.prPollCommentsEvery
+  );
 
-  // 2.6. Poll PR status: build, review, merge (every adoPollStatusEvery ticks, default ~6 minutes)
+  // 2.6. Poll PR status: build, review, merge (every prPollStatusEvery ticks, default ~12 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
   // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
-  if (tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()) {
+  if (tickCount % prPollStatusEvery === 0 || needsAdoPollRetry()) {
     // Build promise array — enabled+unthrottled polls run concurrently via Promise.allSettled
     const statusPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
@@ -3265,8 +3271,8 @@ async function tickInner() {
     } catch (err) { log('warn', `Plan completion check error: ${err?.message || err}`); }
   }
 
-  // 2.7. Poll PR threads for human comments (every adoPollCommentsEvery ticks, default ~12 minutes)
-  if (tickCount % adoPollCommentsEvery === 0) {
+  // 2.7. Poll PR threads for human comments (every prPollCommentsEvery ticks, default ~12 minutes)
+  if (tickCount % prPollCommentsEvery === 0) {
     // Build promise array — enabled+unthrottled comment polls run concurrently via Promise.allSettled
     const commentPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
