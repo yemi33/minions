@@ -428,6 +428,7 @@ async function _processQaMessage(message, selection, opts) {
         selection: selection,
         filePath: capturedFilePath || null,
         model: window._lastStatus?.autoMode?.ccModel || undefined,
+        contentHash: capturedDocContext.content ? capturedDocContext.content.length + ':' + capturedDocContext.content.charCodeAt(0) + ':' + capturedDocContext.content.charCodeAt(capturedDocContext.content.length - 1) : undefined,
       }),
     });
     const data = await res.json();

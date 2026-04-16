@@ -852,16 +852,18 @@ async function executeCCActions(actions) {
 // Session store for doc modals — keyed by filePath or title, persisted to disk
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
+const DOC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 604800000 — 7 days
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
 // Load persisted doc sessions on startup
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
+    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      if (s.turnCount < CC_SESSION_MAX_TURNS) {
-        docSessions.set(key, s);
-      }
+      if (s.turnCount >= CC_SESSION_MAX_TURNS) continue;
+      if (s.lastActiveAt && now - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) continue;
+      docSessions.set(key, s);
     }
   }
 } catch { /* optional */ }
@@ -870,6 +872,25 @@ function persistDocSessions() {
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
   safeWrite(DOC_SESSIONS_PATH, obj);
+}
+
+// Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
+let _persistDocSessionsTimer = null;
+function schedulePersistDocSessions() {
+  if (_persistDocSessionsTimer) clearTimeout(_persistDocSessionsTimer);
+  _persistDocSessionsTimer = setTimeout(() => {
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }, 5000); // 5s debounce — rapid turns produce one write per burst
+}
+
+/** Flush any pending debounced write immediately (call on shutdown). */
+function flushPendingDocSessions() {
+  if (_persistDocSessionsTimer) {
+    clearTimeout(_persistDocSessionsTimer);
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }
 }
 
 // Resolve session from any store (CC global or doc-specific)
@@ -881,6 +902,11 @@ function resolveSession(store, key) {
   const s = docSessions.get(key);
   if (!s) return null;
   if (s.turnCount >= CC_SESSION_MAX_TURNS) {
+    docSessions.delete(key);
+    persistDocSessions();
+    return null;
+  }
+  if (s.lastActiveAt && Date.now() - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -909,7 +935,7 @@ function updateSession(store, key, sessionId, existing) {
       turnCount: (existing && prev ? prev.turnCount : 0) + 1,
       _docHash: prev?._docHash || null,
     });
-    persistDocSessions();
+    schedulePersistDocSessions();
   }
 }
 
@@ -972,7 +998,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
       safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     } else if (sessionKey) {
       docSessions.delete(sessionKey);
-      persistDocSessions();
+      schedulePersistDocSessions();
     }
   }
 
@@ -1005,6 +1031,12 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     updateSession(store, sessionKey, result.sessionId, false);
   }
   return result;
+}
+
+// Lightweight content fingerprint — same algorithm used browser-side (no crypto needed)
+function contentFingerprint(str) {
+  if (!str) return '';
+  return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(str.length - 1);
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
@@ -1047,7 +1079,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // One-shot call — discard the session ccCall just stored so it cannot
     // bleed into future interactions under the same key.
     docSessions.delete(sessionKey);
-    persistDocSessions();
+    schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
@@ -3221,7 +3253,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         try { shared.sanitizePath(body.filePath, MINIONS_DIR); } catch { return jsonReply(res, 400, { error: 'path must be under minions directory' }); }
         fullPath = path.resolve(MINIONS_DIR, body.filePath);
         const diskContent = safeRead(fullPath);
-        if (diskContent !== null) currentContent = diskContent;
+        if (diskContent !== null) {
+          // If client sent a contentHash and it matches disk, skip replacement — client copy is fresh
+          if (body.contentHash && contentFingerprint(diskContent) === body.contentHash) {
+            // body.document is already current — no override needed
+          } else {
+            currentContent = diskContent;
+          }
+        }
       }
 
       const { answer, content, actions } = await ccDocCall({
@@ -4741,7 +4780,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat
-    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?', handler: handleDocChat },
+    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
 
     // Inbox
     { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },
@@ -5102,3 +5141,8 @@ server.on('error', e => {
   }
   process.exit(1);
 });
+
+// ── Graceful shutdown: flush debounced writes ──────────────────────────────
+server.on('close', () => flushPendingDocSessions());
+process.on('SIGTERM', () => { flushPendingDocSessions(); process.exit(0); });
+process.on('SIGINT', () => { flushPendingDocSessions(); process.exit(0); });

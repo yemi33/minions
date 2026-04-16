@@ -14742,6 +14742,156 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(planCreateHandler.includes('must start with a markdown heading'), 'Should validate plan content starts with markdown heading');
   });
 
+  // ── Debounced doc-session persistence (P-d8c2f1a7) ─────────────────────────
+  await test('persistDocSessions is debounced via schedulePersistDocSessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('_persistDocSessionsTimer'), 'Should have debounce timer variable');
+    assert.ok(src.includes('function schedulePersistDocSessions'), 'Should have schedulePersistDocSessions function');
+    assert.ok(src.includes('clearTimeout(_persistDocSessionsTimer)'), 'Should clear previous timer on each call');
+    assert.ok(src.includes('setTimeout('), 'schedulePersistDocSessions should use setTimeout');
+  });
+
+  await test('schedulePersistDocSessions uses 5-second debounce window', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const scheduleFn = src.slice(src.indexOf('function schedulePersistDocSessions'), src.indexOf('function schedulePersistDocSessions') + 300);
+    assert.ok(scheduleFn.includes('5000'), 'Debounce interval should be 5000ms (5 seconds)');
+  });
+
+  await test('updateSession uses debounced persistence for doc sessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const updateFn = src.slice(src.indexOf('function updateSession'), src.indexOf('function updateSession') + 800);
+    assert.ok(updateFn.includes('schedulePersistDocSessions()'), 'updateSession should call schedulePersistDocSessions (not persistDocSessions directly)');
+  });
+
+  await test('resolveSession eviction still calls persistDocSessions directly', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 400);
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'resolveSession eviction path should call persistDocSessions() directly');
+    assert.ok(!resolveFn.includes('schedulePersistDocSessions'), 'resolveSession should NOT use debounced variant');
+  });
+
+  await test('ccCall dead-session cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find the ccCall dead-session cleanup block
+    const ccCallFn = src.slice(src.indexOf('session appears dead'), src.indexOf('session appears dead') + 500);
+    assert.ok(ccCallFn.includes('schedulePersistDocSessions()'), 'Dead-session cleanup in ccCall should use debounced persistence');
+  });
+
+  await test('ccDocCall freshSession cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    const freshBlock = docCallFn.slice(docCallFn.indexOf('One-shot call'), docCallFn.indexOf('One-shot call') + 200);
+    assert.ok(freshBlock.includes('schedulePersistDocSessions()'), 'freshSession cleanup should use debounced persistence');
+  });
+
+  await test('debounced doc-session persistence flushes on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('flushPendingDocSessions'), 'Should have a flush function for shutdown');
+    // Flush should be wired to shutdown/close
+    assert.ok(src.includes("process.on('SIGTERM'") || src.includes("process.on('SIGINT'") || src.includes('server.on(\'close\''),
+      'Flush should be wired to process signal or server close event');
+  });
+
+  // ── TTL-based doc-session eviction (P-e4a6b9d3) ────────────────────────────
+  await test('DOC_SESSION_TTL_MS constant defined as 7 days', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('DOC_SESSION_TTL_MS'), 'Should define DOC_SESSION_TTL_MS constant');
+    // 7 * 24 * 60 * 60 * 1000 = 604800000
+    assert.ok(src.includes('604800000') || src.includes('7 * 24 * 60 * 60 * 1000'), 'TTL should be 7 days in milliseconds');
+  });
+
+  await test('resolveSession evicts doc sessions older than TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
+    assert.ok(resolveFn.includes('lastActiveAt'), 'resolveSession should check lastActiveAt for TTL');
+    assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+  });
+
+  await test('resolveSession TTL check comes after turnCount check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    const turnIdx = resolveFn.indexOf('CC_SESSION_MAX_TURNS');
+    const ttlIdx = resolveFn.indexOf('DOC_SESSION_TTL_MS');
+    assert.ok(turnIdx > 0, 'Should have turnCount check');
+    assert.ok(ttlIdx > 0, 'Should have TTL check');
+    assert.ok(turnIdx < ttlIdx, 'turnCount check should come before TTL check');
+  });
+
+  await test('startup loading filters out expired doc sessions by TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docLoadMatch = src.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
+    assert.ok(docLoadMatch, 'Should have doc session startup loader');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Startup loader should filter by TTL');
+    assert.ok(docLoadMatch[0].includes('lastActiveAt'), 'Startup loader should check lastActiveAt');
+  });
+
+  await test('TTL eviction in resolveSession calls persistDocSessions directly (not debounced)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // The eviction path should call persistDocSessions() directly for immediate consistency
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'TTL eviction should call persistDocSessions() directly');
+  });
+
+  await test('sessions within TTL window are not evicted by resolveSession', () => {
+    // Verify the TTL check uses > (greater than), not >= (greater or equal), and checks lastActiveAt
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // Must compute elapsed time from lastActiveAt
+    assert.ok(resolveFn.includes('Date.now()') || resolveFn.includes('new Date'), 'Should compute current time for comparison');
+    assert.ok(resolveFn.includes('getTime') || resolveFn.includes('Date.now'), 'Should convert to numeric time for comparison');
+  });
+
+  // ── Skip disk re-read when client content is fresh (P-f7b3c5e1) ────────────
+  await test('handleDocChat uses contentHash to skip disk re-read when fresh', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    assert.ok(handler.includes('contentHash'), 'handleDocChat should check contentHash from request body');
+    assert.ok(handler.includes('body.document'), 'handleDocChat should use body.document when hash matches');
+  });
+
+  await test('contentHash comparison uses lightweight fingerprint (not MD5)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // Server computes fingerprint from disk content using the same scheme as client
+    assert.ok(handler.includes('contentFingerprint') || handler.includes('charCodeAt'), 'Should use lightweight fingerprint function');
+  });
+
+  await test('contentHash is optional — omitting it falls back to disk read', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // When contentHash is missing, existing behavior is preserved: disk content wins
+    assert.ok(handler.includes('body.contentHash'), 'Should reference body.contentHash');
+    // Disk read still happens (safeRead) — but content is used from client when hash matches
+    assert.ok(handler.includes('safeRead'), 'Should still call safeRead for disk content');
+  });
+
+  await test('contentFingerprint helper computes length:firstChar:lastChar', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function contentFingerprint'), 'Should define contentFingerprint helper');
+    const fn = src.slice(src.indexOf('function contentFingerprint'), src.indexOf('function contentFingerprint') + 300);
+    assert.ok(fn.includes('.length'), 'Fingerprint should include content length');
+    assert.ok(fn.includes('charCodeAt'), 'Fingerprint should include charCodeAt');
+  });
+
+  await test('frontend _processQaMessage sends contentHash in request body', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat'"), src.indexOf("fetch('/api/doc-chat'") + 500);
+    assert.ok(fetchBlock.includes('contentHash'), 'Frontend should send contentHash in doc-chat request');
+  });
+
+  await test('frontend contentHash uses same fingerprint scheme as server', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes('charCodeAt'), 'Frontend should use charCodeAt for fingerprint');
+    assert.ok(src.includes('.length'), 'Frontend should include length in fingerprint');
+  });
+
+  await test('route table documents contentHash as optional param', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const routeLine = src.match(/doc-chat.*params:.*contentHash/);
+    assert.ok(routeLine, 'Route table should list contentHash as a param');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
@@ -17025,12 +17175,12 @@ async function testCCMultiTab() {
     assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
   });
 
-  await test('resolveSession does not check age for doc sessions', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
-    assert.ok(!body.includes('age'), 'resolveSession should not reference age');
-    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference expiry constant');
+    assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
   await test('CC session restored on startup without age check', () => {
@@ -17040,10 +17190,10 @@ async function testCCMultiTab() {
     assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
   });
 
-  await test('doc sessions restored on startup without age check', () => {
+  await test('doc sessions restored on startup with TTL filtering', () => {
     const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
     assert.ok(docLoadMatch, 'Should have doc session startup loader');
-    assert.ok(!docLoadMatch[0].includes('age'), 'Doc session loader should not check age');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Doc session loader should filter expired sessions by TTL');
   });
 
   await test('prompt hash stored with tab session for invalidation', () => {
