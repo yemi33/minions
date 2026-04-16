@@ -13,7 +13,7 @@ Repo: {{repo_name}} | Org: {{ado_org}} | ADO Project: {{ado_project}}
 
 ## Your Task
 
-Verify that a set of related changes work correctly together. You must **figure out** how to build, test, and run this specific project — do not assume any particular language, framework, or tooling. Your job is to:
+Verify that a set of related changes work correctly together. You must **figure out** how to build, test, and run this specific project — do not assume any particular language, framework, or tooling. Follow this process:
 
 1. **Set up worktrees** with all PR branches merged
 2. **Understand the project** — read its docs to learn how to build, test, and run it
@@ -43,15 +43,17 @@ For each project worktree, **read its documentation** to understand:
 
 Check these files: `CLAUDE.md`, `README.md`, `package.json`, `Makefile`, `Cargo.toml`, `pyproject.toml`, `build.gradle`, `CMakeLists.txt`, `docker-compose.yml`, `Podfile`, `build.gradle.kts`, `*.xcodeproj`, `*.xcworkspace`, or whatever build system the project uses.
 
+Treat the repository's own docs, scripts, and config as the source of truth for build, test, and run commands. If the repo provides multiple options, choose the standard local verification path it recommends.
+
 **Do not assume any specific platform.** The project could be a web app, mobile app (Android/iOS/React Native/Flutter), backend service, CLI tool, library, monorepo, or anything else. Adapt your verification approach to what the project actually is.
 
 ## Step 3: Build and Test
 
 For each project worktree:
 1. `cd` into the worktree path
-2. Install dependencies using whatever the project requires
-3. Run the build using the project's build system
-4. Run the test suite
+2. Install dependencies using the command or workflow the repo specifies
+3. Run the build using the repo's documented build command
+4. Run the test suite the repo defines for full verification
 5. Record: PASS or FAIL with error output, test counts (passed/failed/skipped)
 
 If a build or test fails, **do NOT fix it** — report the exact error and continue with other projects.
@@ -61,18 +63,13 @@ If a build or test fails, **do NOT fix it** — report the exact error and conti
 Determine if the project has a **runnable application** (web server, API, desktop app, mobile emulator, etc.) by reading its documentation and build config. For mobile apps, check if an emulator/simulator can be launched or if building an APK/IPA is the appropriate verification step.
 
 If found:
-1. Start it **detached from your process** so it survives after you exit. Use the platform-appropriate method:
-   ```bash
-   cd <worktree-path>
-   nohup <start-command> > app-server.log 2>&1 &
-   echo $! > app-server.pid
-   ```
-   On Windows, use `spawn` with `detached: true` and `child.unref()`.
-
-2. Wait a few seconds, then verify it's responding (e.g. `curl -s -o /dev/null -w "%{http_code}" http://localhost:<PORT>`)
-3. Note the URL, port, and PID
+1. Start it **detached from your process** so it survives after you exit.
+   - If the repo docs provide a local run or background-start command, use that.
+   - Otherwise, use the detached-process mechanism that fits the current environment. Do not assume Bash, PowerShell, or any specific shell unless the repo or runtime clearly provides it.
+2. Wait a few seconds, then verify it using the repo's documented smoke test, health check, startup output, or the lightest project-appropriate manual check.
+3. Note the URL, port, process identifier, or equivalent runtime details the repo exposes
 4. Output the exact restart command with **absolute worktree paths**
-5. Include the stop command (e.g. `kill <PID>` or `taskkill /PID <PID> /F` on Windows)
+5. Include the stop command or shutdown procedure that matches how you started it
 
 If the project has no runnable application, skip this step and note that in the guide.
 
@@ -144,11 +141,12 @@ For each project worktree:
 
 ## Working Style
 
-Use subagents only for genuinely parallel, independent tasks (e.g., building separate project worktrees simultaneously). For sequential steps like reading docs, running tests, and writing the report, work directly — do not spawn subagents.
+Use subagents only for genuinely parallel, independent build/test tasks on separate project worktrees. For sequential work (docs → build → test → report), and for starting detached servers, work directly — do not spawn subagents.
 
 ## Rules
 
 - **Read the project docs first** — never assume a build system, language, or framework
+- Treat repo-provided docs, scripts, and config as the source of truth for build/test/run commands
 - Base testing steps on the **acceptance criteria** from each plan item
 - Include **concrete steps** — URLs, buttons to click, inputs to type, expected results
 - Be **transparent** — clearly separate what you verified vs what needs human review

@@ -51,19 +51,13 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## Build & Test (MANDATORY before pushing)
 
-After implementation, verify everything works before pushing:
+Build and test before pushing:
 
-1. **Build** the project using its build system (check CLAUDE.md, package.json, README, Makefile). If the build fails:
-   - Read the error, fix the issue, re-build
-   - If it fails 3 times, report the errors in your findings and stop
-2. **Run the full test suite** using whatever command the project specifies (check CLAUDE.md, agent.md, README, or package.json scripts).
-3. If any tests fail:
-   - Determine if YOUR changes caused the failure
-   - Fix any regressions you introduced
-   - Re-run tests until all pass
-4. If tests were already failing before your changes (pre-existing), note them in the PR description but do NOT block on them
-5. **Run any other checks** the repo defines (linting, type checking, formatting) — read project docs for the full list
-6. Do NOT push code with failing tests or a broken build that you introduced
+1. **Build** the project using its build system (check CLAUDE.md, package.json, README, or Makefile). Retry up to 3 times; if it still fails, report the errors and stop.
+2. **Run the full test suite** using the command the project defines. Fix regressions you introduced and re-run until your changes are green.
+3. If tests were already failing before your changes, note that in the PR description but do not block on pre-existing failures.
+4. **Run any other checks** the repo defines (linting, type checking, formatting).
+5. Do NOT push code with a broken build or failing tests that you introduced.
 
 ## Push & Create PR
 
@@ -83,4 +77,4 @@ Include build/test status and run instructions in the PR description. If the pro
 
 Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Your final message MUST include the PR URL so the engine can track it. Stop immediately after.
 
-**NEVER run `gh pr merge` or any merge command on your own PR.** The engine reviews and merges PRs through a separate review cycle. Self-merging bypasses code review entirely and is prohibited regardless of circumstances.
+Do NOT run `gh pr merge` or any other merge command on your own PR. The engine reviews and merges PRs through a separate review cycle. Self-merging is prohibited.
