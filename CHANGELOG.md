@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1040 (2026-04-16)
+
+### Other
+- Harden CC stream resilience
+
 ## 0.1.1039 (2026-04-16)
 
 ### Features
