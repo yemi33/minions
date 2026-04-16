@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1047 (2026-04-16)
+
+### Fixes
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
 ## 0.1.1039 (2026-04-16)
 
 ### Features
