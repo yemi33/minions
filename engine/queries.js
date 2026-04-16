@@ -630,6 +630,11 @@ let _kbCache = null;
 let _kbCacheTs = 0;
 const KB_CACHE_TTL = 30000; // 30s — KB changes infrequently
 
+function invalidateKnowledgeBaseCache() {
+  _kbCache = null;
+  _kbCacheTs = 0;
+}
+
 function getKnowledgeBaseEntries() {
   const now = Date.now();
   if (_kbCache && (now - _kbCacheTs) < KB_CACHE_TTL) return _kbCache;
@@ -639,23 +644,32 @@ function getKnowledgeBaseEntries() {
     const catDir = path.join(KNOWLEDGE_DIR, cat);
     const files = safeReadDir(catDir).filter(f => f.endsWith('.md'));
     for (const f of files) {
-      const content = safeRead(path.join(catDir, f)) || '';
+      const filePath = path.join(catDir, f);
+      const content = safeRead(filePath) || '';
       const titleMatch = content.match(/^#\s+(.+)/m);
       const title = titleMatch ? titleMatch[1].trim() : f.replace(/\.md$/, '');
       const agentMatch = f.match(/^\d{4}-\d{2}-\d{2}-(\w+)-/);
-      const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})/);
+      const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})/) || content.match(/^date:\s*(\d{4}-\d{2}-\d{2})$/m);
       const sourceMatch = content.match(/^source:\s*(.+)/m);
+      let sortTs = 0;
+      try { sortTs = fs.statSync(filePath).mtimeMs || 0; } catch {}
+      const displayDate = dateMatch ? dateMatch[1] : (sortTs ? new Date(sortTs).toISOString().slice(0, 10) : '');
       entries.push({
         cat, file: f, title,
         agent: agentMatch ? agentMatch[1] : '',
-        date: dateMatch ? dateMatch[1] : '',
+        date: displayDate,
+        sortTs,
         source: sourceMatch ? sourceMatch[1].trim() : '',
         preview: content.slice(0, 200),
         size: content.length,
       });
     }
   }
-  entries.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  entries.sort((a, b) =>
+    (b.sortTs || 0) - (a.sortTs || 0) ||
+    (b.date || '').localeCompare(a.date || '') ||
+    a.title.localeCompare(b.title)
+  );
   _kbCache = entries;
   _kbCacheTs = now;
   return entries;
@@ -1092,6 +1106,7 @@ module.exports = {
   readHeadTail, // exported for testing
   detectInFlightTool, // exported for testing
   resetPrdInfoCache,
+  invalidateKnowledgeBaseCache,
 
   // Core state
   getConfig, getControl, getDispatch, getDispatchQueue, invalidateDispatchCache,

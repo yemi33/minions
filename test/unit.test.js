@@ -7401,8 +7401,12 @@ async function testHumanContributions() {
       'Should derive sortTs from KB file mtime');
     assert.ok(kbSrc.includes('function kbNewestFirst(a, b)'),
       'Should define a shared recency comparator for KB items');
-    assert.ok((kbSrc.match(/items\.sort\(kbNewestFirst\)/g) || []).length >= 3,
-      'Should sort pinned, all, and category tabs by KB recency');
+    assert.ok(kbSrc.includes('function kbPinnedNewestFirst(a, b)'),
+      'Should define a combined pin+recency comparator for non-pinned tabs');
+    assert.ok((kbSrc.match(/items\.sort\(kbNewestFirst\)/g) || []).length >= 1,
+      'Pinned tab should sort by recency');
+    assert.ok((kbSrc.match(/items\.sort\(kbPinnedNewestFirst\)/g) || []).length >= 2,
+      'All and category tabs should sort with pin priority and recency in one pass');
   });
 
   await test('openCreateKbModal function exists', () => {
@@ -10847,6 +10851,15 @@ async function testKbSweepBatching() {
       'KB sweep should report no-op when pinned exclusions leave fewer than 2 entries');
     assert.ok(bgFn.includes('if (manifest.length < 2)'),
       'KB sweep should stop before LLM batching when too few unpinned entries remain');
+  });
+
+  await test('KB sweep reclassification preserves original mtime for newest-first ordering', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('const srcStats = fs.statSync(srcPath);'),
+      'KB reclassification should capture source file timestamps');
+    assert.ok(bgFn.includes('fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);'),
+      'KB reclassification should preserve original timestamps after moving categories');
   });
 }
 

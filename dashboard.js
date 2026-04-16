@@ -2415,9 +2415,12 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         if (!fs.existsSync(srcPath)) continue;
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
         try {
+          const srcStats = fs.statSync(srcPath);
           const content = safeRead(srcPath);
           const updated = content.replace(/^(category:\s*).+$/m, `$1${r.to}`);
-          safeWrite(path.join(destDir, entry.file), updated);
+          const destPath = path.join(destDir, entry.file);
+          safeWrite(destPath, updated);
+          fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);
           safeUnlink(srcPath);
           reclassified++;
         } catch (e) { console.error('kb reclassify:', e.message); }
