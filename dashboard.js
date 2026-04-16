@@ -32,6 +32,24 @@ const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
   MINIONS_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH, PRD_DIR } = queries;
 
+// Startup size guard (#1167): fail fast with a clear error when dispatch.json /
+// cooldowns.json have ballooned past ENGINE_DEFAULTS.maxStateFileBytes. Without
+// this, V8 silently OOMs on JSON.parse(~1 GB) and the operator has no hint as to
+// which file is bloated. The thrown error names the file and directs to
+// engine/contexts/ where sidecars live.
+(() => {
+  const stateFiles = [
+    DISPATCH_PATH,
+    path.join(ENGINE_DIR, 'cooldowns.json'),
+  ];
+  for (const fp of stateFiles) {
+    try { shared.assertStateFileSize(fp); } catch (e) {
+      console.error('\n[dashboard] STARTUP ABORTED — ' + e.message + '\n');
+      process.exit(78); // 78 = configuration error; consistent with spawn-agent.js
+    }
+  }
+})();
+
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);

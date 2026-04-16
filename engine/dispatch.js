@@ -11,6 +11,7 @@ const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
+  sidecarDispatchPrompt, deleteDispatchPromptSidecar,
   WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
@@ -24,13 +25,34 @@ function recovery() { if (!_recovery) _recovery = require('./recovery'); return 
 
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 
+/**
+ * Sweep pending + active dispatch entries and move any oversized prompts to
+ * sidecar files. Keeps dispatch.json from bloating to hundreds of MB when
+ * fix-type prompts inline PR diffs / build logs / coalesced feedback (#1167).
+ * Safe to call on every mutation: small prompts are untouched.
+ */
+function _sidecarOversizedPrompts(dispatch) {
+  const threshold = ENGINE_DEFAULTS.maxDispatchPromptBytes;
+  const lists = [dispatch.pending, dispatch.active];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (item && typeof item.prompt === 'string') sidecarDispatchPrompt(item, threshold);
+    }
+  }
+}
+
 function mutateDispatch(mutator) {
   const defaultDispatch = { pending: [], active: [], completed: [] };
   const result = mutateJsonFileLocked(DISPATCH_PATH, (dispatch) => {
     dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
     dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
     dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
-    return mutator(dispatch) ?? dispatch;
+    const next = mutator(dispatch) ?? dispatch;
+    // Prompt-size guard: runs on every write so a single bad item cannot bloat
+    // dispatch.json. Sidecars live in engine/contexts/<id>.md.
+    _sidecarOversizedPrompts(next);
+    return next;
   }, { defaultValue: defaultDispatch });
   // Invalidate the read cache so next getDispatch() sees fresh data
   try { require('./queries').invalidateDispatchCache(); } catch {}
@@ -116,7 +138,12 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
     if (failureClass && result === DISPATCH_RESULT.ERROR) item.failureClass = failureClass;
+    // Drop prompt (and sidecar file, if any) — completed entries don't need
+    // replayable content and it would accumulate forever (#1167).
+    try { deleteDispatchPromptSidecar(item); } catch { /* best-effort */ }
     delete item.prompt;
+    delete item._promptFile;
+    delete item._promptBytes;
     if (dispatch.completed.length >= 100) {
       dispatch.completed = dispatch.completed.slice(-100);
     }

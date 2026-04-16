@@ -22,6 +22,8 @@ engine/kb-swept.json
 engine/watches.json
 # All transient temp files (prompts, pids, logs) go in engine/tmp/
 engine/tmp/
+# Large-prompt sidecar files referenced by dispatch.json entries (#1167)
+engine/contexts/
 # Backup/lock files from safeWrite atomic writes
 engine/*.bak
 engine/*.backup

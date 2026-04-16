@@ -7225,6 +7225,259 @@ async function testWakeupCoalescing() {
     // Cleanup
     cooldown.dispatchCooldowns.delete(testKey);
   });
+
+  // ── Per-entry size cap (#1167) ──
+  // Rationale: count-capping alone (20 entries) is insufficient — a single
+  // huge PR comment blob (50+ MB) would still produce a 1 GB cooldowns.json
+  // at the cap. Each string field must be individually truncated.
+
+  await test('ENGINE_DEFAULTS defines maxPendingContextEntryBytes (#1167)', () => {
+    assert.ok(sharedSrc.includes('maxPendingContextEntryBytes'),
+      'ENGINE_DEFAULTS should define per-entry byte cap for pendingContexts');
+  });
+
+  await test('setCooldownWithContext truncates oversized string fields (#1167)', () => {
+    const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown.js'));
+    const testKey = `__test_entrycap_${Date.now()}`;
+    const huge = 'x'.repeat(1024 * 1024); // 1 MB — above 256 KB default cap
+    cooldown.setCooldownWithContext(testKey, { feedbackContent: huge, timestamp: 'now' });
+    const entry = cooldown.dispatchCooldowns.get(testKey);
+    assert.ok(entry, 'Entry should exist');
+    assert.strictEqual(entry.pendingContexts.length, 1, 'One context should be stored');
+    const stored = entry.pendingContexts[0];
+    // Must be truncated — stored size clearly under the 1 MB input
+    assert.ok(
+      Buffer.byteLength(stored.feedbackContent, 'utf8') < Buffer.byteLength(huge, 'utf8'),
+      'feedbackContent should be truncated from 1 MB to under the cap');
+    assert.ok(stored.feedbackContent.includes('truncated'),
+      'Truncated context should include a marker indicating what happened');
+    assert.strictEqual(stored.timestamp, 'now', 'Non-string fields should be preserved');
+    cooldown.dispatchCooldowns.delete(testKey);
+  });
+}
+
+// ─── Dispatch Prompt Sidecar (#1167) ─────────────────────────────────────────
+// Fix-type prompts inlined hundreds-of-MB PR diffs / build logs into
+// dispatch.json and crashed the dashboard at JSON.parse(~1 GB). The sidecar
+// helpers write oversized prompts to engine/contexts/<id>.md and keep only a
+// short stub + _promptFile ref in dispatch.json. Guards run on every mutation
+// so a single runaway call cannot bloat the queue.
+
+async function testDispatchPromptSidecar() {
+  console.log('\n── dispatch.json prompt sidecar (#1167) ──');
+
+  await test('ENGINE_DEFAULTS defines maxDispatchPromptBytes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('maxDispatchPromptBytes'),
+      'ENGINE_DEFAULTS should define the dispatch prompt size threshold');
+  });
+
+  await test('ENGINE_DEFAULTS defines maxStateFileBytes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('maxStateFileBytes'),
+      'ENGINE_DEFAULTS should define the state-file size ceiling');
+  });
+
+  await test('shared exports sidecar helpers', () => {
+    assert.strictEqual(typeof shared.sidecarDispatchPrompt, 'function',
+      'sidecarDispatchPrompt should be exported');
+    assert.strictEqual(typeof shared.resolveDispatchPrompt, 'function',
+      'resolveDispatchPrompt should be exported');
+    assert.strictEqual(typeof shared.deleteDispatchPromptSidecar, 'function',
+      'deleteDispatchPromptSidecar should be exported');
+    assert.strictEqual(typeof shared.assertStateFileSize, 'function',
+      'assertStateFileSize should be exported');
+  });
+
+  await test('sidecarDispatchPrompt leaves small prompts alone', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Bust caches so helpers resolve against the test MINIONS_DIR
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const item = { id: 'test-small-1', prompt: 'hello world' };
+      const didSidecar = freshShared.sidecarDispatchPrompt(item, 1024 * 1024);
+      assert.strictEqual(didSidecar, false, 'Small prompt should not be sidecarred');
+      assert.strictEqual(item.prompt, 'hello world', 'Prompt should be untouched');
+      assert.ok(!item._promptFile, 'No _promptFile marker should be added');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('sidecarDispatchPrompt writes oversized prompt to engine/contexts/<id>.md', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const huge = 'A'.repeat(2 * 1024 * 1024); // 2 MB — above 1 MB default threshold
+      const item = { id: 'test-big-1', prompt: huge };
+      const didSidecar = freshShared.sidecarDispatchPrompt(item);
+      assert.strictEqual(didSidecar, true, 'Oversized prompt should be sidecarred');
+      assert.ok(item._promptFile, '_promptFile reference should be set');
+      assert.ok(item.prompt.length < 1000, 'Inlined prompt should be replaced with a short stub');
+      assert.ok(item.prompt.includes(item._promptFile),
+        'Stub prompt should name the sidecar path so humans inspecting dispatch.json see where the content went');
+      // File should exist and match original content
+      const sidecarPath = freshShared.dispatchPromptSidecarPath(item.id);
+      assert.ok(fs.existsSync(sidecarPath), 'Sidecar file should exist on disk');
+      assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), huge,
+        'Sidecar must preserve the full original prompt byte-for-byte');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('resolveDispatchPrompt returns sidecar contents when _promptFile is set', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const huge = 'B'.repeat(1.5 * 1024 * 1024);
+      const item = { id: 'test-resolve-1', prompt: huge };
+      freshShared.sidecarDispatchPrompt(item);
+      const resolved = freshShared.resolveDispatchPrompt(item);
+      assert.strictEqual(resolved, huge,
+        'resolveDispatchPrompt must return the full prompt from the sidecar, not the stub');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('resolveDispatchPrompt returns inline prompt when no sidecar is set', () => {
+    const item = { id: 'inline-1', prompt: 'just a short prompt' };
+    assert.strictEqual(shared.resolveDispatchPrompt(item), 'just a short prompt');
+  });
+
+  await test('deleteDispatchPromptSidecar cleans up the sidecar file', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const item = { id: 'test-delete-1', prompt: 'C'.repeat(2 * 1024 * 1024) };
+      freshShared.sidecarDispatchPrompt(item);
+      const sidecarPath = freshShared.dispatchPromptSidecarPath(item.id);
+      assert.ok(fs.existsSync(sidecarPath), 'Sidecar should exist after sidecarDispatchPrompt');
+      freshShared.deleteDispatchPromptSidecar(item);
+      assert.ok(!fs.existsSync(sidecarPath), 'Sidecar should be removed after deleteDispatchPromptSidecar');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('mutateDispatch sidecars oversized pending prompts automatically', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const huge = 'D'.repeat(2 * 1024 * 1024);
+      testDispatch.mutateDispatch(dp => {
+        dp.pending.push({ id: 'oversized-1', agent: 'test', type: 'fix', prompt: huge });
+        return dp;
+      });
+      const onDisk = testQueries.getDispatch();
+      const found = onDisk.pending.find(p => p.id === 'oversized-1');
+      assert.ok(found, 'Item should be present in pending');
+      assert.ok(found._promptFile, 'Oversized prompt must be sidecarred automatically');
+      assert.ok(found.prompt.length < 1000,
+        'dispatch.json must not contain the full oversized prompt');
+      // Sanity: dispatch.json size stays reasonable
+      const dispatchBytes = fs.statSync(require('../engine/queries').DISPATCH_PATH).size;
+      assert.ok(dispatchBytes < 100 * 1024,
+        `dispatch.json should stay small after sidecaring (got ${dispatchBytes} bytes)`);
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('completeDispatch deletes the prompt sidecar', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const huge = 'E'.repeat(2 * 1024 * 1024);
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({ id: 'complete-test-1', agent: 'test', type: 'fix', prompt: huge, meta: {} });
+        return dp;
+      });
+      const sidecar = freshShared.dispatchPromptSidecarPath('complete-test-1');
+      assert.ok(fs.existsSync(sidecar), 'Sidecar should exist after mutateDispatch auto-sidecar');
+      testDispatch.completeDispatch('complete-test-1', shared.DISPATCH_RESULT.SUCCESS, '', '', { processWorkItemFailure: false });
+      assert.ok(!fs.existsSync(sidecar),
+        'completeDispatch should delete the sidecar — otherwise engine/contexts/ grows forever');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('assertStateFileSize throws when file exceeds limit', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'huge.json');
+    // 2 MB file; check with 1 MB limit.
+    fs.writeFileSync(fp, Buffer.alloc(2 * 1024 * 1024, 'x'));
+    assert.throws(() => shared.assertStateFileSize(fp, 1 * 1024 * 1024),
+      /State file too large/,
+      'assertStateFileSize must throw a clear error naming the file');
+    // Under-limit file should not throw
+    const small = path.join(dir, 'small.json');
+    fs.writeFileSync(small, '{}');
+    assert.doesNotThrow(() => shared.assertStateFileSize(small));
+    // Missing file should not throw
+    assert.doesNotThrow(() => shared.assertStateFileSize(path.join(dir, 'missing.json')));
+  });
+
+  await test('dashboard.js guards startup with assertStateFileSize', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('assertStateFileSize'),
+      'dashboard.js must call assertStateFileSize at startup (#1167)');
+  });
+
+  await test('engine/cli.js start guards with assertStateFileSize', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('assertStateFileSize'),
+      'engine/cli.js start command must call assertStateFileSize at startup (#1167)');
+  });
+
+  await test('spawnAgent reads prompt via resolveDispatchPrompt (sidecar-aware)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnIdx = engineSrc.indexOf('async function spawnAgent(');
+    assert.ok(fnIdx > -1, 'spawnAgent should exist');
+    const fnBody = engineSrc.slice(fnIdx, fnIdx + 2000);
+    assert.ok(fnBody.includes('resolveDispatchPrompt'),
+      'spawnAgent must use resolveDispatchPrompt so oversized prompts are read from sidecar — otherwise agents get only the stub');
+  });
 }
 
 // ─── Budget Enforcement Tests ───────────────────────────────────────────────
@@ -9992,6 +10245,7 @@ async function main() {
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
+    await testDispatchPromptSidecar();
     await testResolveAgent();
     await testRenderPlaybook();
     await testValidatePlaybookVars();

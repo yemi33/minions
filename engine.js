@@ -355,7 +355,11 @@ async function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts
 }
 
 async function spawnAgent(dispatchItem, config) {
-  const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
+  const { id, agent: agentId, type, meta } = dispatchItem;
+  // Resolve prompt — prefers sidecar file when dispatchItem._promptFile is set
+  // (large prompts are written to engine/contexts/<id>.md to keep dispatch.json
+  // small — see shared.sidecarDispatchPrompt / #1167).
+  const taskPrompt = shared.resolveDispatchPrompt(dispatchItem);
   const claudeConfig = config.claude || {};
   const engineConfig = config.engine || {};
   const startedAt = ts();
