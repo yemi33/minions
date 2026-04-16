@@ -554,7 +554,7 @@ const ENGINE_DEFAULTS = {
   versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
   logFlushInterval: 5000, // 5s — how often to flush buffered log entries to disk
   logBufferSize: 50, // flush immediately when buffer exceeds this many entries
-  lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
+  lockRetries: 0, // no retries — single 5s timeout window with 25ms polling (200 attempts) is sufficient; stale lock recovery at 60s handles crashes
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching

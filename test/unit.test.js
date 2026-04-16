@@ -10305,6 +10305,72 @@ async function testSharedJsFixes() {
     try { fs.unlinkSync(lockPath); } catch {}
   });
 
+  await test('ENGINE_DEFAULTS.lockRetries is 0 — single attempt, no exponential backoff', () => {
+    // lockRetries=0 means maxAttempts=1: one 5s timeout window, no backoff sleeps
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetries, 0,
+      'lockRetries should be 0 to eliminate exponential backoff blocking');
+    // lockRetryBackoffMs kept at 500 for callers that explicitly override lockRetries
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetryBackoffMs, 500,
+      'lockRetryBackoffMs should remain at 500 for override callers');
+  });
+
+  await test('withFileLock with retries=0 throws immediately after single timeout — no retry', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'no-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 200, retryDelayMs: 25, retries: 0 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout with retries=0');
+    // With retries=0, should complete in ~200ms (single timeout), not ~600ms+ (which would indicate a retry)
+    assert.ok(elapsed < 400, `Should finish in ~200ms (single attempt), took ${elapsed}ms — indicates retry happened`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('withFileLock callers can override retries via options parameter', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'override-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      // Explicitly pass retries=1 — should attempt twice (1 timeout + backoff + 1 timeout)
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 150, retryDelayMs: 25, retries: 1, retryBackoffMs: 50 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout after exhausting override retries');
+    // With retries=1: 150ms timeout + 50ms backoff + 150ms timeout = ~350ms minimum
+    assert.ok(elapsed >= 300, `With retries=1, should take >=300ms, took ${elapsed}ms — override not working`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('mutateJsonFileLocked uses ENGINE_DEFAULTS.lockRetries=0 by default', () => {
+    // Verify mutateJsonFileLocked reads lockRetries from ENGINE_DEFAULTS
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fnStart = src.indexOf('function mutateJsonFileLocked(');
+    assert.ok(fnStart >= 0, 'mutateJsonFileLocked should exist');
+    const fnBody = src.substring(fnStart, fnStart + 500);
+    // Should use ENGINE_DEFAULTS.lockRetries as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetries'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetries');
+    // Should use ENGINE_DEFAULTS.lockRetryBackoffMs as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetryBackoffMs'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetryBackoffMs');
+  });
+
   await test('sanitizePath allows valid subpaths', () => {
     const base = createTmpDir();
     const result = shared.sanitizePath('sub/dir/file.txt', base);
