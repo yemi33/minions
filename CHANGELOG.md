@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1009 (2026-04-16)
+
+### Other
+- chore: trigger publish workflow test
+
 ## 0.1.1008 (2026-04-16)
 
 ### Features
