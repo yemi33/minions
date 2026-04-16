@@ -15457,6 +15457,14 @@ async function testDashboardResilience() {
       'Reopened sessions with queued messages should resume draining the queue');
   });
 
+  await test('clearQaConversation aborts in-flight doc-chat before wiping session state', () => {
+    const clearFn = modalQaSrc.slice(modalQaSrc.indexOf('function clearQaConversation'), modalQaSrc.indexOf('\nfunction modalSend'));
+    assert.ok(clearFn.includes('_qaAbortController.abort()'),
+      'clearQaConversation should abort the active controller before clearing state');
+    assert.ok(clearFn.includes('runtime?.abortController') && clearFn.includes('runtime.abortController.abort()'),
+      'clearQaConversation should also abort the per-session runtime controller before resetting it');
+  });
+
   // ── Text selection → doc-chat flow ──────────────────────────────────────────
 
   await test('mouseup listener captures selection into _modalDocContext', () => {
