@@ -1931,8 +1931,8 @@ async function discoverFromPrs(config, project) {
       continue;
     }
     // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
-    // Manually-linked PRs with autoObserve are allowed through (they have _autoObserve flag)
-    const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || pr._autoObserve;
+    // Manually-linked PRs with autoObserve=true (_manual && !_contextOnly) are allowed through
+    const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || (pr._manual && !pr._contextOnly);
     if (!isAgentPr) continue;
 
     const prNumber = shared.getPrNumber(pr);

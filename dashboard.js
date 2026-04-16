@@ -4536,6 +4536,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           prdItems: [],
           _manual: true,
           _contextOnly: !autoObserve,
+          _autoObserve: !!autoObserve,
           _context: context || '',
         });
         return prs;
