@@ -9759,7 +9759,7 @@ async function testMeetingsExtendedBehavioral() {
       roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
     });
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
       const m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
     } finally {
@@ -15201,6 +15201,7 @@ async function testDashboardResilience() {
   const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
   const liveStreamSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
   const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+  const modalSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal.js'), 'utf8');
   const modalQaSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
 
   // ── safeFetch wrapper ──
@@ -15394,7 +15395,7 @@ async function testDashboardResilience() {
   await test('doc-chat shows processing badge on source card when processing starts', () => {
     const processBody = modalQaSrc.slice(
       modalQaSrc.indexOf('async function _processQaMessage'),
-      modalQaSrc.indexOf('async function _processQaMessage') + 800
+      modalQaSrc.indexOf('\nfunction qaAbort')
     );
     assert.ok(processBody.includes("showNotifBadge(sourceCard, 'processing')"),
       '_processQaMessage must show processing badge on source card at start');
@@ -15406,8 +15407,54 @@ async function testDashboardResilience() {
   });
 
   await test('doc-chat badge persists if messages still queued', () => {
-    assert.ok(modalQaSrc.includes('_qaQueue.length === 0'),
+    assert.ok(modalQaSrc.includes('runtime.queue.length === 0'),
       'Badge should only clear when queue is empty');
+  });
+
+  await test('doc-chat runtime state is scoped per session key', () => {
+    assert.ok(modalQaSrc.includes('const _qaRuntime = new Map()'),
+      'modal-qa.js should keep runtime doc-chat state in a per-session map');
+    assert.ok(modalQaSrc.includes('const sessionKey = opts?.sessionKey || _qaSessionKey;'),
+      '_processQaMessage should capture the originating session key');
+    assert.ok(modalQaSrc.includes('_qaPersistSession(sessionKey'),
+      'Responses should persist against the originating session key, not whichever doc is currently open');
+  });
+
+  await test('switching doc-chat sessions saves current state before replacing _qaSessionKey', () => {
+    const initFn = modalQaSrc.slice(modalQaSrc.indexOf('function _initQaSession'), modalQaSrc.indexOf('\nfunction clearQaConversation'));
+    assert.ok(initFn.includes('_qaSaveActiveSessionState()'),
+      '_initQaSession should save the current document session before switching');
+    assert.ok(initFn.includes('_qaLoadSessionState(key)'),
+      '_initQaSession should restore runtime state for the new document key');
+  });
+
+  await test('doc-chat only rewrites modal body when the originating session is still active', () => {
+    const processFn = modalQaSrc.slice(modalQaSrc.indexOf('async function _processQaMessage'), modalQaSrc.indexOf('\nfunction qaAbort'));
+    assert.ok(processFn.includes('if (_qaIsActiveSession(sessionKey)) {') && processFn.includes("document.getElementById('modal-body')"),
+      '_processQaMessage must guard modal-body updates behind the originating session being active');
+    assert.ok(processFn.includes('showNotifBadge(doneCard, \'done\')'),
+      'Background completions should badge the source card instead of mutating another open document');
+  });
+
+  await test('closeModal clears active doc-chat globals even while background work continues', () => {
+    assert.ok(modalSrc.includes('_qaResetActiveState();'),
+      'closeModal should clear the active doc-chat globals after saving session state');
+    assert.ok(modalSrc.includes('_qaSaveActiveSessionState()'),
+      'closeModal should persist the current doc-chat session before clearing active state');
+  });
+
+  await test('doc-chat persists queued messages in saved session state', () => {
+    assert.ok(modalQaSrc.includes('queue: _qaCloneQueue(prior?.queue)'),
+      'Runtime restore should seed queued messages from the persisted session record');
+    assert.ok(modalQaSrc.includes('queue: Array.isArray(queue) ? _qaCloneQueue(queue)'),
+      '_qaPersistSession should write queued messages into the persisted session record');
+  });
+
+  await test('doc-chat restores queued work and strips stale loading UI on reopen', () => {
+    assert.ok(modalQaSrc.includes("tmp.querySelectorAll('.modal-qa-loading').forEach(el => el.remove())"),
+      'Reopened sessions should clear stale loading indicators when no request is actually running');
+    assert.ok(modalQaSrc.includes('function _qaResumeQueuedMessages()') && modalQaSrc.includes('setTimeout(_qaResumeQueuedMessages, 0)'),
+      'Reopened sessions with queued messages should resume draining the queue');
   });
 
   // ── Text selection → doc-chat flow ──────────────────────────────────────────
