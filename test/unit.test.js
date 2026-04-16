@@ -10085,6 +10085,9 @@ async function main() {
     // W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages
     await testSyncPrsToolResultInUserMessages();
 
+    // W-mo0kxqenseo9: Cancel work item — endpoint, UI, CC action
+    await testCancelWorkItem();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -21120,4 +21123,122 @@ async function testSyncPrsToolResultInUserMessages() {
     }
   });
 }
+// ─── W-mo0kxqenseo9: Cancel Work Item ─────────────────────────────────────
+
+async function testCancelWorkItem() {
+  console.log('\n── Cancel Work Item (W-mo0kxqenseo9) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const wiJsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+  const ccJsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const ccSystemSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  // 1. /api/work-items/cancel endpoint exists in route table
+  await test('cancel endpoint registered in route table', () => {
+    assert.ok(dashSrc.includes('/api/work-items/cancel'),
+      'dashboard.js must register /api/work-items/cancel route');
+  });
+
+  // 2. handleWorkItemsCancel function exists
+  await test('handleWorkItemsCancel function exists', () => {
+    assert.ok(dashSrc.includes('handleWorkItemsCancel'),
+      'dashboard.js must define handleWorkItemsCancel handler');
+  });
+
+  // 3. Cancel handler sets status to WI_STATUS.CANCELLED
+  await test('cancel handler sets WI_STATUS.CANCELLED', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    assert.ok(fnStart > -1, 'handleWorkItemsCancel must exist');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('WI_STATUS.CANCELLED'),
+      'cancel handler must set status to WI_STATUS.CANCELLED');
+  });
+
+  // 4. Cancel handler calls cleanDispatchEntries
+  await test('cancel handler calls cleanDispatchEntries', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('cleanDispatchEntries'),
+      'cancel handler must call cleanDispatchEntries to kill agent and clean dispatch queue');
+  });
+
+  // 5. Cancel handler calls invalidateStatusCache
+  await test('cancel handler calls invalidateStatusCache', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('invalidateStatusCache'),
+      'cancel handler must call invalidateStatusCache');
+  });
+
+  // 6. Cancel handler uses mutateJsonFileLocked (not safeWrite)
+  await test('cancel handler uses mutateJsonFileLocked for atomic write', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'cancel handler must use mutateJsonFileLocked for atomic read-modify-write');
+  });
+
+  // 7. Cancel handler records _cancelledBy metadata
+  await test('cancel handler records _cancelledBy metadata', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('_cancelledBy'),
+      'cancel handler must set _cancelledBy for audit trail');
+  });
+
+  // 8. Cancel handler allows cancelling dispatched items (bypasses guard)
+  await test('cancel handler does not block dispatched items', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    // Must NOT have the "Cannot edit dispatched items" rejection for cancellation
+    assert.ok(!fnBody.includes("Cannot edit dispatched items"),
+      'cancel handler must bypass the dispatched-item guard');
+  });
+
+  // 9. Cancel button rendered in work item UI
+  await test('cancel button exists in work item UI', () => {
+    assert.ok(wiJsSrc.includes('cancelWorkItem'),
+      'render-work-items.js must have a cancelWorkItem function or call');
+  });
+
+  // 10. cancelWorkItem JS handler function exists
+  await test('cancelWorkItem JS handler exists', () => {
+    assert.ok(wiJsSrc.includes('function cancelWorkItem') || wiJsSrc.includes('async function cancelWorkItem'),
+      'render-work-items.js must define cancelWorkItem function');
+  });
+
+  // 11. cancelWorkItem calls /api/work-items/cancel
+  await test('cancelWorkItem handler calls cancel API', () => {
+    assert.ok(wiJsSrc.includes('/api/work-items/cancel'),
+      'cancelWorkItem must call /api/work-items/cancel endpoint');
+  });
+
+  // 12. CC action handler for cancel-work-item
+  await test('cancel-work-item CC action handler exists', () => {
+    assert.ok(ccJsSrc.includes("'cancel-work-item'") || ccJsSrc.includes('"cancel-work-item"'),
+      'command-center.js must handle cancel-work-item action');
+  });
+
+  // 13. CC system prompt documents cancel-work-item action
+  await test('cancel-work-item documented in CC system prompt', () => {
+    assert.ok(ccSystemSrc.includes('cancel-work-item'),
+      'cc-system.md must document the cancel-work-item action');
+  });
+
+  // 14. Cancel handler rejects already-done items
+  await test('cancel handler rejects items that are already done/cancelled', () => {
+    const fnStart = dashSrc.indexOf('async function handleWorkItemsCancel');
+    const fnEnd = dashSrc.indexOf('\n  async function', fnStart + 1);
+    const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
+    assert.ok(fnBody.includes('DONE_STATUSES') || fnBody.includes('WI_STATUS.DONE') || fnBody.includes('already'),
+      'cancel handler must reject already-done/cancelled items');
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });

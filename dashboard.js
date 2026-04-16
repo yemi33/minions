@@ -1419,6 +1419,63 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handleWorkItemsCancel(req, res) {
+    try {
+      const body = await readBody(req);
+      const { id, source, reason } = body;
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+      // Find the right work-items file
+      let wiPath;
+      if (!source || source === 'central') {
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      } else {
+        const proj = PROJECTS.find(p => p.name === source);
+        if (proj) wiPath = shared.projectWorkItemsPath(proj);
+      }
+      if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
+
+      let result = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) { result = { code: 404, body: { error: 'item not found' } }; return items; }
+        // Reject already-done or already-cancelled items
+        if (DONE_STATUSES.has(item.status) || item.status === WI_STATUS.CANCELLED) {
+          result = { code: 400, body: { error: 'cannot cancel item with status: ' + item.status } };
+          return items;
+        }
+        item.status = WI_STATUS.CANCELLED;
+        item._cancelledBy = reason || 'user';
+        item.cancelledAt = new Date().toISOString();
+        result = { code: 200, body: { ok: true, item } };
+        return items;
+      });
+      if (!result) return jsonReply(res, 500, { error: 'unexpected state' });
+      if (result.code !== 200) return jsonReply(res, result.code, result.body);
+
+      // Clean dispatch entries + kill running agent (outside lock)
+      const dispatchRemoved = cleanDispatchEntries(d =>
+        d.meta?.item?.id === id ||
+        d.meta?.dispatchKey?.endsWith(id)
+      );
+
+      // Clean cooldown entries
+      try {
+        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+        const cooldowns = safeJsonObj(cooldownPath);
+        let cleaned = false;
+        for (const key of Object.keys(cooldowns)) {
+          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
+        }
+        if (cleaned) safeWrite(cooldownPath, cooldowns);
+      } catch (e) { console.error('cooldown cleanup on cancel:', e.message); }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   async function handleWorkItemsArchive(req, res) {
     try {
       const body = await readBody(req);
@@ -4244,6 +4301,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?, references?, acceptanceCriteria?', handler: handleWorkItemsUpdate },
     { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
+    { method: 'POST', path: '/api/work-items/cancel', desc: 'Cancel a work item, kill agent, clear dispatch', params: 'id, source?, reason?', handler: handleWorkItemsCancel },
     { method: 'POST', path: '/api/work-items/archive', desc: 'Move a completed/failed work item to archive', params: 'id, source?', handler: handleWorkItemsArchive },
     { method: 'GET', path: '/api/work-items/archive', desc: 'List archived work items', handler: handleWorkItemsArchiveList },
     { method: 'POST', path: '/api/work-items/reopen', desc: 'Reopen a done/failed work item back to pending', params: 'id, project?, description?', handler: handleWorkItemsReopen },

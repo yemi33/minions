@@ -70,6 +70,7 @@ function wiRow(item) {
       ((item.status === 'pending' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
       ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
       ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
+      ((item.status === 'pending' || item.status === 'dispatched' || item.status === 'queued' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--orange);border-color:var(--orange);margin-right:4px" onclick="event.stopPropagation();cancelWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Cancel work item and kill agent">&#x1F6AB;</button>' : '') +
       '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
     '</td>' +
   '</tr>';
@@ -207,6 +208,21 @@ async function deleteWorkItem(id, source) {
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
   } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
+}
+
+async function cancelWorkItem(id, source) {
+  if (!confirm('Cancel work item ' + id + '? This will kill any running agent and mark it cancelled.')) return;
+  markDeleted('wi:' + id);
+  var wiTable = document.getElementById('work-items-content');
+  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  showToast('cmd-toast', 'Work item cancelled', true);
+  try {
+    const res = await fetch('/api/work-items/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, source: source || undefined })
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Cancel failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Cancel error: ' + e.message, false); refresh(); }
 }
 
 async function archiveWorkItem(id, source) {
