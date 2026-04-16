@@ -171,7 +171,14 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+let _worktreeCountCache = 0;
+let _worktreeCountCacheTs = 0;
+
 function _countWorktrees() {
+  const now = Date.now();
+  if (_worktreeCountCacheTs && (now - _worktreeCountCacheTs) < shared.ENGINE_DEFAULTS.worktreeCountCacheTtl) {
+    return _worktreeCountCache;
+  }
   try {
     const config = queries.getConfig();
     const projects = shared.getProjects(config);
@@ -199,6 +206,8 @@ function _countWorktrees() {
         }
       } catch {}
     }
+    _worktreeCountCache = count;
+    _worktreeCountCacheTs = now;
     return count;
   } catch { return 0; }
 }

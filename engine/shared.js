@@ -534,6 +534,7 @@ const ENGINE_DEFAULTS = {
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
   worktreeRoot: '../worktrees',
+  worktreeCountCacheTtl: 30000, // 30s — TTL for cached _countWorktrees() result in dashboard
   idleAlertMinutes: 15,
   fanOutTimeout: null, // falls back to agentTimeout
   restartGracePeriod: 1200000, // 20min

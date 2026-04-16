@@ -23300,6 +23300,47 @@ async function testPipelineBehavioral() {
     }
     assert.ok(fn.includes('PIPELINE_STATUS.WAITING_HUMAN'), 'WAIT should return WAITING_HUMAN status');
   });
+
+  // ── _countWorktrees TTL cache ──
+
+  await test('_countWorktrees uses TTL cache variables', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('_worktreeCountCache'), '_worktreeCountCache variable must exist');
+    assert.ok(dashSrc.includes('_worktreeCountCacheTs'), '_worktreeCountCacheTs timestamp variable must exist');
+  });
+
+  await test('_countWorktrees returns cached value within TTL', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The function must check Date.now() against _worktreeCountCacheTs to decide cache hit
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('Date.now()'), '_countWorktrees must check current time for TTL');
+    assert.ok(fn.includes('_worktreeCountCacheTs'), '_countWorktrees must reference cache timestamp');
+    assert.ok(fn.includes('_worktreeCountCache'), '_countWorktrees must reference cached value');
+    // Must have early return for cache hit (return cached value without scanning)
+    assert.ok(fn.includes('return _worktreeCountCache'), '_countWorktrees must return cached value on cache hit');
+  });
+
+  await test('_countWorktrees updates cache after filesystem scan', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    // After scanning, must write back to cache
+    assert.ok(fn.includes('_worktreeCountCache = count') || fn.includes('_worktreeCountCache = '),
+      '_countWorktrees must store scanned count in cache');
+    assert.ok(fn.includes('_worktreeCountCacheTs = '),
+      '_countWorktrees must update cache timestamp after scan');
+  });
+
+  await test('_countWorktrees TTL uses ENGINE_DEFAULTS.worktreeCountCacheTtl', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('worktreeCountCacheTtl'),
+      '_countWorktrees TTL must reference ENGINE_DEFAULTS.worktreeCountCacheTtl, not a hardcoded number');
+  });
+
+  await test('ENGINE_DEFAULTS includes worktreeCountCacheTtl', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.worktreeCountCacheTtl, 30000,
+      'worktreeCountCacheTtl must be 30000ms (30 seconds)');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
