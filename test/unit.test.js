@@ -21618,9 +21618,15 @@ async function testDuplicatePrPrevention() {
       fs.mkdirSync(projectDir, { recursive: true });
       const prFile = path.join(projectDir, 'pull-requests.json');
 
+      // Use canonical IDs — mutateJsonFileLocked auto-normalizes PR records via
+      // normalizePrRecords(), which calls getCanonicalPrId() and rewrites plain
+      // "PR-100" to "github:org/repo#100" based on the PR's url field.
+      const canonicalId100 = 'github:org/repo#100';
+      const canonicalId999 = 'github:org/repo#999';
+
       // Pre-existing active PR on branch work/W-8eobrosn
       testShared.safeWrite(prFile, [{
-        id: 'PR-100', prNumber: 100, title: 'Original PR', agent: 'dallas',
+        id: canonicalId100, prNumber: 100, title: 'Original PR', agent: 'dallas',
         branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'active',
         created: '2026-04-15T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
         prdItems: ['W-8eobrosn']
@@ -21637,8 +21643,8 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'Original PR-100 should still be tracked');
-      assert.ok(!ids.includes('PR-999'), 'Duplicate PR-999 on same branch should NOT be added');
+      assert.ok(ids.includes(canonicalId100), 'Original PR should still be tracked');
+      assert.ok(!ids.includes(canonicalId999), 'Duplicate PR on same branch should NOT be added');
       assert.strictEqual(result.length, 1, 'Should have exactly 1 PR (the original)');
     } finally { restore(); }
   });
@@ -21655,9 +21661,13 @@ async function testDuplicatePrPrevention() {
       fs.mkdirSync(projectDir, { recursive: true });
       const prFile = path.join(projectDir, 'pull-requests.json');
 
+      // Use canonical IDs — mutateJsonFileLocked auto-normalizes PR records
+      const canonicalId100 = 'github:org/repo#100';
+      const canonicalId999 = 'github:org/repo#999';
+
       // Pre-existing ABANDONED PR on branch work/W-8eobrosn
       testShared.safeWrite(prFile, [{
-        id: 'PR-100', prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
+        id: canonicalId100, prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
         branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'abandoned',
         created: '2026-04-14T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
         prdItems: ['W-8eobrosn']
@@ -21673,8 +21683,8 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'Abandoned PR-100 should still be tracked');
-      assert.ok(ids.includes('PR-999'), 'New PR-999 should be added because existing PR is abandoned');
+      assert.ok(ids.includes(canonicalId100), 'Abandoned PR should still be tracked');
+      assert.ok(ids.includes(canonicalId999), 'New PR should be added because existing PR is abandoned');
       assert.strictEqual(result.length, 2, 'Should have 2 PRs');
     } finally { restore(); }
   });
