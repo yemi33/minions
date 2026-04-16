@@ -11255,6 +11255,161 @@ async function testSettingsComprehensive() {
     assert.ok(saveBlock.includes('workItems'), 'saveSettings should include workItems toggle state');
   });
 
+  await test('settings saveSettings uses persisted settings data, not openSettings local data', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const saveBlock = src.slice(src.indexOf('async function saveSettings'));
+    assert.ok(src.includes('let _settingsData = null;'), 'settings.js should persist the loaded settings payload at module scope');
+    assert.ok(src.includes('_settingsData = data;'), 'openSettings should refresh the persisted settings payload after loading');
+    assert.ok(saveBlock.includes('_settingsData'), 'saveSettings should read projects from persisted settings data');
+    assert.ok(!saveBlock.includes('(data.projects || [])'), 'saveSettings must not reference openSettings local data out of scope');
+  });
+
+  await test('settings saveSettings posts project toggles without data ReferenceError', async () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const elements = Object.create(null);
+    function ensureEl(id) {
+      if (!elements[id]) {
+        elements[id] = {
+          id,
+          value: '',
+          checked: false,
+          style: {},
+          innerHTML: '',
+          textContent: '',
+          disabled: false,
+          className: '',
+          dataset: {},
+          addEventListener() {}
+        };
+      }
+      return elements[id];
+    }
+    ensureEl('settings-status');
+    ensureEl('modal-settings-save');
+    ensureEl('set-routing').value = 'implement -> dallas';
+    ensureEl('set-ws-prs-Alpha').checked = true;
+    ensureEl('set-ws-wi-Alpha').checked = false;
+    ensureEl('set-ws-prs-Beta').checked = false;
+    ensureEl('set-ws-wi-Beta').checked = true;
+
+    const fetchCalls = [];
+    const toastCalls = [];
+    const api = new Function(
+      'document',
+      'fetch',
+      'showToast',
+      'escHtml',
+      'refresh',
+      'alert',
+      'confirm',
+      'setTimeout',
+      'window',
+      settingsSrc + '\nreturn { saveSettings, setSettingsData: function(v) { _settingsData = v; } };'
+    )(
+      {
+        getElementById: ensureEl,
+        querySelectorAll: () => [],
+        createElement: () => ensureEl('dynamic-' + Object.keys(elements).length),
+        querySelector: () => ({ lastElementChild: null, insertBefore() {} })
+      },
+      async (url, options) => {
+        fetchCalls.push({ url, options });
+        if (url === '/api/settings') return { ok: true, json: async () => ({ ok: true, clamped: [] }) };
+        if (url === '/api/settings/routing') return { ok: true, json: async () => ({ ok: true }) };
+        throw new Error('Unexpected fetch: ' + url);
+      },
+      function() { toastCalls.push(Array.from(arguments)); },
+      s => String(s),
+      () => {},
+      () => {},
+      () => true,
+      fn => { fn(); return 0; },
+      {}
+    );
+
+    api.setSettingsData({
+      projects: [
+        { name: 'Alpha' },
+        { name: 'Beta' }
+      ]
+    });
+
+    await api.saveSettings();
+
+    assert.strictEqual(fetchCalls.length, 2, 'saveSettings should post config and routing');
+    const payload = JSON.parse(fetchCalls[0].options.body);
+    assert.deepStrictEqual(payload.projects, [
+      { name: 'Alpha', workSources: { pullRequests: { enabled: true }, workItems: { enabled: false } } },
+      { name: 'Beta', workSources: { pullRequests: { enabled: false }, workItems: { enabled: true } } }
+    ], 'saveSettings should serialize project workSources from persisted settings data');
+    assert.strictEqual(fetchCalls[1].url, '/api/settings/routing', 'saveSettings should save routing after config');
+    assert.strictEqual(ensureEl('settings-status').textContent, 'Saved. Engine picks up changes on next tick.');
+    assert.ok(toastCalls.some(call => call[1] === 'Settings saved' && call[2] === true), 'saveSettings should surface success toast');
+  });
+
+  await test('settings saveSettings falls back to empty projects when settings snapshot is unavailable', async () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const elements = Object.create(null);
+    function ensureEl(id) {
+      if (!elements[id]) {
+        elements[id] = {
+          id,
+          value: '',
+          checked: false,
+          style: {},
+          innerHTML: '',
+          textContent: '',
+          disabled: false,
+          className: '',
+          dataset: {},
+          addEventListener() {}
+        };
+      }
+      return elements[id];
+    }
+    ensureEl('settings-status');
+    ensureEl('modal-settings-save');
+    ensureEl('set-routing').value = 'review -> ripley';
+
+    const fetchCalls = [];
+    const api = new Function(
+      'document',
+      'fetch',
+      'showToast',
+      'escHtml',
+      'refresh',
+      'alert',
+      'confirm',
+      'setTimeout',
+      'window',
+      settingsSrc + '\nreturn { saveSettings };'
+    )(
+      {
+        getElementById: ensureEl,
+        querySelectorAll: () => [],
+        createElement: () => ensureEl('dynamic-' + Object.keys(elements).length),
+        querySelector: () => ({ lastElementChild: null, insertBefore() {} })
+      },
+      async (url, options) => {
+        fetchCalls.push({ url, options });
+        return { ok: true, json: async () => ({ ok: true, clamped: [] }) };
+      },
+      () => {},
+      s => String(s),
+      () => {},
+      () => {},
+      () => true,
+      fn => { fn(); return 0; },
+      {}
+    );
+
+    await api.saveSettings();
+
+    const payload = JSON.parse(fetchCalls[0].options.body);
+    assert.deepStrictEqual(payload.projects, [], 'saveSettings should tolerate missing persisted settings data');
+    assert.strictEqual(ensureEl('settings-status').textContent, 'Saved. Engine picks up changes on next tick.');
+  });
+
   await test('handleSettingsUpdate projects handler validates project name exists', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
@@ -13996,8 +14151,8 @@ async function testPrDuplicateRaceFix() {
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');
     assert.ok(engineSrc.includes('needsAdoPollRetry()'), 'engine.js must call needsAdoPollRetry() in tick loop');
     // Should be used alongside the configurable cadence check
-    assert.ok(engineSrc.includes('tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()'),
-      'engine.js must bypass adoPollStatusEvery cadence when needsAdoPollRetry() is true');
+    assert.ok(engineSrc.includes('tickCount % prPollStatusEvery === 0 || needsAdoPollRetry()'),
+      'engine.js must bypass prPollStatusEvery cadence when needsAdoPollRetry() is true');
   });
 
   await test('dashboard render-prs.js shows stale build status indicator', () => {
@@ -19439,18 +19594,57 @@ async function testAdoThrottleTickGuards() {
       'syncPrdFromPrs must NOT be directly guarded by isAdoThrottled');
   });
 
-  // ── No changes to config values ──
+  // ── PR polling cadence config ──
 
-  await test('adoPollStatusEvery and adoPollCommentsEvery are not modified', () => {
-    // These should still reference ENGINE_DEFAULTS, not hardcoded values
-    assert.ok(engineSrc.includes('adoPollStatusEvery'),
-      'adoPollStatusEvery must still be used');
-    assert.ok(engineSrc.includes('adoPollCommentsEvery'),
-      'adoPollCommentsEvery must still be used');
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollStatusEvery'),
-      'adoPollStatusEvery must still reference ENGINE_DEFAULTS');
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollCommentsEvery'),
-      'adoPollCommentsEvery must still reference ENGINE_DEFAULTS');
+  await test('prPollStatusEvery and prPollCommentsEvery are the canonical config keys', () => {
+    assert.ok(engineSrc.includes('prPollStatusEvery'),
+      'prPollStatusEvery must be used');
+    assert.ok(engineSrc.includes('prPollCommentsEvery'),
+      'prPollCommentsEvery must be used');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.prPollStatusEvery'),
+      'prPollStatusEvery must reference ENGINE_DEFAULTS');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.prPollCommentsEvery'),
+      'prPollCommentsEvery must reference ENGINE_DEFAULTS');
+    assert.ok(engineSrc.includes('config.engine?.adoPollStatusEvery'),
+      'engine.js should still read the deprecated adoPollStatusEvery as a fallback');
+    assert.ok(engineSrc.includes('config.engine?.adoPollCommentsEvery'),
+      'engine.js should still read the deprecated adoPollCommentsEvery as a fallback');
+  });
+
+  await test('ENGINE_DEFAULTS uses generic PR poll cadence defaults', () => {
+    const sharedSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes('prPollStatusEvery: 12'),
+      'ENGINE_DEFAULTS.prPollStatusEvery should default to 12');
+    assert.ok(sharedSrc.includes('prPollCommentsEvery: 12'),
+      'ENGINE_DEFAULTS.prPollCommentsEvery should default to 12');
+  });
+
+  await test('settings.js uses generic PR poll field ids and keys', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-prPollStatusEvery'),
+      'settings.js should use set-prPollStatusEvery field id');
+    assert.ok(settingsSrc.includes('set-prPollCommentsEvery'),
+      'settings.js should use set-prPollCommentsEvery field id');
+    assert.ok(settingsSrc.includes('prPollStatusEvery'),
+      'settings.js should save the prPollStatusEvery key');
+    assert.ok(settingsSrc.includes('prPollCommentsEvery'),
+      'settings.js should save the prPollCommentsEvery key');
+    assert.ok(settingsSrc.includes('e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12'),
+      'settings.js should fall back from prPollStatusEvery to adoPollStatusEvery when loading older configs');
+    assert.ok(settingsSrc.includes('e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12'),
+      'settings.js should fall back from prPollCommentsEvery to adoPollCommentsEvery when loading older configs');
+  });
+
+  await test('dashboard settings API aliases deprecated poll cadence keys', () => {
+    const dashSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('engine.prPollStatusEvery === undefined && engine.adoPollStatusEvery !== undefined'),
+      'handleSettingsRead should expose prPollStatusEvery from deprecated adoPollStatusEvery');
+    assert.ok(dashSrc.includes('e.prPollStatusEvery === undefined && e.adoPollStatusEvery !== undefined'),
+      'handleSettingsUpdate should accept deprecated adoPollStatusEvery input');
+    assert.ok(dashSrc.includes('delete config.engine.adoPollStatusEvery'),
+      'handleSettingsUpdate should remove deprecated adoPollStatusEvery when saving');
+    assert.ok(dashSrc.includes('delete config.engine.adoPollCommentsEvery'),
+      'handleSettingsUpdate should remove deprecated adoPollCommentsEvery when saving');
   });
 }
 
@@ -21670,6 +21864,29 @@ async function testLoopToWatchInterception() {
       'should skip when create-watch already in actions');
   });
 
+  await test('_detectLoopInvocation detects loop tool metadata even without /loop text', () => {
+    const result = detectLoopInvocation(
+      'Monitoring is set up.',
+      [],
+      [{ name: 'loop', input: { pr: 1065, interval: '15m', condition: 'merged' } }]
+    );
+    assert.ok(result, 'should detect loop tool invocation from metadata');
+    assert.strictEqual(result.target, '1065');
+    assert.strictEqual(result.interval, '15m');
+    assert.strictEqual(result.condition, 'merged');
+  });
+
+  await test('_detectLoopInvocation extracts PR target from loop tool URL input', () => {
+    const result = detectLoopInvocation(
+      'Monitoring is active.',
+      [],
+      [{ name: 'loop', input: { url: 'https://github.com/org/repo/pull/555', every: '10m' } }]
+    );
+    assert.ok(result, 'should detect loop tool invocation from URL metadata');
+    assert.strictEqual(result.target, '555');
+    assert.strictEqual(result.interval, '10m');
+  });
+
   await test('_detectLoopInvocation detects /loop mention with PR target', () => {
     const result = detectLoopInvocation('I\'ll start /loop to monitor PR 1065 build.', []);
     assert.ok(result, 'should detect /loop invocation');
@@ -21819,6 +22036,8 @@ async function testLoopToWatchInterception() {
     assert.ok(handleCC, 'handleCommandCenter must exist');
     const fnText = handleCC[0];
     assert.ok(fnText.includes('_detectLoopInvocation'), 'non-streaming path must call _detectLoopInvocation');
+    assert.ok(fnText.includes('_extractToolUsesFromRaw(result.raw)'),
+      'non-streaming path must pass tool-use metadata into the loop fallback');
     // Ensure it's called after parseCCActions
     const parseIdx = fnText.indexOf('parseCCActions');
     const detectIdx = fnText.indexOf('_detectLoopInvocation');
@@ -21831,6 +22050,10 @@ async function testLoopToWatchInterception() {
     assert.ok(handleStream, 'handleCommandCenterStream must exist');
     const fnText = handleStream[0];
     assert.ok(fnText.includes('_detectLoopInvocation'), 'streaming path must call _detectLoopInvocation');
+    assert.ok(fnText.includes('toolUses.push({ name, input: input || {} })'),
+      'streaming path must retain tool-use metadata so loop fallback still works when the final text omits /loop');
+    assert.ok(fnText.includes('toolUses = []; // discard stale metadata from the failed resume attempt'),
+      'streaming retry path must clear stale tool metadata before the fresh retry');
     const parseIdx = fnText.indexOf('parseCCActions');
     const detectIdx = fnText.indexOf('_detectLoopInvocation');
     assert.ok(parseIdx > -1 && detectIdx > parseIdx,

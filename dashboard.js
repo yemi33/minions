@@ -672,10 +672,109 @@ function parseCCActions(text) {
 // This pure function detects /loop invocation in CC response text and synthesizes
 // a create-watch action as a fallback. Returns null if no conversion needed.
 
-function _detectLoopInvocation(text, actions) {
-  if (!text) return null;
+function _detectLoopInvocation(text, actions, toolUses) {
+  const observedToolUses = Array.isArray(toolUses) ? toolUses : [];
+  if (!text && observedToolUses.length === 0) return null;
   // If a create-watch action was already emitted, no fallback needed
   if (actions && actions.some(a => a.type === 'create-watch')) return null;
+
+  function _extractTargetFromValue(value, keyHint) {
+    if (value == null) return null;
+    const hint = String(keyHint || '').toLowerCase();
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const nested = _extractTargetFromValue(item, hint);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        const nested = _extractTargetFromValue(v, k);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    const str = String(value).trim();
+    if (!str) return null;
+    const prUrlMatch = str.match(/\/pull\/(\d+)\b/i) || str.match(/\/pullrequest\/(\d+)\b/i);
+    if (prUrlMatch) return { target: prUrlMatch[1], targetType: 'pr' };
+    const prMatch = str.match(/\bPR[- #:]?(\d+)\b/i) || str.match(/\bpull[- ]request[- #:]?(\d+)\b/i);
+    if (prMatch) return { target: prMatch[1], targetType: 'pr' };
+    const wiMatch = str.match(/\bW-([a-z0-9]+)\b/i);
+    if (wiMatch) return { target: 'W-' + wiMatch[1], targetType: 'work-item' };
+    if ((hint.includes('pr') || hint.includes('pull')) && /^\d+$/.test(str)) return { target: str, targetType: 'pr' };
+    if ((hint.includes('work') || hint.includes('item') || hint === 'id') && /^W-[a-z0-9]+$/i.test(str)) return { target: str.toUpperCase().startsWith('W-') ? 'W-' + str.slice(2) : str, targetType: 'work-item' };
+    if (hint.includes('target')) {
+      if (/^\d+$/.test(str)) return { target: str, targetType: 'pr' };
+      if (/^W-[a-z0-9]+$/i.test(str)) return { target: 'W-' + str.slice(2), targetType: 'work-item' };
+    }
+    return null;
+  }
+
+  function _extractIntervalFromValue(value, keyHint) {
+    if (value == null) return null;
+    const hint = String(keyHint || '').toLowerCase();
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const nested = _extractIntervalFromValue(item, hint);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        const nested = _extractIntervalFromValue(v, k);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (!(hint.includes('interval') || hint.includes('every') || hint.includes('frequency'))) return null;
+    const str = String(value).trim().toLowerCase();
+    if (!str) return null;
+    if (/^\d+$/.test(str)) return str;
+    const match = str.match(/^(\d+(?:\.\d+)?)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)$/i);
+    if (!match) return null;
+    return match[1] + match[2][0].toLowerCase();
+  }
+
+  function _extractConditionFromValue(value, keyHint) {
+    if (value == null) return null;
+    const hint = String(keyHint || '').toLowerCase();
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const nested = _extractConditionFromValue(item, hint);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        const nested = _extractConditionFromValue(v, k);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    if (!(hint.includes('condition') || hint.includes('until') || hint.includes('goal') || hint.includes('status'))) return null;
+    const str = String(value).trim().toLowerCase();
+    if (['merged', 'build-pass', 'build-fail', 'completed', 'failed', 'status-change', 'any', 'new-comments', 'vote-change'].includes(str)) return str;
+    if (/\b(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?|success)\b/i.test(str)) return 'build-pass';
+    if (/\b(?:fail(?:s|ing|ed)?|red|broken|broke)\b/i.test(str)) return 'build-fail';
+    if (/\bmerge(?:d)?\b/i.test(str)) return 'merged';
+    if (/\bcomplete(?:d)?\b/i.test(str)) return 'completed';
+    if (/\bfail(?:ed)?\b/i.test(str)) return 'failed';
+    if (/\bcomment/i.test(str)) return 'new-comments';
+    if (/\bvote|review/i.test(str)) return 'vote-change';
+    if (/\bstatus/i.test(str)) return 'any';
+    return null;
+  }
+
+  const loopToolSeen = observedToolUses.some(t => /\bloop\b/i.test(String(t?.name || '')));
+  const toolText = observedToolUses.map(t => {
+    try { return [String(t?.name || ''), JSON.stringify(t?.input || {})].filter(Boolean).join(' '); }
+    catch { return String(t?.name || ''); }
+  }).join('\n');
+  const combinedText = [text || '', toolText].filter(Boolean).join('\n');
 
   // Check for /loop invocation patterns in CC response
   const loopPatterns = [
@@ -686,14 +785,21 @@ function _detectLoopInvocation(text, actions) {
     /\bmonitoring.*\bloop\b/i,
     /\binvok(?:e|ed|ing).*\bloop\b/i,
   ];
-  if (!loopPatterns.some(p => p.test(text))) return null;
+  if (!loopToolSeen && !loopPatterns.some(p => p.test(combinedText))) return null;
 
   // Extract target — PR number or work item ID
-  const prMatch = text.match(/\bPR[- #]?(\d+)\b/i) || text.match(/\bpull[- ]request[- #]?(\d+)/i);
-  const wiMatch = text.match(/\bW-([a-z0-9]+)\b/);
+  const directTarget = observedToolUses.map(t => _extractTargetFromValue(t && t.input, t && t.name)).find(Boolean);
+  const prMatch = combinedText.match(/\/pull\/(\d+)\b/i) ||
+    combinedText.match(/\/pullrequest\/(\d+)\b/i) ||
+    combinedText.match(/\bPR[- #:]?(\d+)\b/i) ||
+    combinedText.match(/\bpull[- ]request[- #:]?(\d+)/i);
+  const wiMatch = combinedText.match(/\bW-([a-z0-9]+)\b/i);
 
   let target = null, targetType = 'pr';
-  if (prMatch) {
+  if (directTarget) {
+    target = directTarget.target;
+    targetType = directTarget.targetType;
+  } else if (prMatch) {
     target = prMatch[1];
     targetType = 'pr';
   } else if (wiMatch) {
@@ -703,16 +809,20 @@ function _detectLoopInvocation(text, actions) {
   if (!target) return null; // Can't synthesize without a target
 
   // Extract interval (e.g. "every 15 minutes", "every 5m")
-  const intervalMatch = text.match(/every\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)\b/i);
+  const directInterval = observedToolUses.map(t => _extractIntervalFromValue(t && t.input, t && t.name)).find(Boolean);
+  const intervalMatch = combinedText.match(/every\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)\b/i);
   let interval = '5m';
-  if (intervalMatch) interval = intervalMatch[1] + intervalMatch[2][0];
+  if (directInterval) interval = directInterval;
+  else if (intervalMatch) interval = intervalMatch[1] + intervalMatch[2][0];
 
   // Infer condition from keywords
-  let condition = 'any';
-  if (/\bbuild\b/i.test(text) && /\b(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?|success)\b/i.test(text)) condition = 'build-pass';
-  else if (/\bbuild\b/i.test(text) && /\b(?:fail(?:s|ing|ed)?|red|broken|broke)\b/i.test(text)) condition = 'build-fail';
-  else if (/\bmerge[d]?\b/i.test(text)) condition = 'merged';
-  else if (/\bcomplete[d]?\b/i.test(text)) condition = 'completed';
+  let condition = observedToolUses.map(t => _extractConditionFromValue(t && t.input, t && t.name)).find(Boolean) || 'any';
+  if (condition === 'any') {
+    if (/\bbuild\b/i.test(combinedText) && /\b(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?|success)\b/i.test(combinedText)) condition = 'build-pass';
+    else if (/\bbuild\b/i.test(combinedText) && /\b(?:fail(?:s|ing|ed)?|red|broken|broke)\b/i.test(combinedText)) condition = 'build-fail';
+    else if (/\bmerge[d]?\b/i.test(combinedText)) condition = 'merged';
+    else if (/\bcomplete[d]?\b/i.test(combinedText)) condition = 'completed';
+  }
 
   return {
     type: 'create-watch',
@@ -724,6 +834,23 @@ function _detectLoopInvocation(text, actions) {
     description: 'Auto-converted from /loop invocation',
     stopAfter: condition === 'any' ? 0 : 1,
   };
+}
+
+function _extractToolUsesFromRaw(raw) {
+  const toolUses = [];
+  if (!raw) return toolUses;
+  for (const line of String(raw).split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj.type !== 'assistant' || !Array.isArray(obj.message?.content)) continue;
+      for (const block of obj.message.content) {
+        if (block?.type === 'tool_use' && block.name) toolUses.push({ name: block.name, input: block.input || {} });
+      }
+    } catch {}
+  }
+  return toolUses;
 }
 
 // ── Server-side CC action execution ──────────────────────────────────────────
@@ -3758,8 +3885,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
 
         const parsed = parseCCActions(result.text);
+        const toolUses = _extractToolUsesFromRaw(result.raw);
         // Safety net: detect /loop invocation and convert to create-watch
-        const _loopWatch = _detectLoopInvocation(parsed.text, parsed.actions);
+        const _loopWatch = _detectLoopInvocation(parsed.text, parsed.actions, toolUses);
         if (_loopWatch) {
           parsed.actions.push(_loopWatch);
           console.warn('[CC] /loop invocation detected — converted to create-watch');
@@ -3869,6 +3997,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
         const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
         const ccMaxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
+        let toolUses = [];
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
           timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
@@ -3879,6 +4008,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             writeCcEvent({ type: 'chunk', text: display });
           },
           onToolUse: (name, input) => {
+            toolUses.push({ name, input: input || {} });
             writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
           }
         });
@@ -3893,6 +4023,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
           const freshPreamble = buildCCStatePreamble();
           const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
+          toolUses = []; // discard stale metadata from the failed resume attempt
           const retryPromise = callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
             timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
             allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
@@ -3903,6 +4034,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               writeCcEvent({ type: 'chunk', text: display });
             },
             onToolUse: (name, input) => {
+              toolUses.push({ name, input: input || {} });
               writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
             }
           });
@@ -3952,7 +4084,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Send final result with actions — execute server-side first
         const { text: displayText, actions } = parseCCActions(result.text);
         // Safety net: detect /loop invocation and convert to create-watch
-        const _loopWatch = _detectLoopInvocation(displayText, actions);
+        const _loopWatch = _detectLoopInvocation(displayText, actions, toolUses);
         if (_loopWatch) {
           actions.push(_loopWatch);
           console.warn('[CC] /loop invocation detected — converted to create-watch');
@@ -4142,8 +4274,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const config = queries.getConfig();
       const routing = safeRead(path.join(MINIONS_DIR, 'routing.md')) || '';
+      const engine = { ...shared.ENGINE_DEFAULTS, ...(config.engine || {}) };
+      if (engine.prPollStatusEvery === undefined && engine.adoPollStatusEvery !== undefined) engine.prPollStatusEvery = engine.adoPollStatusEvery;
+      if (engine.prPollCommentsEvery === undefined && engine.adoPollCommentsEvery !== undefined) engine.prPollCommentsEvery = engine.adoPollCommentsEvery;
       return jsonReply(res, 200, {
-        engine: { ...shared.ENGINE_DEFAULTS, ...(config.engine || {}) },
+        engine,
         claude: { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) },
         agents: config.agents || {},
         teams: { ...shared.ENGINE_DEFAULTS.teams, ...(config.teams || {}) },
@@ -4172,6 +4307,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (body.engine) {
         const e = body.engine;
         const D = shared.ENGINE_DEFAULTS;
+        if (e.prPollStatusEvery === undefined && e.adoPollStatusEvery !== undefined) e.prPollStatusEvery = e.adoPollStatusEvery;
+        if (e.prPollCommentsEvery === undefined && e.adoPollCommentsEvery !== undefined) e.prPollCommentsEvery = e.adoPollCommentsEvery;
         // Numeric fields: { key: [min, max?] }
         const numericFields = {
           tickInterval: [10000], maxConcurrent: [1, 50], inboxConsolidateThreshold: [1],
@@ -4181,7 +4318,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           meetingRoundTimeout: [60000],
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
-          adoPollStatusEvery: [1], adoPollCommentsEvery: [1],
+          prPollStatusEvery: [1], prPollCommentsEvery: [1],
           agentBusyReassignMs: [0],
         };
         for (const [key, [min, max]] of Object.entries(numericFields)) {
@@ -4194,6 +4331,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             config.engine[key] = val;
           }
         }
+        delete config.engine.adoPollStatusEvery;
+        delete config.engine.adoPollCommentsEvery;
         // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
         // CC model/effort
