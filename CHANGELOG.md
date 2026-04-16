@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1018 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+
 ## 0.1.1015 (2026-04-16)
 
 ### Fixes
