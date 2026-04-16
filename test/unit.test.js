@@ -1191,6 +1191,13 @@ async function testQueriesKnowledgeBase() {
     }
   });
 
+  await test('getKnowledgeBaseEntries exposes numeric recency sort key', () => {
+    const entries = queries.getKnowledgeBaseEntries();
+    for (const e of entries) {
+      assert.ok(typeof e.sortTs === 'number', 'KB entry missing numeric sortTs');
+    }
+  });
+
   await test('getKnowledgeBaseIndex returns string', () => {
     const index = queries.getKnowledgeBaseIndex();
     assert.ok(typeof index === 'string');
@@ -2598,8 +2605,8 @@ async function testWorktreeManagement() {
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('dirLower.includes(branchSlug)'),
-      'Post-merge cleanup should match by sanitized branch slug');
+    assert.ok(src.includes('worktreeDirMatchesBranch'),
+      'Post-merge cleanup should use the shared slug-boundary helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
   });
@@ -7369,6 +7376,33 @@ async function testHumanContributions() {
   await test('KB endpoint validates category', () => {
     assert.ok(dashSrc.includes('architecture') && dashSrc.includes('conventions') && dashSrc.includes('project-notes'),
       'Should validate against known KB categories');
+  });
+
+  await test('Knowledge mutations invalidate KB cache', () => {
+    const invalidateCalls = (dashSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
+    assert.ok(invalidateCalls >= 4,
+      'Should invalidate KB cache after KB create, promotion, sweep, and command-center knowledge writes');
+  });
+
+  await test('queries exports KB cache invalidation helper', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(queriesSrc.includes('function invalidateKnowledgeBaseCache()'),
+      'Should define a KB cache invalidation helper');
+    assert.ok(queriesSrc.includes('invalidateKnowledgeBaseCache,'),
+      'Should export KB cache invalidation helper');
+  });
+
+  await test('Knowledge list exposes sortTs and UI sorts by recency', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(dashSrc.includes('sortTs: e.sortTs'),
+      'Should include sortTs in /api/knowledge results');
+    assert.ok(queriesSrc.includes('sortTs = fs.statSync(filePath).mtimeMs || 0'),
+      'Should derive sortTs from KB file mtime');
+    assert.ok(kbSrc.includes('function kbNewestFirst(a, b)'),
+      'Should define a shared recency comparator for KB items');
+    assert.ok((kbSrc.match(/items\.sort\(kbNewestFirst\)/g) || []).length >= 3,
+      'Should sort pinned, all, and category tabs by KB recency');
   });
 
   await test('openCreateKbModal function exists', () => {
@@ -12263,12 +12297,15 @@ async function testStatusMutationGuards() {
     assert.ok(!src.includes('cleanDispatchEntries'), 'engine.js should not call cleanDispatchEntries (dashboard-only function)');
   });
 
-  await test('dashboard.js: handlePrdItemsRemove null-guards safeJson result', () => {
+  await test('dashboard.js: handlePrdItemsRemove uses mutateJsonFileLocked', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fnStart = src.indexOf('handlePrdItemsRemove');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj'), 'handlePrdItemsRemove must null-guard plan from safeJson or use safeJsonObj');
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'handlePrdItemsRemove must use mutateJsonFileLocked for atomic plan updates');
+    assert.ok(!fnBody.includes('safeWrite(planPath, plan)'),
+      'handlePrdItemsRemove must not use unlocked safeWrite on the PRD file');
   });
 
   await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
@@ -12888,6 +12925,16 @@ async function testEngineAuditCritical() {
     assert.ok(src.includes("case 'allBuildsGreen'"), 'must support allBuildsGreen check');
   });
 
+  await test('pipeline.js allBuildsGreen reads stage monitoredResources and canonical-aware PR refs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('collectPipelinePrRefs'),
+      'allBuildsGreen should collect monitored PR refs through a shared helper');
+    assert.ok(src.includes('stage?.monitoredResources'),
+      'allBuildsGreen should include stage-level monitoredResources');
+    assert.ok(src.includes('shared.findPrRecord(allPrs, prRef)'),
+      'allBuildsGreen should resolve monitored PR refs through shared.findPrRecord');
+  });
+
   await test('pipeline.js isStageComplete handles CONDITION type', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
     assert.ok(src.includes('STAGE_TYPE.CONDITION'), 'isStageComplete must handle CONDITION type');
@@ -13068,6 +13115,17 @@ async function testEngineAuditCritical() {
       'processPendingRebases must use mutateJsonFileLocked');
     assert.ok(!fn.match(/(?<!\w)safeWrite\(PENDING_REBASES_PATH/),
       'processPendingRebases must not use unlocked safeWrite — concurrent queuePendingRebase entries would be lost');
+  });
+
+  await test('processPendingRebases resolves queued PRs through normalized matching', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('const prs = getPrs(project);'),
+      'processPendingRebases should read PRs through getPrs so queued legacy IDs normalize on read');
+    assert.ok(fn.includes('shared.findPrRecord(prs, entry.prId, project)'),
+      'processPendingRebases should resolve queued PRs through shared.findPrRecord');
   });
 
   await test('processPendingRebases drains queue atomically then merges remaining back', () => {
@@ -14092,6 +14150,8 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
     assert.ok(fn.includes('shared.findPrRecord(prs, pr)'),
       'should use shared.findPrRecord so normalized PR files still match stale PR event objects');
+    assert.ok(fn.indexOf('mutateJsonFileLocked') < fn.indexOf('await teamsPost'),
+      'should claim dedup state before posting to Teams');
   });
 
   await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {

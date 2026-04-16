@@ -526,7 +526,7 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
   if (!cfg.notifyEvents || !cfg.notifyEvents.includes(event)) return;
 
   // Dedup check — don't re-notify the same event
-  if (pr._teamsNotifiedEvents && pr._teamsNotifiedEvents.includes(event)) return;
+  if (!prFilePath && pr._teamsNotifiedEvents && pr._teamsNotifiedEvents.includes(event)) return;
 
   const card = cards.buildPrCard(pr, event, project);
 
@@ -535,24 +535,45 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
   const convKeys = Object.keys(state.conversations || {});
   if (convKeys.length === 0) return;
 
+  let claimedEvent = false;
+  let shouldPost = true;
   try {
-    await teamsPost(convKeys[0], card);
-    log('info', `Teams PR notification sent: ${event} for ${pr.id}`);
-
-    // Record dedup — update _teamsNotifiedEvents on PR via lock
     if (prFilePath) {
       mutateJsonFileLocked(prFilePath, (prs) => {
         if (!Array.isArray(prs)) return prs;
         const target = shared.findPrRecord(prs, pr);
-        if (target) {
-          if (!target._teamsNotifiedEvents) target._teamsNotifiedEvents = [];
-          if (!target._teamsNotifiedEvents.includes(event)) {
-            target._teamsNotifiedEvents.push(event);
-          }
+        if (!target) return prs;
+        if (!target._teamsNotifiedEvents) target._teamsNotifiedEvents = [];
+        if (target._teamsNotifiedEvents.includes(event)) {
+          shouldPost = false;
+          return prs;
         }
+        target._teamsNotifiedEvents.push(event);
+        claimedEvent = true;
+        return prs;
       }, { defaultValue: [] });
     }
+    if (!shouldPost) return;
+    await teamsPost(convKeys[0], card);
+    if (pr && typeof pr === 'object') {
+      if (!Array.isArray(pr._teamsNotifiedEvents)) pr._teamsNotifiedEvents = [];
+      if (!pr._teamsNotifiedEvents.includes(event)) pr._teamsNotifiedEvents.push(event);
+    }
+    log('info', `Teams PR notification sent: ${event} for ${pr.id}`);
   } catch (err) {
+    if (claimedEvent && prFilePath) {
+      try {
+        mutateJsonFileLocked(prFilePath, (prs) => {
+          if (!Array.isArray(prs)) return prs;
+          const target = shared.findPrRecord(prs, pr);
+          if (!target || !Array.isArray(target._teamsNotifiedEvents)) return prs;
+          target._teamsNotifiedEvents = target._teamsNotifiedEvents.filter(e => e !== event);
+          return prs;
+        }, { defaultValue: [] });
+      } catch (revertErr) {
+        log('warn', `Teams PR dedup revert failed for ${pr.id}: ${revertErr.message}`);
+      }
+    }
     log('warn', `Teams PR notification failed for ${pr.id}: ${err.message}`);
   }
 }
