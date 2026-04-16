@@ -171,7 +171,14 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+let _worktreeCountCache = 0;
+let _worktreeCountCacheTs = 0;
+
 function _countWorktrees() {
+  const now = Date.now();
+  if (_worktreeCountCacheTs && (now - _worktreeCountCacheTs) < shared.ENGINE_DEFAULTS.worktreeCountCacheTtl) {
+    return _worktreeCountCache;
+  }
   try {
     const config = queries.getConfig();
     const projects = shared.getProjects(config);
@@ -199,6 +206,8 @@ function _countWorktrees() {
         }
       } catch {}
     }
+    _worktreeCountCache = count;
+    _worktreeCountCacheTs = now;
     return count;
   } catch { return 0; }
 }
@@ -302,13 +311,20 @@ function parsePinnedEntries(content) {
   return entries;
 }
 
+// Two-tier status cache: fast state (10s) for frequently-changing data, slow state (60s) for rarely-changing data.
+// Combined into _statusCache for API/SSE consumers — no API contract change.
+let _fastState = null;
+let _fastStateTs = 0;
+const FAST_STATE_TTL = 10000; // 10s — dispatch, agents, metrics, work items, etc.
+let _slowState = null;
+let _slowStateTs = 0;
+const SLOW_STATE_TTL = 60000; // 60s — skills, PRDs, pinned, version, projects, etc.
 let _statusCache = null;
 let _statusCacheJson = null; // cached JSON.stringify(_statusCache) — avoids double-serialization for SSE
-let _statusCacheTs = 0;
-const STATUS_CACHE_TTL = 10000; // 10s — reduces expensive aggregation frequency; mutations call invalidateStatusCache()
+let _statusCacheGzip = null; // pre-computed gzip of _statusCacheJson — avoids per-request gzipSync
 const _statusStreamClients = new Set();
 let _statusPushTimer = null;
-let _lastStatusHash = '';
+let _lastStatusPushRef = null; // last JSON string reference pushed to SSE — O(1) change detection
 
 // mtime-based cache invalidation — skip full rebuild if no tracked files changed
 const _mtimeTrackedFiles = () => {
@@ -348,8 +364,12 @@ function _mtimesChanged(prev, curr) {
 }
 
 function invalidateStatusCache() {
+  _fastState = null;
+  _fastStateTs = 0;
+  // Slow state continues on its own TTL — not invalidated by mutations
   _statusCache = null;
   _statusCacheJson = null;
+  _statusCacheGzip = null;
   // Push to SSE clients (debounced 500ms to avoid flooding during batch mutations)
   if (_statusPushTimer) return;
   _statusPushTimer = setTimeout(() => {
@@ -364,89 +384,110 @@ function invalidateStatusCache() {
 
 function getStatus() {
   const now = Date.now();
-  if (_statusCache && (now - _statusCacheTs) < STATUS_CACHE_TTL) {
-    // Within TTL — check mtimes for early return (skip full rebuild if nothing changed)
+
+  // Fast state: 10s TTL with mtime-based validation for early exit
+  let fastStale = !_fastState || (now - _fastStateTs) >= FAST_STATE_TTL;
+  if (!fastStale) {
+    // Within TTL — check mtimes for early return (skip rebuild if no tracked files changed)
     const currMtimes = _getMtimes();
-    if (!_mtimesChanged(_lastMtimes, currMtimes)) return _statusCache;
+    if (_mtimesChanged(_lastMtimes, currMtimes)) fastStale = true;
   }
 
-  // Reload config on each cache miss — picks up external changes (minions init, minions add)
-  reloadConfig();
+  // Slow state: 60s TTL, pure TTL (no mtime check — these files change rarely)
+  const slowStale = !_slowState || (now - _slowStateTs) >= SLOW_STATE_TTL;
 
-  const prdInfo = getPrdInfo();
-  _statusCache = {
-    agents: getAgents(),
-    prdProgress: prdInfo.progress,
-    inbox: getInbox(),
-    notes: getNotesWithMeta(),
-    prd: prdInfo.status,
-    pullRequests: getPullRequests(),
-    verifyGuides: getVerifyGuides(),
-    archivedPrds: getArchivedPrds(),
-    engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
-    adoThrottle: ado.getAdoThrottleState(),
-    ghThrottle: gh.getGhThrottleState(),
-    dispatch: getDispatchQueue(),
-    engineLog: getEngineLog(),
-    metrics: getMetrics(),
-    workItems: getWorkItems(),
-    skills: getSkills(),
-    mcpServers: getMcpServers(),
-    schedules: (() => {
-      const scheds = CONFIG.schedules || [];
-      const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
-      return scheds.map(s => {
-        const runEntry = runs[s.id];
-        // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
-        const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
-        const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
-        return { ...s, _lastRun, ...extra };
-      });
-    })(),
-    watches: watchesMod.getWatches(),
-    meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
-    pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
-    pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
-    projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
-    autoMode: {
-      approvePlans: !!CONFIG.engine?.autoApprovePlans,
-      decompose: CONFIG.engine?.autoDecompose !== false,
-      tempAgents: !!CONFIG.engine?.allowTempAgents,
-      inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
-      ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
-      ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
-    },
-    initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
-    installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
-    version: (() => {
-      const engine = getEngineState();
-      const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
-      const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
-                          !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
-      const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
-                             !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
-      return {
-        running: engine.codeVersion || null,
-        runningCommit: engine.codeCommit || null,
-        dashboardRunning: _dashboardVersion.codeVersion,
-        dashboardRunningCommit: _dashboardVersion.codeCommit,
-        dashboardStartedAt: _dashboardVersion.startedAt,
-        disk: diskVersion,
-        diskCommit,
-        engineStale,
-        dashboardStale,
-        stale: engineStale || dashboardStale,
-        latest: _npmVersionCache?.latest || null,
-        // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
-        updateAvailable: !isGitRepo && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
-        _npmCheckError: _npmVersionCache?.error || null,
-      };
-    })(),
-    timestamp: new Date().toISOString(),
-  };
-  _statusCacheTs = now;
+  // If nothing stale, return cached merged result
+  if (!fastStale && !slowStale && _statusCache) return _statusCache;
+
+  // Rebuild fast state (frequently-changing data: ~12-15 reads)
+  if (fastStale) {
+    // Reload config on fast-state miss — picks up external changes (minions init, minions add)
+    reloadConfig();
+    _fastState = {
+      agents: getAgents(),
+      inbox: getInbox(),
+      notes: getNotesWithMeta(),
+      pullRequests: getPullRequests(),
+      engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
+      adoThrottle: ado.getAdoThrottleState(),
+      ghThrottle: gh.getGhThrottleState(),
+      dispatch: getDispatchQueue(),
+      engineLog: getEngineLog(),
+      metrics: getMetrics(),
+      workItems: getWorkItems(),
+      watches: watchesMod.getWatches(),
+      meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
+    };
+    _fastStateTs = now;
+    _lastMtimes = _getMtimes();
+  }
+
+  // Rebuild slow state (rarely-changing data: ~8-15 reads, 60s TTL)
+  if (slowStale) {
+    const prdInfo = getPrdInfo();
+    _slowState = {
+      prdProgress: prdInfo.progress,
+      prd: prdInfo.status,
+      verifyGuides: getVerifyGuides(),
+      archivedPrds: getArchivedPrds(),
+      skills: getSkills(),
+      mcpServers: getMcpServers(),
+      schedules: (() => {
+        const scheds = CONFIG.schedules || [];
+        const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
+        return scheds.map(s => {
+          const runEntry = runs[s.id];
+          // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
+          const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
+          const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
+          return { ...s, _lastRun, ...extra };
+        });
+      })(),
+      pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
+      pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
+      projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
+      autoMode: {
+        approvePlans: !!CONFIG.engine?.autoApprovePlans,
+        decompose: CONFIG.engine?.autoDecompose !== false,
+        tempAgents: !!CONFIG.engine?.allowTempAgents,
+        inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
+        ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
+        ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
+      },
+      initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
+      installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
+      version: (() => {
+        const engine = getEngineState();
+        const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
+        const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+                            !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
+        const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
+                               !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
+        return {
+          running: engine.codeVersion || null,
+          runningCommit: engine.codeCommit || null,
+          dashboardRunning: _dashboardVersion.codeVersion,
+          dashboardRunningCommit: _dashboardVersion.codeCommit,
+          dashboardStartedAt: _dashboardVersion.startedAt,
+          disk: diskVersion,
+          diskCommit,
+          engineStale,
+          dashboardStale,
+          stale: engineStale || dashboardStale,
+          latest: _npmVersionCache?.latest || null,
+          // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
+          updateAvailable: !isGitRepo && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+          _npmCheckError: _npmVersionCache?.error || null,
+        };
+      })(),
+    };
+    _slowStateTs = now;
+  }
+
+  // Merge both tiers — no API contract change
+  _statusCache = { ..._fastState, ..._slowState, timestamp: new Date().toISOString() };
   _statusCacheJson = null; // invalidate cached JSON — will be lazily rebuilt by getStatusJson()
-  _lastMtimes = _getMtimes();
+  _statusCacheGzip = null;
   return _statusCache;
 }
 
@@ -455,6 +496,7 @@ function getStatusJson() {
   getStatus(); // ensure _statusCache is fresh
   if (!_statusCacheJson) {
     _statusCacheJson = JSON.stringify(_statusCache);
+    _statusCacheGzip = zlib.gzipSync(_statusCacheJson); // pre-compute gzip once per cache rebuild
   }
   return _statusCacheJson;
 }
@@ -463,9 +505,8 @@ function getStatusJson() {
 setInterval(() => {
   if (_statusStreamClients.size === 0) return;
   const data = getStatusJson();
-  const hash = require('crypto').createHash('md5').update(data).digest('hex');
-  if (hash === _lastStatusHash) return;
-  _lastStatusHash = hash;
+  if (data === _lastStatusPushRef) return; // O(1) reference comparison — new string ref means content changed
+  _lastStatusPushRef = data;
   for (const res of _statusStreamClients) {
     try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
   }
@@ -4222,15 +4263,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleStatus(req, res) {
     try {
-      // Use pre-serialized JSON to avoid double-stringify in jsonReply
+      // Use pre-serialized JSON and pre-computed gzip buffer — zero per-request compression
       const json = getStatusJson();
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.statusCode = 200;
       const ae = req && req.headers && req.headers['accept-encoding'] || '';
-      if (ae.includes('gzip') && json.length > 1024) {
+      if (ae.includes('gzip') && _statusCacheGzip) {
         res.setHeader('Content-Encoding', 'gzip');
-        res.end(zlib.gzipSync(json));
+        res.end(_statusCacheGzip);
       } else {
         res.end(json);
       }

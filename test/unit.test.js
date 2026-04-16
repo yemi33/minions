@@ -3377,6 +3377,22 @@ async function testLegacyStatusMigration() {
       'cleanup should log reconciliation of failed-with-PR items');
   });
 
+  await test('cleanup.js failed-with-PR reconciliation uses locked write via mutateWorkItems (#407)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Extract the reconciliation section (6a) — between the "Reconcile failed" comment and the next section
+    const sectionStart = src.indexOf('// 6a. Reconcile failed work items');
+    const sectionEnd = src.indexOf('// 6b.');
+    assert.ok(sectionStart > -1 && sectionEnd > sectionStart, 'Section 6a must exist');
+    const section = src.slice(sectionStart, sectionEnd);
+    // Must use mutateWorkItems (locked) — not safeJson+safeWrite (unlocked)
+    assert.ok(section.includes('mutateWorkItems'),
+      'reconciliation must use mutateWorkItems() for locked atomic read-modify-write');
+    assert.ok(!section.includes('safeWrite('),
+      'reconciliation must NOT use unlocked safeWrite() — race condition with concurrent writers');
+    assert.ok(!section.includes('safeJson('),
+      'reconciliation must NOT use safeJson() for read — mutateWorkItems provides the data inside the lock');
+  });
+
   await test('cleanup.js resets orphaned PRD item statuses (#779)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('shared.WI_STATUS.DISPATCHED') && src.includes('!wiIds.has(feat.id)'),
@@ -10209,6 +10225,16 @@ async function main() {
     // W-mo1jw71krscj: Pipeline behavioral tests — CRUD, stage execution, run lifecycle
     await testPipelineBehavioral();
 
+    // P-a5e9c1d7: Split getStatus() into fast/slow state tiers
+    await testStatusCacheTiers();
+
+    // P-c7f1a3b8: Pre-cached gzip status buffer
+    await testStatusGzipCache();
+
+    // P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled
+    await testParallelPrPolling();
+
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -10303,6 +10329,72 @@ async function testSharedJsFixes() {
     assert.ok(threw, 'withFileLock should throw on timeout with fresh lock');
     // Clean up
     try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('ENGINE_DEFAULTS.lockRetries is 0 — single attempt, no exponential backoff', () => {
+    // lockRetries=0 means maxAttempts=1: one 5s timeout window, no backoff sleeps
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetries, 0,
+      'lockRetries should be 0 to eliminate exponential backoff blocking');
+    // lockRetryBackoffMs kept at 500 for callers that explicitly override lockRetries
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetryBackoffMs, 500,
+      'lockRetryBackoffMs should remain at 500 for override callers');
+  });
+
+  await test('withFileLock with retries=0 throws immediately after single timeout — no retry', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'no-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 200, retryDelayMs: 25, retries: 0 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout with retries=0');
+    // With retries=0, should complete in ~200ms (single timeout), not ~600ms+ (which would indicate a retry)
+    assert.ok(elapsed < 400, `Should finish in ~200ms (single attempt), took ${elapsed}ms — indicates retry happened`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('withFileLock callers can override retries via options parameter', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'override-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      // Explicitly pass retries=1 — should attempt twice (1 timeout + backoff + 1 timeout)
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 150, retryDelayMs: 25, retries: 1, retryBackoffMs: 50 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout after exhausting override retries');
+    // With retries=1: 150ms timeout + 50ms backoff + 150ms timeout = ~350ms minimum
+    assert.ok(elapsed >= 300, `With retries=1, should take >=300ms, took ${elapsed}ms — override not working`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('mutateJsonFileLocked uses ENGINE_DEFAULTS.lockRetries=0 by default', () => {
+    // Verify mutateJsonFileLocked reads lockRetries from ENGINE_DEFAULTS
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fnStart = src.indexOf('function mutateJsonFileLocked(');
+    assert.ok(fnStart >= 0, 'mutateJsonFileLocked should exist');
+    const fnBody = src.substring(fnStart, fnStart + 500);
+    // Should use ENGINE_DEFAULTS.lockRetries as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetries'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetries');
+    // Should use ENGINE_DEFAULTS.lockRetryBackoffMs as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetryBackoffMs'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetryBackoffMs');
   });
 
   await test('sanitizePath allows valid subpaths', () => {
@@ -23307,6 +23399,351 @@ async function testPipelineBehavioral() {
       assert.ok(fn.includes(`STAGE_TYPE.${type}`), `executeStage should handle STAGE_TYPE.${type}`);
     }
     assert.ok(fn.includes('PIPELINE_STATUS.WAITING_HUMAN'), 'WAIT should return WAITING_HUMAN status');
+  });
+
+  // ── _countWorktrees TTL cache ──
+
+  await test('_countWorktrees uses TTL cache variables', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('_worktreeCountCache'), '_worktreeCountCache variable must exist');
+    assert.ok(dashSrc.includes('_worktreeCountCacheTs'), '_worktreeCountCacheTs timestamp variable must exist');
+  });
+
+  await test('_countWorktrees returns cached value within TTL', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The function must check Date.now() against _worktreeCountCacheTs to decide cache hit
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('Date.now()'), '_countWorktrees must check current time for TTL');
+    assert.ok(fn.includes('_worktreeCountCacheTs'), '_countWorktrees must reference cache timestamp');
+    assert.ok(fn.includes('_worktreeCountCache'), '_countWorktrees must reference cached value');
+    // Must have early return for cache hit (return cached value without scanning)
+    assert.ok(fn.includes('return _worktreeCountCache'), '_countWorktrees must return cached value on cache hit');
+  });
+
+  await test('_countWorktrees updates cache after filesystem scan', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    // After scanning, must write back to cache
+    assert.ok(fn.includes('_worktreeCountCache = count') || fn.includes('_worktreeCountCache = '),
+      '_countWorktrees must store scanned count in cache');
+    assert.ok(fn.includes('_worktreeCountCacheTs = '),
+      '_countWorktrees must update cache timestamp after scan');
+  });
+
+  await test('_countWorktrees TTL uses ENGINE_DEFAULTS.worktreeCountCacheTtl', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('worktreeCountCacheTtl'),
+      '_countWorktrees TTL must reference ENGINE_DEFAULTS.worktreeCountCacheTtl, not a hardcoded number');
+  });
+
+  await test('ENGINE_DEFAULTS includes worktreeCountCacheTtl', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.worktreeCountCacheTtl, 30000,
+      'worktreeCountCacheTtl must be 30000ms (30 seconds)');
+  });
+}
+
+// ─── P-a5e9c1d7: Split getStatus() into fast/slow state tiers ───────────────
+
+async function testStatusCacheTiers() {
+  console.log('\n── Status Cache Tiers (fast/slow) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Tier variables and TTLs exist ──
+
+  await test('dashboard.js has _fastState and _slowState cache variables', () => {
+    assert.ok(dashSrc.includes('let _fastState'), '_fastState variable must exist');
+    assert.ok(dashSrc.includes('let _slowState'), '_slowState variable must exist');
+    assert.ok(dashSrc.includes('let _fastStateTs'), '_fastStateTs timestamp must exist');
+    assert.ok(dashSrc.includes('let _slowStateTs'), '_slowStateTs timestamp must exist');
+  });
+
+  await test('FAST_STATE_TTL is 10s and SLOW_STATE_TTL is 60s', () => {
+    assert.ok(dashSrc.includes('FAST_STATE_TTL = 10000'), 'FAST_STATE_TTL must be 10000ms (10s)');
+    assert.ok(dashSrc.includes('SLOW_STATE_TTL = 60000'), 'SLOW_STATE_TTL must be 60000ms (60s)');
+  });
+
+  // ── Fast state contains the right keys ──
+
+  await test('fast state includes frequently-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // These must appear in the _fastState assignment
+    assert.ok(body.includes('_fastState'), 'getStatus must build _fastState');
+    for (const key of ['agents:', 'inbox:', 'pullRequests:', 'dispatch:', 'metrics:', 'workItems:', 'watches:', 'meetings:', 'adoThrottle:', 'ghThrottle:', 'engineLog:']) {
+      assert.ok(body.includes(key), `fast state must include ${key}`);
+    }
+  });
+
+  // ── Slow state contains the right keys ──
+
+  await test('slow state includes rarely-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    assert.ok(body.includes('_slowState'), 'getStatus must build _slowState');
+    for (const key of ['skills:', 'prdProgress:', 'mcpServers:', 'pinned:', 'projects:', 'autoMode:', 'version:', 'schedules:']) {
+      assert.ok(body.includes(key), `slow state must include ${key}`);
+    }
+  });
+
+  // ── invalidateStatusCache invalidates fast state only ──
+
+  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    const body = fn[0];
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
+    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+  });
+
+  // ── mtime tracking applies to fast state only ──
+
+  await test('mtime-based validation applies only to fast-state TTL check', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The mtime check should be near _fastState logic, not _slowState
+    const fastIdx = body.indexOf('_fastState');
+    const mtimeIdx = body.indexOf('_mtimesChanged');
+    const slowIdx = body.indexOf('_slowState');
+    assert.ok(fastIdx > 0 && mtimeIdx > 0 && slowIdx > 0, 'all three markers must exist');
+    // mtime check should appear before or near fast state, not after slow state assignment
+    assert.ok(mtimeIdx < slowIdx, 'mtime validation must appear before slow state building (applies to fast tier only)');
+  });
+
+  // ── getStatus merges both tiers ──
+
+  await test('getStatus merges fast and slow state into combined _statusCache', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The final _statusCache should spread both tiers
+    assert.ok(body.includes('..._fastState') && body.includes('..._slowState'),
+      'getStatus must merge _fastState and _slowState via spread into _statusCache');
+    assert.ok(body.includes('timestamp:'), 'merged status must include timestamp');
+  });
+
+  // ── Slow state is NOT rebuilt when only fast state changes ──
+
+  await test('slow state rebuild is gated by SLOW_STATE_TTL only (no mtime check)', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The slowStale check should reference SLOW_STATE_TTL, not _mtimesChanged
+    assert.ok(body.includes('SLOW_STATE_TTL'), 'slow state staleness must be gated by SLOW_STATE_TTL');
+    // Extract the slowStale logic — it should be a simple TTL check
+    const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
+    assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+// ─── P-c7f1a3b8: Pre-cached gzip status buffer ────────────────────────────
+
+async function testStatusGzipCache() {
+  console.log('\n── P-c7f1a3b8: Pre-cached gzip status buffer ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('_statusCacheGzip variable exists alongside _statusCacheJson', () => {
+    assert.ok(dashSrc.includes('let _statusCacheGzip'),
+      'dashboard.js must declare _statusCacheGzip variable');
+    // Both should be declared near each other
+    const jsonIdx = dashSrc.indexOf('let _statusCacheJson');
+    const gzipIdx = dashSrc.indexOf('let _statusCacheGzip');
+    assert.ok(Math.abs(gzipIdx - jsonIdx) < 200,
+      '_statusCacheGzip must be declared near _statusCacheJson');
+  });
+
+  await test('getStatusJson() pre-computes gzip buffer on cache rebuild', () => {
+    const fn = dashSrc.match(/function getStatusJson\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatusJson must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip') && fn[0].includes('gzipSync'),
+      'getStatusJson must compute _statusCacheGzip via gzipSync when rebuilding cache');
+  });
+
+  await test('gzipSync called once per cache rebuild, not per request in handleStatus', () => {
+    // handleStatus should NOT call gzipSync — it should serve _statusCacheGzip
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(!handleStatusFn.includes('gzipSync'),
+      'handleStatus must NOT call gzipSync — should serve pre-cached _statusCacheGzip');
+    assert.ok(handleStatusFn.includes('_statusCacheGzip'),
+      'handleStatus must serve the pre-cached _statusCacheGzip buffer');
+  });
+
+  await test('handleStatus serves pre-cached gzip when Accept-Encoding includes gzip', () => {
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(handleStatusFn.includes('accept-encoding') || handleStatusFn.includes('Accept-Encoding'),
+      'handleStatus must check Accept-Encoding header');
+    assert.ok(handleStatusFn.includes('Content-Encoding') && handleStatusFn.includes('gzip'),
+      'handleStatus must set Content-Encoding: gzip when serving cached buffer');
+  });
+
+  await test('SSE periodic push uses reference comparison instead of MD5 hash', () => {
+    // Find the setInterval for periodic push (the 10000ms one)
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Must NOT use MD5 hash
+    assert.ok(!intervalBody.includes('createHash') && !intervalBody.includes('md5'),
+      'SSE periodic push must NOT use MD5 hash — use reference comparison');
+    // Should use reference comparison (checking if data !== _lastXxx or similar)
+    assert.ok(!intervalBody.includes('.digest('),
+      'SSE periodic push must not compute hash digests');
+  });
+
+  await test('_lastStatusHash is removed or replaced with reference-based tracking', () => {
+    // The old _lastStatusHash should be replaced
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Should have some form of "last" reference comparison
+    assert.ok(intervalBody.includes('===') || intervalBody.includes('!=='),
+      'SSE periodic push must use reference equality for change detection');
+  });
+
+  await test('invalidateStatusCache clears _statusCacheGzip', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'invalidateStatusCache must clear _statusCacheGzip');
+  });
+
+  await test('getStatus cache rebuild invalidates _statusCacheGzip', () => {
+    // When _statusCache is rebuilt in getStatus(), both _statusCacheJson and _statusCacheGzip are invalidated
+    const fn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatus must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'getStatus must invalidate _statusCacheGzip when rebuilding cache');
+  });
+
+  await test('jsonReply still gzips normally for non-status endpoints', () => {
+    const fn = dashSrc.match(/function jsonReply[\s\S]*?^}/m);
+    assert.ok(fn, 'jsonReply must exist');
+    assert.ok(fn[0].includes('gzipSync'),
+      'jsonReply must still call gzipSync for non-status endpoints');
+  });
+}
+
+// ─── P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled ──
+
+async function testParallelPrPolling() {
+  console.log('\n── P-e1c8b4a6: Parallel PR polling via Promise.allSettled ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Section 2.6: status polls use Promise.allSettled ──
+
+  await test('section 2.6 uses Promise.allSettled for concurrent status polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(section26Idx > -1, 'Section 2.6 comment must exist');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('Promise.allSettled'),
+      'Section 2.6 must use Promise.allSettled to run ADO and GitHub status polls concurrently');
+  });
+
+  await test('section 2.6 builds a promise array for conditional poll dispatch', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // Should push to an array, not await sequentially
+    assert.ok(section26Block.includes('.push('),
+      'Section 2.6 must push poll promises to an array (conditional dispatch pattern)');
+  });
+
+  await test('section 2.6 processPendingRebases runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const rebaseIdx = section26Block.indexOf('processPendingRebases');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(rebaseIdx > -1, 'processPendingRebases must exist in section 2.6');
+    assert.ok(rebaseIdx > allSettledIdx,
+      'processPendingRebases must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 syncPrdFromPrs runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const syncIdx = section26Block.indexOf('syncPrdFromPrs');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(syncIdx > -1, 'syncPrdFromPrs must exist in section 2.6');
+    assert.ok(syncIdx > allSettledIdx,
+      'syncPrdFromPrs must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 preserves conditional guards for ADO and GitHub polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // ADO guard: adoPollEnabled && !isAdoThrottled()
+    assert.ok(section26Block.includes('adoPollEnabled') && section26Block.includes('isAdoThrottled'),
+      'Section 2.6 must preserve adoPollEnabled and isAdoThrottled guards');
+    // GitHub guard: ghPollEnabled && !isGhThrottled()
+    assert.ok(section26Block.includes('ghPollEnabled') && section26Block.includes('isGhThrottled'),
+      'Section 2.6 must preserve ghPollEnabled and isGhThrottled guards');
+  });
+
+  await test('section 2.6 throttle skip log messages preserved for both ADO and GitHub', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('[ado]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [ado] throttled message when ADO poll is skipped');
+    assert.ok(section26Block.includes('[gh]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [gh] throttled message when GitHub poll is skipped');
+  });
+
+  // ── Behavioral test: concurrent execution ──
+
+  await test('Promise.allSettled pattern enables concurrent poll execution', async () => {
+    // Simulate the engine pattern: build promise array conditionally, allSettled them
+    const callOrder = [];
+    const mockAdoPoll = async () => {
+      callOrder.push('ado-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('ado-end');
+    };
+    const mockGhPoll = async () => {
+      callOrder.push('gh-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('gh-end');
+    };
+
+    // Build promise array (mimics engine conditional push pattern)
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    // Both should start before either finishes (concurrent execution)
+    assert.ok(callOrder.indexOf('gh-start') < callOrder.indexOf('ado-end'),
+      `Polls must execute concurrently — gh-start should occur before ado-end. Order: ${callOrder.join(', ')}`);
+    assert.strictEqual(callOrder.length, 4, 'All four events (2 starts + 2 ends) must fire');
+  });
+
+  await test('Promise.allSettled isolates errors between polls', async () => {
+    // If ADO fails, GitHub should still complete
+    let ghCompleted = false;
+    const mockAdoPoll = async () => { throw new Error('ADO network error'); };
+    const mockGhPoll = async () => { ghCompleted = true; };
+
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    assert.ok(ghCompleted, 'GitHub poll must complete even when ADO poll fails');
   });
 }
 
