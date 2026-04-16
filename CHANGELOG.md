@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1011 (2026-04-16)
+
+### Fixes
+-  add push-triggered CI for chore/publish branches
+
+### Other
+- chore: test publish workflow fix
+
 ## 0.1.1008 (2026-04-16)
 
 ### Features
