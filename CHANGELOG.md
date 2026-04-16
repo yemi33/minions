@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1041 (2026-04-16)
+
+### Other
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
 ## 0.1.1039 (2026-04-16)
 
 ### Features
