@@ -578,10 +578,17 @@ For all state files, look under \`${MINIONS_DIR}\`.`;
   return result;
 }
 
+function findCCActionsDelimiter(text) {
+  if (!text) return -1;
+  const match = /(?:^|\r?\n)===ACTIONS===[ \t]*(?=\r?\n|$)/m.exec(text);
+  if (!match) return -1;
+  return match.index + match[0].indexOf('===ACTIONS===');
+}
+
 function parseCCActions(text) {
   let actions = [];
   let displayText = text;
-  const delimIdx = text.indexOf('===ACTIONS===');
+  const delimIdx = findCCActionsDelimiter(text);
   if (delimIdx >= 0) {
     displayText = text.slice(0, delimIdx).trim();
     try {
@@ -598,6 +605,65 @@ function parseCCActions(text) {
     if (actions.length > 0) displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
   }
   return { text: displayText, actions };
+}
+
+// ── /loop → create-watch safety net ──────────────────────────────────────────
+// CC sometimes invokes the /loop skill instead of emitting a create-watch action.
+// This pure function detects /loop invocation in CC response text and synthesizes
+// a create-watch action as a fallback. Returns null if no conversion needed.
+
+function _detectLoopInvocation(text, actions) {
+  if (!text) return null;
+  // If a create-watch action was already emitted, no fallback needed
+  if (actions && actions.some(a => a.type === 'create-watch')) return null;
+
+  // Check for /loop invocation patterns in CC response
+  const loopPatterns = [
+    /\/loop\b/i,
+    /\bloop skill\b/i,
+    /\bSkill.*\bloop\b/i,
+    /\bstarted.*\bloop\b/i,
+    /\bmonitoring.*\bloop\b/i,
+    /\binvok(?:e|ed|ing).*\bloop\b/i,
+  ];
+  if (!loopPatterns.some(p => p.test(text))) return null;
+
+  // Extract target — PR number or work item ID
+  const prMatch = text.match(/\bPR[- #]?(\d+)\b/i) || text.match(/\bpull[- ]request[- #]?(\d+)/i);
+  const wiMatch = text.match(/\bW-([a-z0-9]+)\b/);
+
+  let target = null, targetType = 'pr';
+  if (prMatch) {
+    target = prMatch[1];
+    targetType = 'pr';
+  } else if (wiMatch) {
+    target = 'W-' + wiMatch[1];
+    targetType = 'work-item';
+  }
+  if (!target) return null; // Can't synthesize without a target
+
+  // Extract interval (e.g. "every 15 minutes", "every 5m")
+  const intervalMatch = text.match(/every\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)\b/i);
+  let interval = '5m';
+  if (intervalMatch) interval = intervalMatch[1] + intervalMatch[2][0];
+
+  // Infer condition from keywords
+  let condition = 'any';
+  if (/\bbuild\b/i.test(text) && /\b(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?|success)\b/i.test(text)) condition = 'build-pass';
+  else if (/\bbuild\b/i.test(text) && /\b(?:fail(?:s|ing|ed)?|red|broken|broke)\b/i.test(text)) condition = 'build-fail';
+  else if (/\bmerge[d]?\b/i.test(text)) condition = 'merged';
+  else if (/\bcomplete[d]?\b/i.test(text)) condition = 'completed';
+
+  return {
+    type: 'create-watch',
+    target,
+    targetType,
+    condition,
+    interval,
+    owner: 'human',
+    description: 'Auto-converted from /loop invocation',
+    stopAfter: condition === 'any' ? 0 : 1,
+  };
 }
 
 // ── Server-side CC action execution ──────────────────────────────────────────
@@ -654,6 +720,7 @@ async function executeCCActions(actions) {
           const kbDir = path.join(MINIONS_DIR, 'knowledge', category);
           if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
           shared.safeWrite(path.join(kbDir, slug + '.md'), `# ${action.title}\n\n${action.content || action.description || ''}`);
+          queries.invalidateKnowledgeBaseCache();
           results.push({ type: 'knowledge', ok: true });
           break;
         }
@@ -1412,6 +1479,63 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handleWorkItemsCancel(req, res) {
+    try {
+      const body = await readBody(req);
+      const { id, source, reason } = body;
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+      // Find the right work-items file
+      let wiPath;
+      if (!source || source === 'central') {
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      } else {
+        const proj = PROJECTS.find(p => p.name === source);
+        if (proj) wiPath = shared.projectWorkItemsPath(proj);
+      }
+      if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
+
+      let result = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) { result = { code: 404, body: { error: 'item not found' } }; return items; }
+        // Reject already-done or already-cancelled items
+        if (DONE_STATUSES.has(item.status) || item.status === WI_STATUS.CANCELLED) {
+          result = { code: 400, body: { error: 'cannot cancel item with status: ' + item.status } };
+          return items;
+        }
+        item.status = WI_STATUS.CANCELLED;
+        item._cancelledBy = reason || 'user';
+        item.cancelledAt = new Date().toISOString();
+        result = { code: 200, body: { ok: true, item } };
+        return items;
+      });
+      if (!result) return jsonReply(res, 500, { error: 'unexpected state' });
+      if (result.code !== 200) return jsonReply(res, result.code, result.body);
+
+      // Clean dispatch entries + kill running agent (outside lock)
+      const dispatchRemoved = cleanDispatchEntries(d =>
+        d.meta?.item?.id === id ||
+        d.meta?.dispatchKey?.endsWith(id)
+      );
+
+      // Clean cooldown entries
+      try {
+        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+        const cooldowns = safeJsonObj(cooldownPath);
+        let cleaned = false;
+        for (const key of Object.keys(cooldowns)) {
+          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
+        }
+        if (cleaned) safeWrite(cooldownPath, cooldowns);
+      } catch (e) { console.error('cooldown cleanup on cancel:', e.message); }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   async function handleWorkItemsArchive(req, res) {
     try {
       const body = await readBody(req);
@@ -1751,13 +1875,18 @@ const server = http.createServer(async (req, res) => {
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJsonObj(planPath);
-      if (!plan) return jsonReply(res, 500, { error: 'failed to read plan file' });
-      const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
-      if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
-
-      plan.missing_features.splice(idx, 1);
-      safeWrite(planPath, plan);
+      let removed = false;
+      mutateJsonFileLocked(planPath, (plan) => {
+        if (!plan || Array.isArray(plan) || typeof plan !== 'object') plan = { missing_features: [] };
+        const features = Array.isArray(plan.missing_features) ? plan.missing_features : [];
+        const idx = features.findIndex(f => f.id === body.itemId);
+        if (idx < 0) return plan;
+        features.splice(idx, 1);
+        plan.missing_features = features;
+        removed = true;
+        return plan;
+      }, { defaultValue: { missing_features: [] } });
+      if (!removed) return jsonReply(res, 404, { error: 'item not found in plan' });
 
       // Also remove any materialized work item for this plan item
       let cancelled = false;
@@ -2114,7 +2243,7 @@ const server = http.createServer(async (req, res) => {
     for (const cat of shared.KB_CATEGORIES) result[cat] = [];
     for (const e of entries) {
       if (!result[e.cat]) result[e.cat] = [];
-      result[e.cat].push({ file: e.file, category: e.cat, title: e.title, agent: e.agent, date: e.date, size: e.size, preview: e.preview });
+      result[e.cat].push({ file: e.file, category: e.cat, title: e.title, agent: e.agent, date: e.date, sortTs: e.sortTs, size: e.size, preview: e.preview });
     }
     const swept = safeJson(path.join(ENGINE_DIR, 'kb-swept.json'));
     if (swept) result.lastSwept = swept.timestamp;
@@ -2165,13 +2294,22 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Build a manifest of all KB entries with their content (skip pinned — user wants to keep them)
-      const pinnedKeys = new Set(body.pinnedKeys || []);
+      const requestPinnedKeys = Array.isArray(body.pinnedKeys)
+        ? body.pinnedKeys.filter(k => typeof k === 'string' && k.startsWith('knowledge/'))
+        : [];
+      const serverPinnedKeys = shared.getPinnedItems().filter(k => k.startsWith('knowledge/'));
+      const pinnedKeys = new Set([...serverPinnedKeys, ...requestPinnedKeys]);
       const manifest = [];
       for (const e of entries) {
         if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;
         const content = safeRead(path.join(MINIONS_DIR, 'knowledge', e.cat, e.file));
         if (!content) continue;
         manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });
+      }
+      if (manifest.length < 2) {
+        global._kbSweepLastResult = { ok: true, summary: 'nothing to sweep (< 2 unpinned entries)' };
+        global._kbSweepLastCompletedAt = Date.now();
+        return;
       }
 
       const { callLLM, trackEngineUsage } = require('./engine/llm');
@@ -2277,9 +2415,12 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         if (!fs.existsSync(srcPath)) continue;
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
         try {
+          const srcStats = fs.statSync(srcPath);
           const content = safeRead(srcPath);
           const updated = content.replace(/^(category:\s*).+$/m, `$1${r.to}`);
-          safeWrite(path.join(destDir, entry.file), updated);
+          const destPath = path.join(destDir, entry.file);
+          safeWrite(destPath, updated);
+          fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);
           safeUnlink(srcPath);
           reclassified++;
         } catch (e) { console.error('kb reclassify:', e.message); }
@@ -2299,6 +2440,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
+      queries.invalidateKnowledgeBaseCache();
       global._kbSweepLastResult = { ok: true, summary, plan };
       global._kbSweepLastCompletedAt = Date.now();
     } catch (e) {
@@ -2526,7 +2668,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         const prLinks = shared.getPrLinks();
         const implContext = (plan.missing_features || []).map(f => {
           const wi = planWis.find(w => w.id === f.id);
-          const pr = allPrs.find(p => prLinks[p.id] === f.id || (p.prdItems || []).includes(f.id));
+          const pr = allPrs.find(p => (prLinks[p.id] || []).includes(f.id) || (p.prdItems || []).includes(f.id));
           return `- **${f.id}**: ${f.name} [status: ${wi?.status || f.status}]${pr ? ` (PR: ${pr.id}, branch: \`${pr.branch}\`)` : ''}`;
         }).join('\n');
 
@@ -3144,6 +3286,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
       const kbFile = path.join(kbDir, name);
       safeWrite(kbFile, kbContent);
+      queries.invalidateKnowledgeBaseCache();
 
       // Move inbox item to archive
       const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
@@ -3516,6 +3659,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
 
         const parsed = parseCCActions(result.text);
+        // Safety net: detect /loop invocation and convert to create-watch
+        const _loopWatch = _detectLoopInvocation(parsed.text, parsed.actions);
+        if (_loopWatch) {
+          parsed.actions.push(_loopWatch);
+          console.warn('[CC] /loop invocation detected — converted to create-watch');
+          try { shared.log('warn', '/loop invocation detected in CC response — auto-converted to create-watch'); } catch {}
+        }
         if (parsed.actions.length > 0) {
           parsed.actionResults = await executeCCActions(parsed.actions);
         }
@@ -3601,7 +3751,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
-            const actIdx = text.indexOf('===ACTIONS===');
+            const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
           },
@@ -3625,7 +3775,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
             effort: streamEffort, direct: true,
             onChunk: (text) => {
-              const actIdx = text.indexOf('===ACTIONS===');
+              const actIdx = findCCActionsDelimiter(text);
               const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
               try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
             },
@@ -3678,6 +3828,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         // Send final result with actions — execute server-side first
         const { text: displayText, actions } = parseCCActions(result.text);
+        // Safety net: detect /loop invocation and convert to create-watch
+        const _loopWatch = _detectLoopInvocation(displayText, actions);
+        if (_loopWatch) {
+          actions.push(_loopWatch);
+          console.warn('[CC] /loop invocation detected — converted to create-watch');
+          try { shared.log('warn', '/loop invocation detected in CC response — auto-converted to create-watch'); } catch {}
+        }
         let actionResults;
         if (actions.length > 0) {
           actionResults = await executeCCActions(actions);
@@ -4228,6 +4385,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?, references?, acceptanceCriteria?', handler: handleWorkItemsUpdate },
     { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
+    { method: 'POST', path: '/api/work-items/cancel', desc: 'Cancel a work item, kill agent, clear dispatch', params: 'id, source?, reason?', handler: handleWorkItemsCancel },
     { method: 'POST', path: '/api/work-items/archive', desc: 'Move a completed/failed work item to archive', params: 'id, source?', handler: handleWorkItemsArchive },
     { method: 'GET', path: '/api/work-items/archive', desc: 'List archived work items', handler: handleWorkItemsArchiveList },
     { method: 'POST', path: '/api/work-items/reopen', desc: 'Reopen a done/failed work item back to pending', params: 'id, project?, description?', handler: handleWorkItemsReopen },
@@ -4357,7 +4515,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Extract PR number from URL
       const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
       const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
-      const prId = 'PR-' + prNum;
+      const prId = shared.getCanonicalPrId(targetProject, prNum, url);
 
       // Atomic check-and-insert to prevent duplicates and races with polling loops
       let duplicate = false;
@@ -4366,6 +4524,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
         prs.push({
           id: prId,
+          prNumber: parseInt(prNum, 10) || null,
           title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
           description: '',
           agent: 'human',
@@ -4531,6 +4690,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const header = '# ' + title + '\n\n*Created by human teammate on ' + new Date().toISOString().slice(0, 10) + '*\n\n';
       safeWrite(filePath, header + content);
+      queries.invalidateKnowledgeBaseCache();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, path: filePath });
     }},
@@ -4900,4 +5060,3 @@ server.on('error', e => {
   }
   process.exit(1);
 });
-

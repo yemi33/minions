@@ -7,7 +7,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeWrite, log } = shared;
+const { safeJson, safeWrite, log, ENGINE_DEFAULTS } = shared;
 const { ENGINE_DIR } = queries;
 
 const COOLDOWN_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
@@ -37,6 +37,13 @@ function saveCooldowns() {
     for (const [k, v] of dispatchCooldowns) {
       if (now - v.timestamp > 24 * 60 * 60 * 1000) dispatchCooldowns.delete(k);
     }
+    // Trim pendingContexts arrays before writing to prevent bloat
+    const cap = ENGINE_DEFAULTS.maxPendingContexts;
+    for (const [, v] of dispatchCooldowns) {
+      if (Array.isArray(v.pendingContexts) && v.pendingContexts.length > cap) {
+        v.pendingContexts = v.pendingContexts.slice(-cap);
+      }
+    }
     const obj = Object.fromEntries(dispatchCooldowns);
     try {
       safeWrite(COOLDOWN_PATH, obj);
@@ -61,8 +68,11 @@ function setCooldown(key) {
 
 function setCooldownWithContext(key, context) {
   const existing = dispatchCooldowns.get(key);
-  const pendingContexts = existing?.pendingContexts || [];
+  let pendingContexts = existing?.pendingContexts || [];
   if (context) pendingContexts.push(context);
+  // Cap to last N entries to prevent unbounded growth (cooldowns.json bloat)
+  const cap = ENGINE_DEFAULTS.maxPendingContexts;
+  if (pendingContexts.length > cap) pendingContexts = pendingContexts.slice(-cap);
   dispatchCooldowns.set(key, {
     timestamp: Date.now(),
     failures: existing?.failures || 0,

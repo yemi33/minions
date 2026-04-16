@@ -57,7 +57,8 @@ const prNumber = parseInt(prNumberArg, 10);
 function findInCache(projects) {
   for (const project of projects) {
     const prs = safeJsonArr(projectPrPath(project));
-    const pr = prs.find(p => p.prNumber === prNumber || p.id === `PR-${prNumber}`);
+    shared.normalizePrRecords(prs, project);
+    const pr = prs.find(p => p.prNumber === prNumber || p.id === shared.getCanonicalPrId(project, prNumber) || shared.getPrDisplayId(p) === `PR-${prNumber}`);
     if (!pr) continue;
     const out = {
       prNumber: pr.prNumber || prNumber,

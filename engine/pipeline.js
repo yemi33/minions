@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
+const queries = require('./queries');
 const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
@@ -144,6 +145,46 @@ function resolveStageConfig(stage, run) {
   return resolved;
 }
 
+function collectPipelinePrRefs(pipeline, run) {
+  const refs = [];
+  const seen = new Set();
+  function addPrRef(resource) {
+    if (!resource) return;
+    let type = '';
+    let id = '';
+    let url = '';
+    if (typeof resource === 'string') {
+      id = resource.trim();
+      url = /^https?:\/\//i.test(id) ? id : '';
+    } else if (typeof resource === 'object') {
+      type = String(resource.type || '').trim().toLowerCase();
+      id = String(resource.label || resource.id || '').trim();
+      url = String(resource.url || '').trim();
+    } else {
+      return;
+    }
+    if (type && type !== 'pr') return;
+    const refId = id || url;
+    if (!refId && !url) return;
+    const prNumber = shared.getPrNumber({ id: refId, url });
+    if (!type && prNumber == null) return;
+    const key = url || refId;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    refs.push({ id: refId, url });
+  }
+  for (const res of (pipeline?.monitoredResources || [])) addPrRef(res);
+  for (const stage of (pipeline?.stages || [])) {
+    for (const res of (stage?.monitoredResources || [])) addPrRef(res);
+  }
+  if (run) {
+    for (const [, stageState] of Object.entries(run.stages || {})) {
+      for (const prRef of (stageState.artifacts?.prs || [])) addPrRef(prRef);
+    }
+  }
+  return refs;
+}
+
 // ── Condition Evaluation ─────────────────────────────────────────────────────
 
 /**
@@ -186,27 +227,12 @@ function evaluateCondition(condition, ctx) {
       return pipelineRuns.length >= threshold;
     }
     case 'allBuildsGreen': {
-      // True when all PRs in monitoredResources (or run artifacts) have buildStatus 'passing'
-      const projects = shared.getProjects(config);
-      const allPrs = projects.reduce((acc, p) => {
-        return acc.concat(safeJson(shared.projectPrPath(p)) || []);
-      }, []);
-
-      // Collect PR IDs to check: from monitoredResources (type: 'pr') or run artifact PRs
-      const prIds = new Set();
-      for (const res of (pipeline?.monitoredResources || [])) {
-        const r = typeof res === 'string' ? { label: res } : res;
-        if (r.type === 'pr' && r.label) prIds.add(r.label);
-      }
-      // Also check PRs from run artifacts
-      if (run) {
-        for (const [, s] of Object.entries(run.stages || {})) {
-          for (const prId of (s.artifacts?.prs || [])) prIds.add(prId);
-        }
-      }
-      if (prIds.size === 0) return false; // no PRs to check = can't confirm green
-      for (const prId of prIds) {
-        const pr = allPrs.find(p => p.id === prId);
+      // True when all PRs in monitoredResources (pipeline-level or stage-level) or run artifacts have buildStatus 'passing'
+      const allPrs = queries.getPullRequests(config);
+      const prRefs = collectPipelinePrRefs(pipeline, run);
+      if (prRefs.length === 0) return false; // no PRs to check = can't confirm green
+      for (const prRef of prRefs) {
+        const pr = shared.findPrRecord(allPrs, prRef);
         if (!pr || pr.buildStatus !== 'passing') return false;
       }
       return true;
@@ -703,7 +729,7 @@ function isStageComplete(stage, stageState, run, config) {
       for (const project of projects) {
         const prs = safeJson(shared.projectPrPath(project)) || [];
         for (const prId of prIds) {
-          const pr = prs.find(p => p.id === prId);
+          const pr = shared.findPrRecord(prs, prId, project);
           if (pr && pr.status !== PR_STATUS.MERGED && pr.status !== PR_STATUS.ABANDONED) return false;
         }
       }
