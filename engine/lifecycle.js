@@ -13,6 +13,7 @@ const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, ex
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { isBranchActive } = require('./cooldown');
+const { worktreeDirMatchesBranch } = require('./cleanup');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
@@ -1065,8 +1066,10 @@ const PENDING_REBASES_PATH = path.join(ENGINE_DIR, 'pending-rebases.json');
 
 function queuePendingRebase(pr, project, mergedItemId) {
   mutateJsonFileLocked(PENDING_REBASES_PATH, (pending) => {
-    if (pending.some(e => e.prId === pr.id)) return; // already queued
+    const prDisplayId = shared.getPrDisplayId(pr);
+    if (pending.some(e => e.projectName === project.name && shared.getPrDisplayId(e.prId) === prDisplayId)) return pending; // already queued
     pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
+    return pending;
   }, { defaultValue: [] });
 }
 
@@ -1087,9 +1090,11 @@ async function processPendingRebases(config) {
     const project = shared.getProjects(config).find(p => p.name === entry.projectName);
     if (!project) continue;
 
-    const prs = safeJson(projectPrPath(project)) || [];
-    const pr = prs.find(p => p.id === entry.prId && p.status === PR_STATUS.ACTIVE);
+    const prs = getPrs(project);
+    const pr = shared.findPrRecord(prs, entry.prId, project);
+    if (pr && pr.id !== entry.prId) entry.prId = pr.id;
     if (!pr) continue; // PR closed/merged since queuing
+    if (pr.status !== PR_STATUS.ACTIVE) continue; // PR closed/merged since queuing
 
     const result = await rebaseBranchOntoMain(pr, project, config);
     if (!result.success) {
@@ -1120,12 +1125,11 @@ async function handlePostMerge(pr, project, config, newStatus) {
     const root = path.resolve(project.localPath);
     const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
     // Find worktrees matching this branch — dir format is {slug}-{branch}-{suffix}
-    const branchSlug = shared.sanitizeBranch(pr.branch).toLowerCase();
     try {
       const dirs = require('fs').readdirSync(wtRoot);
       for (const dir of dirs) {
         const dirLower = dir.toLowerCase();
-        if (dirLower.includes(branchSlug) || dir === pr.branch || dir === `bt-${prNum}`) {
+        if (worktreeDirMatchesBranch(dirLower, pr.branch) || dir === pr.branch || dir === `bt-${prNum}`) {
           const wtPath = path.join(wtRoot, dir);
           try {
             if (!require('fs').statSync(wtPath).isDirectory()) continue;
@@ -1802,7 +1806,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         // Find the worktree directory for this dispatch's branch
         const branchSlug = shared.sanitizeBranch ? shared.sanitizeBranch(meta.branch) : meta.branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
         const dirs = fs.readdirSync(worktreeRoot).filter(d => {
-          return d.includes(branchSlug) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
+          return worktreeDirMatchesBranch(d.toLowerCase(), meta.branch) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
         });
         // Only remove if no other active dispatch uses this branch
         const dispatch = getDispatch();
