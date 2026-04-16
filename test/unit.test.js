@@ -10209,6 +10209,9 @@ async function main() {
     // W-mo1jw71krscj: Pipeline behavioral tests — CRUD, stage execution, run lifecycle
     await testPipelineBehavioral();
 
+    // P-c7f1a3b8: Pre-cached gzip status buffer
+    await testStatusGzipCache();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -23299,6 +23302,97 @@ async function testPipelineBehavioral() {
       assert.ok(fn.includes(`STAGE_TYPE.${type}`), `executeStage should handle STAGE_TYPE.${type}`);
     }
     assert.ok(fn.includes('PIPELINE_STATUS.WAITING_HUMAN'), 'WAIT should return WAITING_HUMAN status');
+  });
+}
+
+// ─── P-c7f1a3b8: Pre-cached gzip status buffer ────────────────────────────
+
+async function testStatusGzipCache() {
+  console.log('\n── P-c7f1a3b8: Pre-cached gzip status buffer ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('_statusCacheGzip variable exists alongside _statusCacheJson', () => {
+    assert.ok(dashSrc.includes('let _statusCacheGzip'),
+      'dashboard.js must declare _statusCacheGzip variable');
+    // Both should be declared near each other
+    const jsonIdx = dashSrc.indexOf('let _statusCacheJson');
+    const gzipIdx = dashSrc.indexOf('let _statusCacheGzip');
+    assert.ok(Math.abs(gzipIdx - jsonIdx) < 200,
+      '_statusCacheGzip must be declared near _statusCacheJson');
+  });
+
+  await test('getStatusJson() pre-computes gzip buffer on cache rebuild', () => {
+    const fn = dashSrc.match(/function getStatusJson\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatusJson must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip') && fn[0].includes('gzipSync'),
+      'getStatusJson must compute _statusCacheGzip via gzipSync when rebuilding cache');
+  });
+
+  await test('gzipSync called once per cache rebuild, not per request in handleStatus', () => {
+    // handleStatus should NOT call gzipSync — it should serve _statusCacheGzip
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(!handleStatusFn.includes('gzipSync'),
+      'handleStatus must NOT call gzipSync — should serve pre-cached _statusCacheGzip');
+    assert.ok(handleStatusFn.includes('_statusCacheGzip'),
+      'handleStatus must serve the pre-cached _statusCacheGzip buffer');
+  });
+
+  await test('handleStatus serves pre-cached gzip when Accept-Encoding includes gzip', () => {
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(handleStatusFn.includes('accept-encoding') || handleStatusFn.includes('Accept-Encoding'),
+      'handleStatus must check Accept-Encoding header');
+    assert.ok(handleStatusFn.includes('Content-Encoding') && handleStatusFn.includes('gzip'),
+      'handleStatus must set Content-Encoding: gzip when serving cached buffer');
+  });
+
+  await test('SSE periodic push uses reference comparison instead of MD5 hash', () => {
+    // Find the setInterval for periodic push (the 10000ms one)
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Must NOT use MD5 hash
+    assert.ok(!intervalBody.includes('createHash') && !intervalBody.includes('md5'),
+      'SSE periodic push must NOT use MD5 hash — use reference comparison');
+    // Should use reference comparison (checking if data !== _lastXxx or similar)
+    assert.ok(!intervalBody.includes('.digest('),
+      'SSE periodic push must not compute hash digests');
+  });
+
+  await test('_lastStatusHash is removed or replaced with reference-based tracking', () => {
+    // The old _lastStatusHash should be replaced
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Should have some form of "last" reference comparison
+    assert.ok(intervalBody.includes('===') || intervalBody.includes('!=='),
+      'SSE periodic push must use reference equality for change detection');
+  });
+
+  await test('invalidateStatusCache clears _statusCacheGzip', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'invalidateStatusCache must clear _statusCacheGzip');
+  });
+
+  await test('getStatus cache rebuild invalidates _statusCacheGzip', () => {
+    // When _statusCache is rebuilt in getStatus(), both _statusCacheJson and _statusCacheGzip are invalidated
+    const fn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatus must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'getStatus must invalidate _statusCacheGzip when rebuilding cache');
+  });
+
+  await test('jsonReply still gzips normally for non-status endpoints', () => {
+    const fn = dashSrc.match(/function jsonReply[\s\S]*?^}/m);
+    assert.ok(fn, 'jsonReply must exist');
+    assert.ok(fn[0].includes('gzipSync'),
+      'jsonReply must still call gzipSync for non-status endpoints');
   });
 }
 
