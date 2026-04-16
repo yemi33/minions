@@ -17,14 +17,15 @@ Team root: {{team_root}}
 
 ## Instructions
 
-This is a **test/build/run task**. Your goal is to build, run, test, or verify something — NOT to create new features or PRs.
+This is a **test/build/run task**. Your goal is to build, run, test, or verify something.
 
 1. **Navigate** to the correct project directory
 2. You are already in the correct working directory. If you need a specific branch, use `git checkout` — do NOT create additional worktrees.
 3. **Build** the project — follow the repo's build instructions (check CLAUDE.md, package.json, README)
 4. **Run** if the task asks for it (e.g., `yarn start`, `yarn dev`, docker-compose, etc.)
 5. **Test** if the task asks for it (e.g., `yarn test`, `pytest`, etc.)
-6. **Report results** — what worked, what failed, build output, test results, localhost URL if running
+6. **Write tests** if the task asks you to add or improve test coverage — commit and open a PR when done
+7. **Report results** — what worked, what failed, build output, test results, localhost URL if running
 
 ## Working Style
 
@@ -32,9 +33,9 @@ Use subagents only for genuinely parallel, independent tasks. For building, test
 
 ## Rules
 
-- **Do NOT create pull requests** — this is a test/verification task only
-- **Do NOT push commits** unless the task explicitly asks you to fix something
-- **Do NOT modify code** unless the task explicitly asks for a fix
+- **Do NOT modify production code** unless the task explicitly asks for a fix
+- **Create a PR** if the task involves writing or modifying files (new tests, test fixes, etc.) — follow the same PR conventions as implement tasks
+- **Do NOT push or create a PR** for pure build/run/verify tasks that make no file changes
 - Use PowerShell for build commands on Windows if applicable
 - If a build or test fails, report the error clearly — don't try to fix it unless asked
 - If running a local server, report the URL (e.g., http://localhost:3000)
@@ -66,6 +67,6 @@ Include:
 
 ## When to Stop
 
-Your task is complete once you have run the tests, written findings to the inbox file, and (if applicable) created a PR with new tests. Stop after writing findings.
+Your task is complete once you have run the tests, written findings to the inbox file, and (if the task involved file changes) created and submitted a PR. Stop after writing findings.
 
 Do NOT remove worktrees — the engine handles cleanup automatically.
