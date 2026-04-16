@@ -10209,6 +10209,9 @@ async function main() {
     // W-mo1jw71krscj: Pipeline behavioral tests — CRUD, stage execution, run lifecycle
     await testPipelineBehavioral();
 
+    // P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled
+    await testParallelPrPolling();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -23299,6 +23302,122 @@ async function testPipelineBehavioral() {
       assert.ok(fn.includes(`STAGE_TYPE.${type}`), `executeStage should handle STAGE_TYPE.${type}`);
     }
     assert.ok(fn.includes('PIPELINE_STATUS.WAITING_HUMAN'), 'WAIT should return WAITING_HUMAN status');
+  });
+}
+
+// ─── P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled ──
+
+async function testParallelPrPolling() {
+  console.log('\n── P-e1c8b4a6: Parallel PR polling via Promise.allSettled ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Section 2.6: status polls use Promise.allSettled ──
+
+  await test('section 2.6 uses Promise.allSettled for concurrent status polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(section26Idx > -1, 'Section 2.6 comment must exist');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('Promise.allSettled'),
+      'Section 2.6 must use Promise.allSettled to run ADO and GitHub status polls concurrently');
+  });
+
+  await test('section 2.6 builds a promise array for conditional poll dispatch', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // Should push to an array, not await sequentially
+    assert.ok(section26Block.includes('.push('),
+      'Section 2.6 must push poll promises to an array (conditional dispatch pattern)');
+  });
+
+  await test('section 2.6 processPendingRebases runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const rebaseIdx = section26Block.indexOf('processPendingRebases');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(rebaseIdx > -1, 'processPendingRebases must exist in section 2.6');
+    assert.ok(rebaseIdx > allSettledIdx,
+      'processPendingRebases must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 syncPrdFromPrs runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const syncIdx = section26Block.indexOf('syncPrdFromPrs');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(syncIdx > -1, 'syncPrdFromPrs must exist in section 2.6');
+    assert.ok(syncIdx > allSettledIdx,
+      'syncPrdFromPrs must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 preserves conditional guards for ADO and GitHub polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // ADO guard: adoPollEnabled && !isAdoThrottled()
+    assert.ok(section26Block.includes('adoPollEnabled') && section26Block.includes('isAdoThrottled'),
+      'Section 2.6 must preserve adoPollEnabled and isAdoThrottled guards');
+    // GitHub guard: ghPollEnabled && !isGhThrottled()
+    assert.ok(section26Block.includes('ghPollEnabled') && section26Block.includes('isGhThrottled'),
+      'Section 2.6 must preserve ghPollEnabled and isGhThrottled guards');
+  });
+
+  await test('section 2.6 throttle skip log messages preserved for both ADO and GitHub', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('[ado]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [ado] throttled message when ADO poll is skipped');
+    assert.ok(section26Block.includes('[gh]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [gh] throttled message when GitHub poll is skipped');
+  });
+
+  // ── Behavioral test: concurrent execution ──
+
+  await test('Promise.allSettled pattern enables concurrent poll execution', async () => {
+    // Simulate the engine pattern: build promise array conditionally, allSettled them
+    const callOrder = [];
+    const mockAdoPoll = async () => {
+      callOrder.push('ado-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('ado-end');
+    };
+    const mockGhPoll = async () => {
+      callOrder.push('gh-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('gh-end');
+    };
+
+    // Build promise array (mimics engine conditional push pattern)
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    // Both should start before either finishes (concurrent execution)
+    assert.ok(callOrder.indexOf('gh-start') < callOrder.indexOf('ado-end'),
+      `Polls must execute concurrently — gh-start should occur before ado-end. Order: ${callOrder.join(', ')}`);
+    assert.strictEqual(callOrder.length, 4, 'All four events (2 starts + 2 ends) must fire');
+  });
+
+  await test('Promise.allSettled isolates errors between polls', async () => {
+    // If ADO fails, GitHub should still complete
+    let ghCompleted = false;
+    const mockAdoPoll = async () => { throw new Error('ADO network error'); };
+    const mockGhPoll = async () => { ghCompleted = true; };
+
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    assert.ok(ghCompleted, 'GitHub poll must complete even when ADO poll fails');
   });
 }
 
