@@ -31,6 +31,24 @@ function cleanupTmpDirs() {
   }
 }
 
+function _captureFileState(fp) {
+  return {
+    path: fp,
+    exists: fs.existsSync(fp),
+    data: fs.existsSync(fp) ? fs.readFileSync(fp) : null,
+  };
+}
+
+function _restoreFileState(snapshot) {
+  if (!snapshot) return;
+  if (snapshot.exists) {
+    fs.mkdirSync(path.dirname(snapshot.path), { recursive: true });
+    fs.writeFileSync(snapshot.path, snapshot.data);
+    return;
+  }
+  try { fs.unlinkSync(snapshot.path); } catch {}
+}
+
 function createTestMinionsDir() {
   const dir = createTmpDir();
   for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'plans/archive', 'projects', 'notes/inbox', 'notes/archive', 'knowledge', 'agents']) {
@@ -79,12 +97,23 @@ function skip(name, reason) {
 // ─── Module Imports ──────────────────────────────────────────────────────────
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
+const _preservedLiveLogFiles = [
+  path.join(MINIONS_DIR, 'engine', 'log.json'),
+  path.join(MINIONS_DIR, 'engine', 'log.json.backup'),
+].map(_captureFileState);
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
 const watches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
 const { buildDashboardHtml: _buildDashHtml } = require(path.join(MINIONS_DIR, 'dashboard-build'));
 const _assembledDashHtml = _buildDashHtml();
+
+function restorePreservedLiveLog() {
+  try {
+    if (typeof shared.flushLogs === 'function') shared.flushLogs();
+  } catch {}
+  for (const snapshot of _preservedLiveLogFiles) _restoreFileState(snapshot);
+}
 
 // ─── shared.js Tests ─────────────────────────────────────────────────────────
 
@@ -3367,6 +3396,8 @@ async function testLegacyStatusMigration() {
     assert.ok(src.includes("LEGACY_DONE_ALIASES") || src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define legacy status migration set');
     assert.ok(src.includes("item.status = shared.WI_STATUS.DONE") || src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = shared.WI_STATUS.DONE") || src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
+    assert.ok(src.includes('delete item._retryCount'),
+      'Done-state cleanup paths should clear stale retry metadata');
   });
 
   await test('cleanup.js reconciles failed items with attached PR to done (#407)', () => {
@@ -3375,6 +3406,9 @@ async function testLegacyStatusMigration() {
       'cleanup should check for failed items with _pr');
     assert.ok(src.includes('Reconciled') && src.includes('failed-with-PR'),
       'cleanup should log reconciliation of failed-with-PR items');
+    const reconcileBlock = src.slice(src.indexOf('WI_STATUS.FAILED && item._pr'), src.indexOf('reconciled++;', src.indexOf('WI_STATUS.FAILED && item._pr')) + 20);
+    assert.ok(reconcileBlock.includes('delete item._retryCount'),
+      'failed-with-PR reconciliation should clear retry metadata when marking done');
   });
 
   await test('cleanup.js failed-with-PR reconciliation uses locked write via mutateWorkItems (#407)', () => {
@@ -4319,7 +4353,7 @@ async function testSafeWriteBackupRestore() {
     // Extract withFileLock body using indexOf — regex is fragile with destructured params
     const start = src.indexOf('function withFileLock(');
     assert.ok(start >= 0, 'withFileLock function should exist');
-    const body = src.substring(start, start + 1500);
+    const body = src.substring(start, start + 2200);
     // Should catch ENOENT specifically on unlink
     assert.ok(body.includes("unlinkErr.code !== 'ENOENT'"),
       'stale lock unlink should check for ENOENT specifically');
@@ -4362,6 +4396,20 @@ async function testSafeWriteBackupRestore() {
     assert.strictEqual(shared.safeJson(fp + '.backup').step, 1,
       '.backup should reflect state before latest mutation');
     assert.strictEqual(shared.safeJson(fp).step, 2);
+  });
+
+  await test('unit test runner preserves the live engine log state', () => {
+    const src = fs.readFileSync(__filename, 'utf8');
+    assert.ok(src.includes('restorePreservedLiveLog') && src.includes('log.json.backup'),
+      'unit test runner should preserve and restore the live engine log state');
+  });
+
+  await test('main executes testSafeWriteBackupRestore coverage', () => {
+    const src = fs.readFileSync(__filename, 'utf8');
+    const mainStart = src.lastIndexOf('async function main() {');
+    const mainBlock = src.slice(mainStart, src.indexOf('// ─── P-bf3a91c7: shared.js fixes', mainStart));
+    assert.ok(mainBlock.includes('await testSafeWriteBackupRestore();'),
+      'main should execute testSafeWriteBackupRestore so the coverage stays live');
   });
 }
 
@@ -10188,6 +10236,7 @@ async function main() {
     await testEngineDefaults();
     await testProjectHelpers();
     await testPrLinks();
+    await testSafeWriteBackupRestore();
 
     // queries.js tests
     await testQueriesCore();
@@ -10508,7 +10557,7 @@ async function main() {
     results
   });
 
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
 // ─── P-bf3a91c7: shared.js fixes ──────────────────────────────────────────────
@@ -17510,6 +17559,12 @@ async function testCCMultiTab() {
     assert.ok(cleanupSrc.includes('TEST_RESULTS_CAP'), 'Should define TEST_RESULTS_CAP');
   });
 
+  await test('cleanup.js strips stale retry metadata from done work items', () => {
+    assert.ok(cleanupSrc.includes('doneRetryCounts'), 'Should track cleared done retry metadata');
+    assert.ok(cleanupSrc.includes("item.status === shared.WI_STATUS.DONE && item._retryCount !== undefined"),
+      'Should explicitly clear stale retry metadata from completed items');
+  });
+
   await test('timeout.js kills Unix process tree on hung agent timeout', () => {
     // The hung agent branch should include pkill -P for Unix tree kill
     const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
@@ -24455,4 +24510,13 @@ async function testStatusCacheTiers() {
   });
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main()
+  .then(code => {
+    restorePreservedLiveLog();
+    process.exit(code);
+  })
+  .catch(e => {
+    restorePreservedLiveLog();
+    console.error(e);
+    process.exit(1);
+  });

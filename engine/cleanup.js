@@ -448,17 +448,19 @@ function runCleanup(config, verbose = false) {
     try {
       const wiPath = projectWorkItemsPath(project);
       let reconciled = 0;
-      mutateWorkItems(wiPath, items => {
-        for (const item of items) {
-          if (item.status === shared.WI_STATUS.FAILED && item._pr) {
-            item.status = shared.WI_STATUS.DONE;
-            if (item.failReason) delete item.failReason;
-            if (item.failedAt) delete item.failedAt;
-            if (!item.completedAt) item.completedAt = shared.ts();
-            reconciled++;
+        mutateWorkItems(wiPath, items => {
+          for (const item of items) {
+            if (item.status === shared.WI_STATUS.FAILED && item._pr) {
+              item.status = shared.WI_STATUS.DONE;
+              if (item.failReason) delete item.failReason;
+              if (item.failedAt) delete item.failedAt;
+              delete item._retryCount;
+              delete item._pendingReason;
+              if (!item.completedAt) item.completedAt = shared.ts();
+              reconciled++;
+            }
           }
-        }
-      });
+        });
       if (reconciled > 0) {
         log('info', `Reconciled ${reconciled} failed-with-PR item(s) → done in ${project.name}`);
       }
@@ -472,15 +474,17 @@ function runCleanup(config, verbose = false) {
     try {
       const wiPath = projectWorkItemsPath(project);
       let migrated = 0;
-      mutateWorkItems(wiPath, items => {
-        for (const item of items) {
-          if (LEGACY_DONE_ALIASES.has(item.status)) {
-            item.status = shared.WI_STATUS.DONE;
-            delete item._pendingReason;
-            migrated++;
+        mutateWorkItems(wiPath, items => {
+          for (const item of items) {
+            if (LEGACY_DONE_ALIASES.has(item.status)) {
+              item.status = shared.WI_STATUS.DONE;
+              delete item._retryCount;
+              delete item._pendingReason;
+              if (!item.completedAt) item.completedAt = shared.ts();
+              migrated++;
+            }
           }
-        }
-      });
+        });
       if (migrated > 0) {
         log('info', `Migrated ${migrated} legacy status(es) → done in ${project.name} work items`);
       }
@@ -494,7 +498,9 @@ function runCleanup(config, verbose = false) {
       for (const item of items) {
         if (LEGACY_DONE_ALIASES.has(item.status)) {
           item.status = shared.WI_STATUS.DONE;
+          delete item._retryCount;
           delete item._pendingReason;
+          if (!item.completedAt) item.completedAt = shared.ts();
           migrated++;
         }
       }
@@ -503,6 +509,36 @@ function runCleanup(config, verbose = false) {
       log('info', `Migrated ${migrated} legacy status(es) → done in central work items`);
     }
   } catch (e) { log('warn', 'migrate central legacy statuses: ' + e.message); }
+
+  // 6c. Strip stale retry metadata from completed work items
+  cleaned.doneRetryCounts = 0;
+  for (const project of projects) {
+    try {
+      const wiPath = projectWorkItemsPath(project);
+      mutateWorkItems(wiPath, items => {
+        for (const item of items) {
+          if (item.status === shared.WI_STATUS.DONE && item._retryCount !== undefined) {
+            delete item._retryCount;
+            cleaned.doneRetryCounts++;
+          }
+        }
+      });
+    } catch (e) { log('warn', 'cleanup done retry metadata: ' + e.message); }
+  }
+  try {
+    const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+    mutateWorkItems(centralPath, items => {
+      for (const item of items) {
+        if (item.status === shared.WI_STATUS.DONE && item._retryCount !== undefined) {
+          delete item._retryCount;
+          cleaned.doneRetryCounts++;
+        }
+      }
+    });
+  } catch (e) { log('warn', 'cleanup central done retry metadata: ' + e.message); }
+  if (cleaned.doneRetryCounts > 0) {
+    log('info', `Cleanup: cleared ${cleaned.doneRetryCounts} stale retry count(s) from done work items`);
+  }
   // PRD items (missing_features[].status)
   try {
     let prdDirEntries;
