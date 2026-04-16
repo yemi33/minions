@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.1024 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+- scheduler enabled field falsy check treats undefined as disabled (#1160)
+-  update branch-dedup tests to use canonical PR IDs after merge with master (#1146)
+-  auto-review not firing for manually-linked PRs with autoObserve=true
+-  mark PR abandoned on 404 instead of silently retrying each tick
+- replace undefined PROJECTS with config.projects in checkWatches (#1108)
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+- add maxBuffer to all GitHub CLI spawns + paginate PR list (#1130)
+-  add required CI checks for PRs + update publish for auto-merge
+-  revert to PR merge now that stale status check is removed
+- guard live review check against undefined vote/state values (#1132)
+-  push version bump directly to master instead of via PR
+-  add push-triggered CI for chore/publish branches
+-  publish workflow chore PRs failing to merge
+-  harden KB ordering
+-  harden audited state transitions
+
+### Other
+- chore: test publish after removing stale status check
+- chore: trigger publish test
+- chore: test publish workflow fix
+- chore: trigger publish workflow test
+
 ## 0.1.1023 (2026-04-16)
 
 ### Features
