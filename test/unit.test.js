@@ -1191,6 +1191,13 @@ async function testQueriesKnowledgeBase() {
     }
   });
 
+  await test('getKnowledgeBaseEntries exposes numeric recency sort key', () => {
+    const entries = queries.getKnowledgeBaseEntries();
+    for (const e of entries) {
+      assert.ok(typeof e.sortTs === 'number', 'KB entry missing numeric sortTs');
+    }
+  });
+
   await test('getKnowledgeBaseIndex returns string', () => {
     const index = queries.getKnowledgeBaseIndex();
     assert.ok(typeof index === 'string');
@@ -2598,8 +2605,8 @@ async function testWorktreeManagement() {
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('dirLower.includes(branchSlug)'),
-      'Post-merge cleanup should match by sanitized branch slug');
+    assert.ok(src.includes('worktreeDirMatchesBranch'),
+      'Post-merge cleanup should use the shared slug-boundary helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
   });
@@ -4844,6 +4851,75 @@ async function testResolvePlaybookPath() {
       'playbook.js should define/use resolvePlaybookPath');
     assert.ok(src.includes('resolvePlaybookPath('),
       'renderPlaybook should call resolvePlaybookPath');
+  });
+}
+
+// ─── engine/playbook.js — selectPlaybook Tests ──────────────────────────────
+
+async function testSelectPlaybook() {
+  console.log('\n── engine/playbook.js — selectPlaybook ──');
+
+  let selectPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    selectPlaybook = pb.selectPlaybook;
+  } catch {}
+
+  if (!selectPlaybook) {
+    skip('selectPlaybook', 'engine/playbook.selectPlaybook not available');
+    return;
+  }
+
+  await test('selectPlaybook routes implement type to implement playbook', () => {
+    const result = selectPlaybook('implement', {});
+    assert.strictEqual(result, 'implement',
+      'implement work type should route to implement playbook, not work-item');
+  });
+
+  await test('selectPlaybook routes implement to implement-shared for shared-branch', () => {
+    const result = selectPlaybook('implement', { branchStrategy: 'shared-branch' });
+    assert.strictEqual(result, 'implement-shared',
+      'shared-branch implement should use implement-shared playbook');
+  });
+
+  await test('selectPlaybook routes review type to review playbook', () => {
+    const result = selectPlaybook('review', { _pr: 'PR-1', pr_id: 'PR-1' });
+    assert.strictEqual(result, 'review',
+      'review type with PR should route to review playbook');
+  });
+
+  await test('selectPlaybook routes review without PR to work-item', () => {
+    const result = selectPlaybook('review', {});
+    assert.strictEqual(result, 'work-item',
+      'review type without PR should fall back to work-item');
+  });
+
+  await test('selectPlaybook routes implement:large to implement playbook', () => {
+    const result = selectPlaybook('implement:large', {});
+    assert.strictEqual(result, 'implement',
+      'implement:large should use implement playbook (no separate playbook file)');
+  });
+
+  await test('selectPlaybook routes fix type to work-item (fix.md is for PR fixes)', () => {
+    const result = selectPlaybook('fix', {});
+    assert.strictEqual(result, 'work-item',
+      'fix work items should use work-item playbook (fix.md is PR-fix specific)');
+  });
+
+  await test('selectPlaybook routes explore type to explore playbook', () => {
+    const result = selectPlaybook('explore', {});
+    assert.strictEqual(result, 'explore');
+  });
+
+  await test('selectPlaybook routes verify type to verify playbook', () => {
+    const result = selectPlaybook('verify', {});
+    assert.strictEqual(result, 'verify');
+  });
+
+  await test('selectPlaybook routes unknown type to work-item fallback', () => {
+    const result = selectPlaybook('unknown-type', {});
+    assert.strictEqual(result, 'work-item',
+      'Unknown types should fall back to work-item');
   });
 }
 
@@ -7371,6 +7447,37 @@ async function testHumanContributions() {
       'Should validate against known KB categories');
   });
 
+  await test('Knowledge mutations invalidate KB cache', () => {
+    const invalidateCalls = (dashSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
+    assert.ok(invalidateCalls >= 4,
+      'Should invalidate KB cache after KB create, promotion, sweep, and command-center knowledge writes');
+  });
+
+  await test('queries exports KB cache invalidation helper', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(queriesSrc.includes('function invalidateKnowledgeBaseCache()'),
+      'Should define a KB cache invalidation helper');
+    assert.ok(queriesSrc.includes('invalidateKnowledgeBaseCache,'),
+      'Should export KB cache invalidation helper');
+  });
+
+  await test('Knowledge list exposes sortTs and UI sorts by recency', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(dashSrc.includes('sortTs: e.sortTs'),
+      'Should include sortTs in /api/knowledge results');
+    assert.ok(queriesSrc.includes('sortTs = fs.statSync(filePath).mtimeMs || 0'),
+      'Should derive sortTs from KB file mtime');
+    assert.ok(kbSrc.includes('function kbNewestFirst(a, b)'),
+      'Should define a shared recency comparator for KB items');
+    assert.ok(kbSrc.includes('function kbPinnedNewestFirst(a, b)'),
+      'Should define a combined pin+recency comparator for non-pinned tabs');
+    assert.ok((kbSrc.match(/items\.sort\(kbNewestFirst\)/g) || []).length >= 1,
+      'Pinned tab should sort by recency');
+    assert.ok((kbSrc.match(/items\.sort\(kbPinnedNewestFirst\)/g) || []).length >= 2,
+      'All and category tabs should sort with pin priority and recency in one pass');
+  });
+
   await test('openCreateKbModal function exists', () => {
     const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
     assert.ok(kbSrc.includes('function openCreateKbModal'), 'Should have KB creation modal');
@@ -9889,6 +9996,7 @@ async function main() {
     await testRenderPlaybook();
     await testValidatePlaybookVars();
     await testResolvePlaybookPath();
+    await testSelectPlaybook();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
@@ -10094,6 +10202,10 @@ async function main() {
     // W-mo0jwu9iwnm1: Duplicate PR prevention + cancel stale dispatches on PR close
     await testDuplicatePrPrevention();
     await testCancelDispatchesOnPrClose();
+
+    // W-8eobrosn: GitHub poller maxBuffer fix
+    await testGhMaxBuffer();
+
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -10813,6 +10925,15 @@ async function testKbSweepBatching() {
       'KB sweep should report no-op when pinned exclusions leave fewer than 2 entries');
     assert.ok(bgFn.includes('if (manifest.length < 2)'),
       'KB sweep should stop before LLM batching when too few unpinned entries remain');
+  });
+
+  await test('KB sweep reclassification preserves original mtime for newest-first ordering', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('const srcStats = fs.statSync(srcPath);'),
+      'KB reclassification should capture source file timestamps');
+    assert.ok(bgFn.includes('fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);'),
+      'KB reclassification should preserve original timestamps after moving categories');
   });
 }
 
@@ -12267,12 +12388,15 @@ async function testStatusMutationGuards() {
     assert.ok(!src.includes('cleanDispatchEntries'), 'engine.js should not call cleanDispatchEntries (dashboard-only function)');
   });
 
-  await test('dashboard.js: handlePrdItemsRemove null-guards safeJson result', () => {
+  await test('dashboard.js: handlePrdItemsRemove uses mutateJsonFileLocked', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fnStart = src.indexOf('handlePrdItemsRemove');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj'), 'handlePrdItemsRemove must null-guard plan from safeJson or use safeJsonObj');
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'handlePrdItemsRemove must use mutateJsonFileLocked for atomic plan updates');
+    assert.ok(!fnBody.includes('safeWrite(planPath, plan)'),
+      'handlePrdItemsRemove must not use unlocked safeWrite on the PRD file');
   });
 
   await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
@@ -12892,6 +13016,16 @@ async function testEngineAuditCritical() {
     assert.ok(src.includes("case 'allBuildsGreen'"), 'must support allBuildsGreen check');
   });
 
+  await test('pipeline.js allBuildsGreen reads stage monitoredResources and canonical-aware PR refs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('collectPipelinePrRefs'),
+      'allBuildsGreen should collect monitored PR refs through a shared helper');
+    assert.ok(src.includes('stage?.monitoredResources'),
+      'allBuildsGreen should include stage-level monitoredResources');
+    assert.ok(src.includes('shared.findPrRecord(allPrs, prRef)'),
+      'allBuildsGreen should resolve monitored PR refs through shared.findPrRecord');
+  });
+
   await test('pipeline.js isStageComplete handles CONDITION type', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
     assert.ok(src.includes('STAGE_TYPE.CONDITION'), 'isStageComplete must handle CONDITION type');
@@ -13072,6 +13206,17 @@ async function testEngineAuditCritical() {
       'processPendingRebases must use mutateJsonFileLocked');
     assert.ok(!fn.match(/(?<!\w)safeWrite\(PENDING_REBASES_PATH/),
       'processPendingRebases must not use unlocked safeWrite — concurrent queuePendingRebase entries would be lost');
+  });
+
+  await test('processPendingRebases resolves queued PRs through normalized matching', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('const prs = getPrs(project);'),
+      'processPendingRebases should read PRs through getPrs so queued legacy IDs normalize on read');
+    assert.ok(fn.includes('shared.findPrRecord(prs, entry.prId, project)'),
+      'processPendingRebases should resolve queued PRs through shared.findPrRecord');
   });
 
   await test('processPendingRebases drains queue atomically then merges remaining back', () => {
@@ -14096,6 +14241,8 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
     assert.ok(fn.includes('shared.findPrRecord(prs, pr)'),
       'should use shared.findPrRecord so normalized PR files still match stale PR event objects');
+    assert.ok(fn.indexOf('mutateJsonFileLocked') < fn.indexOf('await teamsPost'),
+      'should claim dedup state before posting to Teams');
   });
 
   await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
@@ -17513,6 +17660,35 @@ async function testPrReviewFixFlows() {
     const liveVoteBlock = engineSrc.slice(engineSrc.indexOf('Pre-dispatch live vote check'), engineSrc.indexOf('Pre-dispatch live vote check') + 800);
     assert.ok(liveVoteBlock.includes("reviewStatus !== 'approved'"),
       'Pre-dispatch live vote check should guard against downgrading approved');
+  });
+
+  // ── Live review check crash guards (W-z7zlvxnt) ──
+
+  await test('ADO fetchSinglePrBuildStatus filters undefined votes', () => {
+    // ado.js line 867: votes array must filter undefined values like checkLiveReviewStatus does at line 797
+    const fetchFn = adoSrc.slice(adoSrc.indexOf('async function fetchSinglePrBuildStatus('), adoSrc.indexOf('\n// ─── ADO Throttle Queries'));
+    const voteLines = fetchFn.match(/\.map\(r => r\.vote\).*/g) || [];
+    assert.ok(voteLines.length > 0, 'fetchSinglePrBuildStatus must extract votes from reviewers');
+    assert.ok(voteLines.every(line => line.includes('.filter(')),
+      'All votes extraction in fetchSinglePrBuildStatus must filter undefined values');
+  });
+
+  await test('ADO checkLiveReviewStatus filters undefined votes', () => {
+    const checkFn = adoSrc.slice(adoSrc.indexOf('async function checkLiveReviewStatus('), adoSrc.indexOf('\nasync function fetchAdoPrMetadata'));
+    const voteLines = checkFn.match(/\.map\(r => r\.vote\).*/g) || [];
+    assert.ok(voteLines.length > 0, 'checkLiveReviewStatus must extract votes from reviewers');
+    assert.ok(voteLines.every(line => line.includes('.filter(')),
+      'All votes extraction in checkLiveReviewStatus must filter undefined values');
+  });
+
+  await test('GitHub checkLiveReviewStatus filters undefined state values from reviews', () => {
+    // Review objects from GitHub API may have undefined state — latestByUser.values() must not contain undefined
+    const checkFn = ghSrc.slice(ghSrc.indexOf('async function checkLiveReviewStatus('), ghSrc.indexOf('\nmodule.exports'));
+    // The states array (from Map values) must filter out undefined/null entries before .some() comparisons
+    // Either filter the values, or guard state assignment so undefined never enters the Map
+    assert.ok(
+      checkFn.includes('.filter(') || checkFn.includes('if (!r.state') || checkFn.includes('r.state &&'),
+      'GitHub checkLiveReviewStatus must guard against undefined state values entering the states array');
   });
 
   // ── updatePrAfterReview passes resultSummary ──
@@ -21381,6 +21557,7 @@ async function testSyncPrsToolResultInUserMessages() {
     }
   });
 }
+
 // ─── W-mo0kxqenseo9: Cancel Work Item ─────────────────────────────────────
 
 async function testCancelWorkItem() {
@@ -21516,9 +21693,15 @@ async function testDuplicatePrPrevention() {
       fs.mkdirSync(projectDir, { recursive: true });
       const prFile = path.join(projectDir, 'pull-requests.json');
 
+      // Use canonical IDs — mutateJsonFileLocked auto-normalizes PR records via
+      // normalizePrRecords(), which calls getCanonicalPrId() and rewrites plain
+      // "PR-100" to "github:org/repo#100" based on the PR's url field.
+      const canonicalId100 = 'github:org/repo#100';
+      const canonicalId999 = 'github:org/repo#999';
+
       // Pre-existing active PR on branch work/W-8eobrosn
       testShared.safeWrite(prFile, [{
-        id: 'PR-100', prNumber: 100, title: 'Original PR', agent: 'dallas',
+        id: canonicalId100, prNumber: 100, title: 'Original PR', agent: 'dallas',
         branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'active',
         created: '2026-04-15T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
         prdItems: ['W-8eobrosn']
@@ -21535,12 +21718,8 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      // normalizePrRecords (called inside mutateJsonFileLocked for pull-requests.json)
-      // rewrites legacy PR-### IDs to canonical github:scope#N format based on URL
-      const canonicalId100 = testShared.getCanonicalPrId(null, { id: 'PR-100', prNumber: 100, url: 'https://github.com/org/repo/pull/100' }, 'https://github.com/org/repo/pull/100');
-      const canonicalId999 = testShared.getCanonicalPrId(mockProject, '999', 'https://github.com/org/repo/pull/999');
-      assert.ok(ids.includes(canonicalId100), 'Original PR-100 should still be tracked (canonical ID)');
-      assert.ok(!ids.includes(canonicalId999), 'Duplicate PR-999 on same branch should NOT be added');
+      assert.ok(ids.includes(canonicalId100), 'Original PR should still be tracked');
+      assert.ok(!ids.includes(canonicalId999), 'Duplicate PR on same branch should NOT be added');
       assert.strictEqual(result.length, 1, 'Should have exactly 1 PR (the original)');
     } finally { restore(); }
   });
@@ -21557,9 +21736,13 @@ async function testDuplicatePrPrevention() {
       fs.mkdirSync(projectDir, { recursive: true });
       const prFile = path.join(projectDir, 'pull-requests.json');
 
+      // Use canonical IDs — mutateJsonFileLocked auto-normalizes PR records
+      const canonicalId100 = 'github:org/repo#100';
+      const canonicalId999 = 'github:org/repo#999';
+
       // Pre-existing ABANDONED PR on branch work/W-8eobrosn
       testShared.safeWrite(prFile, [{
-        id: 'PR-100', prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
+        id: canonicalId100, prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
         branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'abandoned',
         created: '2026-04-14T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
         prdItems: ['W-8eobrosn']
@@ -21575,11 +21758,8 @@ async function testDuplicatePrPrevention() {
 
       const result = testShared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      // normalizePrRecords rewrites legacy PR-### IDs to canonical github:scope#N format
-      const canonicalId100 = testShared.getCanonicalPrId(null, { id: 'PR-100', prNumber: 100, url: 'https://github.com/org/repo/pull/100' }, 'https://github.com/org/repo/pull/100');
-      const canonicalId999 = testShared.getCanonicalPrId(mockProject, '999', 'https://github.com/org/repo/pull/999');
-      assert.ok(ids.includes(canonicalId100), 'Abandoned PR-100 should still be tracked (canonical ID)');
-      assert.ok(ids.includes(canonicalId999), 'New PR-999 should be added because existing PR is abandoned');
+      assert.ok(ids.includes(canonicalId100), 'Abandoned PR should still be tracked');
+      assert.ok(ids.includes(canonicalId999), 'New PR should be added because existing PR is abandoned');
       assert.strictEqual(result.length, 2, 'Should have 2 PRs');
     } finally { restore(); }
   });
@@ -21736,6 +21916,116 @@ async function testCancelDispatchesOnPrClose() {
       assert.strictEqual(dispatch.pending.length, 1, 'Queue unchanged for null/empty input');
     } finally { restore(); }
   });
+}
+
+// ─── W-8eobrosn: GitHub poller maxBuffer fix ──────────────────────────────────
+
+async function testGhMaxBuffer() {
+  console.log('\n── W-8eobrosn: GitHub poller maxBuffer fix ──');
+
+  const ghPath = path.join(MINIONS_DIR, 'engine', 'github.js');
+  const ghSrc = fs.readFileSync(ghPath, 'utf8');
+
+  // ── Source-level verification ──
+
+  await test('github.js defines GH_MAX_BUFFER constant (>= 10MB)', () => {
+    assert.ok(ghSrc.includes('GH_MAX_BUFFER'),
+      'github.js must define a GH_MAX_BUFFER constant');
+    // Must be at least 10 * 1024 * 1024
+    const match = ghSrc.match(/GH_MAX_BUFFER\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/);
+    assert.ok(match, 'GH_MAX_BUFFER must be defined as a product (e.g. 10 * 1024 * 1024)');
+    const value = parseInt(match[1]) * parseInt(match[2]) * parseInt(match[3]);
+    assert.ok(value >= 10 * 1024 * 1024,
+      `GH_MAX_BUFFER must be >= 10MB, got ${value}`);
+  });
+
+  await test('ghApi passes maxBuffer to execAsync', () => {
+    const ghApiFn = ghSrc.match(/async function ghApi[\s\S]*?^}/m);
+    assert.ok(ghApiFn, 'ghApi function must exist');
+    const src = ghApiFn[0];
+    assert.ok(src.includes('maxBuffer') && src.includes('GH_MAX_BUFFER'),
+      'ghApi must pass maxBuffer: GH_MAX_BUFFER to execAsync');
+  });
+
+  await test('fetchGhBuildErrorLog passes maxBuffer to execAsync', () => {
+    const fn = ghSrc.match(/async function fetchGhBuildErrorLog[\s\S]*?^}/m);
+    assert.ok(fn, 'fetchGhBuildErrorLog function must exist');
+    const src = fn[0];
+    assert.ok(src.includes('maxBuffer'),
+      'fetchGhBuildErrorLog must pass maxBuffer to execAsync for log fetch');
+  });
+
+  await test('gh pr merge in pollPrStatus passes maxBuffer to execAsync', () => {
+    // The auto-complete merge call also uses execAsync — ensure maxBuffer is set
+    assert.ok(ghSrc.includes("gh pr merge") && ghSrc.includes('GH_MAX_BUFFER'),
+      'Auto-complete merge call must use GH_MAX_BUFFER');
+  });
+
+  await test('reconcilePrs uses pagination to fetch all open PRs', () => {
+    // reconcilePrs must use --paginate flag on gh api or loop through pages
+    const reconcileFn = ghSrc.slice(ghSrc.indexOf('async function reconcilePrs'));
+    assert.ok(reconcileFn.includes('paginate'),
+      'reconcilePrs must use pagination to handle repos with >100 open PRs');
+  });
+
+  await test('ghApi supports paginate option', () => {
+    // ghApi must accept an opts parameter with paginate support
+    const ghApiFn = ghSrc.match(/async function ghApi[\s\S]*?^}/m);
+    assert.ok(ghApiFn, 'ghApi function must exist');
+    const src = ghApiFn[0];
+    assert.ok(src.includes('paginate'),
+      'ghApi must support a paginate option for endpoints returning arrays');
+  });
+
+  // ── Runtime verification ──
+
+  await test('GH_MAX_BUFFER exported value is at least 10MB', () => {
+    const gh = require(ghPath);
+    assert.ok(typeof gh.GH_MAX_BUFFER === 'number', 'GH_MAX_BUFFER must be exported as a number');
+    assert.ok(gh.GH_MAX_BUFFER >= 10 * 1024 * 1024,
+      `GH_MAX_BUFFER runtime value must be >= 10MB, got ${gh.GH_MAX_BUFFER}`);
+  });
+
+  await test('GH_MAX_BUFFER can hold 250+ PR JSON objects (simulated large response)', () => {
+    // Simulate what gh api --paginate returns for 250 open PRs
+    // Each PR object from GitHub REST API is roughly 3-8KB of JSON
+    const gh = require(ghPath);
+    const fakePr = {
+      number: 1, state: 'open',
+      title: 'feat: implement feature ABCDEF — a reasonably long title for testing',
+      body: 'This is a PR description with some content. '.repeat(20), // ~900 chars
+      head: { ref: 'work/W-abc123def456', sha: 'a'.repeat(40), repo: { full_name: 'org/repo' } },
+      base: { ref: 'master', sha: 'b'.repeat(40), repo: { full_name: 'org/repo' } },
+      user: { login: 'dallas', id: 12345, avatar_url: 'https://example.com/avatar.png' },
+      html_url: 'https://github.com/org/repo/pull/1',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-04-15T00:00:00Z',
+      labels: [{ name: 'enhancement' }, { name: 'agent-generated' }],
+      assignees: [{ login: 'dallas' }],
+      requested_reviewers: [{ login: 'ripley' }],
+      mergeable: true, mergeable_state: 'clean',
+      additions: 150, deletions: 30, changed_files: 5,
+    };
+    // Build an array of 300 PRs (well above the 246 that triggered the bug)
+    const prs = Array.from({ length: 300 }, (_, i) => ({ ...fakePr, number: i + 1 }));
+    const jsonStr = JSON.stringify(prs);
+    const byteSize = Buffer.byteLength(jsonStr, 'utf8');
+    assert.ok(byteSize < gh.GH_MAX_BUFFER,
+      `300 simulated PRs produce ${(byteSize / 1024 / 1024).toFixed(2)}MB — must fit in GH_MAX_BUFFER (${(gh.GH_MAX_BUFFER / 1024 / 1024).toFixed(0)}MB)`);
+  });
+
+  await test('all execAsync calls in github.js include maxBuffer', () => {
+    // Every execAsync call in github.js must pass maxBuffer — none should use Node default
+    const execCalls = ghSrc.match(/execAsync\([^)]*\)/g) || [];
+    assert.ok(execCalls.length >= 3,
+      `Expected at least 3 execAsync calls in github.js, found ${execCalls.length}`);
+    for (const call of execCalls) {
+      assert.ok(call.includes('maxBuffer') || call.includes('GH_MAX_BUFFER'),
+        `execAsync call missing maxBuffer: ${call.slice(0, 80)}...`);
+    }
+  });
+
+  delete require.cache[require.resolve(ghPath)];
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

@@ -1,5 +1,163 @@
 # Changelog
 
+## 0.1.1022 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+-  auto-review not firing for manually-linked PRs with autoObserve=true
+-  mark PR abandoned on 404 instead of silently retrying each tick
+- replace undefined PROJECTS with config.projects in checkWatches (#1108)
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+- add maxBuffer to all GitHub CLI spawns + paginate PR list (#1130)
+-  add required CI checks for PRs + update publish for auto-merge
+-  revert to PR merge now that stale status check is removed
+- guard live review check against undefined vote/state values (#1132)
+-  push version bump directly to master instead of via PR
+-  add push-triggered CI for chore/publish branches
+-  publish workflow chore PRs failing to merge
+-  harden KB ordering
+-  harden audited state transitions
+
+### Other
+- chore: test publish after removing stale status check
+- chore: trigger publish test
+- chore: test publish workflow fix
+- chore: trigger publish workflow test
+
+## 0.1.1021 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+-  mark PR abandoned on 404 instead of silently retrying each tick
+- replace undefined PROJECTS with config.projects in checkWatches (#1108)
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+- add maxBuffer to all GitHub CLI spawns + paginate PR list (#1130)
+-  add required CI checks for PRs + update publish for auto-merge
+-  revert to PR merge now that stale status check is removed
+- guard live review check against undefined vote/state values (#1132)
+-  push version bump directly to master instead of via PR
+-  add push-triggered CI for chore/publish branches
+-  publish workflow chore PRs failing to merge
+-  harden KB ordering
+-  harden audited state transitions
+
+### Other
+- chore: test publish after removing stale status check
+- chore: trigger publish test
+- chore: test publish workflow fix
+- chore: trigger publish workflow test
+
+## 0.1.1020 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+- add maxBuffer to all GitHub CLI spawns + paginate PR list (#1130)
+- replace undefined PROJECTS with config.projects in checkWatches (#1108)
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+
+## 0.1.1019 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+- replace undefined PROJECTS with config.projects in checkWatches (#1108)
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+
+## 0.1.1018 (2026-04-16)
+
+### Features
+- route implement items to dedicated implement playbook (#1115)
+
+### Fixes
+- write permission for publish workflow
+-  run tests inline and post check runs for publish PRs
+
+## 0.1.1015 (2026-04-16)
+
+### Fixes
+-  revert to PR merge now that stale status check is removed
+- guard live review check against undefined vote/state values (#1132)
+
+### Other
+- chore: test publish after removing stale status check
+- chore: trigger publish test
+
+## 0.1.1008 (2026-04-16)
+
+### Features
+- fix duplicate PR creation + cancel stale review dispatches on PR close (#1137)
+- intercept /loop skill invocations in CC and convert to watches (#1140)
+- add cancel work item endpoint, UI button, and CC action (#1136)
+- cap pendingContexts in cooldowns.json to prevent bloat (#1126)
+- fix stopAfter=0 watch expiry — run forever for all conditions (#1117)
+- fix doc-chat Clear chat not persisting session deletion to localStorage (#1102)
+- remove DEFAULTS alias from timeout.js (#1101)
+- Per-project workSources toggles in settings modal (#1096)
+- support project-local playbook overrides (#1094)
+- gate review auto-dispatch on adoPollEnabled and evalLoop config flags (#1092)
+- remove DEFAULTS alias from timeout.js — standardize to ENGINE_DEFAULTS
+- complete watches management — new conditions, CC actions, PROJECTS fix (#1103)
+- fix misleading poll frequency field labels in settings modal (#1099)
+- add Auto-complete PRs toggle to settings modal (#1095)
+-  gate build failure auto-fix behind autoFixBuilds flag
+- free-form interval input + CC create-watch action
+-  flush queued CC messages as single combined request
+-  add quality standard reminder to all agent and CC prompts
+- surface in-flight tool calls in lastAction (#1064)
+- implement dashboard loop/watch management panel
+
+### Fixes
+-  harden audited state transitions
+- scrub stale temp agent IDs from metrics.json (#1129)
+-  harden repo-scoped PR identity handling
+-  only gate reviews/fixes when no free agent slots remain
+-  extend auto-link fallback to ADO projects
+-  auto-link existing GitHub PR when agent completes without creating one
+-  preserve ordered lists across blank lines in markdown renderer
+-  restore CC rendering and tab bar
+-  restore WATCH_ABSOLUTE_CONDITIONS import in watches.js lost in #1117 squash merge
+-  remove dead 'meeting' row from routing.md — orchestrated by engine/meeting.js directly
+- gate review auto-dispatch on adoPollEnabled and evalLoop (#1116)
+-  updatePrAfterReview preserves fixedAt when writing minionsReview
+- replace undefined PROJECTS with config.projects in checkWatches (#1104)
+- fix syncPrsFromOutput skipping tool_result lines where PR URLs live (#1100)
+- Remove autoReview flag — consolidate into evalLoop (#1093)
+- link scheduled task notes back to originating item (#1090)
+-  restore rereview and human-fix dispatch
+-  build fix sets fixDispatched to block same-tick conflict fix
+-  ENGINE_DEFAULTS undefined in tick + playbook empty-var false positives
+-  defer review setCooldown to post-gating in discoverWork
+
+### Other
+- refactor: migrate PR links to array format and consolidate shared helpers
+- docs: update CLAUDE.md with recent Minions architecture changes
+- chore: stop tracking runtime pipeline state
+- chore: strengthen prompts and routing
+- chore: harden prompt posture
+- refactor(watches): rename maxTriggers→stopAfter, add onNotMet per-poll action
+- refactor(dashboard): extract _releaseCCTab helper and CC_LOCK_WAIT_MS constant
+- merge: resolve conflicts with master on PR-1065
+- test(engine): add regression tests for autoFixConflicts flag and DEFAULTS alias
+- refactor(ado): simplify ado-status and extract build/review status helpers
+- refactor(ado): extract stripRefsHeads helper, deduplicate refs/heads/ stripping
+- refactor(ado): simplify comments, fix declaration order, promote ado import
+- refactor(ado): move PR enrichment fetch into fetchAdoPrMetadata helper
+- refactor: Make renderLiveChatMessage a thin wrapper over renderAgentOutput
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes

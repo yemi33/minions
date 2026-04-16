@@ -720,6 +720,7 @@ async function executeCCActions(actions) {
           const kbDir = path.join(MINIONS_DIR, 'knowledge', category);
           if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
           shared.safeWrite(path.join(kbDir, slug + '.md'), `# ${action.title}\n\n${action.content || action.description || ''}`);
+          queries.invalidateKnowledgeBaseCache();
           results.push({ type: 'knowledge', ok: true });
           break;
         }
@@ -1874,13 +1875,18 @@ const server = http.createServer(async (req, res) => {
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJsonObj(planPath);
-      if (!plan) return jsonReply(res, 500, { error: 'failed to read plan file' });
-      const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
-      if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
-
-      plan.missing_features.splice(idx, 1);
-      safeWrite(planPath, plan);
+      let removed = false;
+      mutateJsonFileLocked(planPath, (plan) => {
+        if (!plan || Array.isArray(plan) || typeof plan !== 'object') plan = { missing_features: [] };
+        const features = Array.isArray(plan.missing_features) ? plan.missing_features : [];
+        const idx = features.findIndex(f => f.id === body.itemId);
+        if (idx < 0) return plan;
+        features.splice(idx, 1);
+        plan.missing_features = features;
+        removed = true;
+        return plan;
+      }, { defaultValue: { missing_features: [] } });
+      if (!removed) return jsonReply(res, 404, { error: 'item not found in plan' });
 
       // Also remove any materialized work item for this plan item
       let cancelled = false;
@@ -2237,7 +2243,7 @@ const server = http.createServer(async (req, res) => {
     for (const cat of shared.KB_CATEGORIES) result[cat] = [];
     for (const e of entries) {
       if (!result[e.cat]) result[e.cat] = [];
-      result[e.cat].push({ file: e.file, category: e.cat, title: e.title, agent: e.agent, date: e.date, size: e.size, preview: e.preview });
+      result[e.cat].push({ file: e.file, category: e.cat, title: e.title, agent: e.agent, date: e.date, sortTs: e.sortTs, size: e.size, preview: e.preview });
     }
     const swept = safeJson(path.join(ENGINE_DIR, 'kb-swept.json'));
     if (swept) result.lastSwept = swept.timestamp;
@@ -2409,9 +2415,12 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         if (!fs.existsSync(srcPath)) continue;
         if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
         try {
+          const srcStats = fs.statSync(srcPath);
           const content = safeRead(srcPath);
           const updated = content.replace(/^(category:\s*).+$/m, `$1${r.to}`);
-          safeWrite(path.join(destDir, entry.file), updated);
+          const destPath = path.join(destDir, entry.file);
+          safeWrite(destPath, updated);
+          fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);
           safeUnlink(srcPath);
           reclassified++;
         } catch (e) { console.error('kb reclassify:', e.message); }
@@ -2431,6 +2440,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
+      queries.invalidateKnowledgeBaseCache();
       global._kbSweepLastResult = { ok: true, summary, plan };
       global._kbSweepLastCompletedAt = Date.now();
     } catch (e) {
@@ -3276,6 +3286,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
       const kbFile = path.join(kbDir, name);
       safeWrite(kbFile, kbContent);
+      queries.invalidateKnowledgeBaseCache();
 
       // Move inbox item to archive
       const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
@@ -4525,6 +4536,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           prdItems: [],
           _manual: true,
           _contextOnly: !autoObserve,
+          _autoObserve: !!autoObserve,
           _context: context || '',
         });
         return prs;
@@ -4679,6 +4691,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const header = '# ' + title + '\n\n*Created by human teammate on ' + new Date().toISOString().slice(0, 10) + '*\n\n';
       safeWrite(filePath, header + content);
+      queries.invalidateKnowledgeBaseCache();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, path: filePath });
     }},
