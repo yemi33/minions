@@ -171,7 +171,14 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+let _worktreeCountCache = 0;
+let _worktreeCountCacheTs = 0;
+
 function _countWorktrees() {
+  const now = Date.now();
+  if (_worktreeCountCacheTs && (now - _worktreeCountCacheTs) < shared.ENGINE_DEFAULTS.worktreeCountCacheTtl) {
+    return _worktreeCountCache;
+  }
   try {
     const config = queries.getConfig();
     const projects = shared.getProjects(config);
@@ -199,6 +206,8 @@ function _countWorktrees() {
         }
       } catch {}
     }
+    _worktreeCountCache = count;
+    _worktreeCountCacheTs = now;
     return count;
   } catch { return 0; }
 }
@@ -312,9 +321,10 @@ let _slowStateTs = 0;
 const SLOW_STATE_TTL = 60000; // 60s — skills, PRDs, pinned, version, projects, etc.
 let _statusCache = null;
 let _statusCacheJson = null; // cached JSON.stringify(_statusCache) — avoids double-serialization for SSE
+let _statusCacheGzip = null; // pre-computed gzip of _statusCacheJson — avoids per-request gzipSync
 const _statusStreamClients = new Set();
 let _statusPushTimer = null;
-let _lastStatusHash = '';
+let _lastStatusPushRef = null; // last JSON string reference pushed to SSE — O(1) change detection
 
 // mtime-based cache invalidation — skip full rebuild if no tracked files changed
 const _mtimeTrackedFiles = () => {
@@ -359,6 +369,7 @@ function invalidateStatusCache() {
   // Slow state continues on its own TTL — not invalidated by mutations
   _statusCache = null;
   _statusCacheJson = null;
+  _statusCacheGzip = null;
   // Push to SSE clients (debounced 500ms to avoid flooding during batch mutations)
   if (_statusPushTimer) return;
   _statusPushTimer = setTimeout(() => {
@@ -476,6 +487,7 @@ function getStatus() {
   // Merge both tiers — no API contract change
   _statusCache = { ..._fastState, ..._slowState, timestamp: new Date().toISOString() };
   _statusCacheJson = null; // invalidate cached JSON — will be lazily rebuilt by getStatusJson()
+  _statusCacheGzip = null;
   return _statusCache;
 }
 
@@ -484,6 +496,7 @@ function getStatusJson() {
   getStatus(); // ensure _statusCache is fresh
   if (!_statusCacheJson) {
     _statusCacheJson = JSON.stringify(_statusCache);
+    _statusCacheGzip = zlib.gzipSync(_statusCacheJson); // pre-compute gzip once per cache rebuild
   }
   return _statusCacheJson;
 }
@@ -492,9 +505,8 @@ function getStatusJson() {
 setInterval(() => {
   if (_statusStreamClients.size === 0) return;
   const data = getStatusJson();
-  const hash = require('crypto').createHash('md5').update(data).digest('hex');
-  if (hash === _lastStatusHash) return;
-  _lastStatusHash = hash;
+  if (data === _lastStatusPushRef) return; // O(1) reference comparison — new string ref means content changed
+  _lastStatusPushRef = data;
   for (const res of _statusStreamClients) {
     try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
   }
@@ -4251,15 +4263,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleStatus(req, res) {
     try {
-      // Use pre-serialized JSON to avoid double-stringify in jsonReply
+      // Use pre-serialized JSON and pre-computed gzip buffer — zero per-request compression
       const json = getStatusJson();
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.statusCode = 200;
       const ae = req && req.headers && req.headers['accept-encoding'] || '';
-      if (ae.includes('gzip') && json.length > 1024) {
+      if (ae.includes('gzip') && _statusCacheGzip) {
         res.setHeader('Content-Encoding', 'gzip');
-        res.end(zlib.gzipSync(json));
+        res.end(_statusCacheGzip);
       } else {
         res.end(json);
       }

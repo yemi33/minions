@@ -13,24 +13,17 @@ function closeModal() {
   const resetBtn = document.getElementById('modal-settings-reset');
   if (resetBtn) resetBtn.remove();
   // Save Q&A session for this document (persist across modal open/close)
-  if (_qaSessionKey && (_qaHistory.length > 0 || _qaQueue.length > 0)) {
-    _qaSessions.set(_qaSessionKey, {
-      history: _qaHistory,
-      threadHtml: (document.getElementById('modal-qa-thread') || {}).innerHTML || '',
-      docContext: { ..._modalDocContext },
-      filePath: _modalFilePath,
-    });
-    _saveQaSessions();
+  if (_qaSessionKey && (_qaHistory.length > 0 || _qaQueue.length > 0 || _qaProcessing)) {
+    _qaSaveActiveSessionState();
   }
   // If still processing, show animated badge on the source card
   if (_qaProcessing && _modalFilePath) {
     const card = findCardForFile(_modalFilePath);
     if (card) showNotifBadge(card, 'processing');
   }
-  // Reset UI state but don't kill processing/queue — they run in background
+  // Reset active UI state but don't kill background processing — it is tracked per session
+  _qaResetActiveState();
   _modalDocContext = { title: '', content: '', selection: '' };
-  // Keep session key alive if processing is in flight — result will save when it completes
-  if (!_qaProcessing) _qaSessionKey = '';
   document.getElementById('modal-qa-input').value = '';
   document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
   document.getElementById('modal-qa-pill').style.display = 'none';
