@@ -308,16 +308,27 @@ function checkTimeouts(config) {
     const procInfo = activeProcesses.get(item.id);
     if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
 
+    // Capture live-output.log file state for orphan/hung diagnostics (#W-mo248lkjwgsu).
+    // Three distinguishable failure modes:
+    //   logExists=false           → spawn call itself threw, no log ever written
+    //   logExists=true, size~stub → process died at startup (stub-only content)
+    //   logExists=true, size>stub → genuine hang (process alive, wrote output, then stopped)
+    let _logState = 'logExists=false logSize=0';
+    try {
+      const lst = fs.statSync(liveLogPath);
+      _logState = `logExists=true logSize=${lst.size}`;
+    } catch { /* ENOENT — keep default */ }
+
     if (!hasProcess && silentMs > effectiveTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
       // No tracked process AND no recent output past effective timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
-      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
+      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
       // Clear session so retry starts fresh
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
       deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
     } else if (hasProcess && silentMs > effectiveTimeout) {
       // Has process but no output past effective timeout → hung
-      log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
+      log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Hung — no output for ${silentSec}s`);
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
