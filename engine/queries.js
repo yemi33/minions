@@ -419,7 +419,11 @@ function getAgentDetail(id) {
 // ── Pull Requests ───────────────────────────────────────────────────────────
 
 function getPrs(project) {
-  if (project) return safeJson(projectPrPath(project)) || [];
+  if (project) {
+    const prs = safeJson(projectPrPath(project)) || [];
+    shared.normalizePrRecords(prs, project);
+    return prs;
+  }
   const config = getConfig();
   const all = [];
   for (const p of getProjects(config)) all.push(...getPrs(p));
@@ -433,9 +437,13 @@ function getPullRequests(config) {
   for (const project of projects) {
     const prs = safeJson(projectPrPath(project));
     if (!prs) continue;
+    shared.normalizePrRecords(prs, project);
     const base = project.prUrlBase || '';
     for (const pr of prs) {
-      if (!pr.url && base && pr.id) pr.url = base + String(pr.id).replace('PR-', '');
+      if (!pr.url && base) {
+        const prNumber = shared.getPrNumber(pr);
+        if (prNumber != null) pr.url = base + prNumber;
+      }
       pr._project = project.name || 'Project';
       allPrs.push(pr);
     }
@@ -444,6 +452,7 @@ function getPullRequests(config) {
   const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
   const centralPrs = safeJson(centralPath);
   if (centralPrs) {
+    shared.normalizePrRecords(centralPrs, null);
     for (const pr of centralPrs) {
       if (!allPrs.some(p => p.id === pr.id)) {
         pr._project = 'central';
@@ -737,9 +746,16 @@ function getWorkItems(config) {
   const allPrs = getPullRequests(config);
   for (const item of allItems) {
     if (item._pr && !item._prUrl) {
-      const prId = String(item._pr).replace('PR-', '');
-      const pr = allPrs.find(p => String(p.id).includes(prId));
-      if (pr) item._prUrl = pr.url;
+      const project = projects.find(p => p.name === item.project || p.name === item._source) || null;
+      const canonicalPrId = shared.getCanonicalPrId(project, item._pr);
+      const displayPrId = shared.getPrDisplayId(item._pr);
+      const exactPr = allPrs.find(p => p.id === canonicalPrId);
+      const displayMatches = exactPr ? [] : allPrs.filter(p => shared.getPrDisplayId(p) === displayPrId);
+      const pr = exactPr || (displayMatches.length === 1 ? displayMatches[0] : null);
+      if (pr) {
+        item._pr = pr.id;
+        item._prUrl = pr.url;
+      }
     }
     if (!item._pr) {
       // Derive from PR.prdItems (single source of truth)
@@ -953,7 +969,8 @@ function getPrdInfo(config) {
   for (const [prId, itemIds] of Object.entries(prLinks)) {
     const pr = prById[prId];
     const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
-    const url = pr?.url || (project?.prUrlBase ? project.prUrlBase + prId.replace('PR-', '') : '');
+    const prNumber = shared.getPrNumber(pr || prId);
+    const url = pr?.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
     for (const itemId of (itemIds || [])) {
       if (!prdToPr[itemId]) prdToPr[itemId] = [];
       prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
@@ -962,10 +979,14 @@ function getPrdInfo(config) {
   // Fallback: work item _pr field for anything still missing
   for (const wi of Object.values(wiById)) {
     if (!wi._pr || prdToPr[wi.id]?.length) continue;
-    const pr = prById[wi._pr];
-    const project = projects.find(p => p.name === wi.project || p.name === wi._source);
-    const url = pr?.url || (project?.prUrlBase ? project.prUrlBase + wi._pr.replace('PR-', '') : '');
-    prdToPr[wi.id] = [{ id: wi._pr, url, title: pr?.title || '', status: pr?.status || 'active', _project: project?.name || '' }];
+    const project = projects.find(p => p.name === wi.project || p.name === wi._source) || null;
+    const canonicalPrId = shared.getCanonicalPrId(project, wi._pr);
+    const exactPr = prById[canonicalPrId] || null;
+    const displayMatches = exactPr ? [] : Object.values(prById).filter(candidate => shared.getPrDisplayId(candidate) === shared.getPrDisplayId(wi._pr));
+    const pr = exactPr || (displayMatches.length === 1 ? displayMatches[0] : null);
+    const prNumber = shared.getPrNumber(pr || wi._pr);
+    const url = pr?.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
+    prdToPr[wi.id] = [{ id: pr?.id || canonicalPrId || wi._pr, url, title: pr?.title || '', status: pr?.status || 'active', _project: project?.name || '' }];
   }
   // Aggregate sub-task PRs to decomposed parent (sub-tasks aren't PRD items but their PRs should show)
   for (const pr of allPrs) {
@@ -978,7 +999,8 @@ function getPrdInfo(config) {
       if (!prdToPr[parentId]) prdToPr[parentId] = [];
       if (!prdToPr[parentId].some(p => p.id === pr.id)) {
         const project = projects.find(p => p.name === pr._project) || projects[0] || null;
-        const url = pr.url || (project?.prUrlBase ? project.prUrlBase + pr.id.replace('PR-', '') : '');
+        const prNumber = shared.getPrNumber(pr);
+        const url = pr.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
         prdToPr[parentId].push({ id: pr.id, url, title: pr.title || '', status: pr.status || 'active', _project: pr._project || '' });
       }
     }

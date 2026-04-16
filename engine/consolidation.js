@@ -25,7 +25,8 @@ function consolidateInbox(config) {
 
   const { ENGINE_DEFAULTS } = shared;
   const threshold = config.engine?.inboxConsolidateThreshold || ENGINE_DEFAULTS.inboxConsolidateThreshold;
-  const files = getInboxFiles().filter(f => !_processingFiles.has(f));
+  const pinnedInboxKeys = new Set(shared.getPinnedItems().filter(k => k.startsWith('notes/inbox/')));
+  const files = getInboxFiles().filter(f => !_processingFiles.has(f) && !pinnedInboxKeys.has('notes/inbox/' + f));
   if (files.length < threshold) return;
   // Auto-reset stale flag if consolidation has been running for >5 minutes (process died without cleanup)
   if (_consolidationInFlight && (Date.now() - _consolidationStartedAt) > 300000) {
@@ -485,4 +486,3 @@ module.exports = {
   classifyToKnowledgeBase,
   checkDuplicateHash,
 };
-

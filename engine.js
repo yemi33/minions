@@ -1878,7 +1878,7 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   try {
     const prsPath = projectPrPath(projectMeta);
     mutatePullRequests(prsPath, prs => {
-      const target = prs.find(p => p.id === prId);
+      const target = shared.findPrRecord(prs, prId, projectMeta);
       if (!target?.humanFeedback?.pendingFix) return;
       target.humanFeedback.pendingFix = false;
     });
@@ -1892,11 +1892,12 @@ async function discoverFromPrs(config, project) {
   const src = project?.workSources?.pullRequests || config.workSources?.pullRequests;
   if (!src?.enabled) return [];
 
-  const prs = safeJson(projectPrPath(project)) || [];
+  const prs = queries.getPrs(project);
   const cooldownMs = (src.cooldownMinutes || 30) * 60 * 1000;
   const newWork = [];
 
   const projMeta = { name: project?.name, localPath: project?.localPath };
+  const projectsByName = new Map(shared.getProjects(config).map(p => [p.name, p]));
 
   // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
   const isAdoProject = project?.repoHost !== 'github';
@@ -1908,12 +1909,21 @@ async function discoverFromPrs(config, project) {
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
   const activePrIds = new Set(
-    (dispatch.active || []).filter(d => d.meta?.pr?.id).map(d => d.meta.pr.id)
+    (dispatch.active || [])
+      .filter(d => d.meta?.pr?.id)
+      .map(d => {
+        const dispatchProject = d.meta?.project?.name
+          ? (projectsByName.get(d.meta.project.name) || d.meta.project)
+          : (d.meta?.project || null);
+        return shared.getCanonicalPrId(dispatchProject, d.meta.pr, d.meta.pr?.url || '');
+      })
+      .filter(Boolean)
   );
 
   const knownAgents = new Set(Object.keys(config.agents || {}));
   for (const pr of prs) {
     if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
+    const prDisplayId = shared.getPrDisplayId(pr);
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
@@ -1925,7 +1935,7 @@ async function discoverFromPrs(config, project) {
     const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || pr._autoObserve;
     if (!isAgentPr) continue;
 
-    const prNumber = (pr.id || '').replace(/^PR-/, '');
+    const prNumber = shared.getPrNumber(pr);
     // Use reviewStatus as single source of truth (synced from ADO/GitHub votes)
     // minionsReview tracks metadata (reviewer, note) but not the authoritative status
     const reviewStatus = pr.reviewStatus || 'pending';
@@ -1939,13 +1949,13 @@ async function discoverFromPrs(config, project) {
     const evalCycles = pr._reviewFixCycles || 0;
     const evalEscalated = evalCycles >= evalMax;
     if (evalEscalated && !pr._evalEscalated) {
-      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
         `# Review Loop Escalation\n\n**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
         `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
         `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
       try {
         mutatePullRequests(projectPrPath(project), prs => {
-          const target = prs.find(p => p.id === pr.id);
+          const target = shared.findPrRecord(prs, pr, project);
           if (target) target._evalEscalated = true;
         });
       } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
@@ -1957,7 +1967,7 @@ async function discoverFromPrs(config, project) {
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
-      const key = `review-${project?.name || 'default'}-${pr.id}`;
+      const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
@@ -1972,7 +1982,7 @@ async function discoverFromPrs(config, project) {
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
-              const target = data.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(data, pr, project);
               if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
               return data;
             });
@@ -1998,7 +2008,7 @@ async function discoverFromPrs(config, project) {
     const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !evalEscalated;
     if (needsReReview) {
-      const key = `rereview-${project?.name || 'default'}-${pr.id}`;
+      const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (isOnCooldown(key, cooldownMs)) continue;
@@ -2013,7 +2023,7 @@ async function discoverFromPrs(config, project) {
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
-              const target = data.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(data, pr, project);
               if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
               return data;
             });
@@ -2036,7 +2046,7 @@ async function discoverFromPrs(config, project) {
     // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
     let fixDispatched = false;
     if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
-      const key = `fix-${project?.name || 'default'}-${pr.id}`;
+      const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
@@ -2050,7 +2060,7 @@ async function discoverFromPrs(config, project) {
         // Increment review→fix cycle counter
         try {
           mutatePullRequests(projectPrPath(project), prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
           });
         } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
@@ -2058,7 +2068,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with pending human feedback (skip if review-fix already dispatched above)
-    const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
+    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
     if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
       const key = humanFixKey;
@@ -2109,7 +2119,7 @@ async function discoverFromPrs(config, project) {
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
         if (!pr.buildFixEscalated) {
-          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
             `# Build Fix Escalation\n\n` +
             `**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
             `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
@@ -2118,7 +2128,7 @@ async function discoverFromPrs(config, project) {
           try {
             const prPath = projectPrPath(project);
             mutatePullRequests(prPath, prs => {
-              const target = prs.find(p => p.id === pr.id);
+              const target = shared.findPrRecord(prs, pr, project);
               if (target) target.buildFixEscalated = true;
             });
           } catch (e) { log('warn', 'mark build fix escalated: ' + e.message); }
@@ -2127,7 +2137,7 @@ async function discoverFromPrs(config, project) {
         continue;
       }
 
-      const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
+      const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
@@ -2147,7 +2157,7 @@ async function discoverFromPrs(config, project) {
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) {
               target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
               target._buildFixPushedAt = ts();
@@ -2167,12 +2177,12 @@ async function discoverFromPrs(config, project) {
           alertBody += `**Error preview:**\n\`\`\`\n${logPreview}\n\`\`\`\n\n`;
         }
         alertBody += `A fix agent has been dispatched to address this. Review the fix when complete.\n`;
-        writeInboxAlert(`build-fail-${pr.agent}-${pr.id}`, alertBody);
+        writeInboxAlert(`build-fail-${pr.agent}-${prDisplayId}`, alertBody);
         // Mark notified to prevent duplicate alerts
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
-            const target = prs.find(p => p.id === pr.id);
+            const target = shared.findPrRecord(prs, pr, project);
             if (target) {
               target._buildFailNotified = true;
             }
@@ -2184,7 +2194,7 @@ async function discoverFromPrs(config, project) {
     // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
     const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
     if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
-      const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
+      const key = `conflict-fix-${project?.name || 'default'}-${prDisplayId}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
@@ -2203,7 +2213,7 @@ async function discoverFromPrs(config, project) {
             // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
             try {
               mutatePullRequests(projectPrPath(project), prs => {
-                const target = prs.find(p => p.id === pr.id);
+                const target = shared.findPrRecord(prs, pr, project);
                 if (target) target._conflictFixedAt = new Date().toISOString();
               });
             } catch (e) { log('warn', `conflict-fix timestamp: ${e.message}`); }

@@ -543,7 +543,7 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
     if (prFilePath) {
       mutateJsonFileLocked(prFilePath, (prs) => {
         if (!Array.isArray(prs)) return prs;
-        const target = prs.find(p => p.id === pr.id);
+        const target = shared.findPrRecord(prs, pr);
         if (target) {
           if (!target._teamsNotifiedEvents) target._teamsNotifiedEvents = [];
           if (!target._teamsNotifiedEvents.includes(event)) {

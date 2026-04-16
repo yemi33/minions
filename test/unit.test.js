@@ -224,8 +224,11 @@ async function testIdGeneration() {
     assert.strictEqual(files.length, 2, 'Different slugs should create separate files');
   });
 
-  await test('writeToInbox returns false on error (missing dir)', () => {
-    const result = shared.writeToInbox('test', 'slug', 'content', '/nonexistent/path/inbox');
+  await test('writeToInbox returns false on error (invalid inbox path)', () => {
+    const dir = createTmpDir();
+    const blocker = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(blocker, 'block writes below this path');
+    const result = shared.writeToInbox('test', 'slug', 'content', path.join(blocker, 'inbox'));
     assert.strictEqual(result, false, 'Should return false on error');
   });
 
@@ -652,6 +655,33 @@ async function testPrLinks() {
     shared.addPrLink('pr-1', null);   // should not crash
   });
 
+  await test('getCanonicalPrId scopes same PR number by repository', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
+    const adoProject = { repoHost: 'ado', adoOrg: 'octo', adoProject: 'platform', repoName: 'beta' };
+    assert.strictEqual(shared.getCanonicalPrId(ghProject, 123), 'github:octo/alpha#123');
+    assert.strictEqual(shared.getCanonicalPrId(adoProject, 123), 'ado:octo/platform/beta#123');
+    assert.strictEqual(shared.getPrDisplayId('github:octo/alpha#123'), 'PR-123');
+  });
+
+  await test('findPrRecord matches canonical PR entries from legacy refs', () => {
+    const project = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
+    const prs = [{
+      id: 'github:octo/alpha#42',
+      prNumber: 42,
+      url: 'https://github.com/octo/alpha/pull/42'
+    }];
+    const found = shared.findPrRecord(prs, { id: 'PR-42', url: 'https://github.com/octo/alpha/pull/42' }, project);
+    assert.strictEqual(found, prs[0]);
+  });
+
+  await test('findPrRecord refuses ambiguous PR-number-only matches', () => {
+    const prs = [
+      { id: 'github:octo/alpha#42', prNumber: 42 },
+      { id: 'github:octo/beta#42', prNumber: 42 },
+    ];
+    assert.strictEqual(shared.findPrRecord(prs, 'PR-42', null), null);
+  });
+
   await test('getPrLinks preserves multiple prdItems per PR and only uses fallback links for uncovered PRs', () => {
     const restore = createTestMinionsDir();
     try {
@@ -706,6 +736,100 @@ async function testPrLinks() {
     }
   });
 
+  await test('addPrLink mirrors prdItems into matching project pull-requests.json when project is provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: 'D:\\demo',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        prUrlBase: 'https://github.com/octo/repo/pull/'
+      };
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-500', prNumber: 500, url: 'https://github.com/octo/repo/pull/500', prdItems: [] }
+      ]));
+      freshShared.addPrLink('PR-500', 'W-500', {
+        project,
+        prNumber: 500,
+        url: 'https://github.com/octo/repo/pull/500'
+      });
+      const storedLinks = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      const storedPrs = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.deepStrictEqual(storedLinks['github:octo/repo#500'], ['W-500']);
+      assert.deepStrictEqual(storedPrs[0].prdItems, ['W-500']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink does not create project pull-requests.json when the file is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const project = {
+        name: 'demo',
+        localPath: 'D:\\demo',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        prUrlBase: 'https://github.com/octo/repo/pull/'
+      };
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.addPrLink('PR-600', 'W-600', {
+        project,
+        prNumber: 600,
+        url: 'https://github.com/octo/repo/pull/600'
+      });
+      const storedLinks = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(storedLinks['github:octo/repo#600'], ['W-600']);
+      assert.ok(!fs.existsSync(prPath), 'Should not create pull-requests.json just to mirror a PR link');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink scrubs corrupt non-string link values before writing back', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, {
+        'PR-700': { corrupt: true }
+      });
+      freshShared.addPrLink('PR-700', 'W-700');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored['PR-700'], ['W-700']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getPinnedItems returns only valid pinned keys', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PINNED_ITEMS_PATH, [
+        'notes/inbox/pinned-note.md',
+        '',
+        null,
+        42,
+        { bad: true },
+        'knowledge/reviews/entry.md'
+      ]);
+      assert.deepStrictEqual(freshShared.getPinnedItems(), [
+        'notes/inbox/pinned-note.md',
+        'knowledge/reviews/entry.md'
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
   await test('addPrLink only mutates fallback pr-links.json, not merged project links', () => {
     const restore = createTestMinionsDir();
     try {
@@ -724,6 +848,85 @@ async function testPrLinks() {
     } finally {
       restore();
     }
+  });
+
+  await test('getPrLinks keeps same PR number separate across repositories', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [
+          { name: 'repo-a', localPath: 'D:/repo-a', repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' },
+          { name: 'repo-b', localPath: 'D:/repo-b', repoHost: 'github', adoOrg: 'octo', repoName: 'beta' },
+        ]
+      });
+      const projectADir = path.join(testDir, 'projects', 'repo-a');
+      const projectBDir = path.join(testDir, 'projects', 'repo-b');
+      fs.mkdirSync(projectADir, { recursive: true });
+      fs.mkdirSync(projectBDir, { recursive: true });
+      fs.writeFileSync(path.join(projectADir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-A'] },
+      ]));
+      fs.writeFileSync(path.join(projectBDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-B'] },
+      ]));
+
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['github:octo/alpha#100'], ['W-A']);
+      assert.deepStrictEqual(links['github:octo/beta#100'], ['W-B']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('mutateJsonFileLocked normalizes legacy PR IDs in project PR files before mutation', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [{ name: 'demo', localPath: 'D:/demo', repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' }]
+      });
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prPath = path.join(projectDir, 'pull-requests.json');
+      freshShared.safeWrite(prPath, [{
+        id: 'PR-42',
+        prNumber: 42,
+        url: 'https://github.com/octo/alpha/pull/42',
+        reviewStatus: 'pending'
+      }]);
+
+      freshShared.mutateJsonFileLocked(prPath, (prs) => {
+        const target = prs.find(pr => pr.id === 'github:octo/alpha#42');
+        assert.ok(target, 'mutation callback should see the canonical PR ID');
+        target.reviewStatus = 'approved';
+        return prs;
+      }, { defaultValue: [] });
+
+      const stored = freshShared.safeJson(prPath) || [];
+      assert.strictEqual(stored[0]?.id, 'github:octo/alpha#42');
+      assert.strictEqual(stored[0]?.reviewStatus, 'approved');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('writeToInbox sanitizes canonical PR slugs for Windows-safe filenames', () => {
+    const inboxDir = createTmpDir();
+    const noteId = shared.writeToInbox(
+      'engine',
+      'build-fail-github:very/long-org-name/really-long-repository-name/subpath#123456789',
+      'test content',
+      inboxDir
+    );
+    const files = fs.readdirSync(inboxDir);
+    assert.ok(noteId, 'writeToInbox should still succeed');
+    assert.strictEqual(files.length, 1, 'exactly one inbox file should be created');
+    assert.ok(!files[0].includes(':'), 'filename should not contain ":"');
+    assert.ok(!files[0].includes('/'), 'filename should not contain "/"');
+    assert.ok(files[0].length < 180, 'filename should stay reasonably bounded');
   });
 }
 
@@ -1255,6 +1458,7 @@ async function testSyncPrdItemStatus() {
 
 async function testConsolidationHelpers() {
   console.log('\n── consolidation.js — Knowledge Base Classification ──');
+  const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
 
   await test('classifyInboxItem categorizes by filename priority', () => {
     // Filename takes priority over content for reviews/builds
@@ -1285,6 +1489,16 @@ async function testConsolidationHelpers() {
     for (const cat of testCases) {
       assert.ok(validCats.has(cat), `classifyInboxItem returned '${cat}' which is not in KB_CATEGORIES`);
     }
+  });
+
+  await test('consolidateInbox skips pinned inbox notes', () => {
+    const consolidateFn = consolidationSrc.slice(consolidationSrc.indexOf('function consolidateInbox'), consolidationSrc.indexOf('// ─── LLM-Powered'));
+    assert.ok(consolidateFn.includes('shared.getPinnedItems()'),
+      'consolidateInbox should read server-side pinned items before sweeping inbox files');
+    assert.ok(consolidateFn.includes("k.startsWith('notes/inbox/')"),
+      'consolidateInbox should only treat inbox pins as sweep exclusions for inbox consolidation');
+    assert.ok(consolidateFn.includes("!pinnedInboxKeys.has('notes/inbox/' + f)"),
+      'Pinned inbox notes should be excluded from consolidation input files');
   });
 }
 
@@ -2300,8 +2514,8 @@ async function testPrReviewFixCycle() {
     // The key should NOT include lastProcessedCommentDate
     assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
       'Human fix key should not include timestamp (prevents cooldown bypass)');
-    assert.ok(src.includes("human-fix-${project?.name || 'default'}-${pr.id}`"),
-      'Human fix key should be PR-level only');
+    assert.ok(src.includes("const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
+      'Human fix key should stay PR-level while using the stable display ID');
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
@@ -2318,8 +2532,8 @@ async function testPrReviewFixCycle() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('activePrIds'),
       'discoverFromPrs should track active PR dispatches');
-    assert.ok(src.includes('activePrIds.has(pr.id)'),
-      'Should skip PRs that already have an active dispatch');
+    assert.ok(src.includes('shared.getCanonicalPrId(') && src.includes('activePrIds.has(pr.id)'),
+      'Should canonicalize active dispatch PR IDs before checking whether the current PR is already active');
   });
 
   await test('Only active PRs are considered for review/fix', () => {
@@ -4729,6 +4943,16 @@ async function testDiscoverFromPrs() {
       'Should skip PRs that already have an active dispatch to prevent races');
   });
 
+  await test('discoverFromPrs reads normalized PRs via queries.getPrs', () => {
+    assert.ok(src.includes('const prs = queries.getPrs(project);'),
+      'discoverFromPrs should read PRs through queries.getPrs so IDs are canonicalized before dispatch decisions');
+  });
+
+  await test('discoverFromPrs uses shared.findPrRecord for PR write-backs', () => {
+    assert.ok(src.includes('shared.findPrRecord('),
+      'discoverFromPrs should use shared.findPrRecord so migrated PR files and stale dispatch metadata still match');
+  });
+
   await test('discoverFromPrs uses cooldown to prevent rapid redispatch', () => {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
@@ -5457,6 +5681,16 @@ async function testSyncPrsFromOutput() {
       'Fallback PR creation should not redundantly call addPrLink after writing prdItems');
   });
 
+  await test('syncPrsFromOutput persists pr-links outside the pull-requests lock callback', () => {
+    const syncIdx = src.indexOf('const linksToPersist = [];');
+    assert.ok(syncIdx > -1, 'Should queue PR links for persistence after the PR file mutation');
+    const lockIdx = src.indexOf('mutateJsonFileLocked(prPath,', syncIdx);
+    const lockReturnIdx = src.indexOf('return prs;', lockIdx);
+    const addIdx = src.indexOf('addPrLink(prId, itemId, { project, prNumber, url });', syncIdx);
+    assert.ok(addIdx > lockReturnIdx,
+      'Should write pr-links only after releasing the pull-requests.json lock');
+  });
+
   await test('syncPrsFromOutput only uses ADO branch lookup for ADO hosts', () => {
     assert.ok(src.includes("const host = projectObj.repoHost || 'ado'"),
       'Should normalize repoHost before branch lookup fallback');
@@ -5506,8 +5740,8 @@ async function testSyncPrsFromOutput() {
   await test('PR dedup uses strict equality, not substring includes', () => {
     assert.ok(!src.includes("String(p.id).includes(prId)"),
       'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
-    assert.ok(src.includes("String(p.id) === String(prId)"),
-      'Should use strict equality for PR ID comparison');
+    assert.ok(src.includes('p.id === fullId'),
+      'Should use exact canonical PR ID equality for dedup');
   });
 }
 
@@ -10219,8 +10453,8 @@ async function testReviewReDispatchLoop() {
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);
     assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
       'needsReReview should not be blocked by completed dispatch history');
-    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${pr.id}`"),
-      'needsReReview should use a dedicated re-review dispatch key');
+    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${prDisplayId}`"),
+      'needsReReview should use a dedicated re-review dispatch key based on the stable display ID');
     assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
       'needsReReview should still respect cooldown');
     assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
@@ -10500,6 +10734,26 @@ async function testKbSweepBatching() {
     assert.ok(src.includes('BATCH_SIZE'), 'sweep should use BATCH_SIZE');
     assert.ok(src.includes('batches.length'), 'sweep should iterate batches');
     assert.ok(src.includes('batch ${b + 1}'), 'sweep should log batch progress');
+  });
+
+  await test('KB sweep skips pinned entries using server and request pin sets', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('shared.getPinnedItems().filter(k => k.startsWith(\'knowledge/\'))'),
+      'KB sweep should read server-side pinned knowledge keys');
+    assert.ok(bgFn.includes('body.pinnedKeys'),
+      'KB sweep should still honor explicitly provided pinned keys from the caller');
+    assert.ok(bgFn.includes("if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;"),
+      'Pinned knowledge entries should be excluded from the sweep manifest');
+  });
+
+  await test('KB sweep exits early when fewer than 2 unpinned entries remain', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes("nothing to sweep (< 2 unpinned entries)"),
+      'KB sweep should report no-op when pinned exclusions leave fewer than 2 entries');
+    assert.ok(bgFn.includes('if (manifest.length < 2)'),
+      'KB sweep should stop before LLM batching when too few unpinned entries remain');
   });
 }
 
@@ -11340,7 +11594,7 @@ async function testPrWriteRaceConditions() {
     shared.safeWrite(prFile, []);
 
     // Mock config with a project pointing to our tmp PR file
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: {
@@ -11371,8 +11625,8 @@ async function testPrWriteRaceConditions() {
 
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-100'), 'PR-100 from agent1 should be present');
-      assert.ok(ids.includes('PR-200'), 'PR-200 from agent2 should be present');
+      assert.ok(ids.includes('github:org/repo#100'), 'repo-scoped PR 100 from agent1 should be present');
+      assert.ok(ids.includes('github:org/repo#200'), 'repo-scoped PR 200 from agent2 should be present');
       assert.strictEqual(result.length, 2, 'Both PRs should be preserved, not overwritten');
     } finally {
       shared.projectPrPath = origProjectPrPath;
@@ -11386,7 +11640,7 @@ async function testPrWriteRaceConditions() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: { agent1: { name: 'Agent1' } }
@@ -11405,8 +11659,8 @@ async function testPrWriteRaceConditions() {
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
 
       const result = shared.safeJson(prFile) || [];
-      const pr300s = result.filter(p => p.id === 'PR-300');
-      assert.strictEqual(pr300s.length, 1, 'PR-300 should appear exactly once despite two calls');
+      const pr300s = result.filter(p => p.id === 'github:org/repo#300');
+      assert.strictEqual(pr300s.length, 1, 'repo-scoped PR 300 should appear exactly once despite two calls');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
@@ -12881,6 +13135,13 @@ async function testPrDuplicateRaceFix() {
       'updatePrAfterReview must not use bare safeWrite on PR file');
   });
 
+  await test('updatePrAfterReview matches PRs with shared.findPrRecord', () => {
+    const fn = lifecycleSrc.match(/function updatePrAfterReview[\s\S]*?^}/m);
+    assert.ok(fn, 'updatePrAfterReview must exist');
+    assert.ok(fn[0].includes('shared.findPrRecord(prs, pr, project)'),
+      'updatePrAfterReview should use shared.findPrRecord so stale legacy dispatch metadata still matches normalized PR files');
+  });
+
   await test('updatePrAfterFix uses mutateJsonFileLocked, not safeWrite', () => {
     const fn = lifecycleSrc.match(/function updatePrAfterFix[\s\S]*?^}/m);
     assert.ok(fn, 'updatePrAfterFix must exist');
@@ -13409,7 +13670,7 @@ async function testAutoRecoveryAndAtomicity() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
 
     const origProjectPrPath = shared.projectPrPath;
@@ -13774,6 +14035,8 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
     assert.ok(fn.includes('_teamsNotifiedEvents'), 'should check dedup array');
     assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
+    assert.ok(fn.includes('shared.findPrRecord(prs, pr)'),
+      'should use shared.findPrRecord so normalized PR files still match stale PR event objects');
   });
 
   await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
@@ -20705,7 +20968,7 @@ async function testSyncPrsToolResultInUserMessages() {
       const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-555'), 'PR-555 from type:user tool_result should be detected');
+      assert.ok(ids.includes('github:org/repo#555'), 'repo-scoped PR 555 from type:user tool_result should be detected');
       assert.ok(count >= 1, 'Should return count >= 1 for detected PR');
     } finally {
       shared.projectPrPath = origProjectPrPath;
@@ -20718,7 +20981,7 @@ async function testSyncPrsToolResultInUserMessages() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'ado', adoOrg: 'myorg', adoProject: 'myproject', repoName: 'myrepo' };
     const mockConfig = {
       projects: [mockProject],
       agents: { agent1: { name: 'Agent1' } }
@@ -20739,7 +21002,7 @@ async function testSyncPrsToolResultInUserMessages() {
       const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-777'), 'PR-777 from ADO URL in type:user tool_result should be detected');
+      assert.ok(ids.includes('ado:myorg/myproject/myrepo#777'), 'repo-scoped PR 777 from ADO URL in type:user tool_result should be detected');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
@@ -20753,7 +21016,7 @@ async function testSyncPrsToolResultInUserMessages() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: { agent1: { name: 'Agent1' } }
@@ -20771,7 +21034,7 @@ async function testSyncPrsToolResultInUserMessages() {
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-888'), 'PR-888 from assistant text block should still be detected');
+      assert.ok(ids.includes('github:org/repo#888'), 'repo-scoped PR 888 from assistant text block should still be detected');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
@@ -20783,7 +21046,7 @@ async function testSyncPrsToolResultInUserMessages() {
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
-    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = {
       projects: [mockProject],
       agents: { agent1: { name: 'Agent1' } }
@@ -20801,7 +21064,7 @@ async function testSyncPrsToolResultInUserMessages() {
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('PR-999'), 'PR-999 from type:result message should still be detected');
+      assert.ok(ids.includes('github:org/repo#999'), 'repo-scoped PR 999 from type:result message should still be detected');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;

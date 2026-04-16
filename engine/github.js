@@ -199,7 +199,7 @@ async function forEachActiveGhPr(config, callback) {
     let projectUpdated = 0;
 
     for (const pr of activePrs) {
-      const prNum = (pr.id || '').replace('PR-', '');
+      const prNum = shared.getPrNumber(pr);
       if (!prNum) continue;
 
       try {
@@ -621,6 +621,7 @@ async function reconcilePrs(config) {
 
     const prPath = projectPrPath(project);
     const currentPrs = safeJson(prPath) || [];
+    shared.normalizePrRecords(currentPrs, project);
     const existingIds = new Set(currentPrs.map(p => p.id));
     let projectAdded = 0;
 
@@ -632,7 +633,8 @@ async function reconcilePrs(config) {
     const allItems = [...workItems, ...centralItems];
 
     for (const ghPr of ghPrs) {
-      const prId = `PR-${ghPr.number}`;
+      const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
+      const prId = shared.getCanonicalPrId(project, ghPr.number, prUrl);
       const branch = ghPr.head?.ref || '';
       const wiMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(W-[a-z0-9]{6,})/i) || branch.match(/(PL-[a-z0-9]{6,})/i);
       const linkedItemId = wiMatch ? wiMatch[1] : null;
@@ -646,7 +648,7 @@ async function reconcilePrs(config) {
           existing.prNumber = ghPr.number;
         }
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId);
+          addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -661,8 +663,6 @@ async function reconcilePrs(config) {
       // Only auto-track PRs linked to a minions work item — skip human-authored PRs
       if (!confirmedItemId && !isE2eBranch) continue;
 
-      const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
-
       currentPrs.push({
         id: prId,
         prNumber: ghPr.number,
@@ -675,7 +675,7 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: [confirmedItemId],
       });
-      addPrLink(prId, confirmedItemId);
+      addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
       existingIds.add(prId);
       projectAdded++;
 
@@ -685,7 +685,7 @@ async function reconcilePrs(config) {
     // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
     for (const pr of currentPrs) {
       if (pr.prNumber == null) {
-        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        const derived = shared.getPrNumber(pr);
         if (derived) pr.prNumber = derived;
       }
     }
@@ -719,7 +719,8 @@ async function checkLiveReviewStatus(pr, project) {
   try {
     const slug = getRepoSlug(project);
     if (!slug) return null;
-    const prNum = (pr.id || '').replace(/^PR-/, '');
+    const prNum = shared.getPrNumber(pr);
+    if (!prNum) return null;
     const reviews = await ghApi(`/pulls/${prNum}/reviews`, slug);
     if (!reviews || !Array.isArray(reviews)) return null;
     const latestByUser = new Map();

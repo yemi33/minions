@@ -2172,13 +2172,22 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Build a manifest of all KB entries with their content (skip pinned — user wants to keep them)
-      const pinnedKeys = new Set(body.pinnedKeys || []);
+      const requestPinnedKeys = Array.isArray(body.pinnedKeys)
+        ? body.pinnedKeys.filter(k => typeof k === 'string' && k.startsWith('knowledge/'))
+        : [];
+      const serverPinnedKeys = shared.getPinnedItems().filter(k => k.startsWith('knowledge/'));
+      const pinnedKeys = new Set([...serverPinnedKeys, ...requestPinnedKeys]);
       const manifest = [];
       for (const e of entries) {
         if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;
         const content = safeRead(path.join(MINIONS_DIR, 'knowledge', e.cat, e.file));
         if (!content) continue;
         manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });
+      }
+      if (manifest.length < 2) {
+        global._kbSweepLastResult = { ok: true, summary: 'nothing to sweep (< 2 unpinned entries)' };
+        global._kbSweepLastCompletedAt = Date.now();
+        return;
       }
 
       const { callLLM, trackEngineUsage } = require('./engine/llm');
@@ -4364,7 +4373,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Extract PR number from URL
       const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
       const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
-      const prId = 'PR-' + prNum;
+      const prId = shared.getCanonicalPrId(targetProject, prNum, url);
 
       // Atomic check-and-insert to prevent duplicates and races with polling loops
       let duplicate = false;
@@ -4373,6 +4382,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
         prs.push({
           id: prId,
+          prNumber: parseInt(prNum, 10) || null,
           title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
           description: '',
           agent: 'human',

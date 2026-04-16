@@ -223,7 +223,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         try {
           const prsPath = projectPrPath(project);
           mutatePullRequests(prsPath, prs => {
-            const target = prs.find(p => p.id === prId);
+            const target = shared.findPrRecord(prs, { id: prId }, project);
             if (target?.humanFeedback) target.humanFeedback.pendingFix = true;
           });
           log('info', `Restored pendingFix=true on ${prId} after failed human-feedback fix`);
@@ -246,9 +246,10 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
 
 function writeInboxAlert(slug, content) {
   try {
-    const file = path.join(INBOX_DIR, `engine-alert-${slug}-${dateStamp()}.md`);
+    const safeSlug = shared.safeSlugComponent(slug, 100);
+    const file = path.join(INBOX_DIR, `engine-alert-${safeSlug}-${dateStamp()}.md`);
     // Dedupe: don't write the same alert twice in the same day
-    const existing = safeReadDir(INBOX_DIR).find(f => f.startsWith(`engine-alert-${slug}-${dateStamp()}`));
+    const existing = safeReadDir(INBOX_DIR).find(f => f.startsWith(`engine-alert-${safeSlug}-${dateStamp()}`));
     if (existing) return;
     safeWrite(file, content);
   } catch (e) { log('warn', 'write inbox alert: ' + e.message); }

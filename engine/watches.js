@@ -20,6 +20,14 @@ function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watche
 // so watches are checked every N ticks where N = ceil(interval / tickInterval).
 const DEFAULT_WATCH_INTERVAL = 300000;
 
+/** Find a PR by target (prNumber, canonical ID, or display ID). */
+function findPrByTarget(pullRequests, target) {
+  const t = String(target);
+  return (pullRequests || []).find(p =>
+    String(p.prNumber) === t || p.id === t || shared.getPrDisplayId(p) === t
+  );
+}
+
 /**
  * Read all watches from disk.
  * @returns {Array<object>}
@@ -131,9 +139,7 @@ function evaluateWatch(watch, state) {
   const { target, targetType, condition } = watch;
 
   if (targetType === WATCH_TARGET_TYPE.PR) {
-    const pr = (state.pullRequests || []).find(p =>
-      String(p.prNumber) === String(target) || p.id === target
-    );
+    const pr = findPrByTarget(state.pullRequests, target);
     if (!pr) return { triggered: false, message: `PR ${target} not found` };
 
     // Store previous state for status-change detection
@@ -290,9 +296,7 @@ function checkWatches(config, state) {
  */
 function _captureState(watch, state) {
   if (watch.targetType === WATCH_TARGET_TYPE.PR) {
-    const pr = (state.pullRequests || []).find(p =>
-      String(p.prNumber) === String(watch.target) || p.id === watch.target
-    );
+    const pr = findPrByTarget(state.pullRequests, watch.target);
     if (pr) return { status: pr.status, buildStatus: pr.buildStatus, reviewStatus: pr.reviewStatus, lastCommentDate: pr.humanFeedback?.lastProcessedCommentDate || null };
   }
   if (watch.targetType === WATCH_TARGET_TYPE.WORK_ITEM) {

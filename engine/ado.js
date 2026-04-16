@@ -255,7 +255,7 @@ async function forEachActivePr(config, token, callback) {
     for (let i = 0; i < activePrs.length; i += CONCURRENCY) {
       const batch = activePrs.slice(i, i + CONCURRENCY);
       const results = await Promise.allSettled(batch.map(async (pr) => {
-        const prNum = (pr.id || '').replace('PR-', '');
+        const prNum = shared.getPrNumber(pr);
         if (!prNum) return false;
         return callback(project, pr, prNum, orgBase);
       }));
@@ -680,6 +680,7 @@ async function reconcilePrs(config) {
 
     const prPath = shared.projectPrPath(project);
     const existingPrs = shared.safeJson(prPath) || [];
+    shared.normalizePrRecords(existingPrs, project);
     const existingIds = new Set(existingPrs.map(p => p.id));
     let projectAdded = 0;
 
@@ -692,7 +693,8 @@ async function reconcilePrs(config) {
 
     let projectUpdated = 0;
     for (const adoPr of adoPrs) {
-      const prId = `PR-${adoPr.pullRequestId}`;
+      const prUrl = getAdoPrUrl(project, adoPr.pullRequestId);
+      const prId = shared.getCanonicalPrId(project, adoPr.pullRequestId, prUrl);
       const branch = stripRefsHeads(adoPr.sourceRefName);
       const title = adoPr.title || '';
       // Extract item ID from branch name or PR title (e.g., feat(P-2cafdc2a): ...)
@@ -710,7 +712,7 @@ async function reconcilePrs(config) {
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId);
+          addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -725,7 +727,6 @@ async function reconcilePrs(config) {
       // are human-authored and should not be auto-tracked or auto-reviewed.
       if (!confirmedItemId) continue;
 
-      const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
         prNumber: adoPr.pullRequestId,
@@ -738,7 +739,7 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: [confirmedItemId],
       });
-      addPrLink(prId, confirmedItemId);
+      addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
@@ -747,7 +748,7 @@ async function reconcilePrs(config) {
     // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
     for (const pr of existingPrs) {
       if (pr.prNumber == null) {
-        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        const derived = shared.getPrNumber(pr);
         if (derived) pr.prNumber = derived;
       }
     }
@@ -786,7 +787,8 @@ async function checkLiveReviewStatus(pr, project) {
     const token = await getAdoToken();
     if (!token) return null;
     const orgBase = shared.getAdoOrgBase(project);
-    const prNum = (pr.id || '').replace(/^PR-/, '');
+    const prNum = shared.getPrNumber(pr);
+    if (!prNum) return null;
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
     const result = await execAsync(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
     const prData = JSON.parse(result);
@@ -851,7 +853,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
       }));
       const logParts = [];
       const seenBuildIds = new Set();
-      const pr = { id: `PR-${prNumber}`, branch: stripRefsHeads(prData.sourceRefName) };
+      const pr = { id: shared.getCanonicalPrId(project, prNumber, getAdoPrUrl(project, prNumber)), branch: stripRefsHeads(prData.sourceRefName) };
       for (const fb of failedBuilds.slice(0, 3)) {
         const errorLog = await fetchAdoBuildErrorLog(orgBase, project, fb, token, pr, seenBuildIds);
         if (errorLog) logParts.push(errorLog);

@@ -781,10 +781,11 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   const newPrsByPath = new Map(); // prPath -> [{ prId, newEntry }]
 
   for (const prId of prMatches) {
-    const fullId = `PR-${prId}`;
     const targetProject = useCentral ? null : resolveProjectForPr(prId);
     const targetName = targetProject ? targetProject.name : '_central';
     const prPath = targetProject ? shared.projectPrPath(targetProject) : centralPrPath;
+    const prUrl = extractPrUrl(prId);
+    const fullId = shared.getCanonicalPrId(targetProject, prId, prUrl);
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -793,7 +794,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       title = meta?.item?.title || '';
     }
 
-    if (!newPrsByPath.has(prPath)) newPrsByPath.set(prPath, { name: targetName, entries: [] });
+    if (!newPrsByPath.has(prPath)) newPrsByPath.set(prPath, { name: targetName, project: targetProject, entries: [] });
     newPrsByPath.get(prPath).entries.push({
       prId, fullId,
       entry: {
@@ -805,7 +806,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         reviewStatus: 'pending',
         status: PR_STATUS.ACTIVE,
         created: ts(),
-        url: extractPrUrl(prId),
+        url: prUrl,
         prdItems: meta?.item?.id ? [meta.item.id] : [],
         sourcePlan: meta?.item?.sourcePlan || '',
         itemType: meta?.item?.itemType || ''
@@ -813,7 +814,8 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     });
   }
 
-  for (const [prPath, { name, entries }] of newPrsByPath) {
+  for (const [prPath, { name, project: targetProject, entries }] of newPrsByPath) {
+    const linksToPersist = [];
     mutateJsonFileLocked(prPath, (data) => {
       const prs = Array.isArray(data) ? data : [];
       // Normalize legacy YYYY-MM-DD created dates to ISO
@@ -821,13 +823,18 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         if (p.created && p.created.length === 10) p.created = p.created + 'T00:00:00.000Z';
       }
       for (const { prId, fullId, entry } of entries) {
-        if (prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
+        if (prs.some(p => p.id === fullId || (p.url && p.url === entry.url))) continue;
         prs.push(entry);
-        if (meta?.item?.id) addPrLink(fullId, meta.item.id);
+        if (meta?.item?.id) {
+          linksToPersist.push({ prId: fullId, itemId: meta.item.id, project: targetProject, prNumber: entry.prNumber, url: entry.url });
+        }
         added++;
       }
       return prs;
     });
+    for (const { prId, itemId, project, prNumber, url } of linksToPersist) {
+      addPrLink(prId, itemId, { project, prNumber, url });
+    }
     log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
   return added;
@@ -894,7 +901,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
   let updatedTarget = null;
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
-    const target = prs.find(p => p.id === pr.id);
+    const target = shared.findPrRecord(prs, pr, project);
     if (!target) return prs;
     // Once approved, stays approved — only changes-requested can override
     if (postReviewStatus) {
@@ -938,7 +945,7 @@ function updatePrAfterFix(pr, project, source) {
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
-    const target = prs.find(p => p.id === pr.id);
+    const target = shared.findPrRecord(prs, pr, project);
     if (!target) return prs;
     // Never downgrade from approved — fix was dispatched but PR is already approved
     if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
@@ -1083,7 +1090,7 @@ async function processPendingRebases(config) {
 
 async function handlePostMerge(pr, project, config, newStatus) {
 
-  const prNum = (pr.id || '').replace('PR-', '');
+  const prNum = shared.getPrNumber(pr);
 
   if (pr.branch && project) {
     const root = path.resolve(project.localPath);
@@ -1329,7 +1336,8 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
   if (reviewFiles.length === 0) return;
   const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).filter(Boolean).join('\n\n');
-  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${pr.id}-${today}.md`;
+  const prSlug = shared.safeSlugComponent(pr.id, 60);
+  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${prSlug}-${today}.md`;
   const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
     `**PR:** ${pr.id} — ${pr.title || ''}\n` +
@@ -1845,7 +1853,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
             log('debug', `Skipping branch PR lookup for unsupported repo host "${host}" on ${projectObj.name}`);
           }
           if (found) {
-            const fullId = `PR-${found.prNumber}`;
+            const fullId = shared.getCanonicalPrId(projectObj, found.prNumber, found.url);
             const prPath = shared.projectPrPath(projectObj);
             mutateJsonFileLocked(prPath, prs => {
               if (!Array.isArray(prs)) prs = [];

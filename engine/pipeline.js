@@ -703,7 +703,7 @@ function isStageComplete(stage, stageState, run, config) {
       for (const project of projects) {
         const prs = safeJson(shared.projectPrPath(project)) || [];
         for (const prId of prIds) {
-          const pr = prs.find(p => p.id === prId);
+          const pr = shared.findPrRecord(prs, prId, project);
           if (pr && pr.status !== PR_STATUS.MERGED && pr.status !== PR_STATUS.ABANDONED) return false;
         }
       }
