@@ -10203,6 +10203,10 @@ async function main() {
     await testDuplicatePrPrevention();
     await testCancelDispatchesOnPrClose();
 
+    // W-8eobrosn: GitHub poller maxBuffer fix
+    await testGhMaxBuffer();
+
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -21553,6 +21557,7 @@ async function testSyncPrsToolResultInUserMessages() {
     }
   });
 }
+
 // ─── W-mo0kxqenseo9: Cancel Work Item ─────────────────────────────────────
 
 async function testCancelWorkItem() {
@@ -21911,6 +21916,116 @@ async function testCancelDispatchesOnPrClose() {
       assert.strictEqual(dispatch.pending.length, 1, 'Queue unchanged for null/empty input');
     } finally { restore(); }
   });
+}
+
+// ─── W-8eobrosn: GitHub poller maxBuffer fix ──────────────────────────────────
+
+async function testGhMaxBuffer() {
+  console.log('\n── W-8eobrosn: GitHub poller maxBuffer fix ──');
+
+  const ghPath = path.join(MINIONS_DIR, 'engine', 'github.js');
+  const ghSrc = fs.readFileSync(ghPath, 'utf8');
+
+  // ── Source-level verification ──
+
+  await test('github.js defines GH_MAX_BUFFER constant (>= 10MB)', () => {
+    assert.ok(ghSrc.includes('GH_MAX_BUFFER'),
+      'github.js must define a GH_MAX_BUFFER constant');
+    // Must be at least 10 * 1024 * 1024
+    const match = ghSrc.match(/GH_MAX_BUFFER\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/);
+    assert.ok(match, 'GH_MAX_BUFFER must be defined as a product (e.g. 10 * 1024 * 1024)');
+    const value = parseInt(match[1]) * parseInt(match[2]) * parseInt(match[3]);
+    assert.ok(value >= 10 * 1024 * 1024,
+      `GH_MAX_BUFFER must be >= 10MB, got ${value}`);
+  });
+
+  await test('ghApi passes maxBuffer to execAsync', () => {
+    const ghApiFn = ghSrc.match(/async function ghApi[\s\S]*?^}/m);
+    assert.ok(ghApiFn, 'ghApi function must exist');
+    const src = ghApiFn[0];
+    assert.ok(src.includes('maxBuffer') && src.includes('GH_MAX_BUFFER'),
+      'ghApi must pass maxBuffer: GH_MAX_BUFFER to execAsync');
+  });
+
+  await test('fetchGhBuildErrorLog passes maxBuffer to execAsync', () => {
+    const fn = ghSrc.match(/async function fetchGhBuildErrorLog[\s\S]*?^}/m);
+    assert.ok(fn, 'fetchGhBuildErrorLog function must exist');
+    const src = fn[0];
+    assert.ok(src.includes('maxBuffer'),
+      'fetchGhBuildErrorLog must pass maxBuffer to execAsync for log fetch');
+  });
+
+  await test('gh pr merge in pollPrStatus passes maxBuffer to execAsync', () => {
+    // The auto-complete merge call also uses execAsync — ensure maxBuffer is set
+    assert.ok(ghSrc.includes("gh pr merge") && ghSrc.includes('GH_MAX_BUFFER'),
+      'Auto-complete merge call must use GH_MAX_BUFFER');
+  });
+
+  await test('reconcilePrs uses pagination to fetch all open PRs', () => {
+    // reconcilePrs must use --paginate flag on gh api or loop through pages
+    const reconcileFn = ghSrc.slice(ghSrc.indexOf('async function reconcilePrs'));
+    assert.ok(reconcileFn.includes('paginate'),
+      'reconcilePrs must use pagination to handle repos with >100 open PRs');
+  });
+
+  await test('ghApi supports paginate option', () => {
+    // ghApi must accept an opts parameter with paginate support
+    const ghApiFn = ghSrc.match(/async function ghApi[\s\S]*?^}/m);
+    assert.ok(ghApiFn, 'ghApi function must exist');
+    const src = ghApiFn[0];
+    assert.ok(src.includes('paginate'),
+      'ghApi must support a paginate option for endpoints returning arrays');
+  });
+
+  // ── Runtime verification ──
+
+  await test('GH_MAX_BUFFER exported value is at least 10MB', () => {
+    const gh = require(ghPath);
+    assert.ok(typeof gh.GH_MAX_BUFFER === 'number', 'GH_MAX_BUFFER must be exported as a number');
+    assert.ok(gh.GH_MAX_BUFFER >= 10 * 1024 * 1024,
+      `GH_MAX_BUFFER runtime value must be >= 10MB, got ${gh.GH_MAX_BUFFER}`);
+  });
+
+  await test('GH_MAX_BUFFER can hold 250+ PR JSON objects (simulated large response)', () => {
+    // Simulate what gh api --paginate returns for 250 open PRs
+    // Each PR object from GitHub REST API is roughly 3-8KB of JSON
+    const gh = require(ghPath);
+    const fakePr = {
+      number: 1, state: 'open',
+      title: 'feat: implement feature ABCDEF — a reasonably long title for testing',
+      body: 'This is a PR description with some content. '.repeat(20), // ~900 chars
+      head: { ref: 'work/W-abc123def456', sha: 'a'.repeat(40), repo: { full_name: 'org/repo' } },
+      base: { ref: 'master', sha: 'b'.repeat(40), repo: { full_name: 'org/repo' } },
+      user: { login: 'dallas', id: 12345, avatar_url: 'https://example.com/avatar.png' },
+      html_url: 'https://github.com/org/repo/pull/1',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-04-15T00:00:00Z',
+      labels: [{ name: 'enhancement' }, { name: 'agent-generated' }],
+      assignees: [{ login: 'dallas' }],
+      requested_reviewers: [{ login: 'ripley' }],
+      mergeable: true, mergeable_state: 'clean',
+      additions: 150, deletions: 30, changed_files: 5,
+    };
+    // Build an array of 300 PRs (well above the 246 that triggered the bug)
+    const prs = Array.from({ length: 300 }, (_, i) => ({ ...fakePr, number: i + 1 }));
+    const jsonStr = JSON.stringify(prs);
+    const byteSize = Buffer.byteLength(jsonStr, 'utf8');
+    assert.ok(byteSize < gh.GH_MAX_BUFFER,
+      `300 simulated PRs produce ${(byteSize / 1024 / 1024).toFixed(2)}MB — must fit in GH_MAX_BUFFER (${(gh.GH_MAX_BUFFER / 1024 / 1024).toFixed(0)}MB)`);
+  });
+
+  await test('all execAsync calls in github.js include maxBuffer', () => {
+    // Every execAsync call in github.js must pass maxBuffer — none should use Node default
+    const execCalls = ghSrc.match(/execAsync\([^)]*\)/g) || [];
+    assert.ok(execCalls.length >= 3,
+      `Expected at least 3 execAsync calls in github.js, found ${execCalls.length}`);
+    for (const call of execCalls) {
+      assert.ok(call.includes('maxBuffer') || call.includes('GH_MAX_BUFFER'),
+        `execAsync call missing maxBuffer: ${call.slice(0, 80)}...`);
+    }
+  });
+
+  delete require.cache[require.resolve(ghPath)];
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

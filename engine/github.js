@@ -20,6 +20,11 @@ function engine() {
 let _dispatch = null;
 function dispatchModule() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
 
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+// 10 MB — prevents maxBuffer exceeded errors on repos with many open PRs.
+// Node.js default is 1 MB which overflows when GitHub API returns 100+ PR objects.
+const GH_MAX_BUFFER = 10 * 1024 * 1024;
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isGitHub(project) {
@@ -83,11 +88,16 @@ const isGhThrottled = () => _ghThrottle.isThrottled();
 /** Returns a snapshot of the current GitHub throttle state. */
 const getGhThrottleState = () => _ghThrottle.getState();
 
-/** Run a `gh api` call and parse JSON result. Returns null on failure. */
-async function ghApi(endpoint, slug) {
+/** Run a `gh api` call and parse JSON result. Returns null on failure.
+ * @param {string} endpoint - API endpoint (e.g. '/pulls?state=open')
+ * @param {string} slug - owner/repo slug
+ * @param {object} [opts] - Options: { paginate: boolean, timeout: number }
+ */
+async function ghApi(endpoint, slug, opts = {}) {
   try {
-    const cmd = `gh api "repos/${slug}${endpoint}"`;
-    const result = await execAsync(cmd, { timeout: 30000, encoding: 'utf-8' });
+    const paginateFlag = opts.paginate ? ' --paginate' : '';
+    const cmd = `gh api${paginateFlag} "repos/${slug}${endpoint}"`;
+    const result = await execAsync(cmd, { timeout: opts.timeout || 30000, encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER });
     const parsed = JSON.parse(result);
     _ghThrottle.recordSuccess();
     return parsed;
@@ -152,7 +162,7 @@ async function fetchGhBuildErrorLog(slug, failedRuns) {
       // Always fetch job log — annotations alone often lack test failure details
       try {
         const cmd = `gh api "repos/${slug}/actions/jobs/${run.id}/logs" 2>&1`;
-        const result = await execAsync(cmd, { timeout: 15000, encoding: 'utf-8' });
+        const result = await execAsync(cmd, { timeout: 15000, encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER });
         if (result && !result.includes('Not Found')) {
           logParts.push(`--- ${run.name || 'Check'} (log) ---\n${result}`);
         }
@@ -471,7 +481,7 @@ async function pollPrStatus(config) {
       if (autoComplete) {
         try {
           const mergeMethod = ['squash', 'merge', 'rebase'].includes(config.engine?.prMergeMethod) ? config.engine.prMergeMethod : 'squash';
-          await execAsync(`gh pr merge ${prNum} --${mergeMethod} --repo ${slug} --delete-branch`, { timeout: 30000, encoding: 'utf-8' });
+          await execAsync(`gh pr merge ${prNum} --${mergeMethod} --repo ${slug} --delete-branch`, { timeout: 30000, encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER });
           pr._autoCompleted = true;
           log('info', `Auto-completed PR ${pr.id}: builds green + review approved → merged (${mergeMethod})`);
           updated = true;
@@ -612,8 +622,8 @@ async function reconcilePrs(config) {
       } catch { continue; }
     }
 
-    // Fetch open PRs
-    const prsData = await ghApi('/pulls?state=open&per_page=100', slug);
+    // Fetch open PRs — paginate to handle repos with >100 open PRs
+    const prsData = await ghApi('/pulls?state=open&per_page=100', slug, { paginate: true, timeout: 60000 });
     if (!prsData || !Array.isArray(prsData)) {
       recordSlugFailure(slug);
       continue;
@@ -760,4 +770,5 @@ module.exports = {
   resetSlugBackoff,
   _ghPollBackoff,
   _ghThrottle, // exported for testing
+  GH_MAX_BUFFER, // exported for testing
 };
