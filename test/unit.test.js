@@ -9103,6 +9103,32 @@ async function testMeetings() {
     assert.ok(ccSrc.includes('ccRetryLast') && ccSrc.includes('Retry'),
       'Should show retry button when CC fetch fails');
   });
+
+  await test('CC probes dashboard health before showing reload prompt on fetch failure', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes("fetch('/api/status'") && ccSrc.includes('dashboardHealth'),
+      'CC should check /api/status before claiming the dashboard connection is lost');
+    assert.ok(ccSrc.includes('request stream was interrupted') && ccSrc.includes('Reload Page'),
+      'CC should distinguish a transient stream failure from a real dashboard outage');
+  });
+
+  await test('CC preserves partial output and restart context on interrupted streams', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes('Stream interrupted after {seconds}s'),
+      'Interrupted CC streams should preserve partial output instead of discarding it');
+    assert.ok(ccSrc.includes('Dashboard restarted while this response was streaming'),
+      'CC should distinguish dashboard restarts from generic connection loss');
+    assert.ok(ccSrc.includes('The response stream ended before completion.'),
+      'CC should surface a clear recovery message when a stream ends without a done event');
+  });
+
+  await test('CC streaming endpoint sends heartbeat events to keep long responses alive', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('CC_STREAM_HEARTBEAT_MS'),
+      'Streaming CC should define a heartbeat interval for long-lived responses');
+    assert.ok(dashSrc.includes("writeCcEvent({ type: 'heartbeat' })") && dashSrc.includes('setInterval(() =>'),
+      'Streaming CC should emit heartbeat events while a response is in flight');
+  });
 }
 
 // ─── Team Meetings Behavioral Tests ─────────────────────────────────────────

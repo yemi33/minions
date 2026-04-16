@@ -54,6 +54,26 @@ function _ccActiveTab() {
   return _ccTabs.find(function(t) { return t.id === _ccActiveTabId; }) || null;
 }
 
+async function _ccDashboardHealth() {
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, 3000);
+  try {
+    var res = await fetch('/api/status', { signal: controller.signal, cache: 'no-store' });
+    if (!(res && res.ok)) return { reachable: false, restarted: false };
+    var data = await res.json().catch(function() { return null; });
+    var currentDashId = data && data.version ? data.version.dashboardStartedAt : null;
+    var knownDashId = window._lastStatus && window._lastStatus.version ? window._lastStatus.version.dashboardStartedAt : null;
+    return {
+      reachable: true,
+      restarted: !!(currentDashId && knownDashId && currentDashId !== knownDashId)
+    };
+  } catch {
+    return { reachable: false, restarted: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function _ccFindPinTarget(query) {
   for (var i = 0; i < (inboxData || []).length; i++) {
     if (inboxData[i].name.toLowerCase().includes(query)) {
@@ -532,6 +552,16 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       if (activeTab._queue && activeTab._queue.length > 0) _renderQueueIndicator();
       if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
     }
+    function _ccElapsedFooter(label) {
+      var seconds = Math.round((Date.now() - ccStartTime) / 1000);
+      return '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + label.replace('{seconds}', seconds) + '</div>';
+    }
+    function _ccRetryControls(extraHtml, showReload) {
+      return (extraHtml || '') +
+        '<button onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
+        (showReload ? ' <button onclick="location.reload()" style="margin-top:6px;padding:4px 12px;background:var(--orange);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">Reload Page</button>' : '') +
+        ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>';
+    }
     // Start phase timer immediately so thinking text updates while waiting for SSE
     var phaseTimer = setInterval(updateStreamDiv, 1000);
     updateStreamDiv(); // render proper layout immediately (not raw "Thinking..." text)
@@ -563,6 +593,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     var reader = res.body.getReader();
     var decoder = new TextDecoder();
     var buf = '';
+    var terminalEventSeen = false;
 
     while (true) {
       var readResult = await reader.read();
@@ -579,21 +610,23 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
             streamedText = evt.text;
             if (activeTab) activeTab._streamedText = streamedText;
             updateStreamDiv();
+          } else if (evt.type === 'heartbeat') {
+            continue;
           } else if (evt.type === 'tool') {
             toolsUsed.push({ name: evt.name, input: evt.input || {} });
             if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
             updateStreamDiv();
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
+            terminalEventSeen = true;
             _cleanupStreamDiv();
             // If system prompt changed, show a notice before the response
             if (evt.sessionReset) {
               addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
             }
             // placeholder was added with skipSave=true — nothing to pop
-            var ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered = renderMd(evt.text || streamedText || '');
-            addMsg('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
+            addMsg('assistant', rendered + _ccElapsedFooter('{seconds}s'));
             if (evt.sessionId !== undefined) {
               // Save session to the originating tab, not whichever tab is active now
               var originTab = _ccTabs.find(function(t) { return t.id === activeTabId; });
@@ -605,6 +638,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
               for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
             }
           } else if (evt.type === 'error') {
+            terminalEventSeen = true;
             _cleanupStreamDiv();
             // placeholder was skipSave — no pop needed
             addMsg('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
@@ -621,11 +655,11 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         try {
           var revt = JSON.parse(rline.slice(6));
           if (revt.type === 'done') {
+            terminalEventSeen = true;
             _cleanupStreamDiv();
             // placeholder was skipSave — no pop needed
-            var ccElapsed2 = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered2 = renderMd(revt.text || streamedText || '');
-            addMsg('assistant', rendered2 + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed2 + 's</div>');
+            addMsg('assistant', rendered2 + _ccElapsedFooter('{seconds}s'));
             if (revt.sessionId !== undefined) {
               var originTab2 = _ccTabs.find(function(t) { return t.id === activeTabId; });
               if (originTab2) { originTab2.sessionId = revt.sessionId || null; }
@@ -635,6 +669,12 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
               _tagServerExecuted(revt.actions, revt.actionResults);
               for (var ai2 = 0; ai2 < revt.actions.length; ai2++) { await ccExecuteAction(revt.actions[ai2], activeTabId); }
             }
+          } else if (revt.type === 'heartbeat') {
+            continue;
+          } else if (revt.type === 'error') {
+            terminalEventSeen = true;
+            _cleanupStreamDiv();
+            addMsg('assistant', '<span style="color:var(--red)">' + escHtml(revt.error) + '</span>');
           } else if (revt.type === 'chunk') {
             streamedText = revt.text;
             updateStreamDiv();
@@ -643,11 +683,13 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       }
     }
     // If stream ended without a 'done' event, finalize with whatever we have
-    if (streamDiv.parentNode || document.getElementById('cc-restore-thinking') || document.querySelector('[data-stream-tab="' + activeTabId + '"]')) {
+    if (!terminalEventSeen && (streamDiv.parentNode || document.getElementById('cc-restore-thinking') || document.querySelector('[data-stream-tab="' + activeTabId + '"]'))) {
       _cleanupStreamDiv();
+      var streamEndedHint = '<div style="font-size:10px;color:var(--muted);margin-top:4px">The response stream ended before completion. Retry to continue from the last user message.</div>';
       if (streamedText) {
-        var ccElapsed3 = Math.round((Date.now() - ccStartTime) / 1000);
-        addMsg('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed3 + 's</div>');
+        addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') + _ccRetryControls(streamEndedHint, false));
+      } else {
+        addMsg('assistant', '<span style="color:var(--red)">The response stream ended before completion.</span>' + _ccRetryControls(streamEndedHint, false));
       }
     }
   } catch (e) {
@@ -655,19 +697,24 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     if (e.name === 'AbortError') {
       _wasAborted = true;
       if (streamedText) {
-        var ccElapsed4 = Math.round((Date.now() - ccStartTime) / 1000);
-        addMsg('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">Stopped after ' + ccElapsed4 + 's</div>');
+        addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stopped after {seconds}s'));
       } else {
         addMsg('assistant', '<span style="color:var(--red);font-size:11px">Stopped</span>');
       }
     } else {
-      var retryId = 'cc-retry-' + Date.now();
       var isNetworkError = e.message === 'Failed to fetch' || e.message.includes('NetworkError');
-      addMsg('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
-        (isNetworkError ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard connection lost. Reload the page to reconnect.</div>' : '') +
-        '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
-        (isNetworkError ? ' <button onclick="location.reload()" style="margin-top:6px;padding:4px 12px;background:var(--orange);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">Reload Page</button>' : '') +
-        ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
+      var dashboardHealth = isNetworkError ? await _ccDashboardHealth() : { reachable: false, restarted: false };
+      var connectionHint = '';
+      if (isNetworkError) {
+        connectionHint = dashboardHealth.restarted
+          ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard restarted while this response was streaming. Reload the page to reconnect to the new instance.</div>'
+          : dashboardHealth.reachable
+            ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">The request stream was interrupted, but the dashboard is still reachable. Retry or start a new session.</div>'
+            : '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard connection lost. Reload the page to reconnect.</div>';
+      }
+      addMsg('assistant', (streamedText ? renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') : '') +
+        '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
+        _ccRetryControls(connectionHint, isNetworkError && (!dashboardHealth.reachable || dashboardHealth.restarted)));
     }
   } finally {
     if (activeTab) { activeTab._sending = false; activeTab._abortController = null; activeTab._429retries = 0; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }

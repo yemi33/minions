@@ -541,6 +541,7 @@ const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight t
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
+const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _ccTabIsInFlight(tabId) {
   if (!ccInFlightTabs.has(tabId)) return false;
@@ -3791,6 +3792,23 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   async function handleCommandCenterStream(req, res) {
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
     let tabId;
+    let _ccStreamAbort = null;
+    let _ccStreamEnded = false;
+    let _ccHeartbeatTimer = null;
+    const writeCcEvent = (payload) => {
+      try {
+        res.write('data: ' + JSON.stringify(payload) + '\n\n');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stopCcHeartbeat = () => {
+      if (_ccHeartbeatTimer) {
+        clearInterval(_ccHeartbeatTimer);
+        _ccHeartbeatTimer = null;
+      }
+    };
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
@@ -3807,13 +3825,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightTabs.set(tabId, Date.now());
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-      let _ccStreamAbort = null;
-      let _ccStreamEnded = false;
+      writeCcEvent({ type: 'heartbeat' }); // flush headers quickly and keep intermediaries from idling out
+      _ccHeartbeatTimer = setInterval(() => {
+        if (_ccStreamEnded) {
+          stopCcHeartbeat();
+          return;
+        }
+        if (!writeCcEvent({ type: 'heartbeat' })) stopCcHeartbeat();
+      }, CC_STREAM_HEARTBEAT_MS);
       // Kill LLM process immediately if client disconnects mid-stream.
       // Guard with !_ccStreamEnded: when the stream ends normally, finally already released the lock;
       // without the guard, this close event (which fires after res.end) could wipe a new request's lock.
       req.on('close', () => {
         if (!_ccStreamEnded) {
+          stopCcHeartbeat();
           _releaseCCTab(tabId);
           if (_ccStreamAbort) {
             console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
@@ -3851,10 +3876,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onChunk: (text) => {
             const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-            try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
+            writeCcEvent({ type: 'chunk', text: display });
           },
           onToolUse: (name, input) => {
-            try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
+            writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
           }
         });
         _ccStreamAbort = llmPromise.abort;
@@ -3875,10 +3900,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             onChunk: (text) => {
               const actIdx = findCCActionsDelimiter(text);
               const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-              try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
+              writeCcEvent({ type: 'chunk', text: display });
             },
             onToolUse: (name, input) => {
-              try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
+              writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
             }
           });
           _ccStreamAbort = retryPromise.abort;
@@ -3896,7 +3921,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
           const retryHint = 'Send your message again to retry.';
-          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null }) + '\n\n');
+          writeCcEvent({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null });
           _ccStreamEnded = true; res.end();
           return;
         }
@@ -3939,7 +3964,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const donePayload = { type: 'done', text: displayText, actions, actionResults, sessionId: responseSessionId, newSession: !wasResume };
         if (sessionReset) donePayload.sessionReset = true;
-        res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
+        writeCcEvent(donePayload);
 
         // Mirror CC response to Teams (non-blocking, skip Teams-originated)
         const _streamTabId = body.tabId || 'default';
@@ -3949,11 +3974,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         _ccStreamEnded = true; res.end();
       } finally {
+        stopCcHeartbeat();
         _releaseCCTab(tabId);
       }
     } catch (e) {
+      stopCcHeartbeat();
       _releaseCCTab(tabId);
-      try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
+      writeCcEvent({ type: 'error', error: e.message });
       _ccStreamEnded = true; try { res.end(); } catch {}
     }
   }
