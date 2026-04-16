@@ -16,6 +16,10 @@ function engine() {
   return _engine;
 }
 
+// Lazy require for dispatch module (avoids circular dependency via engine)
+let _dispatch = null;
+function dispatchModule() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isGitHub(project) {
@@ -327,6 +331,10 @@ async function pollPrStatus(config) {
           delete pr.buildFixAttempts;
           delete pr.buildFixEscalated;
         }
+        // Cancel any pending review/fix dispatches — they're stale now that the PR is closed
+        try {
+          dispatchModule().cancelPendingDispatchesForPr(pr.id);
+        } catch (e) { log('warn', `Cancel dispatches for ${pr.id}: ${e.message}`); }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
     }
