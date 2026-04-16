@@ -442,22 +442,24 @@ function runCleanup(config, verbose = false) {
 
   // 6a. Reconcile failed work items that have an attached PR (#407)
   // If a work item is 'failed' but already has _pr, it should be 'done'.
+  // Uses mutateWorkItems() for locked atomic read-modify-write — prevents
+  // race conditions with concurrent engine/dashboard/lifecycle writers.
   for (const project of projects) {
     try {
       const wiPath = projectWorkItemsPath(project);
-      const items = safeJson(wiPath) || [];
       let reconciled = 0;
-      for (const item of items) {
-        if (item.status === shared.WI_STATUS.FAILED && item._pr) {
-          item.status = shared.WI_STATUS.DONE;
-          if (item.failReason) delete item.failReason;
-          if (item.failedAt) delete item.failedAt;
-          if (!item.completedAt) item.completedAt = shared.ts();
-          reconciled++;
+      mutateWorkItems(wiPath, items => {
+        for (const item of items) {
+          if (item.status === shared.WI_STATUS.FAILED && item._pr) {
+            item.status = shared.WI_STATUS.DONE;
+            if (item.failReason) delete item.failReason;
+            if (item.failedAt) delete item.failedAt;
+            if (!item.completedAt) item.completedAt = shared.ts();
+            reconciled++;
+          }
         }
-      }
+      });
       if (reconciled > 0) {
-        safeWrite(wiPath, items);
         log('info', `Reconciled ${reconciled} failed-with-PR item(s) → done in ${project.name}`);
       }
     } catch (e) { log('warn', 'reconcile failed-with-PR: ' + e.message); }

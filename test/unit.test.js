@@ -3377,6 +3377,22 @@ async function testLegacyStatusMigration() {
       'cleanup should log reconciliation of failed-with-PR items');
   });
 
+  await test('cleanup.js failed-with-PR reconciliation uses locked write via mutateWorkItems (#407)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Extract the reconciliation section (6a) — between the "Reconcile failed" comment and the next section
+    const sectionStart = src.indexOf('// 6a. Reconcile failed work items');
+    const sectionEnd = src.indexOf('// 6b.');
+    assert.ok(sectionStart > -1 && sectionEnd > sectionStart, 'Section 6a must exist');
+    const section = src.slice(sectionStart, sectionEnd);
+    // Must use mutateWorkItems (locked) — not safeJson+safeWrite (unlocked)
+    assert.ok(section.includes('mutateWorkItems'),
+      'reconciliation must use mutateWorkItems() for locked atomic read-modify-write');
+    assert.ok(!section.includes('safeWrite('),
+      'reconciliation must NOT use unlocked safeWrite() — race condition with concurrent writers');
+    assert.ok(!section.includes('safeJson('),
+      'reconciliation must NOT use safeJson() for read — mutateWorkItems provides the data inside the lock');
+  });
+
   await test('cleanup.js resets orphaned PRD item statuses (#779)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('shared.WI_STATUS.DISPATCHED') && src.includes('!wiIds.has(feat.id)'),
