@@ -7100,6 +7100,55 @@ async function testWakeupCoalescing() {
     assert.ok(cooldownSrc.includes('existing?.failures || 0'),
       'setCooldownWithContext should preserve failure count');
   });
+
+  // ── pendingContexts cap tests ──
+  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+
+  await test('ENGINE_DEFAULTS defines maxPendingContexts', () => {
+    assert.ok(sharedSrc.includes('maxPendingContexts'),
+      'ENGINE_DEFAULTS should define maxPendingContexts cap');
+  });
+
+  await test('setCooldownWithContext caps pendingContexts to maxPendingContexts', () => {
+    assert.ok(cooldownSrc.includes('maxPendingContexts') || cooldownSrc.includes('MAX_PENDING_CONTEXTS'),
+      'setCooldownWithContext should reference the pending contexts cap');
+    assert.ok(cooldownSrc.includes('.slice('),
+      'setCooldownWithContext should use .slice() to trim pendingContexts');
+  });
+
+  await test('saveCooldowns trims pendingContexts on every write', () => {
+    assert.ok(cooldownSrc.includes('pendingContexts') && cooldownSrc.includes('slice'),
+      'saveCooldowns should trim pendingContexts arrays before writing to disk');
+  });
+
+  await test('cleanup.js truncates existing pendingContexts arrays', () => {
+    assert.ok(cleanupSrc.includes('pendingContexts'),
+      'cleanup.js should include one-time pendingContexts truncation');
+    assert.ok(cleanupSrc.includes('pendingContextsTrimmed') || cleanupSrc.includes('pendingCtx'),
+      'cleanup.js should track how many pendingContexts arrays were trimmed');
+  });
+
+  await test('pendingContexts cap is behaviorally enforced', () => {
+    // Behavioral test: actually call setCooldownWithContext many times and verify cap
+    const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown.js'));
+    const testKey = `__test_cap_${Date.now()}`;
+    // Push 30 contexts (above the cap of 20)
+    for (let i = 0; i < 30; i++) {
+      cooldown.setCooldownWithContext(testKey, `ctx-${i}`);
+    }
+    const entry = cooldown.dispatchCooldowns.get(testKey);
+    assert.ok(entry, 'Cooldown entry should exist after setCooldownWithContext');
+    assert.ok(entry.pendingContexts.length <= 20,
+      `pendingContexts should be capped at 20, got ${entry.pendingContexts.length}`);
+    // Verify we kept the LAST 20 (most recent), not the first
+    assert.strictEqual(entry.pendingContexts[entry.pendingContexts.length - 1], 'ctx-29',
+      'Should keep the most recent contexts (last 20)');
+    assert.strictEqual(entry.pendingContexts[0], 'ctx-10',
+      'First entry should be ctx-10 after trimming oldest');
+    // Cleanup
+    cooldown.dispatchCooldowns.delete(testKey);
+  });
 }
 
 // ─── Budget Enforcement Tests ───────────────────────────────────────────────
