@@ -815,6 +815,8 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     });
   }
 
+  const entryBranch = meta?.branch || '';
+
   for (const [prPath, { name, project: targetProject, entries }] of newPrsByPath) {
     const linksToPersist = [];
     mutateJsonFileLocked(prPath, (data) => {
@@ -825,6 +827,28 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       }
       for (const { prId, fullId, entry } of entries) {
         if (prs.some(p => p.id === fullId || (p.url && p.url === entry.url))) continue;
+
+        // Branch-level dedup: skip if an active PR already exists on the same branch.
+        // This prevents duplicate PRs when an agent retries and calls `gh pr create` again
+        // on the same branch (GitHub allows multiple PRs from one branch).
+        // Only block when the existing PR is active — abandoned/merged PRs don't conflict.
+        const branch = entry.branch || entryBranch;
+        if (branch) {
+          const existingOnBranch = prs.find(p => p.branch === branch && p.status === PR_STATUS.ACTIVE && p.id !== fullId);
+          if (existingOnBranch) {
+            log('warn', `Duplicate PR detected: ${fullId} on branch ${branch} — already tracked as ${existingOnBranch.id}. Skipping.`);
+            // Best-effort close the duplicate on GitHub (non-blocking, fire-and-forget)
+            try {
+              const ghSlug = output.match(/github\.com\/([^/]+\/[^/]+)/)?.[1];
+              if (ghSlug) {
+                execAsync(`gh pr close ${prId} --repo ${ghSlug} --comment "Closing duplicate — ${existingOnBranch.id} already tracks this branch."`, { timeout: 15000 })
+                  .catch(() => {});
+              }
+            } catch { /* best-effort */ }
+            continue;
+          }
+        }
+
         prs.push(entry);
         if (meta?.item?.id) {
           linksToPersist.push({ prId: fullId, itemId: meta.item.id, project: targetProject, prNumber: entry.prNumber, url: entry.url });

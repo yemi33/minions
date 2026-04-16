@@ -278,6 +278,31 @@ function updateAgentStatus(dispatchId, status, detail) {
   });
 }
 
+// ─── Cancel Pending Dispatches for Closed PR ───────────────────────────────
+
+/**
+ * Cancel all pending dispatch entries that reference a specific PR.
+ * Called when a PR transitions to merged/abandoned/closed — any pending
+ * review, fix, or re-review dispatches for that PR are stale and should
+ * not be spawned.
+ * @param {string} prId — PR identifier (e.g. 'PR-100')
+ * @returns {number} count of cancelled entries
+ */
+function cancelPendingDispatchesForPr(prId) {
+  if (!prId) return 0;
+  let cancelled = 0;
+  mutateDispatch((dispatch) => {
+    const before = dispatch.pending.length;
+    dispatch.pending = dispatch.pending.filter(d => d.meta?.pr?.id !== prId);
+    cancelled = before - dispatch.pending.length;
+    return dispatch;
+  });
+  if (cancelled > 0) {
+    log('info', `Cancelled ${cancelled} pending dispatch(es) for closed PR ${prId}`);
+  }
+  return cancelled;
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -287,4 +312,5 @@ module.exports = {
   completeDispatch,
   writeInboxAlert,
   updateAgentStatus,
+  cancelPendingDispatchesForPr,
 };
