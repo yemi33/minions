@@ -111,23 +111,26 @@ jobs:
           npm publish --access public
 
           # Commit version bump + changelog via PR.
-          # Direct push is blocked by the ruleset's pull_request rule.
-          # No required status checks, so the PR can merge immediately.
+          # Branch commit has NO [skip ci] so required status checks run.
+          # PR title has [skip ci] so the squash-merged commit on master
+          # won't re-trigger this publish workflow.
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
           git diff --cached --quiet && echo "No changes to commit" || {
             BRANCH="chore/publish-$NEXT"
             git checkout -b "$BRANCH"
-            git commit -m "chore: publish $NEXT [skip ci]"
+            git commit -m "chore: publish $NEXT — changelog updated"
             git push origin "$BRANCH"
             gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
-            gh pr merge "$BRANCH" --merge --delete-branch
 
             # Close any stale publish PRs left over from previous runs
-            gh pr list --state open --json number,title --jq '.[] | select(.title | startswith("chore: publish")) | .number' | while read pr; do
+            gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
               gh pr close "$pr" --delete-branch 2>/dev/null || true
             done
+
+            # Auto-merge once CI passes (squash so commit message inherits PR title with [skip ci])
+            gh pr merge "$BRANCH" --auto --squash --delete-branch
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
