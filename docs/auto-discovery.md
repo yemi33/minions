@@ -37,13 +37,13 @@ Skips PRs where `status !== "active"`.
 
 ### Source 2: PRD Gap Analysis (via `materializePlansAsWorkItems`)
 
-PRD items flow through `materializePlansAsWorkItems()`, which scans `~/.minions/prd/*.json` for PRD files with `missing`/`planned` items and creates work items in the target project's queue.
+PRD items flow through `materializePlansAsWorkItems()`, which scans `~/.minions/prd/*.json` for PRD files with `missing` / `updated` / `planned` items and creates work items in the target project's queue.
 
-**Reads:** `<project>/docs/prd-gaps.json` (or custom path from `workSources.prd.path`)
+**Reads:** `~/.minions/prd/*.json` — the central PRD directory. (Legacy `<project>/docs/prd-gaps.json` paths are no longer scanned.)
 
 | Item State | Action | Dispatch Type |
 |------------|--------|---------------|
-| `status: "missing"` or `"planned"` | Queue implementation | `implement` |
+| `status: "missing"` or `"updated"` | Queue implementation (re-opens any existing done WI) | `implement` |
 | `estimated_complexity: "large"` | Routes to `implement:large` (prefers Rebecca) | `implement:large` |
 
 ### Source 3: Per-Project Work Items (`discoverFromWorkItems`)
@@ -165,14 +165,19 @@ Item found
 `resolveAgent()` parses `routing.md` to pick the right agent:
 
 ```
-routing.md table:
+routing.md table (see the file for the authoritative list):
   implement       → dallas  (fallback: ralph)
   implement:large → rebecca (fallback: dallas)
   review          → ripley  (fallback: lambert)
-  fix             → _author_ (fallback: dallas)   ← routes to PR author
-  analyze         → lambert (fallback: rebecca)
+  fix             → _author_ (fallback: _any_)    ← routes to PR author, any idle as fallback
+  plan            → ripley  (fallback: rebecca)
+  plan-to-prd     → lambert (fallback: rebecca)
   explore         → ripley  (fallback: rebecca)
   test            → dallas  (fallback: ralph)
+  ask             → ripley  (fallback: rebecca)
+  verify          → dallas  (fallback: ralph)
+  decompose       → ripley  (fallback: rebecca)
+  meeting         → ripley  (fallback: lambert)
 ```
 
 Resolution order:
@@ -216,7 +221,7 @@ git worktree add <rootDir>/../worktrees/<branch> -b <branch> <mainBranch>
 ```
 - Branch names are sanitized (alphanumeric, dots, hyphens, slashes only, max 200 chars)
 - If worktree fails for implement/fix → item marked as error, moved to completed
-- If worktree fails for review/analyze → falls back to rootDir (read-only tasks)
+- If worktree fails for review/explore/ask → falls back to rootDir (read-only tasks)
 
 ### 3. Render Playbook
 ```
@@ -291,8 +296,8 @@ The dashboard exposes a unified input box at `http://localhost:7331` that parses
 | `@agent` | Assigns to a specific agent (sets `item.agent`) |
 | `@everyone` | Fan-out to all agents (sets `scope: 'fan-out'`) |
 | `!high` / `!low` | Sets priority (default: medium) |
-| `/decide` | Creates a decision (appended to `notes.md`) |
-| `/prd` | Creates a PRD item (appended to `prd-gaps.json`) |
+| `/note` | Writes a note to `notes/inbox/` for consolidation into `notes.md` |
+| `/plan` | Creates a plan draft (appended to `plans/`) |
 | `#project` | Targets a specific project queue |
 
 Work type is auto-detected from keywords (fix, explore, test, review → implement as fallback). The `@agent` assignment flows through to the engine: `item.agent || resolveAgent(workType, config)`.
@@ -305,20 +310,20 @@ Work type is auto-detected from keywords (fix, explore, test, review → impleme
                               │
                    ┌──────────┼──────────┐
                    ▼          ▼          ▼
-             work-items   decisions   prd-gaps
-             .json        .md         .json
+             work-items   notes/       plans/
+             .json        inbox/*.md   *.md
 
 Per-project sources:              Central engine:              Agents:
 
 work-items.json ──┐
-prd-gaps.json ────┤
 pull-requests.json┤  discoverWork()   dispatch.json
 docs/**/*.md (specs)┤  (each tick)      ┌──────────┐
                   │       │           │ pending   │
 ~/.minions/         │       │           │ active    │
   work-items.json ┤       │           │ completed │
-  plans/*.md ─────┘       ▼           └─────┬────┘
-                     addToDispatch()─────────┘
+  prd/*.json ─────┤       │           └─────┬────┘
+  plans/*.md ─────┘       ▼                 │
+                     addToDispatch()────────┘
                                             │
 ADO REST API ─── pollPrBuildStatus() ──► pull-requests.json
 (every 6min)      (buildStatus field)       │
@@ -390,20 +395,12 @@ All discovery behavior is controlled via `config.json`:
       "name": "MyProject",
       "localPath": "C:/Users/you/MyProject",
       "workSources": {
-        "prd": {
-          "enabled": true,
-          "path": "docs/prd-gaps.json",
-          "itemFilter": { "status": ["missing", "planned"] },
-          "cooldownMinutes": 30
-        },
         "pullRequests": {
           "enabled": true,
-          "path": "projects/<name>/pull-requests.json",
           "cooldownMinutes": 30
         },
         "workItems": {
           "enabled": true,
-          "path": "projects/<name>/work-items.json",
           "cooldownMinutes": 0
         }
       }

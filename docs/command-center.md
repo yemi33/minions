@@ -11,9 +11,9 @@ Click the **CC** button in the top-right header of the dashboard. A slide-out ch
 CC maintains a true multi-turn session using Claude CLI's `--resume` flag. Unlike a typical stateless API call, each message resumes the same conversation — Claude retains full history including tool calls, intermediate reasoning, and file contents from prior turns.
 
 **Session lifecycle:**
-- **Created** on first message (or after expiry/new-session)
+- **Created** on first message (or after the system prompt changes, or when you click **New Session**)
 - **Resumed** on subsequent messages via `--resume <sessionId>`
-- **Expires** after 2 hours of inactivity
+- **Invalidated** only when the CC system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. There is no time-based expiry and no turn cap (`CC_SESSION_MAX_TURNS = Infinity`).
 - **Persisted** to `engine/cc-session.json` — survives dashboard restarts
 - **Frontend messages** saved to `localStorage` — survive page refresh
 
@@ -108,7 +108,7 @@ User message (CC panel, doc modal, or steer)
     ▼
 POST /api/command-center  (or /api/doc-chat, /api/steer-document)
     │
-    ├── Validate session (expiry check)
+    ├── Validate session (prompt-hash check — invalidate if `_ccPromptHash` drifted)
     ├── Build dynamic state preamble (buildCCStatePreamble)
     ├── callLLM() with sessionId (resume) or without (new)
     │     model: sonnet
