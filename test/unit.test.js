@@ -11510,23 +11510,23 @@ async function testAuxModuleBugFixes() {
   });
 
   // Bug #35: scheduler treats undefined/null enabled as disabled
-  await test('scheduler.js: falsy enabled skips schedule', () => {
+  // Fix: only skip schedules explicitly set to enabled === false
+  // undefined/null should default to enabled (per schema: enabled?: boolean -- default true)
+  await test('scheduler.js: only sched.enabled === false skips schedule', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
-    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check to match dashboard UI behavior');
+    assert.ok(src.includes('sched.enabled === false'), 'Should use strict false check so undefined/null default to enabled');
+    assert.ok(!src.includes('!sched.enabled'), 'Should NOT use truthy check — that treats undefined as disabled');
   });
 
-  await test('scheduler discoverScheduledWork skips undefined-enabled schedules', () => {
-    // Functional test: create a schedule with undefined enabled
-    const tmpDir = createTmpDir();
-    const origPath = scheduler.SCHEDULE_RUNS_PATH;
-    // We can't easily override the path, so test the source logic instead
+  await test('scheduler discoverScheduledWork treats omitted enabled as enabled', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
-    // Verify the line that checks enabled
-    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check — matches dashboard UI enabled badge');
-    // A schedule with enabled:undefined should be skipped
-    // A schedule with enabled:null should be skipped
-    // A schedule with enabled:false should be skipped
-    // Only enabled:true should pass
+    // Verify the strict false check
+    assert.ok(src.includes('sched.enabled === false'), 'Should use strict false check — matches schema default true');
+    // With the fix:
+    // A schedule with enabled:undefined should run (default true)
+    // A schedule with enabled:null should run (default true)
+    // A schedule with enabled:true should run
+    // Only enabled:false should be skipped
   });
 
   // Bug #36: spawn-agent registers exit/SIGTERM handler for temp file cleanup
@@ -13271,12 +13271,14 @@ async function testEngineAuditCritical() {
       'resolveWorkItemPath must return null for unrecognized source');
   });
 
-  await test('scheduler enabled check uses truthy, not strict equality', () => {
+  await test('scheduler enabled check uses strict false, not truthy check', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
     assert.ok(!src.includes('sched.enabled !== true'),
       'scheduler must not use strict !== true check — schedules with enabled:undefined would silently never fire');
-    assert.ok(src.includes('!sched.enabled'),
-      'scheduler should use truthy check to match dashboard UI behavior');
+    assert.ok(src.includes('sched.enabled === false'),
+      'scheduler should use strict false check so undefined/null default to enabled per schema');
+    assert.ok(!src.includes('!sched.enabled'),
+      'scheduler must not use truthy check — that treats undefined as disabled, breaking the schema default');
   });
 }
 

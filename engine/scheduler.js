@@ -114,7 +114,7 @@ function discoverScheduledWork(config) {
   mutateJsonFileLocked(SCHEDULE_RUNS_PATH, (runs) => {
     for (const sched of schedules) {
       if (!sched.id || !sched.cron || !sched.title) continue;
-      if (!sched.enabled) continue; // truthy check — matches dashboard UI badge behavior
+      if (sched.enabled === false) continue; // strict false check — undefined/null default to enabled per schema
 
       // Backward compat: runs[sched.id] can be a string (old format) or object (new format)
       const runEntry = runs[sched.id] || null;
