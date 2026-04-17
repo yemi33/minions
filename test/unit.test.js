@@ -10613,6 +10613,9 @@ async function main() {
     // W-mnytn469wx90: Agent busy reassignment
     await testAgentBusyReassignment();
 
+    // #1206: Undefined-agent guard in pending dispatch loop
+    await testUndefinedAgentGuard();
+
     // W-mnyao4dyz8w7: createThrottleTracker factory, adoFetchText throttle, GitHub throttle
     await testCreateThrottleTracker();
     await testAdoFetchTextThrottle();
@@ -20160,6 +20163,108 @@ async function testAgentBusyReassignment() {
     // Must be set when reason === 'agent_busy' and cleared otherwise
     assert.ok(engineSrc.includes("agent_busy") && engineSrc.includes('_agentBusySince'),
       'Both agent_busy and _agentBusySince should be present in the annotation logic');
+  });
+}
+
+// ─── #1206: Undefined-agent guard in pending dispatch loop ─────────────────
+//
+// A pending dispatch item with `item.agent === undefined` must not be handed to
+// spawnAgent — it crashes with `TypeError: The "path" argument must be of type
+// string. Received undefined`, returns null, and the item stays pending, which
+// re-enters the loop on the next tick. Infinite crash loop.
+
+async function testUndefinedAgentGuard() {
+  console.log('\n── #1206: Undefined-agent guard in pending dispatch ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // 1. Source: a truthy guard on item.agent exists in the pending dispatch loop
+  await test('engine.js guards against undefined item.agent before toDispatch.push', () => {
+    // Must contain a check that item.agent is truthy before dispatch
+    // Accept either `if (!item.agent)` style or `typeof item.agent !== 'string'`
+    const hasNullishGuard = /if\s*\(\s*!item\.agent\b/.test(engineSrc)
+      || /typeof\s+item\.agent\s*!==\s*['"]string['"]/.test(engineSrc);
+    assert.ok(hasNullishGuard,
+      'engine.js must include a guard on item.agent being nullish/non-string before spawn');
+  });
+
+  // 2. Source: the guard uses resolveAgent() with the item type as fallback
+  await test('undefined-agent guard uses resolveAgent for fallback resolution', () => {
+    // The guard block should reference resolveAgent with item.type
+    // Look for a `!item.agent` branch that contains `resolveAgent(`
+    const guardBlock = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,400}?resolveAgent\s*\(/);
+    assert.ok(guardBlock,
+      'Undefined-agent guard must call resolveAgent() to pick a fallback agent');
+  });
+
+  // 3. Behavioral: simulate the dispatch loop — undefined agent gets resolved or skipped
+  await test('undefined item.agent is replaced via routing before push (behavioral)', () => {
+    const pending = [
+      { id: 'u-1', agent: undefined, type: 'fix', meta: { item: {} } },
+    ];
+    const busyAgents = new Set();
+    const toDispatch = [];
+    // Simulate the guard — pick any configured agent as the fallback
+    const cfg = { agents: { dallas: { name: 'Dallas', role: 'Engineer' } } };
+    const resolveAgentStub = (type, config) => Object.keys(config.agents)[0] || null;
+
+    for (const item of pending) {
+      if (!item.agent) {
+        const fallback = resolveAgentStub(item.type || 'fix', cfg);
+        if (!fallback) continue;
+        item.agent = fallback;
+        item.agentName = cfg.agents[fallback]?.name || fallback;
+        item.agentRole = cfg.agents[fallback]?.role || 'Agent';
+      }
+      if (busyAgents.has(item.agent)) continue;
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    assert.strictEqual(toDispatch.length, 1, 'Item with resolvable fallback should dispatch');
+    assert.strictEqual(toDispatch[0].agent, 'dallas', 'Should be routed to fallback agent');
+    assert.strictEqual(toDispatch[0].agentName, 'Dallas', 'agentName should be populated from config');
+    assert.strictEqual(toDispatch[0].agentRole, 'Engineer', 'agentRole should be populated from config');
+  });
+
+  // 4. Behavioral: if routing returns null (no agents configured), item is skipped
+  await test('undefined item.agent with no routable fallback is skipped, never pushed (behavioral)', () => {
+    const pending = [
+      { id: 'u-2', agent: undefined, type: 'fix', meta: { item: {} } },
+    ];
+    const toDispatch = [];
+    const resolveAgentStub = () => null; // no agents available
+
+    for (const item of pending) {
+      if (!item.agent) {
+        const fallback = resolveAgentStub();
+        if (!fallback) continue;
+        item.agent = fallback;
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 0,
+      'Item must not be pushed to toDispatch when no fallback agent is available');
+    // And spawnAgent must never see an item with undefined agent
+    assert.strictEqual(toDispatch.find(i => !i.agent), undefined,
+      'No item with undefined agent may reach spawn');
+  });
+
+  // 5. Source: the guard block persists the resolved agent back to dispatch.json
+  //    so the fix survives the tick — mirrors the reassignment-path convention.
+  await test('undefined-agent guard persists resolution to dispatch.json (source check)', () => {
+    // Look for a mutateDispatch inside the !item.agent guard block
+    const block = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,1500}?mutateDispatch/);
+    assert.ok(block,
+      'Undefined-agent guard must call mutateDispatch to persist the resolved agent');
+  });
+
+  // 6. Source: the guard ships with a log line so this case is diagnosable
+  await test('undefined-agent guard emits a log line (source check)', () => {
+    const block = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,1500}?log\s*\(/);
+    assert.ok(block,
+      'Undefined-agent guard must log when it triggers (for observability)');
   });
 }
 
