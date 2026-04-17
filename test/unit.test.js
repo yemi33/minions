@@ -9132,8 +9132,8 @@ async function testMeetings() {
 
   await test('meeting round timeout is configurable via meetingRoundTimeout', () => {
     const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    assert.ok(sharedSrc.includes('meetingRoundTimeout') && sharedSrc.includes('600000'),
-      'ENGINE_DEFAULTS should include meetingRoundTimeout of 600000ms (10min)');
+    assert.ok(sharedSrc.includes('meetingRoundTimeout') && sharedSrc.includes('900000'),
+      'ENGINE_DEFAULTS should include meetingRoundTimeout of 900000ms (15min)');
     assert.ok(meetingSrc.includes('meetingRoundTimeout'),
       'meeting.js should read meetingRoundTimeout from config');
   });
@@ -10183,10 +10183,10 @@ async function testMeetingsExtendedBehavioral() {
       id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
       participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
       debate: {}, humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 700000).toISOString(), // 11.7 min ago
+      roundStartedAt: new Date(Date.now() - 1000000).toISOString(), // 16.7 min ago
     });
     try {
-      // Default ENGINE_DEFAULTS.meetingRoundTimeout is 600000 (10 min)
+      // Default ENGINE_DEFAULTS.meetingRoundTimeout is 900000 (15 min)
       meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
       const m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'debating', 'Should advance to debating after timeout');
@@ -10208,7 +10208,7 @@ async function testMeetingsExtendedBehavioral() {
       findings: { alice: { content: 'A' }, bob: { content: 'B' } },
       debate: { alice: { content: 'Alice debate' } }, // only alice submitted
       humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
     });
     try {
       meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
@@ -10228,7 +10228,7 @@ async function testMeetingsExtendedBehavioral() {
       findings: { alice: { content: 'Found bugs in module X' } },
       debate: { alice: { content: 'Should fix ASAP' } },
       humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
     });
     try {
       meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });

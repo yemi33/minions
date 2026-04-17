@@ -45,7 +45,7 @@ async function openSettings() {
       settingsField('Idle Alert', 'set-idleAlertMinutes', e.idleAlertMinutes || 15, 'min', 'Alert after agent idle this long') +
       settingsField('Shutdown Timeout', 'set-shutdownTimeout', e.shutdownTimeout || 300000, 'ms', 'Max wait for agents during graceful shutdown') +
       settingsField('Restart Grace Period', 'set-restartGracePeriod', e.restartGracePeriod || 1200000, 'ms', 'Grace period before orphan detection on restart') +
-      settingsField('Meeting Round Timeout', 'set-meetingRoundTimeout', e.meetingRoundTimeout || 600000, 'ms', 'Auto-advance meeting round after this') +
+      settingsField('Meeting Round Timeout', 'set-meetingRoundTimeout', e.meetingRoundTimeout || 900000, 'ms', 'Auto-advance meeting round after this') +
     '</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
       settingsToggle('Auto-approve Plans', 'set-autoApprovePlans', !!e.autoApprovePlans, 'PRDs are approved automatically without human review') +

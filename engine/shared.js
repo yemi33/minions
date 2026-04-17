@@ -695,7 +695,7 @@ const ENGINE_DEFAULTS = {
   autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoFixConflicts: true, // auto-dispatch fix agents when a PR has merge conflicts
   autoFixBuilds: true, // auto-dispatch fix agents when a PR build fails
-  meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
+  meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // max review→fix cycles before escalating to human
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
