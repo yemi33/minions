@@ -3512,6 +3512,37 @@ async function tickInner() {
         });
       } catch (e) { log('warn', `Persist agent resolution for ${item.id} failed: ${e.message}`); }
     }
+    // #1204: Pre-assigned unspawned temp agents never unblock naturally.
+    // When a batch discovery saturates maxConcurrent, resolveAgent hands out temp
+    // IDs that get stamped onto pending items. Because those temp IDs are never
+    // in busyAgents (they were never spawned), the agent-busy reassignment path
+    // never fires — items sit forever even when named agents go idle. Re-route
+    // them eagerly before the busy check so an idle named agent can pick up.
+    const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+    if (isUnspawnedTemp) {
+      const altAgent = resolveAgent(item.type, config);
+      if (altAgent && altAgent !== item.agent) {
+        const prevAgent = item.agent;
+        item.agent = altAgent;
+        item.agentName = config.agents[altAgent]?.name || tempAgents.get(altAgent)?.name || altAgent;
+        item.agentRole = config.agents[altAgent]?.role || tempAgents.get(altAgent)?.role || 'Agent';
+        delete item._agentBusySince;
+        delete item.skipReason;
+        log('info', `Reassigning ${item.id} from unspawned temp ${prevAgent} to ${altAgent} — temp agent never spawned`);
+        // Persist reassignment to dispatch.json so it survives restarts/ticks
+        mutateDispatch((dp) => {
+          const p = (dp.pending || []).find(d => d.id === item.id);
+          if (p) {
+            p.agent = altAgent;
+            p.agentName = item.agentName;
+            p.agentRole = item.agentRole;
+            delete p._agentBusySince;
+            delete p.skipReason;
+          }
+          return dp;
+        });
+      }
+    }
     if (busyAgents.has(item.agent)) {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.

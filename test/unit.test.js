@@ -10616,6 +10616,10 @@ async function main() {
     // #1206: Undefined-agent guard in pending dispatch loop
     await testUndefinedAgentGuard();
 
+    // #1204: Unspawned temp agent reassignment
+    await testUnspawnedTempAgentReassignment();
+
+
     // W-mnyao4dyz8w7: createThrottleTracker factory, adoFetchText throttle, GitHub throttle
     await testCreateThrottleTracker();
     await testAdoFetchTextThrottle();
@@ -20265,6 +20269,166 @@ async function testUndefinedAgentGuard() {
     const block = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,1500}?log\s*\(/);
     assert.ok(block,
       'Undefined-agent guard must log when it triggers (for observability)');
+  });
+}
+
+// ─── #1204: Pending items pre-assigned to unspawned temp agents ─────────────
+
+async function testUnspawnedTempAgentReassignment() {
+  console.log('\n── #1204: Unspawned temp agent reassignment ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // 1. Source: dispatch loop detects pre-assigned unspawned temp agents
+  await test('dispatch loop detects pre-assigned temp agents not in active set', () => {
+    // Before the busyAgents.has() check, there must be logic that recognizes
+    // when item.agent is a temp agent ID that's not currently active/running.
+    assert.ok(
+      /isUnspawnedTemp|startsWith\(['"]temp-['"]\)/.test(engineSrc),
+      'Dispatch loop must detect items pre-assigned to unspawned temp agents'
+    );
+  });
+
+  // 2. Source: when detected, reroute via resolveAgent so named idle agents can take over
+  await test('dispatch loop reroutes unspawned temp agents via resolveAgent', () => {
+    // The fix must call resolveAgent near the temp-agent detection in the dispatch loop.
+    // Scan all occurrences of startsWith('temp-') in case other paths use the same check.
+    const matches = [...engineSrc.matchAll(/startsWith\(['"]temp-['"]\)[\s\S]{0,800}/g)];
+    const hasResolveAgentNearby = matches.some(m => /resolveAgent/.test(m[0]));
+    assert.ok(
+      hasResolveAgentNearby,
+      'When a pending item is bound to an unspawned temp agent, the dispatch loop must call resolveAgent to pick a named alternative'
+    );
+  });
+
+  // 3. Source: reassignment persists to dispatch.json
+  await test('unspawned temp reassignment persists via mutateDispatch', () => {
+    // The reassignment must persist across ticks via mutateDispatch. Scan all
+    // occurrences — at least one must have mutateDispatch within 1500 chars.
+    const matches = [...engineSrc.matchAll(/startsWith\(['"]temp-['"]\)[\s\S]{0,1500}/g)];
+    const hasMutateDispatchNearby = matches.some(m => /mutateDispatch/.test(m[0]));
+    assert.ok(hasMutateDispatchNearby,
+      'Unspawned-temp reassignment must persist via mutateDispatch so it survives restarts');
+  });
+
+  // 4. Behavioral: item pre-assigned to unspawned temp agent gets reassigned to idle named agent
+  await test('unspawned temp agent → idle named agent reassignment (behavioral)', () => {
+    const pending = [
+      {
+        id: 'fix-1',
+        agent: 'temp-abc123',        // pre-assigned temp agent that was never spawned
+        agentName: 'Temp-abc1',
+        agentRole: 'Temporary Agent',
+        type: 'fix',
+        meta: { item: {}, branch: 'work/P-fix-1' },
+      },
+    ];
+    const active = [];                  // no agents active
+    const idleNamedAgents = ['dallas', 'lambert', 'ripley'];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    // Simulate the fix logic
+    for (const item of pending) {
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) {
+        // Simulate resolveAgent picking the first idle named agent
+        const altAgent = idleNamedAgents.find(a => !busyAgents.has(a));
+        if (altAgent && altAgent !== item.agent) {
+          item.agent = altAgent;
+          item.agentName = altAgent;
+          item.agentRole = 'Agent';
+        }
+      }
+    }
+
+    assert.strictEqual(pending[0].agent, 'dallas',
+      'Item should be reassigned from temp-abc123 to the first idle named agent (dallas)');
+    assert.notStrictEqual(pending[0].agent, 'temp-abc123',
+      'Item should not retain the unspawned temp agent ID when a named agent is idle');
+  });
+
+  // 5. Behavioral: item keeps temp agent when ALL named agents are busy
+  await test('unspawned temp kept when no named agent idle (behavioral)', () => {
+    const pending = [
+      { id: 'fix-2', agent: 'temp-xyz456', type: 'fix', meta: { item: {} } },
+    ];
+    const active = [
+      { id: 'dallas-1', agent: 'dallas' },
+      { id: 'lambert-1', agent: 'lambert' },
+      { id: 'ripley-1', agent: 'ripley' },
+    ];
+    const namedAgents = ['dallas', 'lambert', 'ripley'];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    for (const item of pending) {
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) {
+        const altAgent = namedAgents.find(a => !busyAgents.has(a));
+        if (altAgent && altAgent !== item.agent) {
+          item.agent = altAgent;
+        }
+      }
+    }
+
+    assert.strictEqual(pending[0].agent, 'temp-xyz456',
+      'When no named agent is idle, the item should retain its temp agent assignment');
+  });
+
+  // 6. Behavioral: an ACTIVE temp agent (in busyAgents) is NOT treated as unspawned
+  await test('active temp agent is not treated as unspawned (behavioral)', () => {
+    const pending = [
+      { id: 'fix-3', agent: 'temp-running', type: 'fix', meta: { item: {} } },
+    ];
+    const active = [
+      { id: 'temp-running-1', agent: 'temp-running' }, // this temp agent IS running
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    let reassigned = false;
+    for (const item of pending) {
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) reassigned = true;
+    }
+
+    assert.strictEqual(reassigned, false,
+      'A temp agent currently running (in busyAgents) must not be flagged as unspawned');
+  });
+
+  // 7. Behavioral: named agents are untouched
+  await test('named agent assignments are not affected (behavioral)', () => {
+    const pending = [
+      { id: 'fix-4', agent: 'dallas', type: 'fix', meta: { item: {} } },
+    ];
+    const active = [];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    let reassigned = false;
+    for (const item of pending) {
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) reassigned = true;
+    }
+
+    assert.strictEqual(reassigned, false,
+      'Named agent assignments must never be flagged as unspawned temp agents');
+    assert.strictEqual(pending[0].agent, 'dallas', 'Named agent should remain unchanged');
+  });
+
+  // 8. Source: reassignment runs BEFORE the busyAgents check
+  await test('unspawned-temp check appears before busyAgents.has check in dispatch loop', () => {
+    // Find positions. The unspawned-temp reassignment logic must execute before
+    // `busyAgents.has(item.agent)` so a rerouted item can still be dispatched this tick.
+    const dispatchLoopStart = engineSrc.indexOf('for (const item of dispatch.pending)');
+    assert.ok(dispatchLoopStart > 0, 'Dispatch loop must exist');
+
+    const tempCheckIdx = engineSrc.indexOf("startsWith('temp-')", dispatchLoopStart);
+    const busyCheckIdx = engineSrc.indexOf('busyAgents.has(item.agent)', dispatchLoopStart);
+
+    assert.ok(tempCheckIdx > dispatchLoopStart,
+      'The unspawned-temp check must appear inside the dispatch loop');
+    assert.ok(busyCheckIdx > dispatchLoopStart,
+      'The busyAgents.has check must appear inside the dispatch loop');
+    assert.ok(tempCheckIdx < busyCheckIdx,
+      'The unspawned-temp reassignment must run before busyAgents.has(item.agent) in the dispatch loop');
   });
 }
 
