@@ -139,10 +139,9 @@ jobs:
               gh pr close "$pr" --delete-branch 2>/dev/null || true
             done
 
-            # Auto-merge once checks are satisfied (squash so commit message inherits PR title with [skip ci])
-            gh pr merge "$BRANCH" --auto --squash --delete-branch
+            # Merge immediately with admin bypass after tests and required checks succeed
+            gh pr merge "$BRANCH" --squash --delete-branch --admin
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GH_TOKEN: ${{ github.token }}
-

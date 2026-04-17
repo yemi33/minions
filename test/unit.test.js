@@ -2850,8 +2850,10 @@ async function testConfigAndPlaybooks() {
 
   await test('publish workflow uses admin bypass for chore publish PR auto-merge', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
-    assert.ok(src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
-      'publish workflow should use --admin so bot-created publish PRs can bypass approval requirements');
+    assert.ok(src.includes('gh pr merge "$BRANCH" --squash --delete-branch --admin'),
+      'publish workflow should use direct admin merge after posting required checks');
+    assert.ok(!src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
+      'publish workflow should not use invalid --auto + --admin combination');
   });
 }
 
