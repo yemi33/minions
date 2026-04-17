@@ -231,40 +231,6 @@ function ccCloseTab(id) {
   ccSaveState();
 }
 
-function ccShowAllConversations() {
-  var dropdown = document.getElementById('cc-all-conversations');
-  if (dropdown) { dropdown.remove(); return; } // toggle off
-  dropdown = document.createElement('div');
-  dropdown.id = 'cc-all-conversations';
-  dropdown.style.cssText = 'position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-top:none;max-height:300px;overflow-y:auto;z-index:360;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
-  var html = '';
-  for (var i = _ccTabs.length - 1; i >= 0; i--) {
-    var t = _ccTabs[i];
-    var isActive = t.id === _ccActiveTabId;
-    var preview = '';
-    if (t.messages.length > 0) {
-      var lastMsg = t.messages[t.messages.length - 1];
-      var tmp = document.createElement('div');
-      tmp.innerHTML = lastMsg.html;
-      preview = (tmp.textContent || tmp.innerText || '').slice(0, 60);
-    }
-    html += '<div style="padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:8px' + (isActive ? ';background:rgba(56,139,253,0.1)' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\');document.getElementById(\'cc-all-conversations\')?.remove()">';
-    html += '<div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:600;color:' + (isActive ? 'var(--blue)' : 'var(--text)') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(t.title) + '</div>';
-    if (preview) html += '<div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">' + escHtml(preview) + '</div>';
-    html += '</div>';
-    html += '<span style="font-size:10px;color:var(--muted)">' + t.messages.length + ' msg</span>';
-    html += '<button onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\');document.getElementById(\'cc-all-conversations\')?.remove();ccShowAllConversations()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:2px 4px">&times;</button>';
-    html += '</div>';
-  }
-  if (_ccTabs.length === 0) html = '<div style="padding:12px;color:var(--muted);font-size:11px;text-align:center">No conversations yet</div>';
-  dropdown.innerHTML = html;
-  var tabBar = document.getElementById('cc-tab-bar');
-  if (tabBar) { tabBar.style.position = 'relative'; tabBar.appendChild(dropdown); }
-  // Close on click outside
-  function closeDropdown(e) { if (!dropdown.contains(e.target) && e.target.id !== 'cc-all-btn') { dropdown.remove(); document.removeEventListener('click', closeDropdown); } }
-  setTimeout(function() { document.addEventListener('click', closeDropdown); }, 0);
-}
-
 function ccRenderTabBar() {
   var bar = document.getElementById('cc-tab-bar');
   if (!bar) return;
@@ -280,7 +246,6 @@ function ccRenderTabBar() {
   }
   html += '<div class="cc-tab cc-tab-new" onclick="ccNewTab()" title="New tab">+</div>';
   html += '</div>';
-  html += '<div class="cc-tab-actions"><button id="cc-all-btn" class="cc-all-btn" onclick="ccShowAllConversations()" title="All conversations">&#x25BC;</button></div>';
   bar.innerHTML = html;
 }
 
@@ -1335,4 +1300,4 @@ if (document.readyState === 'loading') {
   ccInitResize();
 }
 
-window.MinionsCC = { toggleCommandCenter, ccNewSession, ccNewTab, ccSwitchTab, ccCloseTab, ccShowAllConversations, ccRenderTabBar, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccAbort, ccExecuteAction };
+window.MinionsCC = { toggleCommandCenter, ccNewSession, ccNewTab, ccSwitchTab, ccCloseTab, ccRenderTabBar, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccAbort, ccExecuteAction };

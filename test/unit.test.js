@@ -2847,6 +2847,12 @@ async function testConfigAndPlaybooks() {
     assert.ok(src.includes('findNearestLocalMinionsRoot('),
       'bin/minions.js should detect nearest local .minions root');
   });
+
+  await test('publish workflow uses admin bypass for chore publish PR auto-merge', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    assert.ok(src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
+      'publish workflow should use --admin so bot-created publish PRs can bypass approval requirements');
+  });
 }
 
 // ─── Integration-Level Tests (uses real state files) ─────────────────────────
@@ -17639,10 +17645,6 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
   });
 
-  await test('ccShowAllConversations function exists', () => {
-    assert.ok(ccSrc.includes('function ccShowAllConversations'), 'Should have ccShowAllConversations function');
-  });
-
   await test('tab bar rendered in layout.html', () => {
     assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
   });
@@ -17707,18 +17709,15 @@ async function testCCMultiTab() {
 
   await test('tab CSS styles exist', () => {
     assert.ok(stylesSrc.includes('.cc-tab-scroll'), 'Should have .cc-tab-scroll style');
-    assert.ok(stylesSrc.includes('.cc-tab-actions'), 'Should have .cc-tab-actions style');
-    assert.ok(stylesSrc.includes('.cc-all-btn'), 'Should have .cc-all-btn style');
     assert.ok(stylesSrc.includes('.cc-tab'), 'Should have .cc-tab style');
     assert.ok(stylesSrc.includes('.cc-tab.active'), 'Should have .cc-tab.active style');
     assert.ok(stylesSrc.includes('.cc-tab-close'), 'Should have .cc-tab-close style');
   });
 
-  await test('ccRenderTabBar keeps overflow tabs separate from all-conversations button', () => {
+  await test('ccRenderTabBar does not render removed all-conversations chevron', () => {
     assert.ok(ccSrc.includes('cc-tab-scroll'), 'ccRenderTabBar should render a scroll container for tabs');
-    assert.ok(ccSrc.includes('cc-tab-actions'), 'ccRenderTabBar should render a fixed actions container');
-    assert.ok(ccSrc.includes('cc-all-btn') && ccSrc.includes('cc-all-btn" class="cc-all-btn'),
-      'ccRenderTabBar should render the all-conversations button outside the scrolling tab strip');
+    assert.ok(!ccSrc.includes('cc-all-btn'), 'ccRenderTabBar should not render the removed all-conversations button');
+    assert.ok(!ccSrc.includes('ccShowAllConversations'), 'Command Center should not ship the removed dropdown helper');
   });
 
   // ── Integration flow tests ────────────────────────────────────────────────
