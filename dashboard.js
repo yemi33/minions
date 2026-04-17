@@ -533,9 +533,9 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-// Sessions never expire by time — user controls lifecycle via tabs (new tab = new session, /clear = reset).
-// Only invalidated by: system prompt change, explicit clear, or tab close.
-const CC_SESSION_MAX_TURNS = Infinity;
+// Bound resumed session growth so stale conversations do not accumulate unbounded context.
+const CC_SESSION_MAX_TURNS = shared.ENGINE_DEFAULTS.ccMaxTurns;
+const CC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
@@ -568,14 +568,13 @@ function ccSessionValid() {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
+  if (_sessionExpired(ccSession.lastActiveAt || ccSession.createdAt, CC_SESSION_TTL_MS)) {
+    console.log('[CC] Session expired by TTL — starting fresh');
+    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+    return false;
+  }
   return ccSession.turnCount < CC_SESSION_MAX_TURNS;
 }
-
-// Load persisted CC session on startup
-try {
-  const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId) ccSession = saved;
-} catch { /* optional */ }
 
 // Static system prompt — baked into session on creation, never changes
 // Load CC system prompt from file — editable without touching engine code
@@ -591,6 +590,34 @@ const CC_STATIC_SYSTEM_PROMPT = (() => {
 
 // Hash the system prompt so we can detect changes and invalidate stale sessions
 const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
+
+function _sessionExpired(lastActiveAt, ttlMs) {
+  if (!lastActiveAt || !ttlMs) return false;
+  const at = new Date(lastActiveAt).getTime();
+  if (!Number.isFinite(at)) return true;
+  return Date.now() - at > ttlMs;
+}
+
+function _filterCcTabSessions(sessions) {
+  return (Array.isArray(sessions) ? sessions : []).filter(s =>
+    s && s.id && s.sessionId &&
+    (s.turnCount || 0) < CC_SESSION_MAX_TURNS &&
+    !_sessionExpired(s.lastActiveAt || s.createdAt, CC_SESSION_TTL_MS) &&
+    (!s._promptHash || s._promptHash === _ccPromptHash)
+  );
+}
+
+function _readCcTabSessions({ prune = true } = {}) {
+  const sessions = _filterCcTabSessions(shared.safeJsonArr(CC_SESSIONS_PATH));
+  if (prune) safeWrite(CC_SESSIONS_PATH, sessions);
+  return sessions;
+}
+
+// Load persisted CC session on startup
+try {
+  const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
+  if (saved && saved.sessionId && !_sessionExpired(saved.lastActiveAt || saved.createdAt, CC_SESSION_TTL_MS)) ccSession = saved;
+} catch { /* optional */ }
 
 let _preambleCache = null;
 let _preambleCacheTs = 0;
@@ -998,17 +1025,16 @@ async function executeCCActions(actions) {
 // Session store for doc modals — keyed by filePath or title, persisted to disk
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
-const DOC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 604800000 — 7 days
+const DOC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.docSessionTtlMs;
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
 // Load persisted doc sessions on startup
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
-    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
       if (s.turnCount >= CC_SESSION_MAX_TURNS) continue;
-      if (s.lastActiveAt && now - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) continue;
+      if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) continue;
       docSessions.set(key, s);
     }
   }
@@ -1052,7 +1078,7 @@ function resolveSession(store, key) {
     persistDocSessions();
     return null;
   }
-  if (s.lastActiveAt && Date.now() - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) {
+  if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -3819,14 +3845,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 
   async function handleCCSessionsList(req, res) {
-    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    const sessions = _readCcTabSessions();
     return jsonReply(res, 200, { sessions });
   }
 
   async function handleCCSessionDelete(req, res, match) {
     const id = match?.[1];
     if (!id) return jsonReply(res, 400, { error: 'id required' });
-    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    const sessions = _readCcTabSessions();
     const filtered = sessions.filter(s => s.id !== id);
     safeWrite(CC_SESSIONS_PATH, filtered);
     return jsonReply(res, 200, { ok: true });
@@ -3885,7 +3911,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
 
         const parsed = parseCCActions(result.text);
-        const toolUses = _extractToolUsesFromRaw(result.raw);
+        const toolUses = Array.isArray(result.toolUses) ? result.toolUses : _extractToolUsesFromRaw(result.raw);
         // Safety net: detect /loop invocation and convert to create-watch
         const _loopWatch = _detectLoopInvocation(parsed.text, parsed.actions, toolUses);
         if (_loopWatch) {
@@ -3981,9 +4007,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         let sessionReset = false;
         // If system prompt changed since this session was created, force a fresh session
         if (tabSessionId) {
-          const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+          const sessions = _readCcTabSessions();
           const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
-          if (tabEntry && tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
+          if (!tabEntry) {
+            tabSessionId = null;
+            sessionReset = true;
+          } else if (tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
             tabSessionId = null;
             sessionReset = true;
           }
@@ -4065,7 +4094,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const _persistTabId = body.tabId;
         if (_persistTabId && responseSessionId) {
           try {
-            const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+            const sessions = _readCcTabSessions();
             const existing = sessions.find(s => s.id === _persistTabId);
             const preview = (body.message || '').slice(0, 80);
             if (existing) {

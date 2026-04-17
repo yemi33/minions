@@ -2512,9 +2512,10 @@ function normalizeAc(ac) {
 function buildWorkItemDispatchVars(item, vars, config, options = {}) {
   const { worktreePath, includeNotes = true, workType } = options;
 
-  // Notes content (uses queries.getNotes instead of inline fs.readFileSync)
+  // Team notes are injected once in renderPlaybook(). Keep notes_content as a
+  // lightweight pointer so prompts do not duplicate the full notes.md blob.
   if (includeNotes) {
-    vars.notes_content = getNotes() || '';
+    vars.notes_content = 'See the **Team Notes** section above for the latest shared team context.';
   }
 
   // References
@@ -2561,7 +2562,7 @@ function buildWorkItemDispatchVars(item, vars, config, options = {}) {
   if (workType === WORK_TYPE.ASK) {
     vars.question = item.title + (item.description ? '\n\n' + item.description : '');
     vars.task_id = item.id;
-    vars.notes_content = getNotes() || '';
+    vars.notes_content = 'See the **Team Notes** section above for the latest shared team context.';
   }
 
   // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")

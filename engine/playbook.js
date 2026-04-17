@@ -9,7 +9,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, getProjects, log, ts, dateStamp, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
@@ -119,6 +119,10 @@ function resolveTaskContext(item, config) {
   }));
   const resolved = { additionalContext: '', referencedFiles: [] };
 
+  function truncateReferencedContext(content, maxBytes, label) {
+    return truncateTextBytes(content, maxBytes, `\n\n_...${label} truncated — read the full file if needed._`);
+  }
+
 
   // Match agent references: "ripley's plan", "dallas's pr", "lambert's output", etc.
   for (const agent of agentNames) {
@@ -144,7 +148,7 @@ function resolveTaskContext(item, config) {
           const planPath = path.join(MINIONS_DIR, 'plans', planFile);
           try {
             const content = safeRead(planPath);
-            resolved.additionalContext += `\n\n## Referenced Plan: ${planFile} (created by ${agent.name})\n\n${content}`;
+            resolved.additionalContext += `\n\n## Referenced Plan: ${planFile} (created by ${agent.name})\n\n${truncateReferencedContext(content, ENGINE_DEFAULTS.maxReferencedPlanBytes, 'referenced plan')}`;
             resolved.referencedFiles.push(planPath);
             log('info', `Context resolution: found plan "${planFile}" by ${agent.name} for work item ${item.id}`);
           } catch (e) { log('warn', 'resolve plan context: ' + e.message); }
@@ -155,7 +159,7 @@ function resolveTaskContext(item, config) {
             const planPath = path.join(MINIONS_DIR, 'plans', match);
             try {
               const content = safeRead(planPath);
-              resolved.additionalContext += `\n\n## Referenced Plan: ${match}\n\n${content}`;
+              resolved.additionalContext += `\n\n## Referenced Plan: ${match}\n\n${truncateReferencedContext(content, ENGINE_DEFAULTS.maxReferencedPlanBytes, 'referenced plan')}`;
               resolved.referencedFiles.push(planPath);
               log('info', `Context resolution: found plan "${match}" (name match) for work item ${item.id}`);
             } catch (e) { log('warn', 'resolve plan fallback context: ' + e.message); }
@@ -178,7 +182,7 @@ function resolveTaskContext(item, config) {
           .sort().reverse();
         if (files.length > 0) {
           const content = safeRead(path.join(inboxDir, files[0]));
-          resolved.additionalContext += `\n\n## Referenced Notes by ${agent.name}: ${files[0]}\n\n${content.slice(0, 5000)}`;
+          resolved.additionalContext += `\n\n## Referenced Notes by ${agent.name}: ${files[0]}\n\n${truncateReferencedContext(content, ENGINE_DEFAULTS.maxReferencedNotesBytes, 'referenced notes')}`;
           resolved.referencedFiles.push(path.join(inboxDir, files[0]));
           log('info', `Context resolution: found notes "${files[0]}" by ${agent.name} for work item ${item.id}`);
         }
@@ -197,13 +201,20 @@ function resolveTaskContext(item, config) {
       if (plans.length > 0) {
         const planPath = path.join(MINIONS_DIR, 'plans', plans[0]);
         const content = safeRead(planPath);
-        resolved.additionalContext += `\n\n## Referenced Plan (latest): ${plans[0]}\n\n${content}`;
+        resolved.additionalContext += `\n\n## Referenced Plan (latest): ${plans[0]}\n\n${truncateReferencedContext(content, ENGINE_DEFAULTS.maxReferencedPlanBytes, 'referenced plan')}`;
         resolved.referencedFiles.push(planPath);
         log('info', `Context resolution: using latest plan "${plans[0]}" for work item ${item.id}`);
       }
     } catch (e) { log('warn', 'resolve latest plan context: ' + e.message); }
   }
 
+  if (resolved.additionalContext) {
+    resolved.additionalContext = truncateTextBytes(
+      resolved.additionalContext,
+      ENGINE_DEFAULTS.maxResolvedTaskContextBytes,
+      '\n\n_...additional referenced context truncated — read the referenced files if needed._'
+    );
+  }
   return resolved;
 }
 
@@ -316,14 +327,16 @@ function renderPlaybook(type, vars) {
     content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
   }
 
-  // Inject team notes (single injection point — not in buildAgentContext) — capped at 8KB
+  // Inject team notes (single injection point — not in buildAgentContext) — capped via ENGINE_DEFAULTS
   let notes = getNotes();
   if (notes) {
-    if (notes.length > 8192) {
+    if (Buffer.byteLength(notes, 'utf8') > ENGINE_DEFAULTS.maxNotesPromptBytes) {
       const sections = notes.split(/(?=^### )/m);
-      const recent = sections.slice(-10).join('');
-      notes = recent.length > 8192 ? recent.slice(0, 8192) + '\n\n_...notes truncated_' : recent;
-      notes += '\n\n_' + Math.max(0, sections.length - 10) + ' older entries in `notes.md` — Read if needed._';
+      const recent = sections.slice(-10).join('') || notes;
+      const olderCount = Math.max(0, sections.length - 10);
+      const footer = olderCount > 0 ? `\n\n_${olderCount} older entries in \`notes.md\` — Read if needed._` : '';
+      const budget = Math.max(0, ENGINE_DEFAULTS.maxNotesPromptBytes - Buffer.byteLength(footer, 'utf8'));
+      notes = truncateTextBytes(recent, budget, '\n\n_...notes truncated_') + footer;
     }
     content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
   }

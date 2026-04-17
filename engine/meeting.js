@@ -18,6 +18,20 @@ const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 
 const MEETINGS_DIR = path.join(__dirname, '..', 'meetings');
 
+function truncateMeetingContext(text, maxBytes, label) {
+  return shared.truncateTextBytes(text, maxBytes, `\n\n_...${label} truncated — review the meeting transcript if needed._`);
+}
+
+function formatMeetingContributions(entries, agents, emptyText, label, maxBytes) {
+  const pairs = Object.entries(typeof entries === 'object' && entries ? entries : {});
+  if (pairs.length === 0) return emptyText;
+  const perEntryBytes = Math.max(1024, Math.floor(maxBytes / Math.max(1, pairs.length)));
+  const combined = pairs.map(([agent, value]) =>
+    `### ${agents[agent]?.name || agent}\n\n${truncateMeetingContext(value?.content || emptyText, perEntryBytes, `${label} entry`)}`
+  ).join('\n\n---\n\n');
+  return truncateMeetingContext(combined, maxBytes, label);
+}
+
 function getMeetings() {
   if (!fs.existsSync(MEETINGS_DIR)) return [];
   return fs.readdirSync(MEETINGS_DIR)
@@ -100,13 +114,25 @@ function discoverMeetingWork(config) {
       const key = `${concludePrefix}${concluder}`;
       if (activeKeys.has(key)) continue;
 
-      const humanNotes = (Array.isArray(meeting.humanNotes) ? meeting.humanNotes : []).map(n => '- ' + n).join('\n');
-      const allFindings = Object.entries(typeof meeting.findings === 'object' && meeting.findings ? meeting.findings : {}).map(([agent, f]) =>
-        `### ${agents[agent]?.name || agent}\n\n${f.content || '(no findings)'}`
-      ).join('\n\n---\n\n');
-      const allDebate = Object.entries(typeof meeting.debate === 'object' && meeting.debate ? meeting.debate : {}).map(([agent, d]) =>
-        `### ${agents[agent]?.name || agent}\n\n${d.content || '(no response)'}`
-      ).join('\n\n---\n\n');
+      const humanNotes = truncateMeetingContext(
+        (Array.isArray(meeting.humanNotes) ? meeting.humanNotes : []).map(n => '- ' + n).join('\n'),
+        ENGINE_DEFAULTS.maxMeetingHumanNotesBytes,
+        'human meeting notes'
+      );
+      const allFindings = formatMeetingContributions(
+        meeting.findings,
+        agents,
+        '(no findings)',
+        'meeting findings',
+        ENGINE_DEFAULTS.maxMeetingPromptBytes
+      );
+      const allDebate = formatMeetingContributions(
+        meeting.debate,
+        agents,
+        '(no response)',
+        'meeting debate',
+        ENGINE_DEFAULTS.maxMeetingPromptBytes
+      );
 
       const vars = {
         agent_name: agents[concluder]?.name || concluder,
@@ -149,7 +175,11 @@ function discoverMeetingWork(config) {
       const key = `meeting-${meeting.id}-r${round}-${agentId}`;
       if (activeKeys.has(key)) continue;
 
-      const humanNotes = (meeting.humanNotes || []).map(n => '- ' + n).join('\n');
+      const humanNotes = truncateMeetingContext(
+        (meeting.humanNotes || []).map(n => '- ' + n).join('\n'),
+        ENGINE_DEFAULTS.maxMeetingHumanNotesBytes,
+        'human meeting notes'
+      );
       const vars = {
         agent_name: agents[agentId]?.name || agentId,
         agent_role: agents[agentId]?.role || 'Agent',
@@ -160,9 +190,13 @@ function discoverMeetingWork(config) {
       };
 
       if (roundName === 'debating') {
-        vars.all_findings = Object.entries(meeting.findings || {}).map(([agent, f]) =>
-          `### ${agents[agent]?.name || agent}\n\n${f.content || '(no findings)'}`
-        ).join('\n\n---\n\n');
+        vars.all_findings = formatMeetingContributions(
+          meeting.findings,
+          agents,
+          '(no findings)',
+          'meeting findings',
+          ENGINE_DEFAULTS.maxMeetingPromptBytes
+        );
       }
 
       const playbookName = roundName === 'investigating' ? 'meeting-investigate' : 'meeting-debate';

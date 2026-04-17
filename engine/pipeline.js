@@ -15,6 +15,10 @@ const { parseCronExpr, shouldRunNow } = require('./scheduler');
 const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
 const PIPELINE_RUNS_PATH = path.join(__dirname, 'pipeline-runs.json');
 
+function truncatePipelineContext(text, maxBytes, label) {
+  return shared.truncateTextBytes(text, maxBytes, `\n\n_...${label} truncated — inspect the upstream artifacts if needed._`);
+}
+
 // ── Pipeline CRUD ────────────────────────────────────────────────────────────
 
 function getPipelines() {
@@ -433,7 +437,11 @@ async function executePlanStage(stage, stageState, run, config) {
     try {
       const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
       if (mtg) {
-        const transcript = (mtg.transcript || []).map(formatTranscriptEntry).join('\n\n---\n\n');
+        const transcript = truncatePipelineContext(
+          (mtg.transcript || []).map(formatTranscriptEntry).join('\n\n---\n\n'),
+          ENGINE_DEFAULTS.maxPipelineMeetingContextBytes,
+          `meeting transcript for ${mtg.title || mid}`
+        );
         meetingContext += '# Meeting: ' + (mtg.title || mid) + '\n\n**Agenda:** ' + (mtg.agenda || '') + '\n\n' + transcript + '\n\n';
       }
     } catch (e) { log('warn', `Pipeline plan: failed to read meeting ${mid}: ${e.message}`); }
@@ -443,10 +451,15 @@ async function executePlanStage(stage, stageState, run, config) {
     for (const depId of stage.dependsOn) {
       const depStage = run.stages[depId];
       if (depStage?.output && !depStage.artifacts?.meetings?.length) {
-        meetingContext += '## From: ' + depId + '\n\n' + depStage.output + '\n\n';
+        meetingContext += '## From: ' + depId + '\n\n' + truncatePipelineContext(
+          depStage.output,
+          ENGINE_DEFAULTS.maxPipelineMeetingContextBytes,
+          `pipeline stage output from ${depId}`
+        ) + '\n\n';
       }
     }
   }
+  meetingContext = truncatePipelineContext(meetingContext, ENGINE_DEFAULTS.maxPipelineMeetingContextBytes, 'pipeline meeting context');
 
   // Use LLM to generate a structured plan (same approach as dashboard "Create Plan from Meeting" button)
   let content = '';

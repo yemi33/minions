@@ -391,6 +391,44 @@ function uniquePath(filePath) {
   return `${base}-${Date.now()}${ext}`;
 }
 
+function truncateTextBytes(text, maxBytes, suffix = '') {
+  const value = text == null ? '' : String(text);
+  if (!maxBytes || maxBytes <= 0) return '';
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const suffixText = suffix == null ? '' : String(suffix);
+  const suffixBytes = Buffer.byteLength(suffixText, 'utf8');
+  const targetBytes = Math.max(0, maxBytes - suffixBytes);
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, mid), 'utf8') <= targetBytes) low = mid;
+    else high = mid - 1;
+  }
+  return value.slice(0, low) + suffixText;
+}
+
+function tailTextBytes(text, maxBytes, prefix = '') {
+  const value = text == null ? '' : String(text);
+  if (!maxBytes || maxBytes <= 0) return '';
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const prefixText = prefix == null ? '' : String(prefix);
+  const prefixBytes = Buffer.byteLength(prefixText, 'utf8');
+  const targetBytes = Math.max(0, maxBytes - prefixBytes);
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (Buffer.byteLength(value.slice(mid), 'utf8') <= targetBytes) high = mid;
+    else low = mid + 1;
+  }
+  return prefixText + value.slice(low);
+}
+
+function appendTextTail(existing, addition, maxBytes, prefix = '') {
+  return tailTextBytes((existing || '') + (addition || ''), maxBytes, prefix);
+}
+
 // ── Inbox Helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -687,6 +725,19 @@ const ENGINE_DEFAULTS = {
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
   maxStateFileBytes: 100 * 1024 * 1024, // 100 MB — fail startup with a clear error when dispatch.json / cooldowns.json exceed this, rather than silently OOMing on JSON.parse (#1167)
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
+  ccSessionTtlMs: 2 * 60 * 60 * 1000, // 2h — expire stale resumed CC sessions to cap context growth
+  docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
+  maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
+  maxLlmStderrBytes: 64 * 1024, // keep only a bounded stderr tail from direct Claude calls
+  maxLlmLineBufferBytes: 128 * 1024, // cap the incremental JSON line buffer to avoid malformed-stream OOMs
+  maxReferencedPlanBytes: 12 * 1024, // cap full plan injection when implicit task context references prior plans
+  maxReferencedNotesBytes: 5 * 1024, // cap referenced inbox note excerpts injected via task context resolution
+  maxResolvedTaskContextBytes: 20 * 1024, // bound the total implicit context injected from referenced plans/notes
+  maxNotesPromptBytes: 8 * 1024, // cap Team Notes injected into every playbook prompt
+  maxMeetingPromptBytes: 16 * 1024, // cap meeting findings/debate context injected into prompts
+  maxMeetingHumanNotesBytes: 2 * 1024, // cap human note bullet lists injected into meeting prompts
+  maxPipelineMeetingContextBytes: 16 * 1024, // cap aggregated meeting/dependency context for pipeline plan generation
+  notesArchiveMaxFiles: 2000, // keep notes/archive bounded during periodic cleanup
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
   teams: {
@@ -1527,6 +1578,9 @@ module.exports = {
   mutatePullRequests,
   uid,
   uniquePath,
+  truncateTextBytes,
+  tailTextBytes,
+  appendTextTail,
   writeToInbox, parseNoteId,
   exec,
   execAsync,

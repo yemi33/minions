@@ -369,6 +369,22 @@ function runCleanup(config, verbose = false) {
     } catch (e) { log('warn', 'prune output archives: ' + e.message); }
   }
 
+  // 6b. Prune notes/archive — keep the most recent bounded set
+  cleaned.notesArchive = 0;
+  try {
+    const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
+    if (fs.existsSync(archiveDir)) {
+      const archiveFiles = fs.readdirSync(archiveDir)
+        .map(name => ({ name, mtime: fs.statSync(path.join(archiveDir, name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (archiveFiles.length > ENGINE_DEFAULTS.notesArchiveMaxFiles) {
+        for (const old of archiveFiles.slice(ENGINE_DEFAULTS.notesArchiveMaxFiles)) {
+          try { fs.unlinkSync(path.join(archiveDir, old.name)); cleaned.notesArchive++; } catch { /* cleanup */ }
+        }
+      }
+    }
+  } catch (e) { log('warn', 'prune notes archive: ' + e.message); }
+
   // 7. Prune orphaned dispatch entries — items whose source work item no longer exists
   cleaned.orphanedDispatches = 0;
   try {
@@ -708,8 +724,8 @@ function runCleanup(config, verbose = false) {
   // 14. Scrub stale temp agent keys from metrics.json
   try { scrubStaleMetrics(); } catch { /* best-effort cleanup */ }
 
-  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed > 0) {
-    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.pidFiles} PID files`);
+  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed + cleaned.notesArchive > 0) {
+    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.notesArchive} archived notes, ${cleaned.pidFiles} PID files`);
   }
 
   return cleaned;

@@ -2558,6 +2558,15 @@ async function testLlmModule() {
   await test('llm module exports isResumeSessionStillValid', () => {
     assert.ok(typeof llm.isResumeSessionStillValid === 'function');
   });
+
+  await test('llm.js uses bounded stream tails and structured tool metadata', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('function _createStreamAccumulator('), 'Should define a shared stream accumulator');
+    assert.ok(src.includes('appendTextTail(stdout'), 'Should cap stdout tail');
+    assert.ok(src.includes('appendTextTail(stderr'), 'Should cap stderr tail');
+    assert.ok(src.includes('maxLineBufferBytes'), 'Should cap the incremental line buffer');
+    assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
+  });
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
@@ -3472,9 +3481,9 @@ async function testLegacyStatusMigration() {
 
   await test('cleanup.js failed-with-PR reconciliation uses locked write via mutateWorkItems (#407)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    // Extract the reconciliation section (6a) — between the "Reconcile failed" comment and the next section
+    // Extract the reconciliation section (6a) — between the "Reconcile failed" comment and the next subsection
     const sectionStart = src.indexOf('// 6a. Reconcile failed work items');
-    const sectionEnd = src.indexOf('// 6b.');
+    const sectionEnd = src.indexOf('// 6b.', sectionStart);
     assert.ok(sectionStart > -1 && sectionEnd > sectionStart, 'Section 6a must exist');
     const section = src.slice(sectionStart, sectionEnd);
     // Must use mutateWorkItems (locked) — not safeJson+safeWrite (unlocked)
@@ -5354,10 +5363,9 @@ async function testBuildWorkItemDispatchVars() {
       'Should format acceptance criteria into markdown');
   });
 
-  await test('buildWorkItemDispatchVars reads notes via getNotes()', () => {
-    // Must use getNotes() instead of inline fs.readFileSync for notes.md
-    assert.ok(src.includes('getNotes()'),
-      'Should use getNotes() from queries.js');
+  await test('buildWorkItemDispatchVars keeps notes_content lightweight', () => {
+    assert.ok(src.includes('See the **Team Notes** section above for the latest shared team context.'),
+      'Should avoid duplicating the full notes.md blob into notes_content');
   });
 
   await test('buildWorkItemDispatchVars handles checkpoint context', () => {
@@ -15380,18 +15388,17 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   // ── TTL-based doc-session eviction (P-e4a6b9d3) ────────────────────────────
-  await test('DOC_SESSION_TTL_MS constant defined as 7 days', () => {
+  await test('DOC_SESSION_TTL_MS constant comes from ENGINE_DEFAULTS', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('DOC_SESSION_TTL_MS'), 'Should define DOC_SESSION_TTL_MS constant');
-    // 7 * 24 * 60 * 60 * 1000 = 604800000
-    assert.ok(src.includes('604800000') || src.includes('7 * 24 * 60 * 60 * 1000'), 'TTL should be 7 days in milliseconds');
+    assert.ok(src.includes('shared.ENGINE_DEFAULTS.docSessionTtlMs'), 'TTL should come from shared ENGINE_DEFAULTS');
   });
 
   await test('resolveSession evicts doc sessions older than TTL', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
     assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
-    assert.ok(resolveFn.includes('lastActiveAt'), 'resolveSession should check lastActiveAt for TTL');
+    assert.ok(resolveFn.includes('_sessionExpired'), 'resolveSession should use shared expiry helper');
     assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
   });
 
@@ -15421,12 +15428,10 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('sessions within TTL window are not evicted by resolveSession', () => {
-    // Verify the TTL check uses > (greater than), not >= (greater or equal), and checks lastActiveAt
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
-    // Must compute elapsed time from lastActiveAt
-    assert.ok(resolveFn.includes('Date.now()') || resolveFn.includes('new Date'), 'Should compute current time for comparison');
-    assert.ok(resolveFn.includes('getTime') || resolveFn.includes('Date.now'), 'Should convert to numeric time for comparison');
+    assert.ok(resolveFn.includes('_sessionExpired'), 'Should delegate TTL calculation to the shared expiry helper');
+    assert.ok(resolveFn.includes('return s;'), 'Should return the active session record when still within TTL');
   });
 
   // ── Skip disk re-read when client content is fresh (P-f7b3c5e1) ────────────
@@ -17744,20 +17749,21 @@ async function testCCMultiTab() {
       'ccSwitchTab should call ccRenderTabBar');
   });
 
-  // ── Session never-expire tests ─────────────────────────────────────────────
+  // ── Session TTL tests ──────────────────────────────────────────────────────
 
-  await test('sessions never expire by time — CC_SESSION_EXPIRY_MS removed', () => {
-    assert.ok(!dashSrc.includes('CC_SESSION_EXPIRY_MS'), 'CC_SESSION_EXPIRY_MS constant should be removed');
-    assert.ok(!dashSrc.includes('2 * 60 * 60 * 1000'), 'Hardcoded 2-hour expiry should be removed');
+  await test('CC sessions use ENGINE_DEFAULTS TTL', () => {
+    assert.ok(dashSrc.includes('CC_SESSION_TTL_MS'), 'CC_SESSION_TTL_MS constant should exist');
+    assert.ok(dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
+      'CC session TTL should come from shared ENGINE_DEFAULTS');
   });
 
-  await test('ccSessionValid does not check age', () => {
+  await test('ccSessionValid checks TTL before resuming', () => {
     // Extract ccSessionValid function body
     const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
     assert.ok(match, 'ccSessionValid should exist');
     const body = match[0];
-    assert.ok(!body.includes('age'), 'ccSessionValid should not reference age');
-    assert.ok(!body.includes('Date.now()'), 'ccSessionValid should not check Date.now()');
+    assert.ok(body.includes('_sessionExpired'), 'ccSessionValid should use shared expiry helper');
+    assert.ok(body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid should apply CC session TTL');
     assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
     assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
   });
@@ -17770,11 +17776,10 @@ async function testCCMultiTab() {
     assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
-  await test('CC session restored on startup without age check', () => {
-    // The startup block should load session without age filtering
+  await test('CC session restored on startup with TTL filtering', () => {
     const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
     assert.ok(startupMatch, 'Should have CC session startup loader');
-    assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
+    assert.ok(startupMatch[0].includes('_sessionExpired'), 'Startup loader should filter expired sessions');
   });
 
   await test('doc sessions restored on startup with TTL filtering', () => {
@@ -17824,6 +17829,12 @@ async function testCCMultiTab() {
   await test('cleanup.js prunes doc-sessions.json with cap', () => {
     assert.ok(cleanupSrc.includes('doc-sessions.json'), 'Should reference doc-sessions.json');
     assert.ok(cleanupSrc.includes('DOC_SESSIONS_CAP'), 'Should define DOC_SESSIONS_CAP');
+  });
+
+  await test('cleanup.js prunes notes/archive with configured cap', () => {
+    assert.ok(cleanupSrc.includes("path.join(MINIONS_DIR, 'notes', 'archive')"), 'Should reference notes/archive');
+    assert.ok(cleanupSrc.includes('ENGINE_DEFAULTS.notesArchiveMaxFiles'), 'Should use configured notes archive cap');
+    assert.ok(cleanupSrc.includes('archived notes'), 'Cleanup summary should include archived notes pruning');
   });
 
   await test('cleanup.js caps cooldowns.json entries', () => {
@@ -22137,8 +22148,8 @@ async function testLoopToWatchInterception() {
     assert.ok(handleCC, 'handleCommandCenter must exist');
     const fnText = handleCC[0];
     assert.ok(fnText.includes('_detectLoopInvocation'), 'non-streaming path must call _detectLoopInvocation');
-    assert.ok(fnText.includes('_extractToolUsesFromRaw(result.raw)'),
-      'non-streaming path must pass tool-use metadata into the loop fallback');
+    assert.ok(fnText.includes('Array.isArray(result.toolUses) ? result.toolUses : _extractToolUsesFromRaw(result.raw)'),
+      'non-streaming path must prefer structured tool-use metadata and only fall back to raw parsing');
     // Ensure it's called after parseCCActions
     const parseIdx = fnText.indexOf('parseCCActions');
     const detectIdx = fnText.indexOf('_detectLoopInvocation');
@@ -22159,6 +22170,19 @@ async function testLoopToWatchInterception() {
     const detectIdx = fnText.indexOf('_detectLoopInvocation');
     assert.ok(parseIdx > -1 && detectIdx > parseIdx,
       '_detectLoopInvocation must be called after parseCCActions in streaming path');
+  });
+
+  await test('prompt builders use shared caps for referenced context and meeting transcripts', () => {
+    const playbookSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const meetingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'meeting.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(playbookSrc.includes('ENGINE_DEFAULTS.maxReferencedPlanBytes'), 'Playbook context should cap referenced plans');
+    assert.ok(playbookSrc.includes('ENGINE_DEFAULTS.maxResolvedTaskContextBytes'), 'Playbook context should cap total resolved context');
+    assert.ok(playbookSrc.includes('ENGINE_DEFAULTS.maxNotesPromptBytes'), 'Playbook renderer should cap Team Notes by shared budget');
+    assert.ok(engineSrc.includes('See the **Team Notes** section above for the latest shared team context.'), 'Dispatch vars should avoid duplicating notes.md');
+    assert.ok(meetingSrc.includes('ENGINE_DEFAULTS.maxMeetingPromptBytes'), 'Meeting prompts should cap findings/debate context');
+    assert.ok(pipelineSrc.includes('ENGINE_DEFAULTS.maxPipelineMeetingContextBytes'), 'Pipeline prompts should cap aggregated meeting context');
   });
 
   await test('CC system prompt warns against /loop for monitoring', () => {

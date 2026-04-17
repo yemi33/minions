@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { safeWrite, safeUnlink, uid, ts, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked } = shared;
+const { safeWrite, safeUnlink, uid, ts, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked, appendTextTail, ENGINE_DEFAULTS } = shared;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
@@ -127,6 +127,93 @@ function _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTur
   return { proc, cleanupFiles };
 }
 
+function _createStreamAccumulator({
+  maxRawBytes,
+  maxStderrBytes,
+  maxLineBufferBytes,
+  maxTextLength = 0,
+  onChunk = null,
+  onToolUse = null,
+}) {
+  let stdout = '';
+  let stderr = '';
+  let lineBuf = '';
+  let text = '';
+  let usage = null;
+  let sessionId = null;
+  let lastTextSent = '';
+  const toolUses = [];
+
+  function captureResult(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    if (obj.session_id) sessionId = obj.session_id;
+    if (obj.type === 'result') {
+      if (typeof obj.result === 'string') {
+        text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
+      }
+      if (obj.total_cost_usd || obj.usage) {
+        usage = {
+          costUsd: obj.total_cost_usd || 0,
+          inputTokens: obj.usage?.input_tokens || 0,
+          outputTokens: obj.usage?.output_tokens || 0,
+          cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
+          cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
+          durationMs: obj.duration_ms || 0,
+          numTurns: obj.num_turns || 0,
+        };
+      }
+    }
+    if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+      for (const block of obj.message.content) {
+        if (block?.type === 'text' && block.text) {
+          text = maxTextLength ? block.text.slice(0, maxTextLength) : block.text;
+          if (onChunk && block.text !== lastTextSent) {
+            lastTextSent = block.text;
+            onChunk(block.text);
+          }
+        } else if (block?.type === 'tool_use' && block.name) {
+          const toolUse = { name: block.name, input: block.input || {} };
+          toolUses.push(toolUse);
+          if (onToolUse) onToolUse(toolUse.name, toolUse.input);
+        }
+      }
+    }
+  }
+
+  function ingestStdout(chunk) {
+    const str = chunk == null ? '' : chunk.toString();
+    stdout = appendTextTail(stdout, str, maxRawBytes, '...(truncated stdout)\n');
+    lineBuf = appendTextTail(lineBuf, str, maxLineBufferBytes, '');
+    const lines = lineBuf.split('\n');
+    lineBuf = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('{')) continue;
+      try { captureResult(JSON.parse(trimmed)); } catch { /* incomplete JSON or non-JSON line */ }
+    }
+  }
+
+  function ingestStderr(chunk) {
+    stderr = appendTextTail(stderr, chunk == null ? '' : chunk.toString(), maxStderrBytes, '...(truncated stderr)\n');
+  }
+
+  function finalize() {
+    const trimmed = lineBuf.trim();
+    if (trimmed.startsWith('{')) {
+      try { captureResult(JSON.parse(trimmed)); } catch { /* incomplete trailing JSON */ }
+    }
+    if (!text || !usage || !sessionId) {
+      const parsedTail = parseStreamJsonOutput(stdout, maxTextLength ? { maxTextLength } : {});
+      if (!text && parsedTail.text) text = parsedTail.text;
+      if (!usage && parsedTail.usage) usage = parsedTail.usage;
+      if (!sessionId && parsedTail.sessionId) sessionId = parsedTail.sessionId;
+    }
+    return { text, usage, sessionId, raw: stdout, stderr, toolUses };
+  }
+
+  return { ingestStdout, ingestStderr, finalize };
+}
+
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
 function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null, direct = false } = {}) {
@@ -134,29 +221,32 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
   const promise = new Promise((resolve) => {
     const _startMs = Date.now();
     const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId });
+    const acc = _createStreamAccumulator({
+      maxRawBytes: ENGINE_DEFAULTS.maxLlmRawBytes,
+      maxStderrBytes: ENGINE_DEFAULTS.maxLlmStderrBytes,
+      maxLineBufferBytes: ENGINE_DEFAULTS.maxLlmLineBufferBytes,
+    });
 
     _abort = () => { shared.killImmediate(proc); };
 
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', d => { stdout += d.toString(); });
-    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.stdout.on('data', d => { acc.ingestStdout(d); });
+    proc.stderr.on('data', d => { acc.ingestStderr(d); });
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
-      const parsed = parseStreamJsonOutput(stdout);
+      const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
-      resolve({ text: parsed.text || '', usage, sessionId: parsed.sessionId || null, code, stderr, raw: stdout });
+      resolve({ text: parsed.text || '', usage, sessionId: parsed.sessionId || null, code, stderr: parsed.stderr, raw: parsed.raw, toolUses: parsed.toolUses });
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
-      resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
+      resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '', toolUses: [] });
     });
   });
   promise.abort = () => { if (_abort) _abort(); };
@@ -190,56 +280,34 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
   const promise = new Promise((resolve) => {
     const _startMs = Date.now();
     const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId });
+    const acc = _createStreamAccumulator({
+      maxRawBytes: ENGINE_DEFAULTS.maxLlmRawBytes,
+      maxStderrBytes: ENGINE_DEFAULTS.maxLlmStderrBytes,
+      maxLineBufferBytes: ENGINE_DEFAULTS.maxLlmLineBufferBytes,
+      onChunk,
+      onToolUse,
+    });
 
     _abort = () => { shared.killImmediate(proc); };
 
-    let stdout = '';
-    let stderr = '';
-    let lineBuf = '';
-
-    let lastTextSent = '';
-    proc.stdout.on('data', d => {
-      const chunk = d.toString();
-      stdout += chunk;
-      lineBuf += chunk;
-      // Parse complete lines for streaming text
-      const lines = lineBuf.split('\n');
-      lineBuf = lines.pop(); // keep incomplete line in buffer
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('{')) continue;
-        try {
-          const obj = JSON.parse(trimmed);
-          if (obj.type === 'assistant' && obj.message?.content) {
-            for (const block of obj.message.content) {
-              if (block.type === 'text' && block.text && block.text !== lastTextSent) {
-                lastTextSent = block.text;
-                onChunk(block.text);
-              } else if (block.type === 'tool_use' && block.name && onToolUse) {
-                onToolUse(block.name, block.input);
-              }
-            }
-          }
-        } catch { /* incomplete JSON or non-JSON line */ }
-      }
-    });
-    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.stdout.on('data', d => { acc.ingestStdout(d); });
+    proc.stderr.on('data', d => { acc.ingestStderr(d); });
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
-      const parsed = parseStreamJsonOutput(stdout);
+      const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
-      resolve({ text: parsed.text || '', usage, sessionId: parsed.sessionId || null, code, stderr, raw: stdout });
+      resolve({ text: parsed.text || '', usage, sessionId: parsed.sessionId || null, code, stderr: parsed.stderr, raw: parsed.raw, toolUses: parsed.toolUses });
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
-      resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
+      resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '', toolUses: [] });
     });
   });
   promise.abort = () => { if (_abort) _abort(); };
@@ -252,4 +320,3 @@ module.exports = {
   trackEngineUsage,
   isResumeSessionStillValid,
 };
-
