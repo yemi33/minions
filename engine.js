@@ -916,6 +916,23 @@ async function spawnAgent(dispatchItem, config) {
     throw spawnErr;
   }
 
+  // Seed realActivityMap and stamp PID immediately — BEFORE any handlers or timers (#W-mo25loq8kjer).
+  // Why NOW, not later in the function:
+  //  1. Heartbeat clock anchoring. timeout.js uses realActivityMap as the last-activity timestamp for
+  //     tracked processes; when the map has no entry, it falls back to item.started_at (dispatch time,
+  //     which is 20-60s before actual spawn for write tasks doing worktree setup). Read-only tasks
+  //     that produce no stdout for minutes (explore, security audit, large scans) were hitting
+  //     heartbeatTimeout prematurely — clock had already been running since dispatch.
+  //  2. Error-handler race. The `proc.on('error', ...)` handler below calls realActivityMap.delete(id)
+  //     on synchronous spawn failures. Seeding before registering handlers ensures delete sees a value
+  //     to clear rather than leaving an absent-then-absent no-op that downstream code must guard.
+  //  3. Orphan diagnostics. The PID line gives timeout.js a deterministic way to tell "spawn died
+  //     before first write" (stub-only log) from "process started and is hung" (stub + pid line).
+  realActivityMap.set(id, Date.now());
+  try {
+    fs.appendFileSync(liveOutputPath, `[${new Date().toISOString()}] pid: ${proc.pid ?? 'unknown'}\n`);
+  } catch { /* log stamp is best-effort — don't block spawn on fs failure */ }
+
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
@@ -1292,9 +1309,11 @@ async function spawnAgent(dispatchItem, config) {
     }
   }, 3000);
 
-  // Track process — even if PID isn't available yet (async on Windows)
+  // Track process — even if PID isn't available yet (async on Windows).
+  // realActivityMap was already seeded immediately after runFile() returned (#W-mo25loq8kjer);
+  // don't re-seed here — the stdout/stderr handlers above can already have updated it with
+  // a fresher timestamp, and overwriting would clobber the real "last activity" signal.
   activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
-  realActivityMap.set(id, Date.now()); // Initialize real activity at spawn time
 
   updateAgentStatus(id, AGENT_STATUS.RUNNING, `Process spawned for ${agentId}`);
 

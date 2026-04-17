@@ -18408,6 +18408,58 @@ async function testIssue716HeartbeatFeedbackLoop() {
         'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
     }
   });
+
+  // 9. #W-mo25loq8kjer — realActivityMap seeded BEFORE stdout/stderr handlers, immediately after runFile() returns.
+  // Premise: for read-only tasks (explore, security audit) the agent may be silent for minutes.
+  // If realActivityMap has no entry, timeout.js falls back to item.started_at (dispatch time)
+  // which eats part of the heartbeatTimeout window on worktree setup / branch fetch.
+  await test('engine.js seeds realActivityMap immediately after runFile() returns, before stdout handler (#W-mo25loq8kjer)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Locate the spawn try/catch block — runFile invocation is unique to spawnAgent
+    const runFileIdx = src.indexOf('proc = runFile(process.execPath, spawnArgs');
+    assert.ok(runFileIdx > 0, 'spawnAgent should call runFile on process.execPath');
+    const stdoutHandlerIdx = src.indexOf('proc.stdout.on', runFileIdx);
+    assert.ok(stdoutHandlerIdx > runFileIdx, 'stdout handler should be registered after runFile');
+    // Window between runFile and the stdout handler — seeding must happen in this window.
+    const postSpawnWindow = src.slice(runFileIdx, stdoutHandlerIdx);
+    assert.ok(postSpawnWindow.includes('realActivityMap.set(id, Date.now())'),
+      'realActivityMap should be seeded after runFile() returns, before stdout handler is registered');
+  });
+
+  await test('engine.js appends pid line to live-output.log right after spawn (#W-mo25loq8kjer)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const runFileIdx = src.indexOf('proc = runFile(process.execPath, spawnArgs');
+    assert.ok(runFileIdx > 0, 'spawnAgent should call runFile on process.execPath');
+    const stdoutHandlerIdx = src.indexOf('proc.stdout.on', runFileIdx);
+    const postSpawnWindow = src.slice(runFileIdx, stdoutHandlerIdx);
+    // Must log the pid to live-output.log in a format the orphan detector can grep:
+    // `[<iso>] pid: <N>\n` — disambiguates stub-only (spawn died) from pid-present (process started).
+    assert.ok(/fs\.appendFileSync\([^)]*liveOutputPath[^)]*pid:/s.test(postSpawnWindow)
+      || /appendFileSync[\s\S]{0,120}pid:\s*\$\{/.test(postSpawnWindow),
+      'live-output.log should receive a "pid: <N>" line right after runFile() returns');
+  });
+
+  await test('engine.js has exactly one spawn-time realActivityMap seed (no duplicate late init) (#W-mo25loq8kjer)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Count `realActivityMap.set(id, Date.now())` occurrences — should be:
+    //   1. post-spawn seed (new location)
+    //   2. stdout handler
+    //   3. stderr handler
+    //   4. resume stdout handler (steering)
+    //   5. resume stderr handler (steering)
+    // 5 total. The old late-init seed at "Initialize real activity at spawn time" must be gone.
+    assert.ok(!src.includes('// Initialize real activity at spawn time'),
+      'Old late-init realActivityMap seed comment should be removed (moved to post-spawn)');
+  });
+
+  await test('timeout.js orphan diagnostic distinguishes stub-only from pid-present log content (#W-mo25loq8kjer)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The orphan log annotation should expose whether the log contains a pid line —
+    // this is the signal that differentiates "spawn died before first write" (stub only)
+    // from "process started and is genuinely hung" (pid present, no later output).
+    assert.ok(src.includes('pidPresent') || src.includes('pid='),
+      'timeout.js _logState should surface whether a pid line is present in the live-output log');
+  });
 }
 
 // ─── PR Review→Fix, Poll→Fix, Merge Conflict, Auto-Complete Flows ──────────
