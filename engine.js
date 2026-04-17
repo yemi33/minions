@@ -3483,6 +3483,35 @@ async function tickInner() {
       log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
       continue;
     }
+    // #1206: Guard against undefined/non-string item.agent. A corrupted dispatch
+    // entry (manual edit, serialization round-trip, cleared field) would otherwise
+    // be handed to spawnAgent, which crashes with `TypeError: "path" argument must
+    // be of type string. Received undefined` and re-queues — every tick. Try to
+    // resolve a fallback via routing; if none is available, skip this tick.
+    if (!item.agent || typeof item.agent !== 'string') {
+      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config);
+      if (!fallback) {
+        log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
+        continue;
+      }
+      log('info', `Pending dispatch ${item.id} missing agent; routed → ${fallback} (#1206 guard)`);
+      item.agent = fallback;
+      item.agentName = config.agents[fallback]?.name || tempAgents.get(fallback)?.name || fallback;
+      item.agentRole = config.agents[fallback]?.role || tempAgents.get(fallback)?.role || 'Agent';
+      // Persist so the fix survives across ticks even if this dispatch is skipped
+      // later in the loop (branch lock, concurrency cap, agent busy, etc.).
+      try {
+        mutateDispatch((dp) => {
+          const p = (dp.pending || []).find(d => d.id === item.id);
+          if (p) {
+            p.agent = item.agent;
+            p.agentName = item.agentName;
+            p.agentRole = item.agentRole;
+          }
+          return dp;
+        });
+      } catch (e) { log('warn', `Persist agent resolution for ${item.id} failed: ${e.message}`); }
+    }
     if (busyAgents.has(item.agent)) {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
