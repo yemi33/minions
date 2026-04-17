@@ -1321,6 +1321,86 @@ async function testQueriesPrd() {
       }
     }
   });
+
+  await test('_getPrdInputHash tracks engine/pr-links.json mtime (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function _getPrdInputHash');
+    assert.ok(fnStart > -1, 'Should have _getPrdInputHash function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart));
+    assert.ok(fnBody.includes("'pr-links.json'"),
+      '_getPrdInputHash must stat engine/pr-links.json — PR linkage changes via that static override must invalidate the cache');
+  });
+
+  await test('getPrdInfo skips aggregate/E2E PRs from per-item prdToPr (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function getPrdInfo');
+    assert.ok(fnStart > -1);
+    const fnBody = src.slice(fnStart, src.indexOf('function resetPrdInfoCache', fnStart));
+    // Must guard against aggregate (itemIds.length > 1), verify type, and [E2E] titles
+    assert.ok(/itemIds \|\| \[\]\)\.length > 1/.test(fnBody),
+      'prLinks loop must skip PRs linked to more than one item (aggregate)');
+    assert.ok(fnBody.includes("pr?.itemType === 'verify'"),
+      'prLinks loop must skip verify-typed PRs from per-item mapping');
+    assert.ok(fnBody.includes("pr?.title?.startsWith('[E2E]')"),
+      'prLinks loop must skip [E2E] titled PRs from per-item mapping');
+  });
+
+  await test('getPrdInfo: aggregate PR does not bleed into per-item prs array (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with a single project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'TestProj', localPath: testDir, mainBranch: 'main' }],
+        agents: {}, engine: {},
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'test-plan.json'), JSON.stringify({
+        plan_summary: 'Aggregate bleed test',
+        project: 'TestProj',
+        missing_features: [
+          { id: 'AGG-001', title: 'Feature A', status: 'done' },
+          { id: 'AGG-002', title: 'Feature B', status: 'done' },
+        ],
+      }));
+
+      // Project state dir + pull-requests.json with one aggregate PR
+      // linking BOTH items (itemIds.length > 1) — PR IDs get lowercased by
+      // normalizePrRecord (canonical scope form is lowercase).
+      const projStateDir = path.join(testDir, 'projects', 'TestProj');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      fs.writeFileSync(path.join(projStateDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:testproj#999', prNumber: 999, title: '[E2E] aggregate', status: 'active',
+          prdItems: ['AGG-001', 'AGG-002'] },
+        { id: 'github:testproj#998', prNumber: 998, title: 'feat: just A', status: 'active',
+          prdItems: ['AGG-001'] },
+      ]));
+      fs.writeFileSync(path.join(projStateDir, 'work-items.json'), JSON.stringify([
+        { id: 'AGG-001', status: 'done', sourcePlan: 'test-plan.json' },
+        { id: 'AGG-002', status: 'done', sourcePlan: 'test-plan.json' },
+      ]));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      freshQueries.resetPrdInfoCache();
+      const info = freshQueries.getPrdInfo();
+      assert.ok(info.progress, 'Should return progress');
+      const byId = Object.fromEntries(info.progress.items.map(i => [i.id, i]));
+
+      // Aggregate PR #999 must NOT appear in prs[] for either constituent item
+      for (const id of ['AGG-001', 'AGG-002']) {
+        const prs = byId[id]?.prs || [];
+        assert.ok(!prs.some(p => String(p.id).endsWith('#999')),
+          `Item ${id} must not have aggregate PR #999 in its prs[] — it links to multiple items`);
+      }
+      // Single-item PR #998 must still appear for AGG-001
+      assert.ok((byId['AGG-001']?.prs || []).some(p => String(p.id).endsWith('#998')),
+        'Single-item PR #998 must still appear in AGG-001.prs[]');
+    } finally {
+      restore();
+    }
+  });
 }
 
 async function testQueriesHelpers() {
@@ -7104,6 +7184,15 @@ async function testVerifyWorkflow() {
     assert.ok(src.includes('guideByPlan[planFile]'), 'Should look up guide by planFile key');
     assert.ok(src.includes('E2E Aggregate PRs'), 'Should show E2E Aggregate PRs header');
     assert.ok(src.includes('Manual Testing Guide'), 'Should show Manual Testing Guide link');
+  });
+
+  await test('PRD view renderE2eSection filters abandoned PRs (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fnStart = src.indexOf('function renderE2eSection');
+    assert.ok(fnStart > -1, 'Should have renderE2eSection function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n  }', fnStart));
+    assert.ok(fnBody.includes("pr.status !== 'abandoned'"),
+      'renderE2eSection must filter PRs with status abandoned — superseded aggregate branches should not linger');
   });
 
   await test('PRD view calls renderE2eSection for both active and archived groups', () => {
