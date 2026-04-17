@@ -134,14 +134,20 @@ jobs:
                 -f name="$name" -f head_sha="$SHA" -f status=completed -f conclusion=success
             done
 
+            if [ -z "$GH_ADMIN_TOKEN" ]; then
+              echo "PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations."
+              exit 1
+            fi
+
             # Close any stale publish PRs left over from previous runs
-            gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
-              gh pr close "$pr" --delete-branch 2>/dev/null || true
+            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(GH_TOKEN="$GH_ADMIN_TOKEN" gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
+              GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch 2>/dev/null || true
             done
 
             # Merge immediately with admin bypass after tests and required checks succeed
-            gh pr merge "$BRANCH" --squash --delete-branch --admin
+            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --delete-branch --admin
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GH_TOKEN: ${{ github.token }}
+          GH_ADMIN_TOKEN: ${{ secrets.PUBLISH_ADMIN_TOKEN }}

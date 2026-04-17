@@ -3190,8 +3190,14 @@ async function testConfigAndPlaybooks() {
 
   await test('publish workflow uses admin bypass for chore publish PR auto-merge', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
-    assert.ok(src.includes('gh pr merge "$BRANCH" --squash --delete-branch --admin'),
-      'publish workflow should use direct admin merge after posting required checks');
+    assert.ok(src.includes('GH_ADMIN_TOKEN: ${{ secrets.PUBLISH_ADMIN_TOKEN }}'),
+      'publish workflow should read the publish admin PAT from repo secrets');
+    assert.ok(src.includes('PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations.'),
+      'publish workflow should fail clearly when the publish admin PAT is missing');
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --delete-branch --admin'),
+      'publish workflow should use the admin PAT for direct admin merge after posting required checks');
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch'),
+      'publish workflow should use the admin PAT when closing stale publish PRs');
     assert.ok(!src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
       'publish workflow should not use invalid --auto + --admin combination');
   });
