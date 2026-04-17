@@ -10232,19 +10232,36 @@ async function testMeetingsExtendedBehavioral() {
     const testId = 'TEST-EXT-tout-con-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
-      participants: ['alice'],
-      findings: { alice: { content: 'Found bugs in module X' } },
-      debate: { alice: { content: 'Should fix ASAP' } },
+      participants: ['alice', 'bob'],
+      findings: {
+        alice: { content: 'Module X has an auth bug that breaks the save path.' },
+        bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
+      },
+      debate: {
+        alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
+        bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
+      },
       humanNotes: [], conclusion: null, transcript: [],
       roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
     });
     try {
-      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      meetingMod.checkMeetingTimeouts({
+        engine: {},
+        agents: {
+          alice: { name: 'Alice' },
+          bob: { name: 'Bob' },
+        },
+      });
       const m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Should auto-complete on conclude timeout');
       assert.ok(m.conclusion, 'Should have auto-generated conclusion');
       assert.strictEqual(m.conclusion.agent, 'system', 'Conclusion agent should be system');
       assert.ok(m.conclusion.content.includes('Auto-generated'), 'Should note auto-generation');
+      assert.ok(m.conclusion.content.includes('## Debate Takeaways'), 'Should summarize the debate in a dedicated section');
+      assert.ok(m.conclusion.content.includes('## Recommended Next Steps'), 'Should include concrete next steps');
+      assert.ok(m.conclusion.content.includes('We should fix module X before release and add regression coverage'), 'Should surface the strongest debate recommendation');
+      assert.ok(m.conclusion.content.includes('2 findings and 2 debate responses'), 'Should explain what evidence the fallback summary used');
+      assert.ok(!m.conclusion.content.includes('## Debate Summary'), 'Should not fall back to the old raw debate dump section');
       assert.ok(m.completedAt, 'Should set completedAt');
     } finally {
       cleanupMeeting(testId);

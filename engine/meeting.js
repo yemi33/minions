@@ -32,6 +32,100 @@ function formatMeetingContributions(entries, agents, emptyText, label, maxBytes)
   return truncateMeetingContext(combined, maxBytes, label);
 }
 
+function cleanMeetingSummaryText(text) {
+  return String(text || '')
+    .replace(/\r/g, '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[#>*-]+\s*/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitMeetingSummaryFragments(text) {
+  return cleanMeetingSummaryText(text)
+    .split(/\n+|(?:[.!?])\s+|;\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function truncateMeetingSummary(text, maxLen) {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, Math.max(0, maxLen - 1)).trimEnd() + '…';
+}
+
+function formatMeetingSummaryBullets(entries, agents, emptyText, maxLen) {
+  const pairs = Object.entries(typeof entries === 'object' && entries ? entries : {});
+  if (pairs.length === 0) return [`- ${emptyText}`];
+  return pairs.map(([agent, value]) => {
+    const fragments = splitMeetingSummaryFragments(value?.content || '');
+    const summary = truncateMeetingSummary(fragments[0] || cleanMeetingSummaryText(value?.content || '') || emptyText, maxLen);
+    return `- **${agents[agent]?.name || agent}**: ${summary}`;
+  });
+}
+
+function scoreMeetingTakeaway(fragment) {
+  const lower = fragment.toLowerCase();
+  let score = 0;
+  if (/(should|must|need to|needs to|recommend|recommended|action|next step|follow up|fix|mitigat|investigat|verify|test|block)/.test(lower)) score += 4;
+  if (/(agree|aligned|consensus|support|prefer)/.test(lower)) score += 3;
+  if (/(disagree|however|but|risk|risky|concern|trade-off|question|uncertain|worry)/.test(lower)) score += 3;
+  if (fragment.length >= 40 && fragment.length <= 180) score += 2;
+  if (fragment.length > 220) score -= 1;
+  return score;
+}
+
+function collectMeetingTakeaways(entries, agents, maxItems) {
+  const seen = new Set();
+  const candidates = [];
+  for (const [agent, value] of Object.entries(typeof entries === 'object' && entries ? entries : {})) {
+    for (const fragment of splitMeetingSummaryFragments(value?.content || '')) {
+      if (fragment.length < 20) continue;
+      const normalized = fragment.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      candidates.push({
+        text: `- **${agents[agent]?.name || agent}**: ${truncateMeetingSummary(fragment, 180)}`,
+        score: scoreMeetingTakeaway(fragment),
+      });
+    }
+  }
+  return candidates
+    .sort((a, b) => b.score - a.score || a.text.length - b.text.length)
+    .slice(0, maxItems)
+    .map(item => item.text);
+}
+
+function collectMeetingNextSteps(meeting) {
+  const actionPattern = /\b(should|must|need to|needs to|recommend|recommended|follow up|fix|mitigate|investigate|verify|test|document|ship|patch|review)\b/i;
+  const seen = new Set();
+  const steps = [];
+  for (const entries of [meeting.debate, meeting.findings]) {
+    for (const value of Object.values(typeof entries === 'object' && entries ? entries : {})) {
+      for (const fragment of splitMeetingSummaryFragments(value?.content || '')) {
+        if (!actionPattern.test(fragment)) continue;
+        const normalized = fragment.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        steps.push(`- ${truncateMeetingSummary(fragment, 180)}`);
+        if (steps.length >= 3) return steps;
+      }
+    }
+  }
+  return ['- Review the findings and debate, then add a human-written conclusion if more nuance is needed.'];
+}
+
+function buildTimedOutMeetingConclusion(meeting, agents) {
+  const findingsCount = Object.keys(meeting.findings || {}).length;
+  const debateCount = Object.keys(meeting.debate || {}).length;
+  const findingsHighlights = formatMeetingSummaryBullets(meeting.findings, agents, '(none)', 180);
+  const debateTakeaways = collectMeetingTakeaways(meeting.debate, agents, 4);
+  const fallbackDebate = formatMeetingSummaryBullets(meeting.debate, agents, '(none)', 180);
+  const nextSteps = collectMeetingNextSteps(meeting);
+  return `*Auto-generated — conclusion round timed out.*\n\nThis summary is based on ${findingsCount} finding${findingsCount === 1 ? '' : 's'} and ${debateCount} debate response${debateCount === 1 ? '' : 's'}.\n\n## Findings Highlights\n${findingsHighlights.join('\n')}\n\n## Debate Takeaways\n${(debateTakeaways.length ? debateTakeaways : fallbackDebate).join('\n')}\n\n## Recommended Next Steps\n${nextSteps.join('\n')}`;
+}
+
 function getMeetings() {
   if (!fs.existsSync(MEETINGS_DIR)) return [];
   return fs.readdirSync(MEETINGS_DIR)
@@ -417,14 +511,7 @@ function checkMeetingTimeouts(config) {
       saveMeeting(meeting);
     } else if (meeting.status === 'concluding') {
       log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — auto-summarizing`);
-      // Synthesize a conclusion from available findings and debate rather than leaving it empty
-      const findingsSummary = Object.entries(meeting.findings || {}).map(([agent, f]) =>
-        `**${(config.agents || {})[agent]?.name || agent}**: ${(f.content || '').slice(0, 200)}`
-      ).join('\n');
-      const debateSummary = Object.entries(meeting.debate || {}).map(([agent, d]) =>
-        `**${(config.agents || {})[agent]?.name || agent}**: ${(d.content || '').slice(0, 200)}`
-      ).join('\n');
-      const autoConclusion = `*Auto-generated — conclusion round timed out.*\n\n## Key Findings\n${findingsSummary || '(none)'}\n\n## Debate Summary\n${debateSummary || '(none)'}`;
+      const autoConclusion = buildTimedOutMeetingConclusion(meeting, config.agents || {});
       meeting.conclusion = { content: autoConclusion, agent: 'system', submittedAt: ts() };
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'conclusion', content: autoConclusion, at: ts() });
       meeting.status = 'completed';
