@@ -4716,6 +4716,188 @@ async function testResolveAgent() {
   });
 }
 
+// ─── W-mo369rxu6ayf / #1209: Temp-agent concurrency budget ─────────────────
+
+async function testTempAgentBudget() {
+  console.log('\n── engine/routing.js — Temp-agent budget (#1209) ──');
+
+  const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Source-level guards ──
+
+  await test('routing.js exports setTempBudget / getTempBudget', () => {
+    assert.ok(routingSrc.includes('setTempBudget'),
+      'routing.js must export setTempBudget so the engine can cap per-tick temp creation');
+    assert.ok(routingSrc.includes('getTempBudget'),
+      'routing.js must export getTempBudget for tests and observability');
+  });
+
+  await test('resolveAgent guards temp creation on _tempBudget', () => {
+    assert.ok(routingSrc.includes('_tempBudget <= 0'),
+      'resolveAgent must short-circuit temp creation when _tempBudget <= 0');
+    assert.ok(routingSrc.includes('_tempBudget--'),
+      'resolveAgent must decrement _tempBudget when it creates a temp agent');
+  });
+
+  await test('engine.js calls setTempBudget(maxConcurrent - activeCount) before discoverWork', () => {
+    assert.ok(engineSrc.includes('setTempBudget('),
+      'engine.js must call setTempBudget() each tick so temps count against maxConcurrent');
+    // Verify the budget is computed from activeCount and maxConcurrent (not a literal)
+    assert.ok(engineSrc.match(/setTempBudget\(Math\.max\(0,\s*maxC\s*-\s*activeCountPre\)/)
+      || engineSrc.match(/setTempBudget\(Math\.max\(0,\s*maxConcurrent\s*-\s*activeCount/),
+      'setTempBudget argument must derive from maxConcurrent - activeCount');
+  });
+
+  // ── Behavioral guards (actually exercise routing.resolveAgent) ──
+
+  // Isolate routing module state per test — tests run serially, but fresh
+  // require + resetClaimedAgents() still protects against stale _claimedAgents
+  // or _tempBudget leaking from an earlier test.
+  function loadFreshRouting() {
+    const restore = createTestMinionsDir();
+    for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+      try { delete require.cache[require.resolve(m)]; } catch {}
+    }
+    const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+    routing.resetClaimedAgents();
+    return { routing, restore };
+  }
+
+  await test('resolveAgent caps temp creation at tempBudget (maxConcurrent=2, 5 pending) — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: true, maxConcurrent: 2 } };
+      // Simulate engine tick: maxConcurrent - activeCount = 2 - 0 = 2
+      routing.setTempBudget(2);
+
+      const results = [];
+      for (let i = 0; i < 5; i++) results.push(routing.resolveAgent('implement', config));
+
+      const tempCount = results.filter(a => a && a.startsWith('temp-')).length;
+      const refusedCount = results.filter(a => a === null).length;
+      assert.strictEqual(tempCount, 2,
+        `With maxConcurrent=2, at most 2 temp agents per tick (got ${tempCount}: ${JSON.stringify(results)})`);
+      assert.strictEqual(refusedCount, 3,
+        `Remaining 3 calls must return null (refused), got ${refusedCount}`);
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent with tempBudget=0 refuses all temp creation — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: true, maxConcurrent: 5 } };
+      // All slots consumed by permanent agents already in dispatch.active:
+      // setTempBudget(maxConcurrent - activeCount) = 0
+      routing.setTempBudget(0);
+
+      for (let i = 0; i < 3; i++) {
+        assert.strictEqual(routing.resolveAgent('implement', config), null,
+          `Call ${i}: must refuse temp creation when budget is 0`);
+      }
+    } finally { restore(); }
+  });
+
+  await test('tempBudget resets between ticks via setTempBudget — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: true, maxConcurrent: 2 } };
+
+      // Tick 1
+      routing.setTempBudget(2);
+      assert.ok(routing.resolveAgent('implement', config)?.startsWith('temp-'));
+      assert.ok(routing.resolveAgent('implement', config)?.startsWith('temp-'));
+      assert.strictEqual(routing.resolveAgent('implement', config), null,
+        'Tick 1: third call refused after budget=2 exhausted');
+
+      // Tick 2: engine resets per-tick state
+      routing.resetClaimedAgents();
+      routing.setTempBudget(1);
+      assert.ok(routing.resolveAgent('implement', config)?.startsWith('temp-'),
+        'Tick 2: fresh budget allows creation');
+      assert.strictEqual(routing.resolveAgent('implement', config), null,
+        'Tick 2: second call refused after budget=1 exhausted');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent prefers idle named agents without consuming temp budget — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      // Override routing.md cache by providing custom agents matching the routing table.
+      // "implement" routes to dallas → ralph per routing.md.
+      const config = {
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ralph: { name: 'Ralph', role: 'Engineer' },
+        },
+        engine: { allowTempAgents: true, maxConcurrent: 5 },
+      };
+      routing.setTempBudget(3);
+
+      // First two calls claim the two idle named agents. Temp budget untouched.
+      const first = routing.resolveAgent('implement', config);
+      const second = routing.resolveAgent('implement', config);
+      assert.ok(!first?.startsWith('temp-'), `First resolution should be named, got ${first}`);
+      assert.ok(!second?.startsWith('temp-'), `Second resolution should be named, got ${second}`);
+      assert.strictEqual(routing.getTempBudget(), 3,
+        'Named-agent claims must NOT decrement temp budget');
+
+      // Third call: all named claimed → falls back to temp, decrements budget.
+      const third = routing.resolveAgent('implement', config);
+      assert.ok(third?.startsWith('temp-'), `Third resolution should be temp, got ${third}`);
+      assert.strictEqual(routing.getTempBudget(), 2,
+        'Temp creation decrements budget by exactly 1');
+    } finally { restore(); }
+  });
+
+  await test('resetClaimedAgents does NOT clobber tempBudget (engine sets it after reset) — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      // Engine contract: setTempBudget is called after resetClaimedAgents in the tick.
+      // Verify reset leaves budget alone so engine.js's explicit setTempBudget() wins.
+      // If reset clobbered budget, the engine's pre-computed value would be lost inside
+      // discoverWork (which calls resetClaimedAgents at its entry), reopening #1209.
+      routing.setTempBudget(4);
+      assert.strictEqual(routing.getTempBudget(), 4);
+      routing.resetClaimedAgents();
+      // After reset, budget persists — engine explicitly re-sets it each tick anyway,
+      // but leaving it alone avoids a subtle tick-ordering bug.
+      assert.strictEqual(routing.getTempBudget(), 4,
+        'resetClaimedAgents must not clobber _tempBudget');
+    } finally { restore(); }
+  });
+
+  await test('setTempBudget with invalid input falls back to Infinity — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      routing.setTempBudget(null);
+      assert.strictEqual(routing.getTempBudget(), Infinity,
+        'null input should reset budget to Infinity (unbounded)');
+      routing.setTempBudget(-1);
+      assert.strictEqual(routing.getTempBudget(), Infinity,
+        'negative input should fall back to Infinity');
+      routing.setTempBudget('nope');
+      assert.strictEqual(routing.getTempBudget(), Infinity,
+        'non-number input should fall back to Infinity');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent with allowTempAgents=false never creates temps regardless of budget — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: false, maxConcurrent: 5 } };
+      routing.setTempBudget(5);
+
+      for (let i = 0; i < 3; i++) {
+        assert.strictEqual(routing.resolveAgent('implement', config), null,
+          `Must return null (no temp) when allowTempAgents=false — call ${i}`);
+      }
+      assert.strictEqual(routing.getTempBudget(), 5,
+        'Budget must not be consumed when allowTempAgents=false (check runs after)');
+    } finally { restore(); }
+  });
+}
+
 // ─── engine.js — renderPlaybook Tests ───────────────────────────────────────
 
 async function testRenderPlaybook() {
@@ -10430,6 +10612,7 @@ async function main() {
     await testCooldownSystem();
     await testDispatchPromptSidecar();
     await testResolveAgent();
+    await testTempAgentBudget();
     await testRenderPlaybook();
     await testValidatePlaybookVars();
     await testResolvePlaybookPath();

@@ -102,6 +102,20 @@ function isAgentIdle(agentId) {
 const _claimedAgents = new Set();
 function resetClaimedAgents() { _claimedAgents.clear(); }
 
+// Per-tick temp-agent creation budget. Defaults to Infinity (unbounded) so
+// routing.js in isolation keeps previous behaviour. The engine calls
+// setTempBudget() once per tick with `maxConcurrent - activeCount` to ensure
+// temp agents count against maxConcurrent exactly like named agents.
+// Without this, a batch discovery (e.g. PR-poll sweep over many failing PRs)
+// would register one temp agent per pending item, overwhelming the OS and
+// causing mass orphans when the dispatch loop spawns them on later ticks.
+// Closes #1209.
+let _tempBudget = Infinity;
+function setTempBudget(n) {
+  _tempBudget = (typeof n === 'number' && n >= 0 && Number.isFinite(n)) ? n : Infinity;
+}
+function getTempBudget() { return _tempBudget; }
+
 function resolveAgent(workType, config, authorAgent = null) {
   const routes = getRoutingTableCached();
   const route = routes[workType] || routes['implement'];
@@ -144,6 +158,16 @@ function resolveAgent(workType, config, authorAgent = null) {
 
   // No idle configured agent — try temp agent if enabled
   if (config.engine?.allowTempAgents) {
+    // Enforce per-tick temp-agent budget so temps count against maxConcurrent.
+    // Without this guard, a mass-discovery pass (e.g. 20 PR build failures) would
+    // register one temp agent per pending item regardless of concurrency cap,
+    // leaking orphan temp IDs into tempAgents/dispatch and, over subsequent ticks,
+    // spawning far more processes than maxConcurrent allows (#1209).
+    if (_tempBudget <= 0) {
+      log('info', `Temp agent refused for ${workType} — per-tick budget exhausted (maxConcurrent reached)`);
+      return null;
+    }
+    _tempBudget--;
     const tempId = `temp-${shared.uid()}`;
     _claimedAgents.add(tempId);
     tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 9)}`, role: 'Temporary Agent', createdAt: ts() });
@@ -166,4 +190,6 @@ module.exports = {
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,
+  setTempBudget,
+  getTempBudget,
 };
