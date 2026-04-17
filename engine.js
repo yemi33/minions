@@ -122,7 +122,7 @@ const { getConfig, getControl, getDispatch, getNotes,
 
 const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
   getAgentErrorRate, isAgentIdle, resolveAgent, resetClaimedAgents,
-  tempAgents } = require('./engine/routing');
+  setTempBudget, tempAgents } = require('./engine/routing');
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
@@ -3434,6 +3434,18 @@ async function tickInner() {
   }
 
   // 3. Discover new work from sources
+  // Cap temp-agent creation at (maxConcurrent - activeCount) for this tick so
+  // temps count against maxConcurrent like named agents. Without this, a mass
+  // discovery pass (e.g. 20 PR build failures) would stamp a fresh temp agent
+  // onto every pending item regardless of concurrency cap, and those temps
+  // would spawn over subsequent ticks — overwhelming the OS and mass-orphaning
+  // the dispatches (#1209).
+  {
+    const dispatchPre = getDispatch();
+    const activeCountPre = (dispatchPre.active || []).length;
+    const maxC = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
+    setTempBudget(Math.max(0, maxC - activeCountPre));
+  }
   let discoveryOk = true;
   try { await discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); discoveryOk = false; }
 
