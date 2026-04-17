@@ -1342,6 +1342,346 @@ async function testQueriesHelpers() {
   });
 }
 
+async function testQueriesAdditionalCoverage() {
+  console.log('\n── queries.js — Additional Coverage (invalidateDispatchCache / getInbox / getAgentCharter / detectInFlightTool) ──');
+
+  // ── invalidateDispatchCache ────────────────────────────────────────────────
+  // getDispatch() caches the parsed dispatch.json for 2s. invalidateDispatchCache
+  // is the only public way to force the next getDispatch() call to re-read disk
+  // when a writer bypassed mutateDispatch (e.g. tests, migrations, manual edits).
+
+  await test('invalidateDispatchCache forces getDispatch to re-read from disk', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      const freshQueries = require('../engine/queries');
+
+      // v1 on disk → populates in-memory cache
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [{ id: 'v1-only' }], active: [], completed: []
+      }));
+      const first = freshQueries.getDispatch();
+      assert.strictEqual(first.pending.length, 1, 'first read picks up v1');
+      assert.strictEqual(first.pending[0].id, 'v1-only');
+
+      // Bypass mutateDispatch and rewrite the file directly
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [{ id: 'v2-a' }, { id: 'v2-b' }], active: [], completed: []
+      }));
+
+      // Within the 2s TTL, the cache still serves v1 — proves the cache exists
+      const cached = freshQueries.getDispatch();
+      assert.strictEqual(cached.pending.length, 1,
+        'cache within TTL should still return v1 (proves getDispatch caches)');
+
+      // Invalidate → next call must re-read the file
+      freshQueries.invalidateDispatchCache();
+      const refreshed = freshQueries.getDispatch();
+      assert.strictEqual(refreshed.pending.length, 2,
+        'after invalidateDispatchCache, getDispatch must re-read v2 from disk');
+      assert.deepStrictEqual(refreshed.pending.map(p => p.id), ['v2-a', 'v2-b']);
+    } finally { restore(); }
+  });
+
+  await test('invalidateDispatchCache is idempotent and safe before any read', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshQueries = require('../engine/queries');
+      // No prior getDispatch call — cache is already null.
+      freshQueries.invalidateDispatchCache();
+      freshQueries.invalidateDispatchCache();
+      const d = freshQueries.getDispatch();
+      assert.ok(Array.isArray(d.pending) && Array.isArray(d.active) && Array.isArray(d.completed),
+        'getDispatch should still return a well-formed dispatch object after repeated invalidation');
+    } finally { restore(); }
+  });
+
+  // ── getInbox ───────────────────────────────────────────────────────────────
+  // NOTE: getInbox() takes no agentName argument — it returns every .md file
+  // in notes/inbox/, sorted by mtime descending. Callers filter by agent on the
+  // name string (e.g. getAgents() does `inboxFiles.filter(f => f.includes(a.id))`).
+
+  await test('getInbox returns [] for an empty inbox directory', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshQueries = require('../engine/queries');
+      const entries = freshQueries.getInbox();
+      assert.ok(Array.isArray(entries), 'getInbox must always return an array');
+      assert.strictEqual(entries.length, 0, 'empty inbox should yield zero entries');
+    } finally { restore(); }
+  });
+
+  await test('getInbox returns [] when the inbox directory does not exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.rmSync(path.join(testDir, 'notes', 'inbox'), { recursive: true, force: true });
+      const freshQueries = require('../engine/queries');
+      assert.deepStrictEqual(freshQueries.getInbox(), [],
+        'missing inbox dir must return [] (safeReadDir swallows ENOENT — must not throw)');
+    } finally { restore(); }
+  });
+
+  await test('getInbox sorts entries by mtime descending (newest first)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const oldFp = path.join(inboxDir, 'agent1-oldest.md');
+      const midFp = path.join(inboxDir, 'agent2-middle.md');
+      const newFp = path.join(inboxDir, 'agent3-newest.md');
+      fs.writeFileSync(oldFp, 'old');
+      fs.writeFileSync(midFp, 'mid');
+      fs.writeFileSync(newFp, 'new');
+      // Set explicit mtimes (seconds since epoch) spaced 3s apart so the OS
+      // filesystem timestamp granularity (1s on Windows FAT/NTFS) isn't a factor.
+      const base = Math.floor(Date.now() / 1000) - 100;
+      fs.utimesSync(oldFp, base, base);
+      fs.utimesSync(midFp, base + 3, base + 3);
+      fs.utimesSync(newFp, base + 6, base + 6);
+
+      const freshQueries = require('../engine/queries');
+      const names = freshQueries.getInbox().map(e => e.name);
+      assert.deepStrictEqual(names,
+        ['agent3-newest.md', 'agent2-middle.md', 'agent1-oldest.md'],
+        'entries must be sorted by mtime DESC (most recent first)');
+    } finally { restore(); }
+  });
+
+  await test('getInbox populates name, content, age, and mtime for each entry', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'ralph-findings.md'), '# Ralph findings body');
+
+      const freshQueries = require('../engine/queries');
+      const entries = freshQueries.getInbox();
+      assert.strictEqual(entries.length, 1);
+      const e = entries[0];
+      assert.strictEqual(e.name, 'ralph-findings.md');
+      assert.strictEqual(e.content, '# Ralph findings body');
+      assert.ok(typeof e.age === 'string' && /ago$/.test(e.age),
+        'age should be a "Ns/Nm/Nh ago" string from timeSince');
+      assert.ok(typeof e.mtime === 'number' && e.mtime > 0,
+        'mtime must be a positive number (ms since epoch)');
+    } finally { restore(); }
+  });
+
+  await test('getInbox filters out non-.md files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'note.md'), 'keep');
+      fs.writeFileSync(path.join(inboxDir, 'note.txt'), 'skip');
+      fs.writeFileSync(path.join(inboxDir, 'note.json'), '{}');
+      fs.writeFileSync(path.join(inboxDir, 'README'), 'skip');
+
+      const freshQueries = require('../engine/queries');
+      const entries = freshQueries.getInbox();
+      assert.strictEqual(entries.length, 1, 'only .md files should be returned');
+      assert.strictEqual(entries[0].name, 'note.md');
+    } finally { restore(); }
+  });
+
+  await test('getInbox tolerates empty and binary-ish content without throwing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'empty.md'), '');
+      fs.writeFileSync(path.join(inboxDir, 'weird.md'),
+        '\u0000\uFFFD\n---\nyaml: true\n---\nbody');
+
+      const freshQueries = require('../engine/queries');
+      const entries = freshQueries.getInbox();
+      assert.strictEqual(entries.length, 2);
+      const empty = entries.find(e => e.name === 'empty.md');
+      assert.ok(empty, 'empty.md must be listed');
+      assert.strictEqual(empty.content, '', 'empty file content must be the empty string');
+      const weird = entries.find(e => e.name === 'weird.md');
+      assert.ok(weird && weird.content.length > 0,
+        'weird-content file must load (safeRead returns utf8 contents; no throw)');
+    } finally { restore(); }
+  });
+
+  await test('getInbox drops entries whose statSync fails between readdir and stat', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'good.md'), 'good');
+
+      // Simulate a race: safeReadDir returns a name that disappears before stat.
+      // We patch fs.readdirSync in-process to inject a phantom entry.
+      const realReaddirSync = fs.readdirSync;
+      fs.readdirSync = function (p, ...rest) {
+        const list = realReaddirSync.call(fs, p, ...rest);
+        if (String(p).replace(/\\/g, '/').endsWith('notes/inbox') && Array.isArray(list)) {
+          return list.concat('ghost.md');
+        }
+        return list;
+      };
+      try {
+        const freshQueries = require('../engine/queries');
+        const entries = freshQueries.getInbox();
+        assert.strictEqual(entries.length, 1, 'phantom entry must be filtered out');
+        assert.strictEqual(entries[0].name, 'good.md');
+      } finally {
+        fs.readdirSync = realReaddirSync;
+      }
+    } finally { restore(); }
+  });
+
+  // ── getAgentCharter ────────────────────────────────────────────────────────
+  // Reads agents/<id>/charter.md. Missing file / missing dir → '' (via safeRead).
+  // There is NO per-project override path in the current impl — the function is
+  // a thin wrapper around safeRead. If a project override is added later, this
+  // test group documents the current contract.
+
+  await test('getAgentCharter returns charter content when the file is present', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const agentDir = path.join(testDir, 'agents', 'ralph');
+      fs.mkdirSync(agentDir, { recursive: true });
+      const charter = '# Ralph\n\nRalph is the engineer.\n';
+      fs.writeFileSync(path.join(agentDir, 'charter.md'), charter);
+
+      const freshQueries = require('../engine/queries');
+      assert.strictEqual(freshQueries.getAgentCharter('ralph'), charter,
+        'exact file contents must round-trip through getAgentCharter');
+    } finally { restore(); }
+  });
+
+  await test('getAgentCharter returns empty string when charter.md is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // Agent dir exists but no charter.md inside.
+      fs.mkdirSync(path.join(testDir, 'agents', 'lambert'), { recursive: true });
+
+      const freshQueries = require('../engine/queries');
+      assert.strictEqual(freshQueries.getAgentCharter('lambert'), '',
+        'missing charter.md must return safeRead fallback (empty string), never null/undefined');
+    } finally { restore(); }
+  });
+
+  await test('getAgentCharter returns empty string when the agent directory does not exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshQueries = require('../engine/queries');
+      assert.strictEqual(freshQueries.getAgentCharter('nonexistent-agent-xyz'), '',
+        'missing agent dir must be swallowed by safeRead — must not throw');
+    } finally { restore(); }
+  });
+
+  await test('getAgentCharter does not cross agent boundaries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const agentsDir = path.join(testDir, 'agents');
+      fs.mkdirSync(path.join(agentsDir, 'ralph'), { recursive: true });
+      fs.mkdirSync(path.join(agentsDir, 'dallas'), { recursive: true });
+      fs.writeFileSync(path.join(agentsDir, 'ralph', 'charter.md'), 'RALPH_ONLY');
+      fs.writeFileSync(path.join(agentsDir, 'dallas', 'charter.md'), 'DALLAS_ONLY');
+
+      const freshQueries = require('../engine/queries');
+      assert.strictEqual(freshQueries.getAgentCharter('ralph'), 'RALPH_ONLY');
+      assert.strictEqual(freshQueries.getAgentCharter('dallas'), 'DALLAS_ONLY');
+    } finally { restore(); }
+  });
+
+  // ── detectInFlightTool (chosen 4th helper) ─────────────────────────────────
+  // Exported for testing; drives the "Running: Subagent X" badge in the agent
+  // tile by scanning live-output.log tails for task_started JSON events with no
+  // matching task_notification. Stateless — no fs, no globals, no MINIONS_DIR.
+
+  await test('detectInFlightTool returns null for empty / nullish input', () => {
+    assert.strictEqual(queries.detectInFlightTool(''), null);
+    assert.strictEqual(queries.detectInFlightTool(null), null);
+    assert.strictEqual(queries.detectInFlightTool(undefined), null);
+  });
+
+  await test('detectInFlightTool returns null when there are no task events', () => {
+    const tail = [
+      '{"type":"assistant","text":"hi"}',
+      '{"type":"system","subtype":"init"}',
+      'heartbeat-not-json',
+      ''
+    ].join('\n');
+    assert.strictEqual(queries.detectInFlightTool(tail), null);
+  });
+
+  await test('detectInFlightTool returns null when task_started has a matching task_notification', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"T1","description":"Subagent A"}',
+      '{"type":"system","subtype":"task_notification","task_id":"T1"}'
+    ].join('\n');
+    assert.strictEqual(queries.detectInFlightTool(tail), null,
+      'T1 completed → no in-flight tool');
+  });
+
+  await test('detectInFlightTool returns { description, taskId } for an unmatched task_started', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"T1","description":"Subagent A"}',
+      '{"type":"system","subtype":"task_notification","task_id":"T1"}',
+      '{"type":"system","subtype":"task_started","task_id":"T2","description":"Running Explore agent"}'
+    ].join('\n');
+    assert.deepStrictEqual(
+      queries.detectInFlightTool(tail),
+      { description: 'Running Explore agent', taskId: 'T2' }
+    );
+  });
+
+  await test('detectInFlightTool handles interleaved starts correctly (reverse-scan semantics)', () => {
+    // A started, B started, A notified → B is in-flight (A is done, B is not).
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"A","description":"first"}',
+      '{"type":"system","subtype":"task_started","task_id":"B","description":"second"}',
+      '{"type":"system","subtype":"task_notification","task_id":"A"}'
+    ].join('\n');
+    assert.deepStrictEqual(
+      queries.detectInFlightTool(tail),
+      { description: 'second', taskId: 'B' }
+    );
+  });
+
+  await test('detectInFlightTool skips malformed JSON lines silently', () => {
+    const tail = [
+      '{"broken json',
+      '{"type":"system","subtype":"task_started","task_id":"X","description":"real task"}',
+      'heartbeat-line',
+      '{"partial":'
+    ].join('\n');
+    assert.deepStrictEqual(
+      queries.detectInFlightTool(tail),
+      { description: 'real task', taskId: 'X' },
+      'malformed lines must not crash parsing; valid task_started still detected'
+    );
+  });
+
+  await test('detectInFlightTool ignores non-system events that contain the string "task_"', () => {
+    // Defensive: an assistant text mentioning "task_started" must not be treated as an event.
+    const tail = [
+      '{"type":"assistant","text":"task_started was fired earlier"}',
+      '{"type":"user","text":"I saw the task_notification log"}'
+    ].join('\n');
+    assert.strictEqual(queries.detectInFlightTool(tail), null,
+      'only type:"system" events count — any other type must be skipped');
+  });
+
+  await test('detectInFlightTool returns description:null when task_started omits description', () => {
+    const tail = '{"type":"system","subtype":"task_started","task_id":"Z"}';
+    assert.deepStrictEqual(
+      queries.detectInFlightTool(tail),
+      { description: null, taskId: 'Z' }
+    );
+  });
+}
+
 // ─── engine.js Tests (functions that can be tested in isolation) ─────────────
 
 async function testRoutingParser() {
@@ -10365,6 +10705,7 @@ async function main() {
     await testQueriesKnowledgeBase();
     await testQueriesPrd();
     await testQueriesHelpers();
+    await testQueriesAdditionalCoverage();
 
     // engine.js tests
     await testRoutingParser();
