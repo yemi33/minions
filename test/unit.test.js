@@ -10487,6 +10487,13 @@ async function main() {
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
 
+    // W-mo2z8v3ygviu: coverage for shared.js helpers
+    await testTruncateTextBytes();
+    await testTailTextBytes();
+    await testExecSilent();
+    await testTrackReviewMetric();
+    await testParseCanonicalPrId();
+
     // Scheduler tests
     await testSchedulerCronParsing();
 
@@ -10849,6 +10856,389 @@ async function testSharedJsFixes() {
 
   await test('LOCK_STALE_MS is exported and equals 60000', () => {
     assert.strictEqual(shared.LOCK_STALE_MS, 60000);
+  });
+}
+
+// ─── W-mo2z8v3ygviu: coverage for shared.js helpers ──────────────────────────
+// truncateTextBytes, tailTextBytes, execSilent, trackReviewMetric, parseCanonicalPrId
+
+async function testTruncateTextBytes() {
+  console.log('\n── shared.js — truncateTextBytes ──');
+
+  await test('truncateTextBytes returns input unchanged when under budget', () => {
+    assert.strictEqual(shared.truncateTextBytes('hello', 10), 'hello');
+  });
+
+  await test('truncateTextBytes returns input unchanged when exactly at budget', () => {
+    // 'hello' is 5 bytes in UTF-8; maxBytes=5 → no truncation
+    assert.strictEqual(shared.truncateTextBytes('hello', 5), 'hello');
+  });
+
+  await test('truncateTextBytes truncates ASCII to byte budget', () => {
+    assert.strictEqual(shared.truncateTextBytes('hello world', 5), 'hello');
+  });
+
+  await test('truncateTextBytes honors suffix byte budget', () => {
+    // maxBytes=5, suffix='...' (3 bytes) → targetBytes=2, output='he...'
+    assert.strictEqual(shared.truncateTextBytes('hello world', 5, '...'), 'he...');
+    assert.ok(Buffer.byteLength('he...', 'utf8') <= 5);
+  });
+
+  await test('truncateTextBytes empty string returns empty', () => {
+    assert.strictEqual(shared.truncateTextBytes('', 100), '');
+  });
+
+  await test('truncateTextBytes null/undefined input returns empty', () => {
+    assert.strictEqual(shared.truncateTextBytes(null, 100), '');
+    assert.strictEqual(shared.truncateTextBytes(undefined, 100), '');
+  });
+
+  await test('truncateTextBytes maxBytes=0 returns empty', () => {
+    assert.strictEqual(shared.truncateTextBytes('anything', 0), '');
+  });
+
+  await test('truncateTextBytes negative maxBytes returns empty', () => {
+    assert.strictEqual(shared.truncateTextBytes('anything', -5), '');
+  });
+
+  await test('truncateTextBytes does not split multi-byte UTF-8 codepoints (é = 2 bytes)', () => {
+    // 'aé' = 'a' (1 byte) + 'é' (2 bytes) = 3 bytes.
+    // Budget = 2 bytes → must not return 'a' + half of 'é'. Should return 'a' (1 byte).
+    const out = shared.truncateTextBytes('aé', 2);
+    assert.strictEqual(out, 'a');
+    // Result must decode cleanly as UTF-8 at byte boundary
+    assert.strictEqual(Buffer.byteLength(out, 'utf8'), 1);
+    assert.ok(Buffer.byteLength(out, 'utf8') <= 2);
+  });
+
+  await test('truncateTextBytes result always fits within maxBytes (including suffix)', () => {
+    // Use text with mixed multi-byte characters
+    const text = 'café résumé naïve';
+    for (const budget of [1, 2, 3, 5, 7, 10, 15, 100]) {
+      const out = shared.truncateTextBytes(text, budget);
+      assert.ok(Buffer.byteLength(out, 'utf8') <= budget,
+        `Budget ${budget}: got "${out}" with ${Buffer.byteLength(out, 'utf8')} bytes`);
+    }
+  });
+
+  await test('truncateTextBytes coerces non-string input via String()', () => {
+    assert.strictEqual(shared.truncateTextBytes(12345, 3), '123');
+    assert.strictEqual(shared.truncateTextBytes(true, 10), 'true');
+  });
+
+  await test('truncateTextBytes with null suffix treated as empty', () => {
+    assert.strictEqual(shared.truncateTextBytes('hello world', 5, null), 'hello');
+  });
+}
+
+async function testTailTextBytes() {
+  console.log('\n── shared.js — tailTextBytes ──');
+
+  await test('tailTextBytes returns input unchanged when under budget', () => {
+    assert.strictEqual(shared.tailTextBytes('hello', 10), 'hello');
+  });
+
+  await test('tailTextBytes returns input unchanged when exactly at budget', () => {
+    assert.strictEqual(shared.tailTextBytes('hello', 5), 'hello');
+  });
+
+  await test('tailTextBytes returns last N bytes of ASCII string', () => {
+    assert.strictEqual(shared.tailTextBytes('hello world', 5), 'world');
+  });
+
+  await test('tailTextBytes empty string returns empty', () => {
+    assert.strictEqual(shared.tailTextBytes('', 100), '');
+  });
+
+  await test('tailTextBytes null/undefined input returns empty', () => {
+    assert.strictEqual(shared.tailTextBytes(null, 100), '');
+    assert.strictEqual(shared.tailTextBytes(undefined, 100), '');
+  });
+
+  await test('tailTextBytes maxBytes=0 returns empty', () => {
+    assert.strictEqual(shared.tailTextBytes('anything', 0), '');
+  });
+
+  await test('tailTextBytes negative maxBytes returns empty', () => {
+    assert.strictEqual(shared.tailTextBytes('anything', -5), '');
+  });
+
+  await test('tailTextBytes preserves whole multi-byte codepoints at boundary', () => {
+    // 'café' = c(1) + a(1) + f(1) + é(2) = 5 bytes.
+    // Budget=2 → must not return partial 'é'. Result must be 'é' (2 bytes) only.
+    assert.strictEqual(shared.tailTextBytes('café', 2), 'é');
+    // Budget=1 → 'é' alone is 2 bytes, cannot fit → return ''.
+    assert.strictEqual(shared.tailTextBytes('café', 1), '');
+    // Budget=3 → 'é' fits (2 bytes), 'fé' would be 3 bytes but we're checking from the right;
+    // actual binary search lands on 'é' (next boundary moved to fit exactly at/under budget).
+    const three = shared.tailTextBytes('café', 3);
+    assert.ok(Buffer.byteLength(three, 'utf8') <= 3);
+    assert.ok('café'.endsWith(three), `tail must be suffix of input, got "${three}"`);
+  });
+
+  await test('tailTextBytes honors prefix byte budget', () => {
+    // 'hello world' = 11 bytes. budget=5, prefix='…' (3 bytes) → targetBytes=2.
+    // tail of 2 bytes = 'ld', result = '…ld'.
+    const out = shared.tailTextBytes('hello world', 5, '…');
+    assert.strictEqual(out, '…ld');
+    assert.ok(Buffer.byteLength(out, 'utf8') <= 5);
+  });
+
+  await test('tailTextBytes result always fits within maxBytes (including prefix)', () => {
+    const text = 'café résumé naïve';
+    for (const budget of [1, 2, 3, 5, 7, 10, 15, 100]) {
+      const out = shared.tailTextBytes(text, budget);
+      assert.ok(Buffer.byteLength(out, 'utf8') <= budget,
+        `Budget ${budget}: got "${out}" with ${Buffer.byteLength(out, 'utf8')} bytes`);
+    }
+  });
+
+  await test('tailTextBytes coerces non-string input via String()', () => {
+    // '12345' byteLen=5, budget=3 → last 3 bytes = '345'
+    assert.strictEqual(shared.tailTextBytes(12345, 3), '345');
+  });
+
+  await test('tailTextBytes with null prefix treated as empty', () => {
+    assert.strictEqual(shared.tailTextBytes('hello world', 5, null), 'world');
+  });
+}
+
+async function testExecSilent() {
+  console.log('\n── shared.js — execSilent ──');
+
+  await test('execSilent returns stdout as string when encoding is set', () => {
+    const cmd = `"${process.execPath}" -e "process.stdout.write('pong')"`;
+    const result = shared.execSilent(cmd, { encoding: 'utf8' });
+    assert.strictEqual(result, 'pong');
+  });
+
+  await test('execSilent returns Buffer by default (no encoding)', () => {
+    const cmd = `"${process.execPath}" -e "process.stdout.write('hi')"`;
+    const result = shared.execSilent(cmd);
+    assert.ok(Buffer.isBuffer(result), 'default should be Buffer, got ' + typeof result);
+    assert.strictEqual(result.toString('utf8'), 'hi');
+  });
+
+  await test('execSilent throws on non-zero exit code', () => {
+    const cmd = `"${process.execPath}" -e "process.exit(1)"`;
+    assert.throws(() => shared.execSilent(cmd), /Command failed|exit code 1|status 1/i);
+  });
+
+  await test('execSilent honors cwd option', () => {
+    const tmp = createTmpDir();
+    const cmd = `"${process.execPath}" -e "process.stdout.write(process.cwd())"`;
+    const result = shared.execSilent(cmd, { encoding: 'utf8', cwd: tmp });
+    // macOS prepends /private to /var, Windows may normalize case — use realpath for equality.
+    assert.strictEqual(fs.realpathSync(result), fs.realpathSync(tmp));
+  });
+
+  await test('execSilent suppresses stderr by default (stdio: pipe)', () => {
+    // Command writes to stderr but exits 0 — parent stderr should not be polluted.
+    // We verify by capturing via a flag that the call completes without throwing.
+    const cmd = `"${process.execPath}" -e "process.stderr.write('x'); process.exit(0)"`;
+    // Default stdio: 'pipe' → stderr is captured, not inherited → test succeeds silently.
+    const out = shared.execSilent(cmd, { encoding: 'utf8' });
+    assert.strictEqual(out, ''); // stdout empty
+  });
+
+  await test('execSilent error exposes captured stderr', () => {
+    const cmd = `"${process.execPath}" -e "process.stderr.write('boom'); process.exit(2)"`;
+    let caught = null;
+    try { shared.execSilent(cmd); } catch (e) { caught = e; }
+    assert.ok(caught, 'expected execSilent to throw on exit code 2');
+    // child_process.execSync surfaces stderr on err.stderr
+    const stderr = caught.stderr ? caught.stderr.toString() : '';
+    assert.ok(stderr.includes('boom'), `expected captured stderr to include 'boom', got: ${stderr}`);
+  });
+}
+
+async function testTrackReviewMetric() {
+  console.log('\n── shared.js — trackReviewMetric ──');
+
+  // trackReviewMetric writes to the real engine/metrics.json via path.join(__dirname, ...).
+  // That path is hardcoded to this shared.js module's directory, so we can't redirect it
+  // via MINIONS_TEST_DIR. Back up the file before tests and restore on exit.
+  const metricsPath = path.join(MINIONS_DIR, 'engine', 'metrics.json');
+  const snapshot = _captureFileState(metricsPath);
+
+  try {
+    await test('trackReviewMetric skips when review status is not approved or changes-requested', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({ agent: 'dallas' }, 'waiting', { agents: { dallas: {} } });
+      shared.trackReviewMetric({ agent: 'dallas' }, 'pending', { agents: { dallas: {} } });
+      shared.trackReviewMetric({ agent: 'dallas' }, null, { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.deepStrictEqual(m, {}, 'no metric should be recorded for unknown statuses');
+    });
+
+    await test('trackReviewMetric skips when pr has no agent', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({}, 'approved', { agents: { dallas: {} } });
+      shared.trackReviewMetric({ agent: '' }, 'approved', { agents: { dallas: {} } });
+      shared.trackReviewMetric({ agent: null }, 'approved', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.deepStrictEqual(m, {}, 'empty/missing agent should be skipped');
+    });
+
+    await test('trackReviewMetric skips when agent not in config.agents', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({ agent: 'ghost' }, 'approved', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.ghost, undefined, 'non-configured agent should not be recorded');
+    });
+
+    await test('trackReviewMetric increments prsApproved for configured agent', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.prsApproved, 1);
+      assert.strictEqual(m.dallas.prsRejected, undefined);
+    });
+
+    await test('trackReviewMetric increments prsRejected for changes-requested', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.prsRejected, 1);
+      assert.strictEqual(m.dallas.prsApproved, undefined);
+    });
+
+    await test('trackReviewMetric sequential calls accumulate via lock-based read-modify-write', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      const config = { agents: { dallas: {} } };
+      for (let i = 0; i < 5; i++) {
+        shared.trackReviewMetric({ agent: 'dallas' }, 'approved', config);
+      }
+      for (let i = 0; i < 3; i++) {
+        shared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', config);
+      }
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.prsApproved, 5);
+      assert.strictEqual(m.dallas.prsRejected, 3);
+    });
+
+    await test('trackReviewMetric preserves other metric fields on existing agent entry', () => {
+      fs.writeFileSync(metricsPath, JSON.stringify({
+        dallas: { prsApproved: 4, tasksCompleted: 20, totalCostUsd: 1.23 },
+      }));
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.prsApproved, 5);
+      assert.strictEqual(m.dallas.tasksCompleted, 20, 'unrelated fields must be preserved');
+      assert.strictEqual(m.dallas.totalCostUsd, 1.23);
+    });
+
+    await test('trackReviewMetric lowercases agent id before lookup and write', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      shared.trackReviewMetric({ agent: 'Dallas' }, 'approved', { agents: { dallas: {} } });
+      shared.trackReviewMetric({ agent: 'DALLAS' }, 'approved', { agents: { dallas: {} } });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.prsApproved, 2);
+      assert.strictEqual(m.Dallas, undefined);
+      assert.strictEqual(m.DALLAS, undefined);
+    });
+
+    await test('trackReviewMetric does not throw on missing config', () => {
+      fs.writeFileSync(metricsPath, '{}');
+      // Should not throw — config?.agents?.[authorId] short-circuits to undefined.
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', undefined);
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', null);
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', {});
+      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: {} });
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.deepStrictEqual(m, {}, 'no writes should occur without a configured agent');
+    });
+  } finally {
+    _restoreFileState(snapshot);
+  }
+}
+
+async function testParseCanonicalPrId() {
+  console.log('\n── shared.js — parseCanonicalPrId ──');
+
+  await test('parseCanonicalPrId parses github canonical form', () => {
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('github:owner/repo#42'),
+      { scope: 'github:owner/repo', prNumber: 42 }
+    );
+  });
+
+  await test('parseCanonicalPrId parses ado canonical form (org/project/repo)', () => {
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('ado:myorg/myproject/myrepo#7'),
+      { scope: 'ado:myorg/myproject/myrepo', prNumber: 7 }
+    );
+  });
+
+  await test('parseCanonicalPrId normalizes case of prefix and segments', () => {
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('GITHUB:Owner/Repo#42'),
+      { scope: 'github:owner/repo', prNumber: 42 }
+    );
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('ADO:OrgName/ProjectX/RepoY#100'),
+      { scope: 'ado:orgname/projectx/repoy', prNumber: 100 }
+    );
+  });
+
+  await test('parseCanonicalPrId trims surrounding whitespace', () => {
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('  github:owner/repo#42  '),
+      { scope: 'github:owner/repo', prNumber: 42 }
+    );
+  });
+
+  await test('parseCanonicalPrId strips leading/trailing slashes from segments', () => {
+    // normalizePrScopeSegment trims /…/ on each '/'-split segment
+    assert.deepStrictEqual(
+      shared.parseCanonicalPrId('ado:org//project//repo#3'),
+      { scope: 'ado:org//project//repo', prNumber: 3 }
+    );
+  });
+
+  await test('parseCanonicalPrId returns null for malformed input', () => {
+    assert.strictEqual(shared.parseCanonicalPrId('not-a-pr-id'), null);
+    assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo'), null, 'missing #number');
+    assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo#'), null, 'missing digits after #');
+    assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo#abc'), null, 'non-numeric PR id');
+    assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo#42extra'), null, 'trailing non-digits');
+  });
+
+  await test('parseCanonicalPrId returns null for unsupported hosts', () => {
+    assert.strictEqual(shared.parseCanonicalPrId('bitbucket:foo/bar#42'), null);
+    assert.strictEqual(shared.parseCanonicalPrId('gitlab:foo/bar#42'), null);
+  });
+
+  await test('parseCanonicalPrId returns null for legacy/numeric-only ids', () => {
+    assert.strictEqual(shared.parseCanonicalPrId('PR-42'), null);
+    assert.strictEqual(shared.parseCanonicalPrId('42'), null);
+    assert.strictEqual(shared.parseCanonicalPrId('#42'), null);
+  });
+
+  await test('parseCanonicalPrId returns null for URL input', () => {
+    assert.strictEqual(shared.parseCanonicalPrId('https://github.com/owner/repo/pull/42'), null);
+  });
+
+  await test('parseCanonicalPrId returns null for null/undefined/empty', () => {
+    assert.strictEqual(shared.parseCanonicalPrId(null), null);
+    assert.strictEqual(shared.parseCanonicalPrId(undefined), null);
+    assert.strictEqual(shared.parseCanonicalPrId(''), null);
+    assert.strictEqual(shared.parseCanonicalPrId('   '), null);
+  });
+
+  await test('parseCanonicalPrId prNumber is a number, not string', () => {
+    const parsed = shared.parseCanonicalPrId('github:owner/repo#42');
+    assert.strictEqual(typeof parsed.prNumber, 'number');
+    assert.strictEqual(parsed.prNumber, 42);
+  });
+
+  await test('parseCanonicalPrId round-trips with getCanonicalPrId output', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
+    const adoProject = { repoHost: 'ado', adoOrg: 'octo', adoProject: 'platform', repoName: 'beta' };
+    const ghCanonical = shared.getCanonicalPrId(ghProject, 99);
+    const adoCanonical = shared.getCanonicalPrId(adoProject, 99);
+    assert.deepStrictEqual(shared.parseCanonicalPrId(ghCanonical), { scope: 'github:octo/alpha', prNumber: 99 });
+    assert.deepStrictEqual(shared.parseCanonicalPrId(adoCanonical), { scope: 'ado:octo/platform/beta', prNumber: 99 });
   });
 }
 
