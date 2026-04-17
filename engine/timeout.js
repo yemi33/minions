@@ -308,15 +308,33 @@ function checkTimeouts(config) {
     const procInfo = activeProcesses.get(item.id);
     if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
 
-    // Capture live-output.log file state for orphan/hung diagnostics (#W-mo248lkjwgsu).
-    // Three distinguishable failure modes:
-    //   logExists=false           → spawn call itself threw, no log ever written
-    //   logExists=true, size~stub → process died at startup (stub-only content)
-    //   logExists=true, size>stub → genuine hang (process alive, wrote output, then stopped)
-    let _logState = 'logExists=false logSize=0';
+    // Capture live-output.log file state for orphan/hung diagnostics
+    // (#W-mo248lkjwgsu original, #W-mo25loq8kjer pid annotation).
+    // Four distinguishable failure modes:
+    //   logExists=false                         → spawn call itself threw, no log ever written
+    //   logExists=true pidPresent=false         → engine stub written but spawn died before emitting pid line
+    //   logExists=true pidPresent=true silent   → process spawned (pid recorded) but never produced stdout
+    //   logExists=true pidPresent=true size>pid → genuine hang (process wrote output then stopped)
+    //
+    // The pid line `[<iso>] pid: <N>` is stamped by engine.js immediately after runFile() returns.
+    // Its presence → the child process was actually spawned; absence → spawn itself failed or the
+    // appendFileSync on the pid line threw (rare).
+    let _logState = 'logExists=false logSize=0 pidPresent=false';
     try {
       const lst = fs.statSync(liveLogPath);
-      _logState = `logExists=true logSize=${lst.size}`;
+      // Read only the head (4KB) — pid line is written right after the stub, always near the top.
+      // Avoids loading the full log just for a diagnostic annotation.
+      let pidPresent = false;
+      try {
+        const fd = fs.openSync(liveLogPath, 'r');
+        const headSize = Math.min(lst.size, 4096);
+        const headBuf = Buffer.alloc(headSize);
+        fs.readSync(fd, headBuf, 0, headSize, 0);
+        fs.closeSync(fd);
+        // Match `] pid: <digits>` — agnostic to ISO timestamp format at the start.
+        pidPresent = /\]\s+pid:\s+\d+/.test(headBuf.toString('utf8'));
+      } catch { /* read failure — pidPresent stays false */ }
+      _logState = `logExists=true logSize=${lst.size} pidPresent=${pidPresent}`;
     } catch { /* ENOENT — keep default */ }
 
     if (!hasProcess && silentMs > effectiveTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
