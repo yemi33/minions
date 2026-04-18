@@ -104,11 +104,12 @@ async function adoFetch(url, token, opts = {}) {
   const _retryCount = typeof opts === 'number' ? opts : (opts._retryCount || 0); // backward compat
   const method = (typeof opts === 'object' && opts.method) || 'GET';
   const body = (typeof opts === 'object' && opts.body) || undefined;
+  const timeout = (typeof opts === 'object' && Number.isFinite(opts.timeout)) ? opts.timeout : 30000;
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
     method,
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeout),
     body,
   });
   // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
@@ -811,8 +812,11 @@ async function checkLiveReviewStatus(pr, project) {
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
-    const result = await execAsync(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-    const prData = JSON.parse(result);
+    // SEC-02: use in-process adoFetch rather than a shell-out — keeps the bearer
+    // token out of the process argv list where any local process could read it.
+    // 4s timeout preserves the original request-cancellation semantics via AbortSignal.
+    const prData = await adoFetch(url, token, { timeout: 4000 });
+    if (!prData) return null;
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';
     return votesToReviewStatus(votes);

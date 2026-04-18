@@ -20611,6 +20611,35 @@ async function testPrReviewFixFlows() {
       'All votes extraction in checkLiveReviewStatus must filter undefined values');
   });
 
+  // ── SEC-02: No curl shell-out in ado.js (token leak via process argv) ──
+
+  await test('ADO checkLiveReviewStatus uses adoFetch, not curl shell-out', () => {
+    const checkFn = adoSrc.slice(adoSrc.indexOf('async function checkLiveReviewStatus('), adoSrc.indexOf('\nasync function fetchAdoPrMetadata'));
+    assert.ok(!/curl\s/.test(checkFn),
+      'checkLiveReviewStatus must not shell out to curl (token would be exposed on argv)');
+    assert.ok(!checkFn.includes('execAsync('),
+      'checkLiveReviewStatus must not use execAsync (token would be exposed on argv)');
+    assert.ok(checkFn.includes('adoFetch('),
+      'checkLiveReviewStatus must use the in-process adoFetch wrapper');
+  });
+
+  await test('ADO ado.js has no curl shell-out in executable code', () => {
+    // Strip only comments (not string literals — curl shell-outs live inside template literals).
+    const stripped = adoSrc
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/\bcurl\b/.test(stripped),
+      'engine/ado.js must not reference curl outside comments (SEC-02: ADO bearer token leak via process argv)');
+  });
+
+  await test('adoFetch supports configurable timeout via opts.timeout', () => {
+    const adoFetchFn = adoSrc.slice(adoSrc.indexOf('async function adoFetch('), adoSrc.indexOf('\n/** Fetch raw text from ADO API'));
+    assert.ok(adoFetchFn.includes('opts.timeout') || adoFetchFn.includes('timeout ='),
+      'adoFetch should accept a timeout option so callers can override the 30s default');
+    assert.ok(adoFetchFn.includes('AbortSignal.timeout('),
+      'adoFetch should use AbortSignal.timeout() for request cancellation');
+  });
+
   await test('GitHub checkLiveReviewStatus filters undefined state values from reviews', () => {
     // Review objects from GitHub API may have undefined state — latestByUser.values() must not contain undefined
     const checkFn = ghSrc.slice(ghSrc.indexOf('async function checkLiveReviewStatus('), ghSrc.indexOf('\nmodule.exports'));
