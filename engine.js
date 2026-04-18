@@ -1956,6 +1956,7 @@ async function discoverFromPrs(config, project) {
     ? (config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled)
     : (config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled);
   const evalLoopEnabled = config.engine?.evalLoop !== false;
+  const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
 
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
@@ -2164,7 +2165,6 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    const _fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
@@ -2190,7 +2190,7 @@ async function discoverFromPrs(config, project) {
       }
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
-      if (_fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
@@ -2252,7 +2252,7 @@ async function discoverFromPrs(config, project) {
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
-      if (!withinLag && !_fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         const agentId = resolveAgent('fix', config, pr.agent);
         if (agentId) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
