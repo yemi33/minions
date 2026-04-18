@@ -449,7 +449,8 @@ async function pollPrStatus(config) {
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
+        const allBuilds = buildsData?.value || [];
+        const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
           buildStatus = classifyBuildStatus(prBuilds);
@@ -462,6 +463,17 @@ async function pollPrStatus(config) {
               _buildId: String(b.id),
             }));
           }
+        } else if (allBuilds.length > 0 && pr.buildStatus) {
+          // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
+          // but none target the current `mergeCommitId`. Most likely the target branch
+          // moved, ADO recomputed the merge commit, but no new source-side changes
+          // triggered a rebuild. Preserve the previous `pr.buildStatus` so the tracker
+          // reflects the last known truth instead of flipping to a spurious 'none'.
+          // Also log a warn so stale states are detectable in engine logs. Issue #1233.
+          const sampleSv = (allBuilds[0]?.sourceVersion || '').slice(0, 8);
+          log('warn', `PR ${pr.id} build: merge-commit mismatch — ${allBuilds.length} build(s) on merge ref, none target current merge commit ${String(mergeCommitId).slice(0, 8)} (sample sourceVersion ${sampleSv}); preserving previous buildStatus '${pr.buildStatus}'`);
+          buildStatus = pr.buildStatus;
+          if (pr.buildFailReason) buildFailReason = pr.buildFailReason;
         }
       } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }

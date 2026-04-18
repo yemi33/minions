@@ -19342,6 +19342,118 @@ async function testBuildErrorLogFeature() {
         `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
     }
   });
+
+  // ─── Stale merge-commit fallback #1233 (item 3) ────────────────────────────
+  //
+  // When a target-branch update causes ADO to recompute the PR's merge commit
+  // but no new CI builds are triggered (source-side unchanged), `buildsData`
+  // still returns recent builds for this PR — but none match the new
+  // `mergeCommitId`, so `prBuilds` is empty and `buildStatus` resets to 'none'.
+  // The dashboard then shows "none" even though the real-world state hasn't
+  // changed from failing/passing. Fix: detect this specific case (buildsData
+  // has entries but filter returns empty), log a warning, and preserve the
+  // previous `pr.buildStatus` so the tracker reflects the last known truth.
+
+  await test('ado.js detects stale merge-commit and preserves previous buildStatus (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Must check the mismatch condition: builds returned but none match
+    // sourceVersion. Accept either naming (`buildsData.value` directly or a
+    // renamed binding like `allBuilds`) and either condition ordering, but
+    // require the two facts to co-occur:
+    //   - the filtered prBuilds is empty
+    //   - the pre-filter list has entries (prevents firing the fallback when
+    //     there are simply no builds at all)
+    //   - the previous pr.buildStatus is consulted
+    const fallbackMismatchPattern = /(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*(>\s*0|>\s*=?\s*0)[\s\S]{0,120}pr\.buildStatus/;
+    const mismatchOrderFlipped = /prBuilds\.length\s*===\s*0[\s\S]{0,120}(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*>\s*0/;
+    assert.ok(fallbackMismatchPattern.test(src) || mismatchOrderFlipped.test(src),
+      'ado.js must detect the stale merge-commit case (builds list non-empty but prBuilds filter returns empty) AND consult pr.buildStatus');
+    // Must log a warn-level diagnostic so operators can spot stale states
+    const warnRegex = /log\(\s*['"]warn['"][^)]*(stale|mismatch|merge commit|merge-commit|no builds match)/i;
+    assert.ok(warnRegex.test(src),
+      'ado.js must log a warning when builds exist but none target the current merge commit');
+  });
+
+  await test('ado.js preserves pr.buildStatus on merge-commit mismatch instead of resetting to none (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // The fallback branch must assign the previous pr.buildStatus back to
+    // the local buildStatus variable so the subsequent transition guard
+    // does not fire a spurious 'failing → none' log and state change.
+    // Accept either `buildStatus = pr.buildStatus` or an equivalent early-return.
+    assert.ok(
+      /buildStatus\s*=\s*pr\.buildStatus/.test(src)
+      || /buildStatus\s*=\s*\(?\s*pr\.buildStatus\s*\|\|/.test(src),
+      'ado.js must reassign the local buildStatus to the previous pr.buildStatus when builds mismatch the current merge commit');
+  });
+
+  // Behavioral simulation — document the intended decision table.
+  //   buildsData.value | prBuilds (filtered) | prev pr.buildStatus | expected
+  //   empty            | empty               | failing             | 'none'         (no builds ever — honest)
+  //   1+ builds        | empty               | failing             | 'failing'      (preserve — stale merge commit)
+  //   1+ builds        | empty               | 'passing'           | 'passing'      (preserve)
+  //   1+ builds        | empty               | undefined           | 'none'         (no prior knowledge)
+  //   1+ builds        | 1+ matches          | failing             | classify matches
+  const applyBuildStatusResolution = (buildsValue, mergeCommitId, prevStatus) => {
+    let buildStatus = 'none';
+    const prBuilds = (buildsValue || []).filter(b => b.sourceVersion === mergeCommitId);
+    if (prBuilds.length > 0) {
+      // Classify deterministically for the test — mimic classifyBuildStatus roughly
+      const hasFailed = prBuilds.some(b => b.result === 'failed');
+      const allDone = prBuilds.every(b => b.status === 'completed');
+      if (hasFailed) buildStatus = 'failing';
+      else if (allDone) buildStatus = 'passing';
+      else buildStatus = 'running';
+    } else if ((buildsValue || []).length > 0 && prevStatus) {
+      // Stale merge-commit fallback
+      buildStatus = prevStatus;
+    }
+    return buildStatus;
+  };
+
+  await test('behavioral: buildsData empty + prev failing → none (no builds ever)', () => {
+    assert.strictEqual(
+      applyBuildStatusResolution([], 'abc123', 'failing'),
+      'none',
+      'When ADO has no builds at all, report none regardless of prior status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev failing → failing (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'old-merge-hash-1', result: 'failed', status: 'completed' },
+      { sourceVersion: 'old-merge-hash-2', result: 'succeeded', status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new-merge-hash', 'failing'),
+      'failing',
+      'Stale merge commit: preserve previous failing status so dashboard does not show spurious none');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev passing → passing (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', 'passing'),
+      'passing',
+      'Stale merge commit: preserve previous passing status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + no prior status → none (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', undefined),
+      'none',
+      'First poll with mismatched builds and no prior status: stay at none (nothing to preserve)');
+  });
+
+  await test('behavioral: builds match current merge commit → classify matched builds, ignore previous (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'current-merge', result: 'succeeded', status: 'completed' },
+      { sourceVersion: 'old-merge',     result: 'failed',    status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'current-merge', 'failing'),
+      'passing',
+      'When builds match the current merge commit, classify those builds — do not fall back to previous status');
+  });
 }
 
 // ─── spawnEngine state preservation (#564) ──────────────────────────────────
