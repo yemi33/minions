@@ -1029,6 +1029,56 @@ function sanitizeBranch(name) {
   return String(name).replace(/[^a-zA-Z0-9._\-\/]/g, '-').slice(0, 200);
 }
 
+// ── HTTP Origin Allowlist & Security Headers ─────────────────────────────────
+// Pure helpers used by dashboard.js to gate mutating requests against an
+// explicit allowlist of local origins and to attach uniform security response
+// headers. Extracted here so they're unit-testable without the HTTP server.
+
+// Allowed origin (scheme + host) — port-agnostic. Dashboard always binds to
+// 127.0.0.1:7331 locally; browser tabs may arrive as localhost, 127.0.0.1, or
+// IPv6 [::1] depending on how the user opened the page.
+// WHATWG URL keeps IPv6 brackets in `hostname`, so we compare against the
+// bracketed form `[::1]`. We also accept the bare form `::1` defensively.
+const _ALLOWED_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const _ALLOWED_ORIGIN_SCHEMES = new Set(['http:']);
+
+/**
+ * Returns true if the origin-like header value (either an `Origin` header value
+ * such as `http://localhost:7331` or a full `Referer` URL) belongs to the local
+ * dashboard allowlist. Port-agnostic. Returns false for null/undefined/empty,
+ * the literal string `'null'` (sandboxed iframes, data: URIs), malformed URLs,
+ * non-http schemes, and any host not in the allowlist.
+ * @param {string|null|undefined} origin
+ * @returns {boolean}
+ */
+function isAllowedOrigin(origin) {
+  if (!origin || typeof origin !== 'string') return false;
+  const trimmed = origin.trim();
+  if (!trimmed || trimmed === 'null') return false;
+  let parsed;
+  try { parsed = new URL(trimmed); } catch { return false; }
+  if (!parsed.hostname) return false;
+  if (!_ALLOWED_ORIGIN_SCHEMES.has(parsed.protocol)) return false;
+  return _ALLOWED_ORIGIN_HOSTS.has(parsed.hostname);
+}
+
+/**
+ * Returns the baseline set of security response headers to apply on every HTTP
+ * response from the dashboard. Values match OWASP defaults for a same-origin
+ * SPA served from 127.0.0.1. The HTML entry-point response intentionally
+ * overrides CSP to allow its inline `<script>` / `<style>` blocks; API (JSON,
+ * SSE) responses inherit the strict CSP returned here.
+ * @returns {{[key:string]: string}}
+ */
+function buildSecurityHeaders() {
+  return {
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+  };
+}
+
 // ── Skill Frontmatter Parser ─────────────────────────────────────────────────
 
 function parseSkillFrontmatter(content, filename) {
@@ -1631,6 +1681,8 @@ module.exports = {
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
+  isAllowedOrigin,
+  buildSecurityHeaders,
   validatePid,
   parseSkillFrontmatter,
   sleepMs,
