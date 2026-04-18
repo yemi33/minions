@@ -29,16 +29,16 @@ function renderInbox(inbox) {
     const idx = inboxStart + i;
     const pk = inboxPinKey(item.name);
     const pinned = isPinned(pk);
-    return `<div class="inbox-item${pinned ? ' item-pinned' : ''}" data-file="notes/inbox/${escHtml(item.name)}">
+    return `<div class="inbox-item${pinned ? ' item-pinned' : ''}" data-file="notes/inbox/${escapeHtml(item.name)}">
       <div class="inbox-name" onclick="openModal(${idx})" style="cursor:pointer">
-        <span>${escHtml(item.name)}</span><span>${escHtml(item.age || '')}</span>
+        <span>${escapeHtml(item.name)}</span><span>${escapeHtml(item.age || '')}</span>
       </div>
-      <div class="inbox-preview" onclick="openModal(${idx})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
+      <div class="inbox-preview" onclick="openModal(${idx})" style="cursor:pointer">${escapeHtml(item.content.slice(0,200))}</div>
       <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
-        <button class="pr-pager-btn pin-btn${pinned ? ' pinned' : ''}" style="font-size:9px;padding:2px 8px" data-pin-key="${escHtml(pk)}" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,'inbox')">${pinned ? 'Unpin' : 'Pin'}</button>
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();promoteToKB(this.dataset.inboxName)">Add to Knowledge Base</button>
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();openInboxInExplorer(this.dataset.inboxName)">Open in Explorer</button>
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();deleteInboxItem(this.dataset.inboxName)">Delete</button>
+        <button class="pr-pager-btn pin-btn${pinned ? ' pinned' : ''}" style="font-size:9px;padding:2px 8px" data-pin-key="${escapeHtml(pk)}" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,'inbox')">${pinned ? 'Unpin' : 'Pin'}</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escapeHtml(item.name)}" onclick="event.stopPropagation();promoteToKB(this.dataset.inboxName)">Add to Knowledge Base</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escapeHtml(item.name)}" onclick="event.stopPropagation();openInboxInExplorer(this.dataset.inboxName)">Open in Explorer</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" data-inbox-name="${escapeHtml(item.name)}" onclick="event.stopPropagation();deleteInboxItem(this.dataset.inboxName)">Delete</button>
       </div>
     </div>`;
   }).join('');
@@ -62,10 +62,10 @@ function promoteToKB(name) {
     { id: 'reviews', label: 'Reviews' },
   ];
   const picker = '<div style="padding:16px 20px">' +
-    '<p style="font-size:13px;color:var(--text);margin-bottom:12px">Choose a category for <strong>' + escHtml(name) + '</strong>:</p>' +
+    '<p style="font-size:13px;color:var(--text);margin-bottom:12px">Choose a category for <strong>' + escapeHtml(name) + '</strong>:</p>' +
     '<div style="display:flex;flex-direction:column;gap:8px">' +
     categories.map(c =>
-      '<button class="pr-pager-btn" style="font-size:12px;padding:8px 16px;text-align:left" onclick="doPromoteToKB(\'' + escHtml(name) + '\',\'' + c.id + '\')">' + c.label + '</button>'
+      '<button class="pr-pager-btn" style="font-size:12px;padding:8px 16px;text-align:left" onclick="doPromoteToKB(\'' + escapeHtml(name) + '\',\'' + c.id + '\')">' + c.label + '</button>'
     ).join('') +
     '</div></div>';
   document.getElementById('modal-title').textContent = 'Add to Knowledge Base';

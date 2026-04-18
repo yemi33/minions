@@ -19,16 +19,16 @@ function prRow(pr) {
   const url = pr.url || '#';
   const prId = pr.id || '—';
   return '<tr>' +
-    '<td><span class="pr-id">' + escHtml(String(prId)) + '</span></td>' +
-    '<td><a class="pr-title" href="' + escHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escHtml(pr.title || 'Untitled') + '</a>' + (pr.description ? '<div class="pr-desc">' + escHtml(pr.description.length > 120 ? pr.description.slice(0, 120) + '...' : pr.description) + '</div>' : '') + '</td>' +
-    '<td><span class="pr-agent">' + escHtml(pr.agent || '—') + '</span></td>' +
-    '<td><span class="pr-branch">' + escHtml(pr.branch || '—') + '</span></td>' +
-    '<td><span class="pr-badge ' + reviewClass + '">' + escHtml(reviewLabel) + '</span></td>' +
-    '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escHtml(sq.note || '') + '">' + escHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
-    '<td><span class="pr-badge ' + buildClass + '">' + escHtml(buildLabel) + '</span></td>' +
-    '<td><span class="pr-badge ' + statusClass + '">' + escHtml(statusLabel) + '</span></td>' +
-    '<td><span class="pr-date">' + escHtml((pr.created || '—').slice(0, 16).replace('T', ' ')) + '</span></td>' +
-    '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 5px;color:var(--red);border-color:var(--red)" data-pr-id="' + escHtml(String(prId)) + '" onclick="event.stopPropagation();unlinkPr(this.dataset.prId)" title="Remove from tracking">x</button></td>' +
+    '<td><span class="pr-id">' + escapeHtml(String(prId)) + '</span></td>' +
+    '<td><a class="pr-title" href="' + escapeHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escapeHtml(pr.title || 'Untitled') + '</a>' + (pr.description ? '<div class="pr-desc">' + escapeHtml(pr.description.length > 120 ? pr.description.slice(0, 120) + '...' : pr.description) + '</div>' : '') + '</td>' +
+    '<td><span class="pr-agent">' + escapeHtml(pr.agent || '—') + '</span></td>' +
+    '<td><span class="pr-branch">' + escapeHtml(pr.branch || '—') + '</span></td>' +
+    '<td><span class="pr-badge ' + reviewClass + '">' + escapeHtml(reviewLabel) + '</span></td>' +
+    '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escapeHtml(sq.note || '') + '">' + escapeHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escapeHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escapeHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
+    '<td><span class="pr-badge ' + buildClass + '">' + escapeHtml(buildLabel) + '</span></td>' +
+    '<td><span class="pr-badge ' + statusClass + '">' + escapeHtml(statusLabel) + '</span></td>' +
+    '<td><span class="pr-date">' + escapeHtml((pr.created || '—').slice(0, 16).replace('T', ' ')) + '</span></td>' +
+    '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 5px;color:var(--red);border-color:var(--red)" data-pr-id="' + escapeHtml(String(prId)) + '" onclick="event.stopPropagation();unlinkPr(this.dataset.prId)" title="Remove from tracking">x</button></td>' +
     '</tr>';
 }
 
@@ -93,7 +93,7 @@ function openModal(i) {
   if (!item) return;
   document.getElementById('modal-title').textContent = item.name;
   document.getElementById('modal-body').innerHTML =
-    '<div style="margin-bottom:12px"><button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escHtml(item.name) + '\')">Add to Knowledge Base</button></div>' +
+    '<div style="margin-bottom:12px"><button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escapeHtml(item.name) + '\')">Add to Knowledge Base</button></div>' +
     '<div style="font-size:12px;line-height:1.7;color:var(--muted)">' + renderMd(item.content) + '</div>';
   _modalDocContext = { title: item.name, content: item.content, selection: '' };
   _modalFilePath = 'notes/inbox/' + item.name; showModalQa();
@@ -106,7 +106,7 @@ function openModal(i) {
 function openAddPrModal() {
   const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p => {
     const name = typeof p === 'object' ? p.name : p;
-    return '<option value="' + escHtml(name) + '">' + escHtml(name) + '</option>';
+    return '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
   }).join('');
   const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
 
