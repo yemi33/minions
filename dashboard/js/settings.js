@@ -47,22 +47,33 @@ async function openSettings() {
       settingsField('Restart Grace Period', 'set-restartGracePeriod', e.restartGracePeriod || 1200000, 'ms', 'Grace period before orphan detection on restart') +
       settingsField('Meeting Round Timeout', 'set-meetingRoundTimeout', e.meetingRoundTimeout || 900000, 'ms', 'Auto-advance meeting round after this') +
     '</div>' +
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Automation</h3>' +
     '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
       settingsToggle('Auto-approve Plans', 'set-autoApprovePlans', !!e.autoApprovePlans, 'PRDs are approved automatically without human review') +
       settingsToggle('Eval Loop', 'set-evalLoop', e.evalLoop !== false, 'Auto-review implementations and iterate fix cycles until pass') +
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
       settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
-      settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Auto-dispatch fix agents when a PR build fails') +
-      settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Auto-dispatch fix agents when a PR has merge conflicts') +
       settingsToggle('Auto-complete PRs', 'set-autoCompletePrs', !!e.autoCompletePrs, 'Auto-merge PRs when builds pass and review is approved (opt-in)') +
-      settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status and comments each tick (reconciliation always runs)') +
-      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      settingsField('PR Status Poll Frequency', 'set-prPollStatusEvery', e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
-      settingsField('PR Comments Poll Frequency', 'set-prPollCommentsEvery', e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">PR Polling &amp; Dispatch Gates</h3>' +
+    '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px">' +
+      '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">' +
+        settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Keeps ADO PR build results, votes, and comments fresh each tick — the two fix gates below are silently inert when this is off') +
+        '<div style="margin-left:20px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
+          settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Dispatch gate: auto-fix agent when build fails (downstream of ADO Polling)') +
+          settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Dispatch gate: auto-fix agent when merge conflict detected (downstream of ADO Polling)') +
+        '</div>' +
+      '</div>' +
+      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick (reconciliation always runs regardless)') +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">' +
+        settingsField('Status Poll Frequency', 'set-prPollStatusEvery', e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
+        settingsField('Comments Poll Frequency', 'set-prPollCommentsEvery', e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
+      '</div>' +
     '</div>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Limits &amp; Thresholds</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
@@ -78,7 +89,7 @@ async function openSettings() {
       return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
         '<div style="font-size:12px;font-weight:600;margin-bottom:8px">' + escHtml(p.name) + '</div>' +
         '<div style="display:flex;flex-direction:column;gap:6px">' +
-        settingsToggle('Discover from PRs', 'set-ws-prs-' + p.name, p.workSources.pullRequests.enabled, 'Auto-discover work from open pull requests') +
+        settingsToggle('Discover from PRs', 'set-ws-prs-' + p.name, p.workSources.pullRequests.enabled, 'Discovery gate: scan repo for open PRs and surface them as review tasks. Independent of ADO/GitHub polling — does not affect already-tracked PRs.') +
         settingsToggle('Discover from Work Items', 'set-ws-wi-' + p.name, p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
         '</div></div>';
     }).join('') +
