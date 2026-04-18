@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.1075 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
 ## 0.1.1074 (2026-04-18)
 
 ### Features
