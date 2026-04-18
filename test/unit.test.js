@@ -7731,6 +7731,38 @@ async function testSpawnAgentScript() {
     assert.ok(!src.includes('spawnSync') || !src.includes("'--help'"),
       'Should not use spawnSync --help for capability detection (removed as bottleneck)');
   });
+
+  // Issue #1231: skills discovery across external repo worktrees
+  await test('spawn-agent.js passes --add-dir for minions project dir', () => {
+    assert.ok(src.includes("require('os')"),
+      'Should import os module for homedir()');
+    // Minions dir resolves up one from engine/ to repo root
+    assert.ok(src.includes("path.resolve(__dirname, '..')"),
+      'Should resolve minions project dir via path.resolve(__dirname, "..")');
+    assert.ok(src.includes("'--add-dir'"),
+      'Should pass --add-dir flag to claude CLI for skill discovery');
+  });
+
+  await test('spawn-agent.js passes --add-dir for user ~/.claude dir', () => {
+    // Must use os.homedir() per CLAUDE.md cross-platform rule, not $HOME/$USERPROFILE
+    assert.ok(src.includes('os.homedir()'),
+      'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
+    assert.ok(src.includes("'.claude'"),
+      'Should target the .claude subdirectory under home for global skill discovery');
+  });
+
+  await test('spawn-agent.js includes --add-dir on both resume and non-resume paths', () => {
+    // Agents run as fresh processes even on resume — CWD is still the external worktree,
+    // so skill discovery dirs must be passed in both branches of the cliArgs assignment.
+    const resumeIdx = src.indexOf('if (isResume)');
+    assert.ok(resumeIdx !== -1, 'isResume branch must exist');
+    const closeBrace = src.indexOf('\n}\n', resumeIdx);
+    assert.ok(closeBrace !== -1, 'isResume branch should end with closing brace');
+    const branchBlock = src.slice(resumeIdx, closeBrace);
+    const addDirSpreadMatches = branchBlock.match(/\.\.\.addDirArgs/g) || [];
+    assert.ok(addDirSpreadMatches.length >= 2,
+      'Both resume and non-resume cliArgs must spread ...addDirArgs (got ' + addDirSpreadMatches.length + ')');
+  });
 }
 
 // ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
