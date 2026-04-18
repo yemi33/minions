@@ -1956,7 +1956,6 @@ async function discoverFromPrs(config, project) {
     ? (config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled)
     : (config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled);
   const evalLoopEnabled = config.engine?.evalLoop !== false;
-  const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
 
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
@@ -2165,6 +2164,7 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
+    const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
