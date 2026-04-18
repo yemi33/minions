@@ -1,6 +1,6 @@
 {
   "name": "@yemi33/minions",
-  "version": "0.1.1082",
+  "version": "0.1.1083",
   "description": "Multi-agent AI dev team that runs from ~/.minions/ — five autonomous agents share a single engine, dashboard, and knowledge base",
   "bin": {
     "minions": "bin/minions.js"
