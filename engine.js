@@ -3130,6 +3130,13 @@ async function discoverWork(config) {
       if (fs.existsSync(prdDir)) {
         for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
           if (completedPlanCache.has(f)) continue;
+          if (fs.existsSync(path.join(prdDir, 'archive', f))) {
+            // Orphaned backup restore — plan is already archived. Purge the ghost copy.
+            try { fs.unlinkSync(path.join(prdDir, f)); } catch { }
+            try { fs.unlinkSync(path.join(prdDir, f + '.backup')); } catch { }
+            completedPlanCache.add(f);
+            continue;
+          }
           const plan = safeJson(path.join(prdDir, f));
           if (!plan?.missing_features || plan.status === 'completed') {
             if (plan?.status === 'completed') completedPlanCache.add(f);
@@ -3309,6 +3316,13 @@ async function tickInner() {
       const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
       for (const file of prdFiles) {
         if (completedPlanCache.has(file)) continue;
+        if (fs.existsSync(path.join(PRD_DIR, 'archive', file))) {
+          // Orphaned backup restore — plan is already archived. Purge the ghost copy.
+          try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch { }
+          try { fs.unlinkSync(path.join(PRD_DIR, file + '.backup')); } catch { }
+          completedPlanCache.add(file);
+          continue;
+        }
         const plan = safeJson(path.join(PRD_DIR, file));
         if (plan && plan.missing_features && plan.status !== 'completed') {
           const completed = checkPlanCompletion({ item: { sourcePlan: file } }, config);
