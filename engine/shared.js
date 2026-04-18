@@ -608,7 +608,11 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
 
   function extractResult(obj) {
     if (obj.type !== 'result') return false;
-    if (obj.result) text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
+    // Slice from the tail, not the head — review VERDICTs, structured completion
+    // blocks, PR URLs, and agent conclusions all appear at the END of the output.
+    // Head-slicing truncated VERDICTs and caused review work items to be
+    // re-dispatched up to maxRetries times despite successful completion (#1234).
+    if (obj.result) text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
     if (obj.session_id) sessionId = obj.session_id;
     if (obj.total_cost_usd || obj.usage) {
       usage = {
