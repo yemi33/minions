@@ -16683,6 +16683,136 @@ async function testAutoRecoveryAndAtomicity() {
       'getPrdInfo must compute prdFlaggedForRework before rawStatus');
   });
 
+  await test('_getPrdInputHash must track pr-links.json mtime (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const hashFn = src.slice(src.indexOf('function _getPrdInputHash'), src.indexOf('function getPrdInfo'));
+    assert.ok(hashFn.includes('PR_LINKS_PATH'),
+      '_getPrdInputHash must statSync shared.PR_LINKS_PATH so pr-links.json changes invalidate the cache');
+  });
+
+  await test('prdToPr loop must skip aggregate/E2E/verify PRs (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const prdFn = src.slice(src.indexOf('function getPrdInfo'));
+    // Loop over prLinks is where aggregate PRs bleed into individual PRD item prs arrays
+    const loopBlock = prdFn.slice(prdFn.indexOf('const prdToPr'), prdFn.indexOf('// Fallback'));
+    assert.ok(loopBlock.includes('itemIds') && (loopBlock.includes('.length > 1') || loopBlock.includes('.length >= 2')),
+      'prdToPr loop must skip PRs whose prLinks entry covers more than one PRD item (aggregate PR signature)');
+    assert.ok(loopBlock.includes("itemType === 'verify'") || loopBlock.includes("itemType === \"verify\""),
+      'prdToPr loop must skip PRs with itemType "verify"');
+    assert.ok(loopBlock.includes("'[E2E]'") || loopBlock.includes('"[E2E]"'),
+      'prdToPr loop must skip PRs whose title starts with [E2E]');
+  });
+
+  await test('BEHAVIORAL: getPrdInfo cache busts when pr-links.json changes (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with one project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // Minimal PRD file with one item
+      const prdPath = path.join(testDir, 'prd', 'demo-plan.json');
+      fs.writeFileSync(prdPath, JSON.stringify({
+        plan_summary: 'Demo plan', status: 'active', project: 'demo', source_plan: 'demo-plan.md',
+        missing_features: [{ id: 'P-demo1', name: 'Demo item', status: 'dispatched', depends_on: [] }]
+      }));
+
+      // Project has one PR, no links yet
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#77', prNumber: 77, url: 'https://github.com/octo/demo/pull/77', title: 'Individual PR', status: 'active', _project: 'demo', prdItems: [] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-demo1', title: 'Demo item', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+
+      // First call: pr-links.json is empty, so prs array should be empty
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+      const info1 = freshQueries.getPrdInfo();
+      const item1 = info1.progress && info1.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item1, 'PRD item P-demo1 must be present');
+      assert.deepStrictEqual(item1.prs, [], 'Before link: item should have no PRs');
+
+      // Write new pr-links.json and bump mtime to simulate a real update
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({ 'github:octo/demo#77': ['P-demo1'] }));
+      const future = new Date(Date.now() + 5000);
+      fs.utimesSync(freshShared.PR_LINKS_PATH, future, future);
+
+      // Second call: cache must bust, prs array should now contain the PR
+      const info2 = freshQueries.getPrdInfo();
+      const item2 = info2.progress && info2.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item2, 'PRD item P-demo1 must still be present');
+      assert.strictEqual(item2.prs.length, 1, 'After link: item should have exactly 1 PR');
+      assert.strictEqual(item2.prs[0].id, 'github:octo/demo#77', 'After link: PR id must match');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('BEHAVIORAL: getPrdInfo excludes aggregate/E2E PRs from individual PRD items (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'demo-plan.json'), JSON.stringify({
+        plan_summary: 'Demo', status: 'active', project: 'demo', source_plan: 'demo.md',
+        missing_features: [
+          { id: 'P-alpha', name: 'alpha', status: 'dispatched', depends_on: [] },
+          { id: 'P-beta',  name: 'beta',  status: 'dispatched', depends_on: [] }
+        ]
+      }));
+
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      // Three PRs: two individual, one aggregate/E2E
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#1', prNumber: 1, url: 'https://github.com/octo/demo/pull/1', title: 'Implement alpha',    status: 'active', _project: 'demo', prdItems: ['P-alpha'] },
+        { id: 'github:octo/demo#2', prNumber: 2, url: 'https://github.com/octo/demo/pull/2', title: 'Implement beta',     status: 'active', _project: 'demo', prdItems: ['P-beta']  },
+        { id: 'github:octo/demo#9', prNumber: 9, url: 'https://github.com/octo/demo/pull/9', title: '[E2E] Demo verify',  status: 'active', _project: 'demo', itemType: 'verify', prdItems: ['P-alpha', 'P-beta'] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-alpha', title: 'alpha', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' },
+        { id: 'P-beta',  title: 'beta',  status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+
+      const info = freshQueries.getPrdInfo();
+      const alpha = info.progress.items.find(i => i.id === 'P-alpha');
+      const beta  = info.progress.items.find(i => i.id === 'P-beta');
+      assert.ok(alpha && beta, 'Both PRD items must be present');
+
+      // Aggregate/E2E PR #9 must NOT appear in either individual item's prs array
+      const alphaIds = alpha.prs.map(p => p.id);
+      const betaIds  = beta.prs.map(p => p.id);
+      assert.ok(!alphaIds.includes('github:octo/demo#9'),
+        `P-alpha must not include aggregate E2E PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(!betaIds.includes('github:octo/demo#9'),
+        `P-beta must not include aggregate E2E PR; got ${JSON.stringify(betaIds)}`);
+      // Individual PRs still present
+      assert.ok(alphaIds.includes('github:octo/demo#1'),
+        `P-alpha must still include its individual PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(betaIds.includes('github:octo/demo#2'),
+        `P-beta must still include its individual PR; got ${JSON.stringify(betaIds)}`);
+    } finally {
+      restore();
+    }
+  });
+
   await test('areDependenciesMet returns failed when dep item is failed', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const fn = src.slice(src.indexOf('function areDependenciesMet'));

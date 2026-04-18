@@ -922,6 +922,8 @@ function _getPrdInputHash(projects) {
   for (const project of projects) {
     try { mtimes.push(fs.statSync(projectPrPath(project)).mtimeMs); } catch { mtimes.push(0); }
   }
+  // pr-links.json mtime (fallback PRD<->PR link map; missing here caused #1220 stale cache)
+  try { mtimes.push(fs.statSync(shared.PR_LINKS_PATH).mtimeMs); } catch { mtimes.push(0); }
   return { hash: mtimes.join(','), prdDirMtime, archiveDirMtime };
 }
 
@@ -1024,6 +1026,11 @@ function getPrdInfo(config) {
   const prLinks = shared.getPrLinks(); // { "PR-xxxx": ["P-xxxx", "P-yyyy"] }
   for (const [prId, itemIds] of Object.entries(prLinks)) {
     const pr = prById[prId];
+    // Skip aggregate/E2E/verify PRs — they represent plan-level work, not individual PRD items (#1220).
+    // Without this guard, an aggregate PR whose prdItems covers many items bleeds into each item's prs array.
+    const isAggregate = Array.isArray(itemIds) && itemIds.length > 1;
+    const isE2e = pr?.itemType === 'verify' || pr?.itemType === 'pr' || pr?.e2e || (typeof pr?.title === 'string' && pr.title.startsWith('[E2E]'));
+    if (isAggregate || isE2e) continue;
     const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
     const prNumber = shared.getPrNumber(pr || prId);
     const url = pr?.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
