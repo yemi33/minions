@@ -1028,7 +1028,7 @@ function getPrdInfo(config) {
     const pr = prById[prId];
     // Skip aggregate / E2E PRs from per-item mapping — they link to multiple items
     // (or are typed as verify) and would bleed through as duplicate entries on every
-    // constituent item. They are surfaced via renderE2eSection instead.
+    // constituent item. They are surfaced via renderE2eSection instead. (#1220)
     if ((itemIds || []).length > 1 || pr?.itemType === 'verify' || pr?.title?.startsWith('[E2E]')) continue;
     const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
     const prNumber = shared.getPrNumber(pr || prId);
