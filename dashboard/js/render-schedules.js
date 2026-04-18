@@ -250,7 +250,7 @@ function _renderScheduleCalendar(schedules) {
         var strikeStyle = s.enabled === false ? 'text-decoration:line-through;' : '';
         var timeLabel = String(sl.hour).padStart(2, '0') + ':' + String(sl.minute).padStart(2, '0');
         html += '<div class="sched-cal-slot" style="background:' + colors.bg + ';border-left-color:' + colors.border + ';color:' + colors.text + ';opacity:' + opacity + '" ' +
-          'onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')" title="' + escHtml(s.title + ' — ' + timeLabel + ' — ' + (s.type || 'implement')) + '">' +
+          'onclick="if(shouldIgnoreSelectionClick(event))return;openScheduleDetail(\'' + escHtml(s.id) + '\')" title="' + escHtml(s.title + ' — ' + timeLabel + ' — ' + (s.type || 'implement')) + '">' +
           '<span style="font-weight:600;' + strikeStyle + '">' + escHtml((s.title || s.id).slice(0, 25)) + '</span>' +
           '<span style="font-size:9px;opacity:0.7"> ' + timeLabel + '</span>' +
         '</div>';
@@ -292,7 +292,7 @@ function renderSchedules(schedules) {
       const lastRun = s._lastRun ? timeAgo(s._lastRun) : 'never';
       const typeBadge = '<span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span>';
       const humanCron = _cronToHuman(s.cron || '');
-      html += '<tr style="cursor:pointer" onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
+      html += '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
         '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
         '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
         '<td><span title="' + escHtml(s.cron || '') + '" style="font-size:11px;color:var(--blue)">' + escHtml(humanCron) + '</span></td>' +

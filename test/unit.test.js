@@ -9083,6 +9083,38 @@ async function testDashboardUIFunctions() {
       'Detail modal should not truncate description content to 1000 chars');
   });
 
+  await test('dashboard cards ignore click-to-open while user is selecting text', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const plansCardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function shouldIgnoreSelectionClick()'),
+      'dashboard utils should expose a shared selection-click guard');
+    assert.ok(utilsSrc.includes("document.addEventListener('selectionchange', _markRecentTextSelection)") &&
+      utilsSrc.includes("document.addEventListener('mouseup', _markRecentTextSelection)"),
+      'selection-click guard should track live and recent text selections');
+    assert.ok(wiSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail('),
+      'work item rows should not open detail when text is being selected');
+    assert.ok(pipelineSrc.includes('if(shouldIgnoreSelectionClick(event))return;openPipelineDetail('),
+      'pipeline cards should not open detail when text is being selected');
+    assert.ok(meetingsSrc.includes('if(shouldIgnoreSelectionClick(event))return;openMeetingDetail('),
+      'meeting cards should not open detail when text is being selected');
+    assert.ok(plansCardSrc.includes('if(shouldIgnoreSelectionClick(event))return;planView('),
+      'plan cards should not open detail when text is being selected');
+    assert.ok(prdSrc.includes('if(shouldIgnoreSelectionClick(event))return;prdItemEdit('),
+      'PRD rows should not open detail when text is being selected');
+    assert.ok(schedulesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openScheduleDetail('),
+      'schedule cards and rows should not open detail when text is being selected');
+    assert.ok(watchesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWatchDetail('),
+      'watch rows should not open detail when text is being selected');
+    assert.ok(agentsSrc.includes("if(shouldIgnoreSelectionClick(event))return;openAgentDetail("),
+      'agent cards should not open detail when text is being selected');
+  });
+
   // Feedback rating state
   await test('feedback modal has rating selection state', () => {
     assert.ok(wiSrc.includes('_feedbackRating') && wiSrc.includes('_selectRating'),
