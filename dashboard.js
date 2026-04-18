@@ -1323,7 +1323,10 @@ function checkRateLimit(key, maxPerMinute) {
 
 function jsonReply(res, code, data, req) {
   res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Access-Control-Allow-Origin is set ONCE by the server dispatcher prelude:
+  // `*` for GET/HEAD (read-only), never for mutating responses (Origin gate
+  // already blocked cross-origin POSTs). Setting it here would reopen the
+  // cross-origin write path.
   res.statusCode = code;
   const json = JSON.stringify(data);
   const ae = req && req.headers && req.headers['accept-encoding'] || '';
@@ -1443,15 +1446,93 @@ function restartEngine() {
 
 // -- Server --
 
+// Mutating HTTP methods that require Origin and Content-Type gating.
+// GET/HEAD/OPTIONS are treated as read-only/preflight and bypass these checks.
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 const server = http.createServer(async (req, res) => {
-  // CORS preflight
+  // ── Security headers (applied to every response) ──────────────────────────
+  // Baseline CSP + clickjacking/mime/referrer protections. The dashboard HTML
+  // entry-point later overrides CSP for its inline <script>/<style> blocks;
+  // all API (JSON, text, SSE) responses inherit the strict CSP from here.
+  const _secHeaders = shared.buildSecurityHeaders();
+  for (const [k, v] of Object.entries(_secHeaders)) {
+    try { res.setHeader(k, v); } catch { /* headers may already be sent in rare error paths */ }
+  }
+
+  // ── Origin gate (mutating + OPTIONS preflight) ────────────────────────────
+  // Defense-in-depth against CSRF / DNS-rebinding: even though the dashboard
+  // binds to 127.0.0.1, a malicious page can coerce a user's browser to POST
+  // to localhost. We reject any mutating request whose Origin (or Referer, if
+  // Origin is absent) is not in the local allowlist. When both headers are
+  // absent (curl, CLI tooling, Node http.request without Origin) we allow the
+  // request to preserve existing local automation.
+  const _rawOrigin = req.headers['origin'];
+  const _rawReferer = req.headers['referer'];
+  const _isMutating = MUTATING_METHODS.has(req.method);
+
+  function _originGateReject(reason) {
+    console.warn(`[origin-gate] reject ${req.method} ${req.url} origin=${_rawOrigin || _rawReferer || '(none)'} reason=${reason}`);
+    res.statusCode = 403;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: 'Origin not allowed' }));
+  }
+
+  // CORS preflight — echo validated origin; reject disallowed origins outright.
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    if (_rawOrigin) {
+      if (!shared.isAllowedOrigin(_rawOrigin)) { _originGateReject('preflight-origin'); return; }
+      res.setHeader('Access-Control-Allow-Origin', _rawOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
+    // Note: when Origin is absent (non-browser preflight), no ACAO is echoed —
+    // that's fine, only browsers care about ACAO and they always send Origin.
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.statusCode = 204;
     res.end();
     return;
+  }
+
+  // Mutating requests: enforce Origin allowlist (Origin first, Referer fallback).
+  if (_isMutating) {
+    if (_rawOrigin) {
+      if (!shared.isAllowedOrigin(_rawOrigin)) { _originGateReject('origin'); return; }
+    } else if (_rawReferer) {
+      if (!shared.isAllowedOrigin(_rawReferer)) { _originGateReject('referer'); return; }
+    }
+    // Neither Origin nor Referer present → legacy tooling (curl, Node.js) is allowed.
+
+    // Content-Type enforcement: require application/json on mutating requests.
+    // readBody() always expects JSON. Rejecting anything other than
+    // application/json closes the entire CSRF "simple request" loophole
+    // (text/plain, application/x-www-form-urlencoded, multipart/form-data are
+    // all cross-origin-postable without a preflight). DELETE with an empty
+    // body (Content-Length: 0) is exempt — it carries no payload to parse.
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    const clen = parseInt(req.headers['content-length'] || '0', 10) || 0;
+    const hasBody = clen > 0 || req.headers['transfer-encoding'];
+    if (hasBody && !ct.startsWith('application/json')) {
+      res.statusCode = 415;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+      return;
+    }
+    // Empty-body mutating request (e.g. DELETE /api/cc-sessions/:id) with
+    // no Content-Type is allowed — no body, no CSRF-friendly payload.
+    if (!hasBody && ct && !ct.startsWith('application/json')) {
+      res.statusCode = 415;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+      return;
+    }
+  }
+
+  // GET: permit cross-origin reads for external monitoring tools (curl, uptime
+  // checks). Mutating responses deliberately do NOT set ACAO — cross-origin
+  // browsers cannot use them anyway (Origin check blocks that path).
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
 
   // ── Route Handler Functions ───────────────────────────────────────────────
@@ -2289,6 +2370,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   async function handleAgentLiveStream(req, res, match) {
+    // SSE Origin gate — must run BEFORE res.writeHead(200, ...) so we can
+    // still return a 403 with a normal status line. Once we upgrade to SSE
+    // the client has no way to distinguish a rejection from a dropped stream.
+    // GETs normally skip the Origin check, but SSE streams are long-lived and
+    // warrant the same cross-origin guard as mutating endpoints.
+    const _origin = req.headers['origin'];
+    if (_origin && !shared.isAllowedOrigin(_origin)) {
+      console.warn(`[sse-origin-gate] reject GET ${req.url} origin=${_origin}`);
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
+
     const agentId = match[1];
     const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     const liveLogPath = path.join(agentDir, 'live-output.log');
@@ -4021,6 +4116,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 
   async function handleCommandCenterStream(req, res) {
+    // SSE Origin gate (belt-and-suspenders: the top-level dispatcher has
+    // already rejected disallowed origins on POST, but validate again here
+    // before res.writeHead(200, text/event-stream) so any future refactor
+    // that moves the route can't accidentally bypass the check).
+    const _origin = req.headers['origin'];
+    if (_origin && !shared.isAllowedOrigin(_origin)) {
+      console.warn(`[sse-origin-gate] reject POST /api/command-center/stream origin=${_origin}`);
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
     let tabId;
     let _ccStreamAbort = null;
@@ -5366,6 +5473,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('ETag', HTML_ETAG);
   res.setHeader('Cache-Control', 'no-cache'); // revalidate each time, but use 304 if unchanged
+  // The SPA ships as a single self-contained HTML: inline <script> block,
+  // inline <style> block, and many inline onclick= handlers on page
+  // fragments. Strict `script-src 'self'` would break every button. We
+  // relax the default CSP ONLY for the dashboard HTML entry-point — the
+  // strict CSP still applies to all /api/* responses (verified by tests).
+  // data: in img-src permits the inline SVG favicon (<link rel="icon" href="data:...">).
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; " +
+    "connect-src 'self'"
+  );
   if (req.headers['if-none-match'] === HTML_ETAG) {
     res.statusCode = 304;
     res.end();
