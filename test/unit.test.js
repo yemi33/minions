@@ -435,6 +435,165 @@ async function testValidatePid() {
   });
 }
 
+async function testValidateProjectName() {
+  console.log('\n── shared.js — Project Name Validation (SEC-04) ──');
+
+  await test('validateProjectName accepts valid names', () => {
+    assert.strictEqual(shared.validateProjectName('minions'), 'minions');
+    assert.strictEqual(shared.validateProjectName('my-project'), 'my-project');
+    assert.strictEqual(shared.validateProjectName('my_project'), 'my_project');
+    assert.strictEqual(shared.validateProjectName('Project123'), 'Project123');
+    assert.strictEqual(shared.validateProjectName('a'), 'a');
+    // 64-char max is accepted
+    const max = 'a'.repeat(64);
+    assert.strictEqual(shared.validateProjectName(max), max);
+  });
+
+  await test('validateProjectName rejects empty / non-string', () => {
+    assert.throws(() => shared.validateProjectName(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(123), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName({}), /required|Invalid/);
+  });
+
+  await test('validateProjectName rejects names longer than 64 characters', () => {
+    const tooLong = 'a'.repeat(65);
+    const err = assert.throws(() => shared.validateProjectName(tooLong), /Invalid project name/);
+    // Violating name should appear in the error message
+    try { shared.validateProjectName(tooLong); } catch (e) {
+      assert.ok(e.message.includes(tooLong) || e.message.includes('65'), `expected message to cite violating name; got: ${e.message}`);
+      assert.strictEqual(e.statusCode, 400, 'should carry HTTP 400 statusCode');
+    }
+  });
+
+  await test('validateProjectName rejects path-traversal characters', () => {
+    assert.throws(() => shared.validateProjectName('../etc/passwd'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('..'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo/bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\\bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName rejects shell metacharacters', () => {
+    assert.throws(() => shared.validateProjectName('foo;rm -rf /'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo$(whoami)'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo`id`'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo|cat'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo&bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo.bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\0bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName error carries statusCode 400 and violating name', () => {
+    try {
+      shared.validateProjectName('bad/name');
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(e.message.includes('bad/name'), `expected violating name in error; got: ${e.message}`);
+    }
+  });
+}
+
+async function testValidateProjectPath() {
+  console.log('\n── shared.js — Project Path Validation (SEC-05) ──');
+
+  await test('validateProjectPath accepts path containing .git directory', () => {
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath accepts path containing .git file (worktree)', () => {
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /some/main/repo/.git/worktrees/wt');
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath rejects non-existent path', () => {
+    const missing = path.join(os.tmpdir(), 'minions-test-nonexistent-' + Date.now());
+    try {
+      shared.validateProjectPath(missing);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/does not exist|not found/i.test(e.message), `expected not-found message; got: ${e.message}`);
+    }
+  });
+
+  await test('validateProjectPath rejects empty / non-string path', () => {
+    assert.throws(() => shared.validateProjectPath(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(123), /required|Invalid/);
+  });
+
+  await test('validateProjectPath rejects non-repo path without confirmation', () => {
+    const tmp = createTmpDir();
+    try {
+      shared.validateProjectPath(tmp);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/not a git repository|\.git/i.test(e.message), `expected non-repo error; got: ${e.message}`);
+      assert.strictEqual(e.needsConfirmation, true);
+    }
+  });
+
+  await test('validateProjectPath rejects non-repo path when allowNonRepo missing', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { confirmToken: 'anything', isValidToken: () => true }),
+      /not a git repository/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with wrong confirmation token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    assert.throws(
+      () => shared.validateProjectPath(tmp, {
+        allowNonRepo: true,
+        confirmToken: 'wrong-token',
+        isValidToken: t => t === validToken,
+      }),
+      /not a git repository|invalid.*token/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with allowNonRepo but no token', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { allowNonRepo: true, isValidToken: () => true }),
+      /not a git repository|token/i,
+    );
+  });
+
+  await test('validateProjectPath accepts non-repo path with allowNonRepo + valid token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    let consumedToken = null;
+    const result = shared.validateProjectPath(tmp, {
+      allowNonRepo: true,
+      confirmToken: validToken,
+      isValidToken: t => { consumedToken = t; return t === validToken; },
+    });
+    assert.strictEqual(result, path.resolve(tmp));
+    assert.strictEqual(consumedToken, validToken, 'validator should have invoked isValidToken with the supplied token');
+  });
+
+  await test('validateProjectPath ignores allowNonRepo when path IS a git repo', () => {
+    // Defense in depth: if the path is a real git repo, confirmation logic is irrelevant.
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp, { allowNonRepo: true, confirmToken: 'whatever', isValidToken: () => false });
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -11070,6 +11229,8 @@ async function main() {
     await testBranchSanitization();
     await testSanitizePath();
     await testValidatePid();
+    await testValidateProjectName();
+    await testValidateProjectPath();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();

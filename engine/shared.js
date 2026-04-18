@@ -1029,6 +1029,82 @@ function sanitizeBranch(name) {
   return String(name).replace(/[^a-zA-Z0-9._\-\/]/g, '-').slice(0, 200);
 }
 
+// ── Project Name / Path Validation (SEC-04 / SEC-05) ─────────────────────────
+// Enforced at API boundaries (e.g. POST /api/projects/add). Callers that skip
+// these validators leak caller-controlled strings into worktree paths, config
+// keys, and shell invocations — never bypass them for "internal" callers.
+
+const PROJECT_NAME_RE = /^[a-zA-Z0-9_\-]{1,64}$/;
+
+function _httpError(status, message, extra) {
+  const err = new Error(message);
+  err.statusCode = status;
+  if (extra) Object.assign(err, extra);
+  return err;
+}
+
+/**
+ * Validate a project name against a strict allowlist before it ever reaches
+ * filesystem paths, config keys, or shell arguments.
+ *
+ * Allowlist: `/^[a-zA-Z0-9_\-]{1,64}$/` (letters, digits, underscore, hyphen).
+ * Rejects anything else — path separators, dots, whitespace, shell
+ * metacharacters, null bytes. Returns the validated name; throws a 400 Error.
+ */
+function validateProjectName(name) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw _httpError(400, 'Invalid project name: name is required and must be a string');
+  }
+  if (name.length > 64) {
+    throw _httpError(400, `Invalid project name: "${name}" is ${name.length} characters (max 64)`);
+  }
+  if (!PROJECT_NAME_RE.test(name)) {
+    throw _httpError(400, `Invalid project name: "${name}". Must match /^[a-zA-Z0-9_\\-]{1,64}$/ (letters, digits, underscore, hyphen; no path separators, spaces, or shell metacharacters)`);
+  }
+  return name;
+}
+
+/**
+ * Validate a project path before it is persisted to config.json or used as a
+ * worktree parent.
+ *
+ * Default requires `fs.existsSync(path.join(pathStr, '.git'))` — accepts either
+ * a `.git` directory (normal repo) or a `.git` file (worktree pointer).
+ *
+ * To register a non-repo path, the caller must pass BOTH
+ *   `allowNonRepo: true`
+ *   `confirmToken: <uuid>`
+ * and supply an `isValidToken(token)` callback that consumes/validates the
+ * token against a freshly generated server-side token. This prevents a
+ * single POST from silently creating a broken project entry and forces the
+ * client through an explicit confirmation step (D-5: Rebecca / UUID vote).
+ *
+ * Returns the resolved absolute path; throws a 400 Error (with
+ * `needsConfirmation: true` when the only problem is the missing `.git`).
+ */
+function validateProjectPath(pathStr, options = {}) {
+  if (typeof pathStr !== 'string' || pathStr.length === 0) {
+    throw _httpError(400, 'Invalid project path: path is required and must be a string');
+  }
+  const resolved = path.resolve(pathStr);
+  if (!fs.existsSync(resolved)) {
+    throw _httpError(400, `Invalid project path: directory does not exist: ${resolved}`);
+  }
+  const gitMarker = path.join(resolved, '.git');
+  if (fs.existsSync(gitMarker)) return resolved; // .git dir OR worktree .git file
+
+  // Not a git repo — only accept with explicit confirmation.
+  const { allowNonRepo, confirmToken, isValidToken } = options;
+  if (allowNonRepo === true && typeof confirmToken === 'string' && typeof isValidToken === 'function' && isValidToken(confirmToken)) {
+    return resolved;
+  }
+  throw _httpError(
+    400,
+    `Invalid project path: "${resolved}" is not a git repository (no .git directory or file). Retry with allowNonRepo:true and a confirmToken from POST /api/projects/confirm-token to override.`,
+    { needsConfirmation: true },
+  );
+}
+
 // ── Skill Frontmatter Parser ─────────────────────────────────────────────────
 
 function parseSkillFrontmatter(content, filename) {
@@ -1631,6 +1707,8 @@ module.exports = {
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
+  validateProjectName,
+  validateProjectPath,
   validatePid,
   parseSkillFrontmatter,
   sleepMs,
