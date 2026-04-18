@@ -563,6 +563,165 @@ async function testValidatePid() {
   });
 }
 
+async function testValidateProjectName() {
+  console.log('\n── shared.js — Project Name Validation (SEC-04) ──');
+
+  await test('validateProjectName accepts valid names', () => {
+    assert.strictEqual(shared.validateProjectName('minions'), 'minions');
+    assert.strictEqual(shared.validateProjectName('my-project'), 'my-project');
+    assert.strictEqual(shared.validateProjectName('my_project'), 'my_project');
+    assert.strictEqual(shared.validateProjectName('Project123'), 'Project123');
+    assert.strictEqual(shared.validateProjectName('a'), 'a');
+    // 64-char max is accepted
+    const max = 'a'.repeat(64);
+    assert.strictEqual(shared.validateProjectName(max), max);
+  });
+
+  await test('validateProjectName rejects empty / non-string', () => {
+    assert.throws(() => shared.validateProjectName(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(123), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName({}), /required|Invalid/);
+  });
+
+  await test('validateProjectName rejects names longer than 64 characters', () => {
+    const tooLong = 'a'.repeat(65);
+    const err = assert.throws(() => shared.validateProjectName(tooLong), /Invalid project name/);
+    // Violating name should appear in the error message
+    try { shared.validateProjectName(tooLong); } catch (e) {
+      assert.ok(e.message.includes(tooLong) || e.message.includes('65'), `expected message to cite violating name; got: ${e.message}`);
+      assert.strictEqual(e.statusCode, 400, 'should carry HTTP 400 statusCode');
+    }
+  });
+
+  await test('validateProjectName rejects path-traversal characters', () => {
+    assert.throws(() => shared.validateProjectName('../etc/passwd'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('..'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo/bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\\bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName rejects shell metacharacters', () => {
+    assert.throws(() => shared.validateProjectName('foo;rm -rf /'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo$(whoami)'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo`id`'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo|cat'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo&bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo.bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\0bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName error carries statusCode 400 and violating name', () => {
+    try {
+      shared.validateProjectName('bad/name');
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(e.message.includes('bad/name'), `expected violating name in error; got: ${e.message}`);
+    }
+  });
+}
+
+async function testValidateProjectPath() {
+  console.log('\n── shared.js — Project Path Validation (SEC-05) ──');
+
+  await test('validateProjectPath accepts path containing .git directory', () => {
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath accepts path containing .git file (worktree)', () => {
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /some/main/repo/.git/worktrees/wt');
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath rejects non-existent path', () => {
+    const missing = path.join(os.tmpdir(), 'minions-test-nonexistent-' + Date.now());
+    try {
+      shared.validateProjectPath(missing);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/does not exist|not found/i.test(e.message), `expected not-found message; got: ${e.message}`);
+    }
+  });
+
+  await test('validateProjectPath rejects empty / non-string path', () => {
+    assert.throws(() => shared.validateProjectPath(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(123), /required|Invalid/);
+  });
+
+  await test('validateProjectPath rejects non-repo path without confirmation', () => {
+    const tmp = createTmpDir();
+    try {
+      shared.validateProjectPath(tmp);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/not a git repository|\.git/i.test(e.message), `expected non-repo error; got: ${e.message}`);
+      assert.strictEqual(e.needsConfirmation, true);
+    }
+  });
+
+  await test('validateProjectPath rejects non-repo path when allowNonRepo missing', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { confirmToken: 'anything', isValidToken: () => true }),
+      /not a git repository/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with wrong confirmation token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    assert.throws(
+      () => shared.validateProjectPath(tmp, {
+        allowNonRepo: true,
+        confirmToken: 'wrong-token',
+        isValidToken: t => t === validToken,
+      }),
+      /not a git repository|invalid.*token/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with allowNonRepo but no token', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { allowNonRepo: true, isValidToken: () => true }),
+      /not a git repository|token/i,
+    );
+  });
+
+  await test('validateProjectPath accepts non-repo path with allowNonRepo + valid token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    let consumedToken = null;
+    const result = shared.validateProjectPath(tmp, {
+      allowNonRepo: true,
+      confirmToken: validToken,
+      isValidToken: t => { consumedToken = t; return t === validToken; },
+    });
+    assert.strictEqual(result, path.resolve(tmp));
+    assert.strictEqual(consumedToken, validToken, 'validator should have invoked isValidToken with the supplied token');
+  });
+
+  await test('validateProjectPath ignores allowNonRepo when path IS a git repo', () => {
+    // Defense in depth: if the path is a real git repo, confirmation logic is irrelevant.
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp, { allowNonRepo: true, confirmToken: 'whatever', isValidToken: () => false });
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -3730,6 +3889,216 @@ async function testStateIntegrity() {
     } finally {
       restore();
     }
+  });
+
+  // ─── SEC-09: redactSecrets() — token/JWT/azureauth redaction ──────────────
+  await test('redactSecrets is exported from shared.js', () => {
+    assert.strictEqual(typeof shared.redactSecrets, 'function',
+      'redactSecrets should be exported from engine/shared.js');
+  });
+
+  await test('redactSecrets replaces Bearer tokens with [REDACTED]', () => {
+    const input = 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.payload.sig';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('Bearer [REDACTED]'),
+      `Bearer token should be replaced with "Bearer [REDACTED]", got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw token payload must not survive redaction');
+    // Surrounding context preserved
+    assert.ok(out.startsWith('Authorization: Bearer [REDACTED]'),
+      'surrounding context ("Authorization:") should be preserved');
+  });
+
+  await test('redactSecrets handles lowercase bearer too (boundary case)', () => {
+    // Spec regex is case-sensitive on `Bearer` — documents the contract
+    const input = 'bearer abc';
+    assert.strictEqual(shared.redactSecrets(input), 'bearer abc',
+      'lowercase "bearer" is NOT redacted (regex is case-sensitive, by spec)');
+  });
+
+  await test('redactSecrets does not redact short Bearer values (< 20 chars)', () => {
+    const input = 'Bearer short';
+    assert.strictEqual(shared.redactSecrets(input), 'Bearer short',
+      'short values after Bearer should not match the 20+ char token regex');
+  });
+
+  await test('redactSecrets replaces JWT-shaped strings with [REDACTED_JWT]', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT';
+    const input = `got response token=${jwt} end`;
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      `JWT should be replaced with [REDACTED_JWT], got: ${out}`);
+    assert.ok(!out.includes('SflKxwRJSMeKKF2QT'),
+      'JWT signature segment must not survive redaction');
+    assert.ok(out.startsWith('got response token=') && out.endsWith(' end'),
+      'JWT redaction must preserve surrounding context');
+  });
+
+  await test('redactSecrets handles 2-segment JWT shape', () => {
+    const two = 'eyAAAAAAAAAA.bbbbbbbbbbbbb';
+    const out = shared.redactSecrets(`prefix ${two} suffix`);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      '2-segment JWT shape (header.payload) should also match');
+    assert.ok(!out.includes('bbbbbbbbbbbbb'), 'JWT payload must not survive');
+  });
+
+  await test('redactSecrets replaces azureauth "token" JSON key output', () => {
+    const input = '{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.aaaaa.bbbbb","expiresOn":"2026-05-01"}';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_AZUREAUTH]'),
+      `azureauth-shaped "token" JSON field should be replaced, got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw azureauth token value must not survive');
+    // Surrounding context preserved — expiresOn still visible
+    assert.ok(out.includes('"expiresOn":"2026-05-01"'),
+      'non-sensitive surrounding context (expiresOn) should be preserved');
+  });
+
+  await test('redactSecrets is a no-op on clean strings', () => {
+    const clean = 'PR 1234 status: approved — build passing';
+    assert.strictEqual(shared.redactSecrets(clean), clean,
+      'clean string should pass through unchanged');
+  });
+
+  await test('redactSecrets is a no-op on empty / non-string primitives', () => {
+    assert.strictEqual(shared.redactSecrets(''), '', 'empty string passes through');
+    assert.strictEqual(shared.redactSecrets(42), 42, 'numbers pass through');
+    assert.strictEqual(shared.redactSecrets(true), true, 'booleans pass through');
+    assert.strictEqual(shared.redactSecrets(null), null, 'null passes through');
+    assert.strictEqual(shared.redactSecrets(undefined), undefined, 'undefined passes through');
+  });
+
+  await test('redactSecrets recurses into nested objects', () => {
+    const input = {
+      level: 'warn',
+      message: 'auth failed: Bearer eyJlonglongtoken_aaaaaaaaaaaaaaaaaaa',
+      context: {
+        headers: { Authorization: 'Bearer eyJotherlongtoken_bbbbbbbbbbbbbbb' },
+        raw: '{"token":"eyJstdoutdumpAAAAAAAAAAAAAAAA.payload.sig"}',
+      },
+      safe: 42,
+    };
+    const out = shared.redactSecrets(input);
+    assert.ok(out.message.includes('Bearer [REDACTED]'), 'top-level string redacted');
+    assert.ok(out.context.headers.Authorization.includes('Bearer [REDACTED]'),
+      'nested object string redacted');
+    assert.ok(out.context.raw.includes('[REDACTED_AZUREAUTH]'),
+      'deeply nested azureauth payload redacted');
+    assert.strictEqual(out.safe, 42, 'non-string primitives preserved');
+    assert.strictEqual(out.level, 'warn', 'clean strings preserved verbatim');
+    // Original object NOT mutated
+    assert.ok(input.message.includes('eyJlonglongtoken'),
+      'redactSecrets must not mutate the input object');
+  });
+
+  await test('redactSecrets recurses into arrays', () => {
+    const input = ['Bearer eyJonelongtoken_aaaaaaaaaaaaaaaa', 'clean', { t: 'Bearer eyJtwolongtoken_bbbbbbbbbbb' }];
+    const out = shared.redactSecrets(input);
+    assert.ok(Array.isArray(out), 'array stays an array');
+    assert.ok(out[0].includes('Bearer [REDACTED]'), 'array[0] redacted');
+    assert.strictEqual(out[1], 'clean', 'clean array element untouched');
+    assert.ok(out[2].t.includes('Bearer [REDACTED]'), 'object inside array redacted');
+  });
+
+  await test('redactSecrets handles multiple occurrences in one string', () => {
+    const input = 'req1: Bearer eyJfirsttoken_aaaaaaaaaaaaaa / req2: Bearer eyJsecondtoken_bbbbbbbbbbbbbb';
+    const out = shared.redactSecrets(input);
+    const matches = out.match(/Bearer \[REDACTED\]/g) || [];
+    assert.strictEqual(matches.length, 2, 'both Bearer tokens should be redacted');
+    assert.ok(!/eyJfirst|eyJsecond/.test(out), 'no raw token substrings remain');
+  });
+
+  await test('redactSecrets prefers Bearer replacement over JWT when both match', () => {
+    // A JWT after Bearer should yield "Bearer [REDACTED]", not "Bearer [REDACTED_JWT]"
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureAAA';
+    const out = shared.redactSecrets(`Bearer ${jwt}`);
+    assert.strictEqual(out, 'Bearer [REDACTED]',
+      'Bearer + JWT should produce a single "Bearer [REDACTED]", not a double-redacted form');
+  });
+
+  await test('log.json writes are redacted end-to-end', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('warn', 'Live review check failed: Error: Command failed: curl -H "Authorization: Bearer eyJ0eXAiOiJKV1QLongTokenAAAAAAAAAA.payload.signature"');
+      s.log('info', 'fetched azureauth stdout: {"token":"eyJfreshLongTokenBBBBBBBBBB.payload.sig","expiresOn":"2026-05-01"}');
+      s.log('info', 'normal message without secrets');
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const messages = logData.map(e => e.message).join('\n');
+
+      assert.ok(messages.includes('Bearer [REDACTED]'),
+        'log.json should contain Bearer [REDACTED] sentinel');
+      assert.ok(messages.includes('[REDACTED_AZUREAUTH]'),
+        'log.json should contain [REDACTED_AZUREAUTH] sentinel');
+      assert.ok(!messages.includes('eyJ0eXAiOiJKV1QLongToken'),
+        'raw Bearer token must not appear in log.json');
+      assert.ok(!messages.includes('eyJfreshLongToken'),
+        'raw azureauth token must not appear in log.json');
+      assert.ok(messages.includes('normal message without secrets'),
+        'clean messages should pass through unchanged');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('log.json redacts string fields in meta payload', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('debug', 'request failed', {
+        url: 'https://dev.azure.com/org/project',
+        header: 'Bearer eyJlongmetatoken_cccccccccccccc',
+        code: 401,
+      });
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const entry = logData.find(e => e.message === 'request failed');
+      assert.ok(entry, 'the logged entry should be persisted');
+      assert.strictEqual(entry.code, 401, 'non-string meta fields preserved');
+      assert.strictEqual(entry.url, 'https://dev.azure.com/org/project', 'clean URL preserved');
+      assert.ok(entry.header && entry.header.includes('Bearer [REDACTED]'),
+        'sensitive meta string redacted');
+      assert.ok(!entry.header || !entry.header.includes('eyJlongmetatoken'),
+        'raw token must not survive in meta field');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('engine/ado.js has no raw console.log/console.error token leaks', () => {
+    // SEC-09: acceptance criterion — grep verifies no raw token-logging console calls
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Strip line comments so documentation references don't trip the guard
+    const stripped = src.split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    // Match console.log / console.error / console.warn / console.info with token-ish content
+    const leakPattern = /console\.(log|error|warn|info)\s*\([^)]*(Bearer|token|azureauth|Authorization)/i;
+    assert.ok(!leakPattern.test(stripped),
+      'engine/ado.js must not call console.* with raw token/Bearer/azureauth/Authorization strings — use the log() helper so redaction applies');
+  });
+
+  await test('_flushLogBuffer wires redactSecrets before persistence', () => {
+    // Source-level guardrail: ensures future refactors don't bypass redaction at the write site
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('redactSecrets'),
+      'engine/shared.js must reference redactSecrets');
+    // The flush path must invoke redaction (either via map() at flush or via log() at push)
+    const flushBlock = src.slice(src.indexOf('function _flushLogBuffer'),
+      src.indexOf('function flushLogs'));
+    const logBlock = src.slice(src.indexOf('function log('),
+      src.indexOf('function _flushLogBuffer'));
+    assert.ok(flushBlock.includes('redactSecrets') || logBlock.includes('redactSecrets'),
+      'redactSecrets must be invoked either in log() push-time or _flushLogBuffer() flush-time');
   });
 
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
@@ -9139,6 +9508,33 @@ async function testRecentFeatures() {
       'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
+  await test('PR link enrichment always overrides title from remote (closes #1283)', () => {
+    // Find the link handler — starts at the route path and runs to '{ method:' for next route
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    assert.ok(start > 0, 'link handler must exist');
+    // Scan forward until the next route declaration
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    assert.ok(next > start, 'delete handler must come after link handler');
+    const linkHandler = dashSrc.slice(start, next);
+
+    // Enrichment must call fetchAdoPrMetadata or gh api to get remote metadata
+    assert.ok(
+      linkHandler.includes('fetchAdoPrMetadata') || linkHandler.includes('gh api'),
+      'link handler must call remote API to fetch PR metadata'
+    );
+    // Title override must NOT be gated on user-supplied title being empty — real title always wins
+    assert.ok(
+      !/if\s*\(\s*!title\s*&&\s*prData\.title\s*\)/.test(linkHandler),
+      'link handler must NOT gate title override on !title — remote title must always win over user placeholder (closes #1283)'
+    );
+    // Title override must still exist, just unconditional on prData.title presence
+    assert.ok(
+      /prData\.title\s*\)\s*pr\.title\s*=/.test(linkHandler)
+        || /pr\.title\s*=\s*prData\.title/.test(linkHandler),
+      'link handler must still assign pr.title from prData.title when remote returns a title'
+    );
+  });
+
   // Plan creation from dashboard
   await test('POST /api/plans/create endpoint exists', () => {
     assert.ok(dashSrc.includes('/api/plans/create'),
@@ -11184,6 +11580,182 @@ async function testSchedulerCronParsing() {
   });
 }
 
+// ─── scheduler.js — shouldRunNow & dispatch-time persistence ────────────────
+// W-mo3zu273f8tm: scheduler fires same cron twice in one minute when first
+// dispatch fails fast — the 55s elapsed-time guard did not cover the full
+// 60-second cron minute window. Fix: compare calendar-minute buckets so any
+// two fires within the same cron minute are collapsed to one.
+
+async function testSchedulerSameMinuteGuard() {
+  console.log('\n── scheduler.js — same-minute guard (W-mo3zu273f8tm) ──');
+
+  // Regression: two ticks 58s apart inside the same cron minute (e.g. 05:00:01
+  // and 05:00:59) used to both fire because 58000 < 55000 is false. The guard
+  // must now skip the second call regardless of the 55s threshold.
+  await test('shouldRunNow skips second fire within the same calendar minute (58s apart)', () => {
+    const schedule = { cron: '* * *' }; // matches every minute — forces guard to do the work
+    // Freeze Date.now / new Date() to a specific second inside the cron minute
+    const nowMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59
+    const lastMs = new Date(2026, 3, 18, 5, 0, 1).getTime(); // 05:00:01 — 58s earlier
+    const origNow = Date.now;
+    const origDate = global.Date;
+    try {
+      // Patch Date so both `new Date()` (no args) and Date.now() return our fixed "now".
+      // Calls with args (e.g. new Date(isoString)) must still work normally.
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, false,
+        'second fire within the same cron minute must be suppressed even when elapsed > 55s');
+    } finally {
+      global.Date = origDate;
+      Date.now = origNow;
+    }
+  });
+
+  // Positive: crossing a minute boundary must still allow firing
+  await test('shouldRunNow allows firing when now is in a different calendar minute than lastRun', () => {
+    const schedule = { cron: '* * *' };
+    const nowMs = new Date(2026, 3, 18, 5, 1, 0).getTime(); // 05:01:00
+    const lastMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59 — 1s earlier, different minute
+    const origDate = global.Date;
+    try {
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, true,
+        'crossing the minute boundary must allow firing, even when elapsed < 55s');
+    } finally {
+      global.Date = origDate;
+    }
+  });
+
+  // Source-level guard: the shouldRunNow function must compare calendar-minute
+  // buckets rather than rely solely on a 55s elapsed-time check.
+  await test('shouldRunNow source uses calendar-minute comparison for same-cron-window dedup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function shouldRunNow'), src.indexOf('\nfunction ', src.indexOf('function shouldRunNow') + 1));
+    assert.ok(fn.includes('getMinutes') && fn.includes('getHours'),
+      'shouldRunNow must compare calendar-minute (hours + minutes + date) so any two fires in the same cron minute are collapsed');
+  });
+}
+
+async function testSchedulerDispatchTimePersistence() {
+  console.log('\n── scheduler.js — dispatch-time persistence (W-mo3zu273f8tm) ──');
+
+  // Helper: snapshot + reset schedule-runs.json AND its .backup sidecar.
+  // safeJson auto-restores from a .backup file when the main file is missing,
+  // so both must be cleared for a true blank slate inside tests.
+  function _snapshotAndClearScheduleRuns(realPath) {
+    const backupPath = realPath + '.backup';
+    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
+    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+    try { fs.unlinkSync(realPath); } catch {}
+    try { fs.unlinkSync(backupPath); } catch {}
+    return function restoreFiles() {
+      if (snapshot) fs.writeFileSync(realPath, snapshot);
+      else { try { fs.unlinkSync(realPath); } catch {} }
+      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+      else { try { fs.unlinkSync(backupPath); } catch {} }
+    };
+  }
+
+  // Behavioral: discoverScheduledWork records both lastRun AND lastWorkItemId
+  // at dispatch time so the run is durable even if the dispatched work item
+  // crashes before lifecycle.runPostCompletionHooks can update the file.
+  await test('discoverScheduledWork writes lastRun and lastWorkItemId at dispatch time', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // scheduler.js resolves SCHEDULE_RUNS_PATH once at require time relative
+      // to __dirname, so we can't redirect via MINIONS_TEST_DIR alone. Snapshot
+      // and clear the real file (and its .backup sidecar) for this test.
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-dispatch-time-persistence',
+            cron: '* * *', // matches now
+            title: 'dispatch-time persistence regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const work = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1, 'schedule matching now should produce one work item');
+        const wi = work[0];
+        const runs = shared.safeJson(realPath) || {};
+        const entry = runs['test-dispatch-time-persistence'];
+        assert.ok(entry && typeof entry === 'object',
+          'schedule-runs entry must be written at dispatch time as an object');
+        assert.ok(entry.lastRun,
+          'lastRun timestamp must be written at dispatch time (not only on completion)');
+        assert.strictEqual(entry.lastWorkItemId, wi.id,
+          'lastWorkItemId must be written at dispatch time so the run is durable across crashes');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Regression: back-to-back calls to discoverScheduledWork within the same
+  // cron minute must only produce the schedule once — the dispatch-time write
+  // plus the same-minute guard together prevent the duplicate-fire bug.
+  await test('discoverScheduledWork does not double-fire within the same cron minute', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-no-double-fire',
+            cron: '* * *',
+            title: 'no-double-fire regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const first = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(first.length, 1, 'first call should fire the schedule');
+        const second = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(second.length, 0,
+          'second call within the same cron minute must not fire again');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Defense-in-depth: the lifecycle completion path must preserve lastRun and
+  // lastWorkItemId from dispatch time (not clobber them with fresh values).
+  await test('lifecycle completion update preserves dispatch-time lastRun', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const block = src.slice(src.indexOf('schedule-runs.json'), src.indexOf('schedule-runs.json') + 1000);
+    assert.ok(block.includes('lastRun:'),
+      'completion update must preserve lastRun — never blindly overwrite it');
+    // It must read the existing lastRun before writing, not default to ts() unconditionally.
+    assert.ok(block.includes('runs[scheduleId]?.lastRun') || block.includes("runs[scheduleId] && runs[scheduleId].lastRun"),
+      'completion update must read existing lastRun so the dispatch-time value is preserved');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -11200,6 +11772,8 @@ async function main() {
     await testBuildSecurityHeaders();
     await testSanitizePath();
     await testValidatePid();
+    await testValidateProjectName();
+    await testValidateProjectPath();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
@@ -11350,6 +11924,8 @@ async function main() {
 
     // Scheduler tests
     await testSchedulerCronParsing();
+    await testSchedulerSameMinuteGuard();
+    await testSchedulerDispatchTimePersistence();
 
     // P-b8c7d6e5: shared imports refactor (no circular requires)
     await testSharedImportsNoCircular();
@@ -14483,6 +15059,65 @@ async function testDashboardAuditXss() {
       'removePinnedNote should not use JS string interpolation in onclick');
     assert.ok(src.includes('data-pin-title'), 'should use data-pin-title attribute');
     assert.ok(src.includes('this.dataset.pinTitle'), 'should read from dataset');
+  });
+
+  await test('submitPinnedNote optimistically renders new entry before awaiting fetch (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    // Extract submitPinnedNote body up to next function or end
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    const renderPos = body.indexOf('renderPinned(');
+    const fetchPos = body.indexOf('fetch(');
+    assert.ok(renderPos > 0, 'submitPinnedNote must call renderPinned for optimistic update');
+    assert.ok(fetchPos > 0, 'submitPinnedNote must call fetch to persist');
+    assert.ok(renderPos < fetchPos,
+      'renderPinned must fire BEFORE fetch — manual entry should appear in list immediately (optimistic)');
+    assert.ok(body.includes('window._pinnedEntries'),
+      'must update window._pinnedEntries with new entry optimistically so subsequent renders preserve it');
+  });
+
+  await test('submitPinnedNote reverts optimistic state when POST /api/pinned fails (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    // Must capture a snapshot of previous entries so we can revert on failure
+    assert.ok(/prevEntries|previousEntries|priorEntries/.test(body),
+      'must snapshot previous entries for revert on failure');
+    // Must re-render with the revert snapshot in at least one error branch
+    const renderCalls = (body.match(/renderPinned\(/g) || []).length;
+    assert.ok(renderCalls >= 2,
+      'must re-render at least twice: optimistic + revert on failure');
+  });
+
+  await test('POST /api/pinned invalidates slow-state cache so newly pinned entry appears on next status fetch (closes #1295)', () => {
+    // Pinned entries live in _slowState (60s TTL). Without invalidating slow state,
+    // the dashboard would show stale pinned data for up to 60 seconds after pinning.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const addIdx = src.indexOf("'POST', path: '/api/pinned'");
+    assert.ok(addIdx > 0, 'POST /api/pinned handler must exist');
+    // Handler body runs to the next top-level route entry
+    const block = src.slice(addIdx, addIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(block),
+      'POST /api/pinned must call invalidateStatusCache({ includeSlow: true }) — pinned lives in slow state');
+
+    const remIdx = src.indexOf("'/api/pinned/remove'");
+    assert.ok(remIdx > 0, 'POST /api/pinned/remove handler must exist');
+    const remBlock = src.slice(remIdx, remIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(remBlock),
+      'POST /api/pinned/remove must call invalidateStatusCache({ includeSlow: true }) so unpin is immediate');
+  });
+
+  await test('invalidateStatusCache supports includeSlow option for user mutations of slow-state data', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const m = src.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
+    assert.ok(m, 'invalidateStatusCache function must exist');
+    const body = m[0];
+    assert.ok(/includeSlow/.test(body),
+      'invalidateStatusCache should accept an includeSlow option to clear _slowState for user-initiated mutations');
+    assert.ok(/_slowState\s*=\s*null/.test(body),
+      'invalidateStatusCache must be able to clear _slowState when includeSlow is set');
   });
 
   await test('render-inbox.js uses data attributes for item name in onclick', () => {
@@ -18476,6 +19111,188 @@ async function testBuildErrorLogFeature() {
     assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
       'Should clear buildErrorLog when PR is merged/abandoned');
   });
+
+  // ─── Regression guard #1232: preserve buildErrorLog through none/running ───
+  //
+  // When a fix agent pushes a new commit, CI status goes failing → none (builds
+  // queued but not started) or failing → running. If buildErrorLog is cleared
+  // on either transition and CI subsequently fails again, the next fix agent
+  // is dispatched blind with no error context. Only the `passing` transition
+  // represents actual recovery — none/running are transient.
+
+  // Extract the transition-handling block (between the "buildStatus !== 'failing'"
+  // guard and its closing brace) so we can assert what happens there.
+  const extractTransitionBlock = (src) => {
+    const openIdx = src.indexOf("if (buildStatus !== 'failing') {");
+    assert.ok(openIdx > 0, 'Source must contain the non-failing transition guard');
+    // Walk from openIdx forward, tracking brace depth starting at the opening `{`
+    const braceStart = src.indexOf('{', openIdx);
+    let depth = 1;
+    let i = braceStart + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    return src.slice(braceStart, i);
+  };
+
+  await test('ado.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    // Must guard buildErrorLog delete behind a passing check so none/running preserve it
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('github.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('ado.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  await test('github.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  // Behavioral simulation — document the expected state transitions so the
+  // intent is explicit, not just the source pattern.
+  // Mirrors the post-fix poller logic:
+  //   if (buildStatus !== 'failing') {
+  //     delete pr._buildFailNotified;
+  //     if (buildStatus === 'passing') {
+  //       delete pr.buildErrorLog;
+  //       if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+  //     }
+  //   }
+  const applyNonFailingCleanup = (pr, newStatus) => {
+    if (newStatus === 'failing') return;
+    delete pr._buildFailNotified;
+    if (newStatus === 'passing') {
+      delete pr.buildErrorLog;
+      if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+    }
+  };
+
+  await test('behavioral: failing → running preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-a', buildStatus: 'failing',
+      buildErrorLog: 'compile error: missing semicolon',
+      buildFixAttempts: 1, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'running');
+    assert.strictEqual(pr.buildErrorLog, 'compile error: missing semicolon',
+      'buildErrorLog must survive the transient running state so the next fix agent has context');
+    assert.strictEqual(pr.buildFixAttempts, 1,
+      'buildFixAttempts must survive running so the escalation cap is not defeated');
+    assert.strictEqual(pr._buildFailNotified, undefined,
+      '_buildFailNotified is cleared on any non-failing transition so new failures re-notify');
+  });
+
+  await test('behavioral: failing → none preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-b', buildStatus: 'failing',
+      buildErrorLog: 'ETIMEDOUT',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'none');
+    assert.strictEqual(pr.buildErrorLog, 'ETIMEDOUT',
+      'buildErrorLog must survive the transient none state (new builds queued but not complete)');
+    assert.strictEqual(pr.buildFixAttempts, 2,
+      'buildFixAttempts must survive none so the escalation cap is not defeated');
+    assert.strictEqual(pr.buildFixEscalated, false, 'buildFixEscalated must survive none');
+  });
+
+  await test('behavioral: failing → passing clears buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-c', buildStatus: 'failing',
+      buildErrorLog: 'compile error',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'passing');
+    assert.strictEqual(pr.buildErrorLog, undefined, 'buildErrorLog must be cleared on true recovery');
+    assert.strictEqual(pr.buildFixAttempts, undefined, 'buildFixAttempts resets on true recovery');
+    assert.strictEqual(pr.buildFixEscalated, undefined, 'buildFixEscalated resets on true recovery');
+    assert.strictEqual(pr._buildFailNotified, undefined, '_buildFailNotified cleared');
+  });
+
+  // ─── Regression guard #1233: lastBuildCheck reflects actual poll time ──────
+  //
+  // Previously `lastBuildCheck` was written once at dispatch time and never
+  // refreshed, making debugging misleading ("build not checked in hours") when
+  // polling was in fact working. Both pollers must set pr.lastBuildCheck = ts()
+  // every time they talk to the build API.
+
+  await test('ado.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    // Must come AFTER the build query, before (or alongside) the buildStatus transition block
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('github.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('lastBuildCheck is returned as updated=true so mutateJsonFileLocked persists it (#1233)', () => {
+    // Both pollers rely on the callback returning a truthy value to trigger
+    // the merge-back in forEachActivePr. Setting pr.lastBuildCheck without
+    // flipping `updated = true` would leave the field in-memory only and it
+    // would never reach disk — defeating the debugging utility entirely.
+    const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    for (const [label, src] of [['ado.js', adoSrc], ['github.js', ghSrc]]) {
+      const idx = src.indexOf('pr.lastBuildCheck = ts()');
+      assert.ok(idx > 0, `${label}: must contain pr.lastBuildCheck = ts()`);
+      // Within the next ~200 chars we should see `updated = true;` so the
+      // merge-back fires. This is lightweight structural proof, not behavioral
+      // — but the behavioral contract is narrow (just a one-line write).
+      const after = src.slice(idx, idx + 200);
+      assert.ok(/updated\s*=\s*true/.test(after),
+        `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
+    }
+  });
 }
 
 // ─── spawnEngine state preservation (#564) ──────────────────────────────────
@@ -20191,6 +21008,35 @@ async function testPrReviewFixFlows() {
     assert.ok(voteLines.length > 0, 'checkLiveReviewStatus must extract votes from reviewers');
     assert.ok(voteLines.every(line => line.includes('.filter(')),
       'All votes extraction in checkLiveReviewStatus must filter undefined values');
+  });
+
+  // ── SEC-02: No curl shell-out in ado.js (token leak via process argv) ──
+
+  await test('ADO checkLiveReviewStatus uses adoFetch, not curl shell-out', () => {
+    const checkFn = adoSrc.slice(adoSrc.indexOf('async function checkLiveReviewStatus('), adoSrc.indexOf('\nasync function fetchAdoPrMetadata'));
+    assert.ok(!/curl\s/.test(checkFn),
+      'checkLiveReviewStatus must not shell out to curl (token would be exposed on argv)');
+    assert.ok(!checkFn.includes('execAsync('),
+      'checkLiveReviewStatus must not use execAsync (token would be exposed on argv)');
+    assert.ok(checkFn.includes('adoFetch('),
+      'checkLiveReviewStatus must use the in-process adoFetch wrapper');
+  });
+
+  await test('ADO ado.js has no curl shell-out in executable code', () => {
+    // Strip only comments (not string literals — curl shell-outs live inside template literals).
+    const stripped = adoSrc
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/\bcurl\b/.test(stripped),
+      'engine/ado.js must not reference curl outside comments (SEC-02: ADO bearer token leak via process argv)');
+  });
+
+  await test('adoFetch supports configurable timeout via opts.timeout', () => {
+    const adoFetchFn = adoSrc.slice(adoSrc.indexOf('async function adoFetch('), adoSrc.indexOf('\n/** Fetch raw text from ADO API'));
+    assert.ok(adoFetchFn.includes('opts.timeout') || adoFetchFn.includes('timeout ='),
+      'adoFetch should accept a timeout option so callers can override the 30s default');
+    assert.ok(adoFetchFn.includes('AbortSignal.timeout('),
+      'adoFetch should use AbortSignal.timeout() for request cancellation');
   });
 
   await test('GitHub checkLiveReviewStatus filters undefined state values from reviews', () => {
@@ -26710,12 +27556,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──
@@ -26828,7 +27680,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -27151,7 +28003,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -27221,12 +28073,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──
