@@ -27,6 +27,16 @@ let claudeBin;
 let claudeIsNative = false; // true = native binary, false = node cli.js
 const capsCachePath = path.join(__dirname, 'claude-caps.json');
 let _cacheHit = false;
+const isWin = process.platform === 'win32';
+
+// Probe a @anthropic-ai/claude-code package dir for the best binary: native exe > cli.js
+function _probeClaudePackage(pkgDir) {
+  const nativeBin = path.join(pkgDir, 'bin', isWin ? 'claude.exe' : 'claude');
+  if (fs.existsSync(nativeBin)) return { bin: nativeBin, native: true };
+  const cliJs = path.join(pkgDir, 'cli.js');
+  if (fs.existsSync(cliJs)) return { bin: cliJs, native: false };
+  return null;
+}
 
 // Fast path: use cached binary path if it still exists on disk
 const caps = safeJson(capsCachePath);
@@ -36,31 +46,21 @@ if (caps?.claudeBin && fs.existsSync(caps.claudeBin)) {
   _cacheHit = true;
 }
 
-// Strategy 1: Find `claude` on PATH, then resolve to the actual binary
-// Don't parse wrapper scripts — probe known binary locations relative to the wrapper's directory.
+// Strategy 1: Find `claude` on PATH, then probe known binary locations relative to the wrapper's directory
 if (!claudeBin) try {
-  const isWin = process.platform === 'win32';
   const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
   const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
   if (which) {
+    // On non-Windows under Git Bash/MSYS, `which` returns POSIX paths (/c/Users/...) — normalize
     const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
-    const baseDir = path.dirname(whichNative);
-    const ccPkg = path.join(baseDir, 'node_modules', '@anthropic-ai', 'claude-code');
-
-    // Probe in priority order: native binary > cli.js > wrapper itself
-    const nativeBin = path.join(ccPkg, 'bin', isWin ? 'claude.exe' : 'claude');
-    const cliJs = path.join(ccPkg, 'cli.js');
-
-    if (fs.existsSync(nativeBin)) {
-      claudeBin = nativeBin;
-      claudeIsNative = true;
-    } else if (fs.existsSync(cliJs)) {
-      claudeBin = cliJs;
+    const ccPkg = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code');
+    const found = _probeClaudePackage(ccPkg);
+    if (found) {
+      claudeBin = found.bin;
+      claudeIsNative = found.native;
     } else {
-      // Not an npm wrapper — check if the path itself is a native binary
-      // On Windows, only trust .exe files; shell scripts can't be spawned directly
-      const ext = path.extname(whichNative).toLowerCase();
-      if (!isWin || ext === '.exe') {
+      // Not an npm wrapper — on Windows, only trust .exe files (shell scripts can't be spawned directly)
+      if (!isWin || path.extname(whichNative).toLowerCase() === '.exe') {
         claudeBin = whichNative;
         claudeIsNative = true;
       }
@@ -69,9 +69,7 @@ if (!claudeBin) try {
 } catch { /* optional */ }
 
 // Strategy 2: Known node_modules locations (npm global installs)
-// Check for native binary first, then cli.js
 if (!claudeBin) {
-  const isWin = process.platform === 'win32';
   const prefixes = [
     process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code') : '',
     process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code') : '',
@@ -84,10 +82,8 @@ if (!claudeBin) {
   ].filter(Boolean);
   for (const pkg of prefixes) {
     try {
-      const nativeBin = path.join(pkg, 'bin', isWin ? 'claude.exe' : 'claude');
-      if (fs.existsSync(nativeBin)) { claudeBin = nativeBin; claudeIsNative = true; break; }
-      const cliJs = path.join(pkg, 'cli.js');
-      if (fs.existsSync(cliJs)) { claudeBin = cliJs; break; }
+      const found = _probeClaudePackage(pkg);
+      if (found) { claudeBin = found.bin; claudeIsNative = found.native; break; }
     } catch {}
   }
 }
@@ -96,8 +92,8 @@ if (!claudeBin) {
 if (!claudeBin) {
   try {
     const globalRoot = exec('npm root -g', { encoding: 'utf8', env, timeout: 10000 }).trim();
-    const candidate = path.join(globalRoot, '@anthropic-ai', 'claude-code', 'cli.js');
-    if (fs.existsSync(candidate)) claudeBin = candidate;
+    const found = _probeClaudePackage(path.join(globalRoot, '@anthropic-ai', 'claude-code'));
+    if (found) { claudeBin = found.bin; claudeIsNative = found.native; }
   } catch { /* optional */ }
 }
 
