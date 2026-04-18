@@ -488,7 +488,9 @@ function renderPrdProgress(prog) {
   }
 
   function renderE2eSection(planFile) {
-    const prs = e2eByPlan[planFile] || [];
+    // Filter out abandoned E2E PRs — superseded aggregate branches should not
+    // linger in the E2E section after their constituents merged individually.
+    const prs = (e2eByPlan[planFile] || []).filter(pr => pr.status !== 'abandoned');
     const guide = guideByPlan[planFile];
     if (prs.length === 0 && !guide) return '';
     let html = '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">';
