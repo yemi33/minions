@@ -475,6 +475,20 @@ async function testParseStreamJsonOutput() {
     assert.strictEqual(text.length, 50);
   });
 
+  await test('parseStreamJsonOutput keeps tail, not head, when maxTextLength is set (#1234)', () => {
+    // Regression: review agents write long findings with VERDICT markers at the
+    // end; slicing from head dropped the verdict, causing parseReviewVerdict to
+    // return null and the engine to re-dispatch the review up to maxRetries times.
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"result","result":"' + body + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(text.length, 500);
+    assert.ok(text.includes('VERDICT: APPROVE'),
+      'tail slice must preserve VERDICT marker at end of output');
+    assert.ok(!text.startsWith('PREAMBLE_'),
+      'tail slice must drop the preamble, not the tail');
+  });
+
   await test('parseStreamJsonOutput finds result scanning from end', () => {
     const lines = [];
     for (let i = 0; i < 100; i++) lines.push(`{"type":"assistant","message":"line ${i}"}`);
@@ -19657,6 +19671,24 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(parseReviewVerdict(null), null);
     assert.strictEqual(parseReviewVerdict(''), null);
     assert.strictEqual(parseReviewVerdict('This is just a comment, no verdict'), null);
+  });
+
+  await test('parseAgentOutput preserves VERDICT from long review output (#1234)', () => {
+    // Regression: review summaries with VERDICT at the end were truncated by
+    // parseAgentOutput's 2000-char slice from head, so parseReviewVerdict(null)
+    // re-queued the WI up to maxRetries times even on successful completion.
+    const { parseAgentOutput, parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    const longBody =
+      '# Review of PR #1234\n\n' +
+      'Walked through every changed file and checked the logic.\n'.repeat(80) +
+      'Ran the tests locally: 2201 passing, 0 failing.\n'.repeat(20) +
+      '\n## Summary\n\nLooks good overall.\n\nVERDICT: APPROVE\n';
+    assert.ok(longBody.length > 2000, 'test fixture must exceed the slice window to be meaningful');
+    const raw = JSON.stringify({ type: 'result', result: longBody, session_id: 'abc' });
+    const { resultSummary } = parseAgentOutput(raw);
+    assert.ok(resultSummary.includes('VERDICT: APPROVE'),
+      `resultSummary lost the VERDICT marker (got tail: ...${resultSummary.slice(-80)})`);
+    assert.strictEqual(parseReviewVerdict(resultSummary), 'approved');
   });
 
   await test('updatePrAfterReview falls back to verdict parsing when live check is pending', () => {
