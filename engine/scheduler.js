@@ -24,9 +24,28 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, mutateJsonFileLocked, ts, WI_STATUS } = shared;
+const { safeJson, safeWrite, mutateJsonFileLocked, ts, dateStamp, WI_STATUS } = shared;
 
 const SCHEDULE_RUNS_PATH = path.join(__dirname, 'schedule-runs.json');
+
+/**
+ * Substitute schedule-time template variables in a string.
+ * Currently supports:
+ *   {{date}} — today's date as YYYY-MM-DD (UTC, via dateStamp())
+ *
+ * Downstream playbook rendering (engine/playbook.js) is a single-pass replace,
+ * so any {{date}} embedded in a schedule's title/description would survive
+ * substitution of {{task_description}} and surface as an "unresolved template
+ * variables: date" warning plus a literal "{{date}}" in agent filenames.
+ * Resolve these fields at schedule time so the work item carries a concrete
+ * date string from the moment it's created.
+ *
+ * Safe on undefined/null/empty/non-string inputs — returns the input unchanged.
+ */
+function resolveScheduleTemplateVars(str) {
+  if (typeof str !== 'string' || str.length === 0) return str;
+  return str.replace(/\{\{date\}\}/g, dateStamp());
+}
 
 // Parse a single cron field into a matcher function.
 // field: e.g., "*", "5", "1,3,5", "*/15"
@@ -121,12 +140,15 @@ function discoverScheduledWork(config) {
       const lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || null);
       if (!shouldRunNow(sched, lastRun)) continue;
 
+      // Substitute schedule-time template vars (e.g. {{date}}) before the work
+      // item is written — single-pass playbook rendering can't reach placeholders
+      // embedded inside task_description, so they must be resolved up front.
       work.push({
         id: `sched-${sched.id}-${Date.now()}`,
-        title: sched.title,
+        title: resolveScheduleTemplateVars(sched.title),
         type: sched.type || 'implement',
         priority: sched.priority || 'medium',
-        description: sched.description || sched.title,
+        description: resolveScheduleTemplateVars(sched.description || sched.title),
         status: WI_STATUS.PENDING,
         created: ts(),
         createdBy: 'scheduler',
@@ -144,4 +166,4 @@ function discoverScheduledWork(config) {
   return work;
 }
 
-module.exports = { parseCronExpr, parseCronField, shouldRunNow, discoverScheduledWork, SCHEDULE_RUNS_PATH };
+module.exports = { parseCronExpr, parseCronField, shouldRunNow, discoverScheduledWork, resolveScheduleTemplateVars, SCHEDULE_RUNS_PATH };

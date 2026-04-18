@@ -10887,6 +10887,97 @@ async function testSchedulerCronParsing() {
     assert.strictEqual(matcher(3), true);
     assert.strictEqual(matcher(2), false);
   });
+
+  // W-mo3zuc6usdut: scheduler must substitute {{date}} in title/description
+  // so downstream playbooks don't receive literal {{date}} strings that break
+  // single-pass template substitution in renderPlaybook.
+  console.log('\n── scheduler.js — Template Variable Substitution ──');
+
+  await test('resolveScheduleTemplateVars substitutes {{date}} with today YYYY-MM-DD', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('Test health report {{date}}'),
+      `Test health report ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars substitutes all occurrences of {{date}}', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('{{date}}: build report for {{date}}'),
+      `${today}: build report for ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars passes through strings without {{date}}', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars('nothing to substitute'), 'nothing to substitute');
+  });
+
+  await test('resolveScheduleTemplateVars handles undefined/null/empty without throwing', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(undefined), undefined);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(null), null);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(''), '');
+  });
+
+  await test('discoverScheduledWork substitutes {{date}} in title and description', () => {
+    // Preserve + restore real schedule-runs.json so the test doesn't leak state
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      // Wipe any prior run record for our test IDs so the cron fires now
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-sub'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-sub',
+          cron: '* * *', // matches every minute
+          type: 'explore',
+          title: 'health check {{date}}',
+          description: 'explore test-health-{{date}}.md',
+          project: 'minions',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-sub');
+      assert.ok(item, 'discoverScheduledWork should emit a work item for the enabled schedule');
+      assert.strictEqual(item.title, `health check ${today}`, 'title must have {{date}} substituted');
+      assert.strictEqual(item.description, `explore test-health-${today}.md`, 'description must have {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
+  });
+
+  await test('discoverScheduledWork falls back to substituted title when description is absent', () => {
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-title-fallback'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-title-fallback',
+          cron: '* * *',
+          type: 'explore',
+          title: 'daily probe {{date}}',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-title-fallback');
+      assert.ok(item, 'should emit a work item');
+      assert.strictEqual(item.description, `daily probe ${today}`,
+        'description should fall back to title with {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
+  });
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
