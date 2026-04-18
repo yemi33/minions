@@ -2118,6 +2118,28 @@ function classifyFailure(code, stdout = '', stderr = '') {
   return FAILURE_CLASS.UNKNOWN;
 }
 
+/**
+ * When a claude CLI agent exits in <3s with code 1 and no output, the raw
+ * EMPTY_OUTPUT class tells us "no meaningful output" but nothing about WHY.
+ * This helper detects the fast-exit pattern and returns a diagnostic hint
+ * listing likely root causes (machine sleep, network loss, auth failure).
+ *
+ * The hint is propagated as the dispatch `reason` and into the work-item
+ * `failReason`, so humans and other agents can triage without digging into
+ * `agents/*\/output-<id>.log`.
+ *
+ * @param {string|undefined} failureClass — one of FAILURE_CLASS values
+ * @param {number} code — process exit code
+ * @param {number} elapsedMs — milliseconds between spawn and close
+ * @returns {string|null} — annotated hint, or null when the pattern doesn't match
+ */
+function diagnoseEmptyOutput(failureClass, code, elapsedMs) {
+  if (failureClass !== FAILURE_CLASS.EMPTY_OUTPUT) return null;
+  if (code !== 1) return null;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= 3000) return null;
+  return `[empty-output: process exited in ${elapsedMs}ms \u2014 possible causes: machine sleep, network unavailability, auth failure]`;
+}
+
 module.exports = {
   checkPlanCompletion,
   archivePlan,
@@ -2142,6 +2164,7 @@ module.exports = {
   resolveWorkItemPath,
   isItemCompleted,
   classifyFailure,
+  diagnoseEmptyOutput,
   processPendingRebases,
   findDependentActivePrs,
 };
