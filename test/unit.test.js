@@ -18497,6 +18497,82 @@ async function testFailureClassEnum() {
       shared.FAILURE_CLASS.UNKNOWN);
   });
 
+  // W-mo3zul9pirjb — surface meaningful error when claude CLI exits immediately with code 1
+  // and no output. Before this fix, such failures were logged only as "[empty-output]" with
+  // no hint about the likely cause (machine sleep, network loss, auth failure).
+  await test('diagnoseEmptyOutput: fast-exit empty-output returns annotated hint', () => {
+    const hint = lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 1200);
+    assert.ok(typeof hint === 'string' && hint.length > 0,
+      'Should return a hint string for empty-output + code 1 + elapsed < 3000ms');
+    assert.ok(hint.includes('1200ms') || hint.includes('1200 ms'),
+      'Hint should include the elapsed time in milliseconds');
+    assert.ok(/machine sleep/i.test(hint),
+      'Hint should mention machine sleep as a possible cause');
+    assert.ok(/network/i.test(hint),
+      'Hint should mention network unavailability as a possible cause');
+    assert.ok(/auth/i.test(hint),
+      'Hint should mention auth failure as a possible cause');
+    assert.ok(/empty-output/i.test(hint),
+      'Hint should be tagged with the empty-output class');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for EMPTY_OUTPUT class', () => {
+    // Same fast-exit pattern, but non-empty-output class — no hint
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.BUILD_FAILURE, 1, 500), null,
+      'BUILD_FAILURE should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.SPAWN_ERROR, 1, 500), null,
+      'SPAWN_ERROR should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.TIMEOUT, 1, 500), null,
+      'TIMEOUT should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(undefined, 1, 500), null,
+      'Undefined failureClass should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for exit code 1', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 0, 500), null,
+      'Exit code 0 should not trigger hint (no failure)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 78, 500), null,
+      'Exit code 78 (config error) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 143, 500), null,
+      'Exit code 143 (SIGTERM) should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers when elapsed < 3000ms', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 3000), null,
+      '3000ms should not trigger (boundary — only strict <3s)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 5000), null,
+      'Long-running agents that produce no output are a different failure mode');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 2999) === 'string',
+      '2999ms should still trigger hint');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 0) === 'string',
+      '0ms (instant exit) should still trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: rejects invalid elapsed values', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, NaN), null,
+      'NaN elapsed (bad startedAt) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, -10), null,
+      'Negative elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, undefined), null,
+      'Undefined elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 'abc'), null,
+      'Non-numeric elapsed should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput is exported from lifecycle.js', () => {
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput === 'function',
+      'diagnoseEmptyOutput should be exported');
+  });
+
+  await test('onAgentClose annotates errorReason with diagnoseEmptyOutput hint', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('diagnoseEmptyOutput'),
+      'engine.js onAgentClose should call diagnoseEmptyOutput to annotate the empty-output failure');
+    // The annotation should compose with the elapsed time computed from startedAt.
+    assert.ok(/Date\.parse\(startedAt\)|Date\.now\(\)\s*-\s*Date\.parse\(startedAt\)/.test(src),
+      'engine.js should compute elapsed time from startedAt for the diagnostic hint');
+  });
+
   await test('completeDispatch stores failureClass on error entries', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('failureClass') && src.includes('item.failureClass'),
