@@ -112,18 +112,18 @@ function renderKnowledgeBase() {
     const label = KB_CAT_LABELS[item.category] || item.category;
     var pinKey = kbPinKey(item.category, item.file);
     var pinned = isPinned(pinKey);
-    return '<div class="kb-item' + (pinned ? ' item-pinned' : '') + '" data-file="knowledge/' + escHtml(item.category) + '/' + escHtml(item.file) + '" onclick="kbOpenItem(\'' + escHtml(item.category) + '\', \'' + escHtml(item.file) + '\')">' +
+    return '<div class="kb-item' + (pinned ? ' item-pinned' : '') + '" data-file="knowledge/' + escapeHtml(item.category) + '/' + escapeHtml(item.file) + '" onclick="kbOpenItem(\'' + escapeHtml(item.category) + '\', \'' + escapeHtml(item.file) + '\')">' +
       '<div class="kb-item-body">' +
-        '<div class="kb-item-title">' + icon + ' ' + escHtml(item.title) +
-          ' <button class="pr-pager-btn pin-btn' + (pinned ? ' pinned' : '') + '" style="font-size:9px;padding:1px 6px;margin-left:6px;vertical-align:middle" data-pin-key="' + escHtml(pinKey) + '" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,\'kb\')">' + (pinned ? 'Unpin' : 'Pin') + '</button>' +
+        '<div class="kb-item-title">' + icon + ' ' + escapeHtml(item.title) +
+          ' <button class="pr-pager-btn pin-btn' + (pinned ? ' pinned' : '') + '" style="font-size:9px;padding:1px 6px;margin-left:6px;vertical-align:middle" data-pin-key="' + escapeHtml(pinKey) + '" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,\'kb\')">' + (pinned ? 'Unpin' : 'Pin') + '</button>' +
         '</div>' +
         '<div class="kb-item-meta">' +
           '<span>' + label + '</span>' +
-          (item.agent ? '<span>' + escHtml(item.agent) + '</span>' : '') +
+          (item.agent ? '<span>' + escapeHtml(item.agent) + '</span>' : '') +
           '<span>' + (item.date || '') + '</span>' +
           '<span>' + Math.round(item.size / 1024) + 'KB</span>' +
         '</div>' +
-        (item.preview ? '<div class="kb-item-preview">' + escHtml(item.preview) + '</div>' : '') +
+        (item.preview ? '<div class="kb-item-preview">' + escapeHtml(item.preview) + '</div>' : '') +
       '</div>' +
     '</div>';
   }).join('');

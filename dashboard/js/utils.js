@@ -96,6 +96,25 @@ function toggleModalPin() {
   else if (_modalFilePath.startsWith('knowledge/')) renderKnowledgeBase();
 }
 
+// Canonical HTML-escape helper (SEC-03). Use this in all new code and for any user-controlled
+// field that reaches `.innerHTML` / a template literal. Escapes the 6 HTML metacharacters
+// (& < > " ' /) — the `/` escape closes the `</script>` break-out path that a 5-char escape
+// leaves open. Returns '' for null/undefined so missing fields never render the literal strings
+// "null"/"undefined". Idempotent for non-metacharacter input (double-escaping only expands `&`).
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
+
+// Legacy 5-char escape. Kept as a backward-compat alias so files not yet migrated under
+// SEC-03 Phase A still compile. Prefer `escapeHtml` in new code — it adds the `/` escape
+// and null/undefined handling. Phase B will remove this once the remaining renderers move.
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -482,4 +501,4 @@ async function submitBugReport() {
   }
 }
 
-window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
+window.MinionsUtils = { wakeEngine, escapeHtml, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
