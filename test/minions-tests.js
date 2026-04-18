@@ -130,6 +130,33 @@ async function testApiEndpoints() {
     const r = await GET('/api/plans/..%2Fconfig.json');
     assert.strictEqual(r.status, 400);
   });
+
+  await test('Prototype pollution guard rejects __proto__ in request body', async () => {
+    // JSON.parse creates __proto__ as an own enumerable data property; JSON.stringify round-trips it.
+    const poisoned = JSON.parse('{"message":"hi","__proto__":{"polluted":true}}');
+    const r = await POST('/api/command-center', poisoned);
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status} (body: ${r.body})`);
+    assert.ok(r.json && /forbidden key/.test(r.json.error || ''),
+      `expected forbidden-key error, got: ${JSON.stringify(r.json)}`);
+    // Verify the native Object prototype was not mutated as a side effect
+    assert.strictEqual(({}).polluted, undefined, 'Object.prototype was polluted!');
+  });
+
+  await test('Prototype pollution guard rejects constructor in request body', async () => {
+    const r = await POST('/api/command-center', { message: 'hi', constructor: { bad: true } });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+    assert.ok(r.json && /forbidden key/.test(r.json.error || ''),
+      `expected forbidden-key error, got: ${JSON.stringify(r.json)}`);
+  });
+
+  await test('Prototype pollution guard allows clean request bodies', async () => {
+    // Use a fast endpoint that also goes through readBody — proves the guard doesn't over-trigger.
+    const r = await POST('/api/work-items', { title: 'Pollution guard — clean body', type: 'implement', priority: 'low' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status} (body: ${r.body})`);
+    assert.ok(r.json.id, 'expected an id on successful work-item create');
+    // Clean up so we don't leak test state
+    await POST('/api/work-items/delete', { id: r.json.id, source: 'central' });
+  });
 }
 
 async function testWorkItemCrud() {

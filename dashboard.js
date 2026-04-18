@@ -1292,7 +1292,20 @@ function readBody(req) {
       reject(new Error('Request body timeout after 30s'));
     }, 30000);
     req.on('data', chunk => { body += chunk; if (body.length > 1e6) { clearTimeout(timeout); reject(new Error('Too large')); } });
-    req.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    req.on('end', () => {
+      clearTimeout(timeout);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch(e) { reject(e); return; }
+      // Belt-and-braces: reject payloads containing prototype-pollution attack keys
+      // before they reach any downstream Object.assign / spread / deep-merge.
+      if (shared.hasDangerousKey(parsed)) {
+        const err = new Error('Request body contains forbidden key (__proto__, constructor, or prototype)');
+        err.statusCode = 400; // honoured by handler catch blocks so response is 400 regardless of handler
+        reject(err);
+        return;
+      }
+      resolve(parsed);
+    });
     req.on('error', (e) => { clearTimeout(timeout); reject(e); });
   });
 }
@@ -1519,7 +1532,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return jsonReply(res, 200, { ok: true, message: 'Completion check ran but no verify task was needed' });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleWorkItemsRetry(req, res) {
@@ -1847,7 +1860,7 @@ const server = http.createServer(async (req, res) => {
         if (content) { try { allArchived.push(...JSON.parse(content).map(i => ({ ...i, _source: project.name }))); } catch {} }
       }
       return jsonReply(res, 200, allArchived);
-    } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleWorkItemsReopen(req, res) {
@@ -3472,7 +3485,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
       } finally { _docAbort = null; docChatInFlight.delete(docKey); }
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleInboxPersist(req, res) {
@@ -3660,7 +3673,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
       if (!selectedPath) return jsonReply(res, 200, { cancelled: true });
       return jsonReply(res, 200, { path: selectedPath.replace(/\\/g, '/') });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   // ── Non-repo confirmation tokens (SEC-05) ───────────────────────────────
@@ -3857,7 +3870,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
 
       return jsonReply(res, 200, { repos: results });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleFileBug(req, res) {
@@ -3992,7 +4005,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       } finally {
         _releaseCCTab(tabId);
       }
-    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   /** Build a lightweight input object for SSE tool events — keeps only the fields formatToolSummary needs, with truncated string values. */
@@ -4205,8 +4218,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) {
       stopCcHeartbeat();
       _releaseCCTab(tabId);
-      writeCcEvent({ type: 'error', error: e.message });
-      _ccStreamEnded = true; try { res.end(); } catch {}
+      // If SSE headers haven't been sent yet (e.g. readBody guard fired), respond with the
+      // intended HTTP status (400 for prototype-pollution rejection) instead of an SSE event.
+      if (!res.headersSent) {
+        res.statusCode = e.statusCode || 500;
+        res.setHeader('Content-Type', 'application/json');
+        try { res.end(JSON.stringify({ error: e.message })); } catch {}
+      } else {
+        writeCcEvent({ type: 'error', error: e.message });
+        _ccStreamEnded = true; try { res.end(); } catch {}
+      }
     }
   }
 
@@ -4360,7 +4381,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const newPid = restartEngine();
       return jsonReply(res, 200, { ok: true, pid: newPid });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsRead(req, res) {
@@ -4384,7 +4405,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         })),
         routing,
       });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsUpdate(req, res) {
@@ -4526,7 +4547,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         ? 'Settings saved. Some values were adjusted: ' + _clamped.join('; ')
         : 'Settings saved. Engine picks up changes on next tick.';
       return jsonReply(res, 200, { ok: true, message: msg, clamped: _clamped });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsRouting(req, res) {
@@ -4535,7 +4556,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!body.content) return jsonReply(res, 400, { error: 'content required' });
       safeWrite(path.join(MINIONS_DIR, 'routing.md'), body.content);
       return jsonReply(res, 200, { ok: true });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsReset(req, res) {
@@ -4548,7 +4569,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleHealth(req, res) {
