@@ -42,11 +42,37 @@ async function submitPinnedNote(e) {
   const level = document.getElementById('pin-level').value;
   if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Pin Note'; } alert('Title and content required'); return; }
   try { closeModal(); } catch { /* may not be open */ }
+
+  // Optimistic render: append the new entry to the pinned list and re-render immediately
+  // so it appears without waiting for the POST round-trip or the next status refresh (closes #1295).
+  // Snapshot prevEntries so we can revert on failure.
+  const prevEntries = Array.isArray(window._pinnedEntries) ? window._pinnedEntries.slice() : [];
+  const newEntry = { title, content, level: level || 'info' };
+  const nextEntries = prevEntries.concat([newEntry]);
+  window._pinnedEntries = nextEntries;
+  try { renderPinned(nextEntries); } catch { /* DOM may be missing — non-fatal */ }
   showToast('cmd-toast', 'Note pinned', true);
+
   try {
     const res = await fetch('/api/pinned', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, level }) });
-    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Pin failed: ' + (d.error || 'unknown'), false); openPinNoteModal(); }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); openPinNoteModal(); }
+    if (res.ok) {
+      // Reconcile with server state (captures the normalised entry shape from parsePinnedEntries).
+      refresh();
+    } else {
+      // Revert optimistic update and surface the error.
+      window._pinnedEntries = prevEntries;
+      try { renderPinned(prevEntries); } catch { /* ignore */ }
+      const d = await res.json().catch(() => ({}));
+      showToast('cmd-toast', 'Pin failed: ' + (d.error || 'unknown'), false);
+      openPinNoteModal();
+    }
+  } catch (err) {
+    // Network failure — revert optimistic update.
+    window._pinnedEntries = prevEntries;
+    try { renderPinned(prevEntries); } catch { /* ignore */ }
+    showToast('cmd-toast', 'Error: ' + err.message, false);
+    openPinNoteModal();
+  }
 }
 
 async function removePinnedNote(title) {

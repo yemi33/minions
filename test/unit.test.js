@@ -14931,6 +14931,65 @@ async function testDashboardAuditXss() {
     assert.ok(src.includes('this.dataset.pinTitle'), 'should read from dataset');
   });
 
+  await test('submitPinnedNote optimistically renders new entry before awaiting fetch (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    // Extract submitPinnedNote body up to next function or end
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    const renderPos = body.indexOf('renderPinned(');
+    const fetchPos = body.indexOf('fetch(');
+    assert.ok(renderPos > 0, 'submitPinnedNote must call renderPinned for optimistic update');
+    assert.ok(fetchPos > 0, 'submitPinnedNote must call fetch to persist');
+    assert.ok(renderPos < fetchPos,
+      'renderPinned must fire BEFORE fetch — manual entry should appear in list immediately (optimistic)');
+    assert.ok(body.includes('window._pinnedEntries'),
+      'must update window._pinnedEntries with new entry optimistically so subsequent renders preserve it');
+  });
+
+  await test('submitPinnedNote reverts optimistic state when POST /api/pinned fails (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    // Must capture a snapshot of previous entries so we can revert on failure
+    assert.ok(/prevEntries|previousEntries|priorEntries/.test(body),
+      'must snapshot previous entries for revert on failure');
+    // Must re-render with the revert snapshot in at least one error branch
+    const renderCalls = (body.match(/renderPinned\(/g) || []).length;
+    assert.ok(renderCalls >= 2,
+      'must re-render at least twice: optimistic + revert on failure');
+  });
+
+  await test('POST /api/pinned invalidates slow-state cache so newly pinned entry appears on next status fetch (closes #1295)', () => {
+    // Pinned entries live in _slowState (60s TTL). Without invalidating slow state,
+    // the dashboard would show stale pinned data for up to 60 seconds after pinning.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const addIdx = src.indexOf("'POST', path: '/api/pinned'");
+    assert.ok(addIdx > 0, 'POST /api/pinned handler must exist');
+    // Handler body runs to the next top-level route entry
+    const block = src.slice(addIdx, addIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(block),
+      'POST /api/pinned must call invalidateStatusCache({ includeSlow: true }) — pinned lives in slow state');
+
+    const remIdx = src.indexOf("'/api/pinned/remove'");
+    assert.ok(remIdx > 0, 'POST /api/pinned/remove handler must exist');
+    const remBlock = src.slice(remIdx, remIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(remBlock),
+      'POST /api/pinned/remove must call invalidateStatusCache({ includeSlow: true }) so unpin is immediate');
+  });
+
+  await test('invalidateStatusCache supports includeSlow option for user mutations of slow-state data', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const m = src.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
+    assert.ok(m, 'invalidateStatusCache function must exist');
+    const body = m[0];
+    assert.ok(/includeSlow/.test(body),
+      'invalidateStatusCache should accept an includeSlow option to clear _slowState for user-initiated mutations');
+    assert.ok(/_slowState\s*=\s*null/.test(body),
+      'invalidateStatusCache must be able to clear _slowState when includeSlow is set');
+  });
+
   await test('render-inbox.js uses data attributes for item name in onclick', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
     assert.ok(src.includes('data-inbox-name'), 'should use data-inbox-name attribute');
@@ -27367,12 +27426,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──
@@ -27485,7 +27550,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -27808,7 +27873,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -27878,12 +27943,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──
