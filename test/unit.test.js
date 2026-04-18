@@ -4601,6 +4601,26 @@ async function testMutateWorkItemsAndPullRequests() {
     assert.strictEqual(result[0].count, 2, 'both mutations should apply');
   });
 
+  await test('mutateWorkItems skips rewriting unchanged existing files', async () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'unchanged-wi.json');
+    shared.safeWrite(fp, [{ id: 'W-1', status: 'pending' }]);
+    const beforeMtime = fs.statSync(fp).mtimeMs;
+    await new Promise(r => setTimeout(r, 30));
+    shared.mutateWorkItems(fp, () => {});
+    const afterMtime = fs.statSync(fp).mtimeMs;
+    assert.strictEqual(afterMtime, beforeMtime, 'no-op mutateWorkItems should not update mtime');
+    assert.ok(!fs.existsSync(fp + '.backup'), 'no-op mutateWorkItems should not create a backup file');
+  });
+
+  await test('mutateWorkItems skips creating missing file when no changes were made', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'missing-noop-wi.json');
+    const result = shared.mutateWorkItems(fp, () => {});
+    assert.ok(Array.isArray(result), 'return value should still be an array');
+    assert.ok(!fs.existsSync(fp), 'no-op mutateWorkItems should not create the file');
+  });
+
   await test('mutatePullRequests basic read-modify-write', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'pull-requests.json');
@@ -8919,6 +8939,13 @@ async function testDashboardUIFunctions() {
   await test('work item detail shows acceptance criteria and references', () => {
     assert.ok(wiSrc.includes('acceptanceCriteria') && wiSrc.includes('references'),
       'Detail modal should display acceptance criteria and references');
+  });
+
+  await test('work item detail shows full description in scrollable container', () => {
+    assert.ok(wiSrc.includes("field('Description', '<div style=\"font-size:12px;max-height:320px;overflow-y:auto"),
+      'Detail modal description should render in a scrollable container');
+    assert.ok(!wiSrc.includes("renderMd((item.description || item.title || '—').slice(0, 1000))"),
+      'Detail modal should not truncate description content to 1000 chars');
   });
 
   // Feedback rating state

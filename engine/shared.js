@@ -347,23 +347,30 @@ function withFileLock(lockPath, fn, {
 function mutateJsonFileLocked(filePath, mutateFn, {
   defaultValue = {},
   lockRetries,
-  lockRetryBackoffMs
+  lockRetryBackoffMs,
+  skipWriteIfUnchanged = false
 } = {}) {
   const lockPath = `${filePath}.lock`;
   const retries = lockRetries ?? ENGINE_DEFAULTS.lockRetries;
   const retryBackoffMs = lockRetryBackoffMs ?? ENGINE_DEFAULTS.lockRetryBackoffMs;
   return withFileLock(lockPath, () => {
+    const fileExists = fs.existsSync(filePath);
     let data = safeJson(filePath);
+    const parsedInvalid = fileExists && data === null;
     if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
-    // Back up last-known-good state before mutation (best-effort)
-    const backupPath = filePath + '.backup';
-    try { if (fs.existsSync(filePath)) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
+    const beforeSerialized = skipWriteIfUnchanged ? JSON.stringify(data) : null;
     if (path.basename(filePath) === 'pull-requests.json' && Array.isArray(data)) {
       normalizePrRecords(data, resolveProjectForPrPath(filePath));
     }
     const next = mutateFn(data);
     const finalData = next === undefined ? data : next;
-    safeWrite(filePath, finalData);
+    const shouldWrite = !skipWriteIfUnchanged || parsedInvalid || JSON.stringify(finalData) !== beforeSerialized;
+    if (shouldWrite) {
+      // Back up last-known-good state before mutation (best-effort)
+      const backupPath = filePath + '.backup';
+      try { if (fileExists) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
+      safeWrite(filePath, finalData);
+    }
     return finalData;
   }, { retries, retryBackoffMs });
 }
@@ -1351,7 +1358,7 @@ function mutateWorkItems(filePath, mutator) {
   return mutateJsonFileLocked(filePath, (data) => {
     if (!Array.isArray(data)) data = [];
     return mutator(data) || data;
-  }, { defaultValue: [] });
+  }, { defaultValue: [], skipWriteIfUnchanged: true });
 }
 
 /**
