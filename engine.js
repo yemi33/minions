@@ -138,7 +138,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconcilePrdStatuses, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, diagnoseEmptyOutput, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -1231,6 +1231,13 @@ async function spawnAgent(dispatchItem, config) {
     let errorReason = '';
     if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
+      // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the
+      // "silent crash" pattern seen during scheduled tasks when the box went to sleep
+      // or lost network), prepend a diagnostic hint so failReason/dispatch log carry
+      // the actual elapsed time and likely root causes rather than a bare "[empty-output]".
+      const elapsedMs = Date.now() - Date.parse(startedAt);
+      const hint = diagnoseEmptyOutput(failureClass, code, elapsedMs);
+      if (hint) errorReason = errorReason ? `${hint} ${errorReason}` : hint;
     }
     completeDispatch(id, effectiveResult, errorReason, resultSummary, completeOpts);
 
@@ -2157,6 +2164,7 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
+    const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
@@ -2182,7 +2190,7 @@ async function discoverFromPrs(config, project) {
       }
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
@@ -2244,7 +2252,7 @@ async function discoverFromPrs(config, project) {
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
-      if (!withinLag && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         const agentId = resolveAgent('fix', config, pr.agent);
         if (agentId) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {

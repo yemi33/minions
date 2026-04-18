@@ -263,7 +263,7 @@ function renderPlans(plans) {
     const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
     const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'converting': 'var(--yellow)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
     const cardClass = effectiveStatus === 'dispatched' || effectiveStatus === 'converting' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
-    return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
           '<div class="plan-card-meta">' +
@@ -323,7 +323,7 @@ function openArchivedPlansModal() {
   const html = plans.map(p => {
     const itemCount = p.itemCount || 0;
     const completed = p.completedAt ? p.completedAt.slice(0, 10) : '';
-    return '<div class="plan-card" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer;opacity:0.8" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer;opacity:0.8" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title" style="font-size:13px">' + escHtml(p.summary || p.file) + '</div>' +
           '<div class="plan-card-meta">' +

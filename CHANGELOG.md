@@ -1,5 +1,2723 @@
 # Changelog
 
+## 0.1.1153 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1152 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1151 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1150 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1149 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1148 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1147 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1146 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1145 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1144 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1143 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1142 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1141 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1140 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1139 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1137 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1136 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1135 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1134 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1133 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1132 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1131 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1130 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1129 (2026-04-18)
+
+### Features
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1127 (2026-04-18)
+
+### Features
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1126 (2026-04-18)
+
+### Features
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1125 (2026-04-18)
+
+### Features
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1124 (2026-04-18)
+
+### Features
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1123 (2026-04-18)
+
+### Features
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1121 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1120 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1119 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1118 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1116 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1115 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1114 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1113 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1112 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1111 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1110 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1109 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1108 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1107 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1101 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1100 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1099 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1098 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1097 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1096 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1095 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1094 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1093 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1092 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1091 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1090 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1089 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1088 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1087 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1086 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1085 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1084 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1083 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
+## 0.1.1082 (2026-04-18)
+
+### Features
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+- guard undefined agent in pending dispatch loop (closes #1206) (#1210)
+-  improve fallback meeting conclusion
+-  remove command center chevron
+- stamp live-output.log stub before spawn (#1198)
+-  harden settings save and migrate pr poll config
+
+### Other
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
 ## 0.1.1079 (2026-04-18)
 
 ### Features

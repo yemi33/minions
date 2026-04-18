@@ -435,6 +435,165 @@ async function testValidatePid() {
   });
 }
 
+async function testValidateProjectName() {
+  console.log('\n── shared.js — Project Name Validation (SEC-04) ──');
+
+  await test('validateProjectName accepts valid names', () => {
+    assert.strictEqual(shared.validateProjectName('minions'), 'minions');
+    assert.strictEqual(shared.validateProjectName('my-project'), 'my-project');
+    assert.strictEqual(shared.validateProjectName('my_project'), 'my_project');
+    assert.strictEqual(shared.validateProjectName('Project123'), 'Project123');
+    assert.strictEqual(shared.validateProjectName('a'), 'a');
+    // 64-char max is accepted
+    const max = 'a'.repeat(64);
+    assert.strictEqual(shared.validateProjectName(max), max);
+  });
+
+  await test('validateProjectName rejects empty / non-string', () => {
+    assert.throws(() => shared.validateProjectName(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName(123), /required|Invalid/);
+    assert.throws(() => shared.validateProjectName({}), /required|Invalid/);
+  });
+
+  await test('validateProjectName rejects names longer than 64 characters', () => {
+    const tooLong = 'a'.repeat(65);
+    const err = assert.throws(() => shared.validateProjectName(tooLong), /Invalid project name/);
+    // Violating name should appear in the error message
+    try { shared.validateProjectName(tooLong); } catch (e) {
+      assert.ok(e.message.includes(tooLong) || e.message.includes('65'), `expected message to cite violating name; got: ${e.message}`);
+      assert.strictEqual(e.statusCode, 400, 'should carry HTTP 400 statusCode');
+    }
+  });
+
+  await test('validateProjectName rejects path-traversal characters', () => {
+    assert.throws(() => shared.validateProjectName('../etc/passwd'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('..'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo/bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\\bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName rejects shell metacharacters', () => {
+    assert.throws(() => shared.validateProjectName('foo;rm -rf /'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo$(whoami)'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo`id`'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo|cat'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo&bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo.bar'), /Invalid project name/);
+    assert.throws(() => shared.validateProjectName('foo\0bar'), /Invalid project name/);
+  });
+
+  await test('validateProjectName error carries statusCode 400 and violating name', () => {
+    try {
+      shared.validateProjectName('bad/name');
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(e.message.includes('bad/name'), `expected violating name in error; got: ${e.message}`);
+    }
+  });
+}
+
+async function testValidateProjectPath() {
+  console.log('\n── shared.js — Project Path Validation (SEC-05) ──');
+
+  await test('validateProjectPath accepts path containing .git directory', () => {
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath accepts path containing .git file (worktree)', () => {
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /some/main/repo/.git/worktrees/wt');
+    const result = shared.validateProjectPath(tmp);
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+
+  await test('validateProjectPath rejects non-existent path', () => {
+    const missing = path.join(os.tmpdir(), 'minions-test-nonexistent-' + Date.now());
+    try {
+      shared.validateProjectPath(missing);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/does not exist|not found/i.test(e.message), `expected not-found message; got: ${e.message}`);
+    }
+  });
+
+  await test('validateProjectPath rejects empty / non-string path', () => {
+    assert.throws(() => shared.validateProjectPath(''), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(null), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(undefined), /required|Invalid/);
+    assert.throws(() => shared.validateProjectPath(123), /required|Invalid/);
+  });
+
+  await test('validateProjectPath rejects non-repo path without confirmation', () => {
+    const tmp = createTmpDir();
+    try {
+      shared.validateProjectPath(tmp);
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.strictEqual(e.statusCode, 400);
+      assert.ok(/not a git repository|\.git/i.test(e.message), `expected non-repo error; got: ${e.message}`);
+      assert.strictEqual(e.needsConfirmation, true);
+    }
+  });
+
+  await test('validateProjectPath rejects non-repo path when allowNonRepo missing', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { confirmToken: 'anything', isValidToken: () => true }),
+      /not a git repository/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with wrong confirmation token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    assert.throws(
+      () => shared.validateProjectPath(tmp, {
+        allowNonRepo: true,
+        confirmToken: 'wrong-token',
+        isValidToken: t => t === validToken,
+      }),
+      /not a git repository|invalid.*token/i,
+    );
+  });
+
+  await test('validateProjectPath rejects non-repo path with allowNonRepo but no token', () => {
+    const tmp = createTmpDir();
+    assert.throws(
+      () => shared.validateProjectPath(tmp, { allowNonRepo: true, isValidToken: () => true }),
+      /not a git repository|token/i,
+    );
+  });
+
+  await test('validateProjectPath accepts non-repo path with allowNonRepo + valid token', () => {
+    const tmp = createTmpDir();
+    const validToken = 'deadbeef-dead-beef-dead-beefdeadbeef';
+    let consumedToken = null;
+    const result = shared.validateProjectPath(tmp, {
+      allowNonRepo: true,
+      confirmToken: validToken,
+      isValidToken: t => { consumedToken = t; return t === validToken; },
+    });
+    assert.strictEqual(result, path.resolve(tmp));
+    assert.strictEqual(consumedToken, validToken, 'validator should have invoked isValidToken with the supplied token');
+  });
+
+  await test('validateProjectPath ignores allowNonRepo when path IS a git repo', () => {
+    // Defense in depth: if the path is a real git repo, confirmation logic is irrelevant.
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.git'), { recursive: true });
+    const result = shared.validateProjectPath(tmp, { allowNonRepo: true, confirmToken: 'whatever', isValidToken: () => false });
+    assert.strictEqual(result, path.resolve(tmp));
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -473,6 +632,20 @@ async function testParseStreamJsonOutput() {
     const raw = '{"type":"result","result":"' + 'x'.repeat(1000) + '"}';
     const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 50 });
     assert.strictEqual(text.length, 50);
+  });
+
+  await test('parseStreamJsonOutput keeps tail, not head, when maxTextLength is set (#1234)', () => {
+    // Regression: review agents write long findings with VERDICT markers at the
+    // end; slicing from head dropped the verdict, causing parseReviewVerdict to
+    // return null and the engine to re-dispatch the review up to maxRetries times.
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"result","result":"' + body + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(text.length, 500);
+    assert.ok(text.includes('VERDICT: APPROVE'),
+      'tail slice must preserve VERDICT marker at end of output');
+    assert.ok(!text.startsWith('PREAMBLE_'),
+      'tail slice must drop the preamble, not the tail');
   });
 
   await test('parseStreamJsonOutput finds result scanning from end', () => {
@@ -1319,6 +1492,86 @@ async function testQueriesPrd() {
       for (const item of archivedItems) {
         assert.ok(typeof item.sourcePlan === 'string', `archived item ${item.id} sourcePlan should be string`);
       }
+    }
+  });
+
+  await test('_getPrdInputHash tracks engine/pr-links.json mtime (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function _getPrdInputHash');
+    assert.ok(fnStart > -1, 'Should have _getPrdInputHash function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart));
+    assert.ok(fnBody.includes("'pr-links.json'"),
+      '_getPrdInputHash must stat engine/pr-links.json — PR linkage changes via that static override must invalidate the cache');
+  });
+
+  await test('getPrdInfo skips aggregate/E2E PRs from per-item prdToPr (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function getPrdInfo');
+    assert.ok(fnStart > -1);
+    const fnBody = src.slice(fnStart, src.indexOf('function resetPrdInfoCache', fnStart));
+    // Must guard against aggregate (itemIds.length > 1), verify type, and [E2E] titles
+    assert.ok(/itemIds \|\| \[\]\)\.length > 1/.test(fnBody),
+      'prLinks loop must skip PRs linked to more than one item (aggregate)');
+    assert.ok(fnBody.includes("pr?.itemType === 'verify'"),
+      'prLinks loop must skip verify-typed PRs from per-item mapping');
+    assert.ok(fnBody.includes("pr?.title?.startsWith('[E2E]')"),
+      'prLinks loop must skip [E2E] titled PRs from per-item mapping');
+  });
+
+  await test('getPrdInfo: aggregate PR does not bleed into per-item prs array (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with a single project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'TestProj', localPath: testDir, mainBranch: 'main' }],
+        agents: {}, engine: {},
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'test-plan.json'), JSON.stringify({
+        plan_summary: 'Aggregate bleed test',
+        project: 'TestProj',
+        missing_features: [
+          { id: 'AGG-001', title: 'Feature A', status: 'done' },
+          { id: 'AGG-002', title: 'Feature B', status: 'done' },
+        ],
+      }));
+
+      // Project state dir + pull-requests.json with one aggregate PR
+      // linking BOTH items (itemIds.length > 1) — PR IDs get lowercased by
+      // normalizePrRecord (canonical scope form is lowercase).
+      const projStateDir = path.join(testDir, 'projects', 'TestProj');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      fs.writeFileSync(path.join(projStateDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:testproj#999', prNumber: 999, title: '[E2E] aggregate', status: 'active',
+          prdItems: ['AGG-001', 'AGG-002'] },
+        { id: 'github:testproj#998', prNumber: 998, title: 'feat: just A', status: 'active',
+          prdItems: ['AGG-001'] },
+      ]));
+      fs.writeFileSync(path.join(projStateDir, 'work-items.json'), JSON.stringify([
+        { id: 'AGG-001', status: 'done', sourcePlan: 'test-plan.json' },
+        { id: 'AGG-002', status: 'done', sourcePlan: 'test-plan.json' },
+      ]));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      freshQueries.resetPrdInfoCache();
+      const info = freshQueries.getPrdInfo();
+      assert.ok(info.progress, 'Should return progress');
+      const byId = Object.fromEntries(info.progress.items.map(i => [i.id, i]));
+
+      // Aggregate PR #999 must NOT appear in prs[] for either constituent item
+      for (const id of ['AGG-001', 'AGG-002']) {
+        const prs = byId[id]?.prs || [];
+        assert.ok(!prs.some(p => String(p.id).endsWith('#999')),
+          `Item ${id} must not have aggregate PR #999 in its prs[] — it links to multiple items`);
+      }
+      // Single-item PR #998 must still appear for AGG-001
+      assert.ok((byId['AGG-001']?.prs || []).some(p => String(p.id).endsWith('#998')),
+        'Single-item PR #998 must still appear in AGG-001.prs[]');
+    } finally {
+      restore();
     }
   });
 }
@@ -3508,6 +3761,216 @@ async function testStateIntegrity() {
     } finally {
       restore();
     }
+  });
+
+  // ─── SEC-09: redactSecrets() — token/JWT/azureauth redaction ──────────────
+  await test('redactSecrets is exported from shared.js', () => {
+    assert.strictEqual(typeof shared.redactSecrets, 'function',
+      'redactSecrets should be exported from engine/shared.js');
+  });
+
+  await test('redactSecrets replaces Bearer tokens with [REDACTED]', () => {
+    const input = 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.payload.sig';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('Bearer [REDACTED]'),
+      `Bearer token should be replaced with "Bearer [REDACTED]", got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw token payload must not survive redaction');
+    // Surrounding context preserved
+    assert.ok(out.startsWith('Authorization: Bearer [REDACTED]'),
+      'surrounding context ("Authorization:") should be preserved');
+  });
+
+  await test('redactSecrets handles lowercase bearer too (boundary case)', () => {
+    // Spec regex is case-sensitive on `Bearer` — documents the contract
+    const input = 'bearer abc';
+    assert.strictEqual(shared.redactSecrets(input), 'bearer abc',
+      'lowercase "bearer" is NOT redacted (regex is case-sensitive, by spec)');
+  });
+
+  await test('redactSecrets does not redact short Bearer values (< 20 chars)', () => {
+    const input = 'Bearer short';
+    assert.strictEqual(shared.redactSecrets(input), 'Bearer short',
+      'short values after Bearer should not match the 20+ char token regex');
+  });
+
+  await test('redactSecrets replaces JWT-shaped strings with [REDACTED_JWT]', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT';
+    const input = `got response token=${jwt} end`;
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      `JWT should be replaced with [REDACTED_JWT], got: ${out}`);
+    assert.ok(!out.includes('SflKxwRJSMeKKF2QT'),
+      'JWT signature segment must not survive redaction');
+    assert.ok(out.startsWith('got response token=') && out.endsWith(' end'),
+      'JWT redaction must preserve surrounding context');
+  });
+
+  await test('redactSecrets handles 2-segment JWT shape', () => {
+    const two = 'eyAAAAAAAAAA.bbbbbbbbbbbbb';
+    const out = shared.redactSecrets(`prefix ${two} suffix`);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      '2-segment JWT shape (header.payload) should also match');
+    assert.ok(!out.includes('bbbbbbbbbbbbb'), 'JWT payload must not survive');
+  });
+
+  await test('redactSecrets replaces azureauth "token" JSON key output', () => {
+    const input = '{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.aaaaa.bbbbb","expiresOn":"2026-05-01"}';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_AZUREAUTH]'),
+      `azureauth-shaped "token" JSON field should be replaced, got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw azureauth token value must not survive');
+    // Surrounding context preserved — expiresOn still visible
+    assert.ok(out.includes('"expiresOn":"2026-05-01"'),
+      'non-sensitive surrounding context (expiresOn) should be preserved');
+  });
+
+  await test('redactSecrets is a no-op on clean strings', () => {
+    const clean = 'PR 1234 status: approved — build passing';
+    assert.strictEqual(shared.redactSecrets(clean), clean,
+      'clean string should pass through unchanged');
+  });
+
+  await test('redactSecrets is a no-op on empty / non-string primitives', () => {
+    assert.strictEqual(shared.redactSecrets(''), '', 'empty string passes through');
+    assert.strictEqual(shared.redactSecrets(42), 42, 'numbers pass through');
+    assert.strictEqual(shared.redactSecrets(true), true, 'booleans pass through');
+    assert.strictEqual(shared.redactSecrets(null), null, 'null passes through');
+    assert.strictEqual(shared.redactSecrets(undefined), undefined, 'undefined passes through');
+  });
+
+  await test('redactSecrets recurses into nested objects', () => {
+    const input = {
+      level: 'warn',
+      message: 'auth failed: Bearer eyJlonglongtoken_aaaaaaaaaaaaaaaaaaa',
+      context: {
+        headers: { Authorization: 'Bearer eyJotherlongtoken_bbbbbbbbbbbbbbb' },
+        raw: '{"token":"eyJstdoutdumpAAAAAAAAAAAAAAAA.payload.sig"}',
+      },
+      safe: 42,
+    };
+    const out = shared.redactSecrets(input);
+    assert.ok(out.message.includes('Bearer [REDACTED]'), 'top-level string redacted');
+    assert.ok(out.context.headers.Authorization.includes('Bearer [REDACTED]'),
+      'nested object string redacted');
+    assert.ok(out.context.raw.includes('[REDACTED_AZUREAUTH]'),
+      'deeply nested azureauth payload redacted');
+    assert.strictEqual(out.safe, 42, 'non-string primitives preserved');
+    assert.strictEqual(out.level, 'warn', 'clean strings preserved verbatim');
+    // Original object NOT mutated
+    assert.ok(input.message.includes('eyJlonglongtoken'),
+      'redactSecrets must not mutate the input object');
+  });
+
+  await test('redactSecrets recurses into arrays', () => {
+    const input = ['Bearer eyJonelongtoken_aaaaaaaaaaaaaaaa', 'clean', { t: 'Bearer eyJtwolongtoken_bbbbbbbbbbb' }];
+    const out = shared.redactSecrets(input);
+    assert.ok(Array.isArray(out), 'array stays an array');
+    assert.ok(out[0].includes('Bearer [REDACTED]'), 'array[0] redacted');
+    assert.strictEqual(out[1], 'clean', 'clean array element untouched');
+    assert.ok(out[2].t.includes('Bearer [REDACTED]'), 'object inside array redacted');
+  });
+
+  await test('redactSecrets handles multiple occurrences in one string', () => {
+    const input = 'req1: Bearer eyJfirsttoken_aaaaaaaaaaaaaa / req2: Bearer eyJsecondtoken_bbbbbbbbbbbbbb';
+    const out = shared.redactSecrets(input);
+    const matches = out.match(/Bearer \[REDACTED\]/g) || [];
+    assert.strictEqual(matches.length, 2, 'both Bearer tokens should be redacted');
+    assert.ok(!/eyJfirst|eyJsecond/.test(out), 'no raw token substrings remain');
+  });
+
+  await test('redactSecrets prefers Bearer replacement over JWT when both match', () => {
+    // A JWT after Bearer should yield "Bearer [REDACTED]", not "Bearer [REDACTED_JWT]"
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureAAA';
+    const out = shared.redactSecrets(`Bearer ${jwt}`);
+    assert.strictEqual(out, 'Bearer [REDACTED]',
+      'Bearer + JWT should produce a single "Bearer [REDACTED]", not a double-redacted form');
+  });
+
+  await test('log.json writes are redacted end-to-end', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('warn', 'Live review check failed: Error: Command failed: curl -H "Authorization: Bearer eyJ0eXAiOiJKV1QLongTokenAAAAAAAAAA.payload.signature"');
+      s.log('info', 'fetched azureauth stdout: {"token":"eyJfreshLongTokenBBBBBBBBBB.payload.sig","expiresOn":"2026-05-01"}');
+      s.log('info', 'normal message without secrets');
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const messages = logData.map(e => e.message).join('\n');
+
+      assert.ok(messages.includes('Bearer [REDACTED]'),
+        'log.json should contain Bearer [REDACTED] sentinel');
+      assert.ok(messages.includes('[REDACTED_AZUREAUTH]'),
+        'log.json should contain [REDACTED_AZUREAUTH] sentinel');
+      assert.ok(!messages.includes('eyJ0eXAiOiJKV1QLongToken'),
+        'raw Bearer token must not appear in log.json');
+      assert.ok(!messages.includes('eyJfreshLongToken'),
+        'raw azureauth token must not appear in log.json');
+      assert.ok(messages.includes('normal message without secrets'),
+        'clean messages should pass through unchanged');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('log.json redacts string fields in meta payload', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('debug', 'request failed', {
+        url: 'https://dev.azure.com/org/project',
+        header: 'Bearer eyJlongmetatoken_cccccccccccccc',
+        code: 401,
+      });
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const entry = logData.find(e => e.message === 'request failed');
+      assert.ok(entry, 'the logged entry should be persisted');
+      assert.strictEqual(entry.code, 401, 'non-string meta fields preserved');
+      assert.strictEqual(entry.url, 'https://dev.azure.com/org/project', 'clean URL preserved');
+      assert.ok(entry.header && entry.header.includes('Bearer [REDACTED]'),
+        'sensitive meta string redacted');
+      assert.ok(!entry.header || !entry.header.includes('eyJlongmetatoken'),
+        'raw token must not survive in meta field');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('engine/ado.js has no raw console.log/console.error token leaks', () => {
+    // SEC-09: acceptance criterion — grep verifies no raw token-logging console calls
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Strip line comments so documentation references don't trip the guard
+    const stripped = src.split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    // Match console.log / console.error / console.warn / console.info with token-ish content
+    const leakPattern = /console\.(log|error|warn|info)\s*\([^)]*(Bearer|token|azureauth|Authorization)/i;
+    assert.ok(!leakPattern.test(stripped),
+      'engine/ado.js must not call console.* with raw token/Bearer/azureauth/Authorization strings — use the log() helper so redaction applies');
+  });
+
+  await test('_flushLogBuffer wires redactSecrets before persistence', () => {
+    // Source-level guardrail: ensures future refactors don't bypass redaction at the write site
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('redactSecrets'),
+      'engine/shared.js must reference redactSecrets');
+    // The flush path must invoke redaction (either via map() at flush or via log() at push)
+    const flushBlock = src.slice(src.indexOf('function _flushLogBuffer'),
+      src.indexOf('function flushLogs'));
+    const logBlock = src.slice(src.indexOf('function log('),
+      src.indexOf('function _flushLogBuffer'));
+    assert.ok(flushBlock.includes('redactSecrets') || logBlock.includes('redactSecrets'),
+      'redactSecrets must be invoked either in log() push-time or _flushLogBuffer() flush-time');
   });
 
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
@@ -7654,6 +8117,15 @@ async function testVerifyWorkflow() {
     assert.ok(src.includes('Manual Testing Guide'), 'Should show Manual Testing Guide link');
   });
 
+  await test('PRD view renderE2eSection filters abandoned PRs (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fnStart = src.indexOf('function renderE2eSection');
+    assert.ok(fnStart > -1, 'Should have renderE2eSection function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n  }', fnStart));
+    assert.ok(fnBody.includes("pr.status !== 'abandoned'"),
+      'renderE2eSection must filter PRs with status abandoned — superseded aggregate branches should not linger');
+  });
+
   await test('PRD view calls renderE2eSection for both active and archived groups', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     // Active groups
@@ -7730,6 +8202,38 @@ async function testSpawnAgentScript() {
       'Should pass system prompt via file to avoid Windows arg length limits');
     assert.ok(!src.includes('spawnSync') || !src.includes("'--help'"),
       'Should not use spawnSync --help for capability detection (removed as bottleneck)');
+  });
+
+  // Issue #1231: skills discovery across external repo worktrees
+  await test('spawn-agent.js passes --add-dir for minions project dir', () => {
+    assert.ok(src.includes("require('os')"),
+      'Should import os module for homedir()');
+    // Minions dir resolves up one from engine/ to repo root
+    assert.ok(src.includes("path.resolve(__dirname, '..')"),
+      'Should resolve minions project dir via path.resolve(__dirname, "..")');
+    assert.ok(src.includes("'--add-dir'"),
+      'Should pass --add-dir flag to claude CLI for skill discovery');
+  });
+
+  await test('spawn-agent.js passes --add-dir for user ~/.claude dir', () => {
+    // Must use os.homedir() per CLAUDE.md cross-platform rule, not $HOME/$USERPROFILE
+    assert.ok(src.includes('os.homedir()'),
+      'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
+    assert.ok(src.includes("'.claude'"),
+      'Should target the .claude subdirectory under home for global skill discovery');
+  });
+
+  await test('spawn-agent.js includes --add-dir on both resume and non-resume paths', () => {
+    // Agents run as fresh processes even on resume — CWD is still the external worktree,
+    // so skill discovery dirs must be passed in both branches of the cliArgs assignment.
+    const resumeIdx = src.indexOf('if (isResume)');
+    assert.ok(resumeIdx !== -1, 'isResume branch must exist');
+    const closeBrace = src.indexOf('\n}\n', resumeIdx);
+    assert.ok(closeBrace !== -1, 'isResume branch should end with closing brace');
+    const branchBlock = src.slice(resumeIdx, closeBrace);
+    const addDirSpreadMatches = branchBlock.match(/\.\.\.addDirArgs/g) || [];
+    assert.ok(addDirSpreadMatches.length >= 2,
+      'Both resume and non-resume cliArgs must spread ...addDirArgs (got ' + addDirSpreadMatches.length + ')');
   });
 }
 
@@ -8876,6 +9380,33 @@ async function testRecentFeatures() {
       'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
+  await test('PR link enrichment always overrides title from remote (closes #1283)', () => {
+    // Find the link handler — starts at the route path and runs to '{ method:' for next route
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    assert.ok(start > 0, 'link handler must exist');
+    // Scan forward until the next route declaration
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    assert.ok(next > start, 'delete handler must come after link handler');
+    const linkHandler = dashSrc.slice(start, next);
+
+    // Enrichment must call fetchAdoPrMetadata or gh api to get remote metadata
+    assert.ok(
+      linkHandler.includes('fetchAdoPrMetadata') || linkHandler.includes('gh api'),
+      'link handler must call remote API to fetch PR metadata'
+    );
+    // Title override must NOT be gated on user-supplied title being empty — real title always wins
+    assert.ok(
+      !/if\s*\(\s*!title\s*&&\s*prData\.title\s*\)/.test(linkHandler),
+      'link handler must NOT gate title override on !title — remote title must always win over user placeholder (closes #1283)'
+    );
+    // Title override must still exist, just unconditional on prData.title presence
+    assert.ok(
+      /prData\.title\s*\)\s*pr\.title\s*=/.test(linkHandler)
+        || /pr\.title\s*=\s*prData\.title/.test(linkHandler),
+      'link handler must still assign pr.title from prData.title when remote returns a title'
+    );
+  });
+
   // Plan creation from dashboard
   await test('POST /api/plans/create endpoint exists', () => {
     assert.ok(dashSrc.includes('/api/plans/create'),
@@ -8946,6 +9477,38 @@ async function testDashboardUIFunctions() {
       'Detail modal description should render in a scrollable container');
     assert.ok(!wiSrc.includes("renderMd((item.description || item.title || '—').slice(0, 1000))"),
       'Detail modal should not truncate description content to 1000 chars');
+  });
+
+  await test('dashboard cards ignore click-to-open while user is selecting text', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const plansCardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function shouldIgnoreSelectionClick()'),
+      'dashboard utils should expose a shared selection-click guard');
+    assert.ok(utilsSrc.includes("document.addEventListener('selectionchange', _markRecentTextSelection)") &&
+      utilsSrc.includes("document.addEventListener('mouseup', _markRecentTextSelection)"),
+      'selection-click guard should track live and recent text selections');
+    assert.ok(wiSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail('),
+      'work item rows should not open detail when text is being selected');
+    assert.ok(pipelineSrc.includes('if(shouldIgnoreSelectionClick(event))return;openPipelineDetail('),
+      'pipeline cards should not open detail when text is being selected');
+    assert.ok(meetingsSrc.includes('if(shouldIgnoreSelectionClick(event))return;openMeetingDetail('),
+      'meeting cards should not open detail when text is being selected');
+    assert.ok(plansCardSrc.includes('if(shouldIgnoreSelectionClick(event))return;planView('),
+      'plan cards should not open detail when text is being selected');
+    assert.ok(prdSrc.includes('if(shouldIgnoreSelectionClick(event))return;prdItemEdit('),
+      'PRD rows should not open detail when text is being selected');
+    assert.ok(schedulesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openScheduleDetail('),
+      'schedule cards and rows should not open detail when text is being selected');
+    assert.ok(watchesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWatchDetail('),
+      'watch rows should not open detail when text is being selected');
+    assert.ok(agentsSrc.includes("if(shouldIgnoreSelectionClick(event))return;openAgentDetail("),
+      'agent cards should not open detail when text is being selected');
   });
 
   // Feedback rating state
@@ -10980,6 +11543,182 @@ async function testSchedulerCronParsing() {
   });
 }
 
+// ─── scheduler.js — shouldRunNow & dispatch-time persistence ────────────────
+// W-mo3zu273f8tm: scheduler fires same cron twice in one minute when first
+// dispatch fails fast — the 55s elapsed-time guard did not cover the full
+// 60-second cron minute window. Fix: compare calendar-minute buckets so any
+// two fires within the same cron minute are collapsed to one.
+
+async function testSchedulerSameMinuteGuard() {
+  console.log('\n── scheduler.js — same-minute guard (W-mo3zu273f8tm) ──');
+
+  // Regression: two ticks 58s apart inside the same cron minute (e.g. 05:00:01
+  // and 05:00:59) used to both fire because 58000 < 55000 is false. The guard
+  // must now skip the second call regardless of the 55s threshold.
+  await test('shouldRunNow skips second fire within the same calendar minute (58s apart)', () => {
+    const schedule = { cron: '* * *' }; // matches every minute — forces guard to do the work
+    // Freeze Date.now / new Date() to a specific second inside the cron minute
+    const nowMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59
+    const lastMs = new Date(2026, 3, 18, 5, 0, 1).getTime(); // 05:00:01 — 58s earlier
+    const origNow = Date.now;
+    const origDate = global.Date;
+    try {
+      // Patch Date so both `new Date()` (no args) and Date.now() return our fixed "now".
+      // Calls with args (e.g. new Date(isoString)) must still work normally.
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, false,
+        'second fire within the same cron minute must be suppressed even when elapsed > 55s');
+    } finally {
+      global.Date = origDate;
+      Date.now = origNow;
+    }
+  });
+
+  // Positive: crossing a minute boundary must still allow firing
+  await test('shouldRunNow allows firing when now is in a different calendar minute than lastRun', () => {
+    const schedule = { cron: '* * *' };
+    const nowMs = new Date(2026, 3, 18, 5, 1, 0).getTime(); // 05:01:00
+    const lastMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59 — 1s earlier, different minute
+    const origDate = global.Date;
+    try {
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, true,
+        'crossing the minute boundary must allow firing, even when elapsed < 55s');
+    } finally {
+      global.Date = origDate;
+    }
+  });
+
+  // Source-level guard: the shouldRunNow function must compare calendar-minute
+  // buckets rather than rely solely on a 55s elapsed-time check.
+  await test('shouldRunNow source uses calendar-minute comparison for same-cron-window dedup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function shouldRunNow'), src.indexOf('\nfunction ', src.indexOf('function shouldRunNow') + 1));
+    assert.ok(fn.includes('getMinutes') && fn.includes('getHours'),
+      'shouldRunNow must compare calendar-minute (hours + minutes + date) so any two fires in the same cron minute are collapsed');
+  });
+}
+
+async function testSchedulerDispatchTimePersistence() {
+  console.log('\n── scheduler.js — dispatch-time persistence (W-mo3zu273f8tm) ──');
+
+  // Helper: snapshot + reset schedule-runs.json AND its .backup sidecar.
+  // safeJson auto-restores from a .backup file when the main file is missing,
+  // so both must be cleared for a true blank slate inside tests.
+  function _snapshotAndClearScheduleRuns(realPath) {
+    const backupPath = realPath + '.backup';
+    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
+    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+    try { fs.unlinkSync(realPath); } catch {}
+    try { fs.unlinkSync(backupPath); } catch {}
+    return function restoreFiles() {
+      if (snapshot) fs.writeFileSync(realPath, snapshot);
+      else { try { fs.unlinkSync(realPath); } catch {} }
+      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+      else { try { fs.unlinkSync(backupPath); } catch {} }
+    };
+  }
+
+  // Behavioral: discoverScheduledWork records both lastRun AND lastWorkItemId
+  // at dispatch time so the run is durable even if the dispatched work item
+  // crashes before lifecycle.runPostCompletionHooks can update the file.
+  await test('discoverScheduledWork writes lastRun and lastWorkItemId at dispatch time', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // scheduler.js resolves SCHEDULE_RUNS_PATH once at require time relative
+      // to __dirname, so we can't redirect via MINIONS_TEST_DIR alone. Snapshot
+      // and clear the real file (and its .backup sidecar) for this test.
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-dispatch-time-persistence',
+            cron: '* * *', // matches now
+            title: 'dispatch-time persistence regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const work = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1, 'schedule matching now should produce one work item');
+        const wi = work[0];
+        const runs = shared.safeJson(realPath) || {};
+        const entry = runs['test-dispatch-time-persistence'];
+        assert.ok(entry && typeof entry === 'object',
+          'schedule-runs entry must be written at dispatch time as an object');
+        assert.ok(entry.lastRun,
+          'lastRun timestamp must be written at dispatch time (not only on completion)');
+        assert.strictEqual(entry.lastWorkItemId, wi.id,
+          'lastWorkItemId must be written at dispatch time so the run is durable across crashes');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Regression: back-to-back calls to discoverScheduledWork within the same
+  // cron minute must only produce the schedule once — the dispatch-time write
+  // plus the same-minute guard together prevent the duplicate-fire bug.
+  await test('discoverScheduledWork does not double-fire within the same cron minute', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-no-double-fire',
+            cron: '* * *',
+            title: 'no-double-fire regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const first = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(first.length, 1, 'first call should fire the schedule');
+        const second = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(second.length, 0,
+          'second call within the same cron minute must not fire again');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Defense-in-depth: the lifecycle completion path must preserve lastRun and
+  // lastWorkItemId from dispatch time (not clobber them with fresh values).
+  await test('lifecycle completion update preserves dispatch-time lastRun', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const block = src.slice(src.indexOf('schedule-runs.json'), src.indexOf('schedule-runs.json') + 1000);
+    assert.ok(block.includes('lastRun:'),
+      'completion update must preserve lastRun — never blindly overwrite it');
+    // It must read the existing lastRun before writing, not default to ts() unconditionally.
+    assert.ok(block.includes('runs[scheduleId]?.lastRun') || block.includes("runs[scheduleId] && runs[scheduleId].lastRun"),
+      'completion update must read existing lastRun so the dispatch-time value is preserved');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -10994,6 +11733,8 @@ async function main() {
     await testBranchSanitization();
     await testSanitizePath();
     await testValidatePid();
+    await testValidateProjectName();
+    await testValidateProjectPath();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
@@ -11144,6 +11885,8 @@ async function main() {
 
     // Scheduler tests
     await testSchedulerCronParsing();
+    await testSchedulerSameMinuteGuard();
+    await testSchedulerDispatchTimePersistence();
 
     // P-b8c7d6e5: shared imports refactor (no circular requires)
     await testSharedImportsNoCircular();
@@ -14279,6 +15022,65 @@ async function testDashboardAuditXss() {
     assert.ok(src.includes('this.dataset.pinTitle'), 'should read from dataset');
   });
 
+  await test('submitPinnedNote optimistically renders new entry before awaiting fetch (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    // Extract submitPinnedNote body up to next function or end
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    const renderPos = body.indexOf('renderPinned(');
+    const fetchPos = body.indexOf('fetch(');
+    assert.ok(renderPos > 0, 'submitPinnedNote must call renderPinned for optimistic update');
+    assert.ok(fetchPos > 0, 'submitPinnedNote must call fetch to persist');
+    assert.ok(renderPos < fetchPos,
+      'renderPinned must fire BEFORE fetch — manual entry should appear in list immediately (optimistic)');
+    assert.ok(body.includes('window._pinnedEntries'),
+      'must update window._pinnedEntries with new entry optimistically so subsequent renders preserve it');
+  });
+
+  await test('submitPinnedNote reverts optimistic state when POST /api/pinned fails (closes #1295)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    const m = src.match(/async function submitPinnedNote[\s\S]*?(?=\n(?:async )?function |\nwindow\.MinionsPinned)/);
+    assert.ok(m, 'submitPinnedNote must exist');
+    const body = m[0];
+    // Must capture a snapshot of previous entries so we can revert on failure
+    assert.ok(/prevEntries|previousEntries|priorEntries/.test(body),
+      'must snapshot previous entries for revert on failure');
+    // Must re-render with the revert snapshot in at least one error branch
+    const renderCalls = (body.match(/renderPinned\(/g) || []).length;
+    assert.ok(renderCalls >= 2,
+      'must re-render at least twice: optimistic + revert on failure');
+  });
+
+  await test('POST /api/pinned invalidates slow-state cache so newly pinned entry appears on next status fetch (closes #1295)', () => {
+    // Pinned entries live in _slowState (60s TTL). Without invalidating slow state,
+    // the dashboard would show stale pinned data for up to 60 seconds after pinning.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const addIdx = src.indexOf("'POST', path: '/api/pinned'");
+    assert.ok(addIdx > 0, 'POST /api/pinned handler must exist');
+    // Handler body runs to the next top-level route entry
+    const block = src.slice(addIdx, addIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(block),
+      'POST /api/pinned must call invalidateStatusCache({ includeSlow: true }) — pinned lives in slow state');
+
+    const remIdx = src.indexOf("'/api/pinned/remove'");
+    assert.ok(remIdx > 0, 'POST /api/pinned/remove handler must exist');
+    const remBlock = src.slice(remIdx, remIdx + 1000);
+    assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(remBlock),
+      'POST /api/pinned/remove must call invalidateStatusCache({ includeSlow: true }) so unpin is immediate');
+  });
+
+  await test('invalidateStatusCache supports includeSlow option for user mutations of slow-state data', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const m = src.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
+    assert.ok(m, 'invalidateStatusCache function must exist');
+    const body = m[0];
+    assert.ok(/includeSlow/.test(body),
+      'invalidateStatusCache should accept an includeSlow option to clear _slowState for user-initiated mutations');
+    assert.ok(/_slowState\s*=\s*null/.test(body),
+      'invalidateStatusCache must be able to clear _slowState when includeSlow is set');
+  });
+
   await test('render-inbox.js uses data attributes for item name in onclick', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
     assert.ok(src.includes('data-inbox-name'), 'should use data-inbox-name attribute');
@@ -15323,6 +16125,106 @@ async function testPrDuplicateRaceFix() {
     const setCount = (pollFn[0].match(/_adoPollHadAuthFailure = true/g) || []).length;
     assert.strictEqual(setCount, 1,
       '_adoPollHadAuthFailure = true should appear exactly once in pollPrStatus (in auth error catch block only)');
+  });
+
+  // ── Issues #1232 / #1233: buildErrorLog preservation + lastBuildCheck ──────
+  await test('ado.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+
+    // There must NOT be an unconditional `delete pr.buildErrorLog` inside the
+    // `if (buildStatus !== 'failing')` block — it previously cleared logs on
+    // transient 'none'/'running' transitions, blinding fix agents.
+    // The gate must check for 'passing' before deleting.
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Must reference 'passing' to gate buildErrorLog deletion
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    // Verify the delete buildErrorLog inside the block is gated (not at top level of the if)
+    // Simplest invariant: every `delete pr.buildErrorLog` inside the non-failing block
+    // must be under a `buildStatus === 'passing'` condition.
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('ado.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Every `delete pr.buildFixAttempts` in the non-failing block must be under a passing guard
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('ado.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    // Must assign pr.lastBuildCheck = ts() — makes lastBuildCheck reflect actual poll time, not dispatch time
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+  });
+
+  await test('github.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('github.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('github.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
   });
 
   await test('engine.js imports needsAdoPollRetry and uses it in tick cadence', () => {
@@ -16774,6 +17676,116 @@ async function testAutoRecoveryAndAtomicity() {
       'getPrdInfo must compute prdFlaggedForRework before rawStatus');
   });
 
+  await test('BEHAVIORAL: getPrdInfo cache busts when pr-links.json changes (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with one project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // Minimal PRD file with one item
+      const prdPath = path.join(testDir, 'prd', 'demo-plan.json');
+      fs.writeFileSync(prdPath, JSON.stringify({
+        plan_summary: 'Demo plan', status: 'active', project: 'demo', source_plan: 'demo-plan.md',
+        missing_features: [{ id: 'P-demo1', name: 'Demo item', status: 'dispatched', depends_on: [] }]
+      }));
+
+      // Project has one PR, no links yet
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#77', prNumber: 77, url: 'https://github.com/octo/demo/pull/77', title: 'Individual PR', status: 'active', _project: 'demo', prdItems: [] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-demo1', title: 'Demo item', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+
+      // First call: pr-links.json is empty, so prs array should be empty
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+      const info1 = freshQueries.getPrdInfo();
+      const item1 = info1.progress && info1.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item1, 'PRD item P-demo1 must be present');
+      assert.deepStrictEqual(item1.prs, [], 'Before link: item should have no PRs');
+
+      // Write new pr-links.json and bump mtime to simulate a real update
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({ 'github:octo/demo#77': ['P-demo1'] }));
+      const future = new Date(Date.now() + 5000);
+      fs.utimesSync(freshShared.PR_LINKS_PATH, future, future);
+
+      // Second call: cache must bust, prs array should now contain the PR
+      const info2 = freshQueries.getPrdInfo();
+      const item2 = info2.progress && info2.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item2, 'PRD item P-demo1 must still be present');
+      assert.strictEqual(item2.prs.length, 1, 'After link: item should have exactly 1 PR');
+      assert.strictEqual(item2.prs[0].id, 'github:octo/demo#77', 'After link: PR id must match');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('BEHAVIORAL: getPrdInfo excludes aggregate/E2E PRs from individual PRD items (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'demo-plan.json'), JSON.stringify({
+        plan_summary: 'Demo', status: 'active', project: 'demo', source_plan: 'demo.md',
+        missing_features: [
+          { id: 'P-alpha', name: 'alpha', status: 'dispatched', depends_on: [] },
+          { id: 'P-beta',  name: 'beta',  status: 'dispatched', depends_on: [] }
+        ]
+      }));
+
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      // Three PRs: two individual, one aggregate/E2E
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#1', prNumber: 1, url: 'https://github.com/octo/demo/pull/1', title: 'Implement alpha',    status: 'active', _project: 'demo', prdItems: ['P-alpha'] },
+        { id: 'github:octo/demo#2', prNumber: 2, url: 'https://github.com/octo/demo/pull/2', title: 'Implement beta',     status: 'active', _project: 'demo', prdItems: ['P-beta']  },
+        { id: 'github:octo/demo#9', prNumber: 9, url: 'https://github.com/octo/demo/pull/9', title: '[E2E] Demo verify',  status: 'active', _project: 'demo', itemType: 'verify', prdItems: ['P-alpha', 'P-beta'] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-alpha', title: 'alpha', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' },
+        { id: 'P-beta',  title: 'beta',  status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+
+      const info = freshQueries.getPrdInfo();
+      const alpha = info.progress.items.find(i => i.id === 'P-alpha');
+      const beta  = info.progress.items.find(i => i.id === 'P-beta');
+      assert.ok(alpha && beta, 'Both PRD items must be present');
+
+      // Aggregate/E2E PR #9 must NOT appear in either individual item's prs array
+      const alphaIds = alpha.prs.map(p => p.id);
+      const betaIds  = beta.prs.map(p => p.id);
+      assert.ok(!alphaIds.includes('github:octo/demo#9'),
+        `P-alpha must not include aggregate E2E PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(!betaIds.includes('github:octo/demo#9'),
+        `P-beta must not include aggregate E2E PR; got ${JSON.stringify(betaIds)}`);
+      // Individual PRs still present
+      assert.ok(alphaIds.includes('github:octo/demo#1'),
+        `P-alpha must still include its individual PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(betaIds.includes('github:octo/demo#2'),
+        `P-beta must still include its individual PR; got ${JSON.stringify(betaIds)}`);
+    } finally {
+      restore();
+    }
+  });
+
   await test('areDependenciesMet returns failed when dep item is failed', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const fn = src.slice(src.indexOf('function areDependenciesMet'));
@@ -18060,6 +19072,188 @@ async function testBuildErrorLogFeature() {
     assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
       'Should clear buildErrorLog when PR is merged/abandoned');
   });
+
+  // ─── Regression guard #1232: preserve buildErrorLog through none/running ───
+  //
+  // When a fix agent pushes a new commit, CI status goes failing → none (builds
+  // queued but not started) or failing → running. If buildErrorLog is cleared
+  // on either transition and CI subsequently fails again, the next fix agent
+  // is dispatched blind with no error context. Only the `passing` transition
+  // represents actual recovery — none/running are transient.
+
+  // Extract the transition-handling block (between the "buildStatus !== 'failing'"
+  // guard and its closing brace) so we can assert what happens there.
+  const extractTransitionBlock = (src) => {
+    const openIdx = src.indexOf("if (buildStatus !== 'failing') {");
+    assert.ok(openIdx > 0, 'Source must contain the non-failing transition guard');
+    // Walk from openIdx forward, tracking brace depth starting at the opening `{`
+    const braceStart = src.indexOf('{', openIdx);
+    let depth = 1;
+    let i = braceStart + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    return src.slice(braceStart, i);
+  };
+
+  await test('ado.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    // Must guard buildErrorLog delete behind a passing check so none/running preserve it
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('github.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('ado.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  await test('github.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  // Behavioral simulation — document the expected state transitions so the
+  // intent is explicit, not just the source pattern.
+  // Mirrors the post-fix poller logic:
+  //   if (buildStatus !== 'failing') {
+  //     delete pr._buildFailNotified;
+  //     if (buildStatus === 'passing') {
+  //       delete pr.buildErrorLog;
+  //       if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+  //     }
+  //   }
+  const applyNonFailingCleanup = (pr, newStatus) => {
+    if (newStatus === 'failing') return;
+    delete pr._buildFailNotified;
+    if (newStatus === 'passing') {
+      delete pr.buildErrorLog;
+      if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+    }
+  };
+
+  await test('behavioral: failing → running preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-a', buildStatus: 'failing',
+      buildErrorLog: 'compile error: missing semicolon',
+      buildFixAttempts: 1, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'running');
+    assert.strictEqual(pr.buildErrorLog, 'compile error: missing semicolon',
+      'buildErrorLog must survive the transient running state so the next fix agent has context');
+    assert.strictEqual(pr.buildFixAttempts, 1,
+      'buildFixAttempts must survive running so the escalation cap is not defeated');
+    assert.strictEqual(pr._buildFailNotified, undefined,
+      '_buildFailNotified is cleared on any non-failing transition so new failures re-notify');
+  });
+
+  await test('behavioral: failing → none preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-b', buildStatus: 'failing',
+      buildErrorLog: 'ETIMEDOUT',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'none');
+    assert.strictEqual(pr.buildErrorLog, 'ETIMEDOUT',
+      'buildErrorLog must survive the transient none state (new builds queued but not complete)');
+    assert.strictEqual(pr.buildFixAttempts, 2,
+      'buildFixAttempts must survive none so the escalation cap is not defeated');
+    assert.strictEqual(pr.buildFixEscalated, false, 'buildFixEscalated must survive none');
+  });
+
+  await test('behavioral: failing → passing clears buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-c', buildStatus: 'failing',
+      buildErrorLog: 'compile error',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'passing');
+    assert.strictEqual(pr.buildErrorLog, undefined, 'buildErrorLog must be cleared on true recovery');
+    assert.strictEqual(pr.buildFixAttempts, undefined, 'buildFixAttempts resets on true recovery');
+    assert.strictEqual(pr.buildFixEscalated, undefined, 'buildFixEscalated resets on true recovery');
+    assert.strictEqual(pr._buildFailNotified, undefined, '_buildFailNotified cleared');
+  });
+
+  // ─── Regression guard #1233: lastBuildCheck reflects actual poll time ──────
+  //
+  // Previously `lastBuildCheck` was written once at dispatch time and never
+  // refreshed, making debugging misleading ("build not checked in hours") when
+  // polling was in fact working. Both pollers must set pr.lastBuildCheck = ts()
+  // every time they talk to the build API.
+
+  await test('ado.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    // Must come AFTER the build query, before (or alongside) the buildStatus transition block
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('github.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('lastBuildCheck is returned as updated=true so mutateJsonFileLocked persists it (#1233)', () => {
+    // Both pollers rely on the callback returning a truthy value to trigger
+    // the merge-back in forEachActivePr. Setting pr.lastBuildCheck without
+    // flipping `updated = true` would leave the field in-memory only and it
+    // would never reach disk — defeating the debugging utility entirely.
+    const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    for (const [label, src] of [['ado.js', adoSrc], ['github.js', ghSrc]]) {
+      const idx = src.indexOf('pr.lastBuildCheck = ts()');
+      assert.ok(idx > 0, `${label}: must contain pr.lastBuildCheck = ts()`);
+      // Within the next ~200 chars we should see `updated = true;` so the
+      // merge-back fires. This is lightweight structural proof, not behavioral
+      // — but the behavioral contract is narrow (just a one-line write).
+      const after = src.slice(idx, idx + 200);
+      assert.ok(/updated\s*=\s*true/.test(after),
+        `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
+    }
+  });
 }
 
 // ─── spawnEngine state preservation (#564) ──────────────────────────────────
@@ -18341,6 +19535,82 @@ async function testFailureClassEnum() {
   await test('classifyFailure: unknown failure → UNKNOWN', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, 'some long agent output that is more than fifty characters of normal text without any error patterns', ''),
       shared.FAILURE_CLASS.UNKNOWN);
+  });
+
+  // W-mo3zul9pirjb — surface meaningful error when claude CLI exits immediately with code 1
+  // and no output. Before this fix, such failures were logged only as "[empty-output]" with
+  // no hint about the likely cause (machine sleep, network loss, auth failure).
+  await test('diagnoseEmptyOutput: fast-exit empty-output returns annotated hint', () => {
+    const hint = lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 1200);
+    assert.ok(typeof hint === 'string' && hint.length > 0,
+      'Should return a hint string for empty-output + code 1 + elapsed < 3000ms');
+    assert.ok(hint.includes('1200ms') || hint.includes('1200 ms'),
+      'Hint should include the elapsed time in milliseconds');
+    assert.ok(/machine sleep/i.test(hint),
+      'Hint should mention machine sleep as a possible cause');
+    assert.ok(/network/i.test(hint),
+      'Hint should mention network unavailability as a possible cause');
+    assert.ok(/auth/i.test(hint),
+      'Hint should mention auth failure as a possible cause');
+    assert.ok(/empty-output/i.test(hint),
+      'Hint should be tagged with the empty-output class');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for EMPTY_OUTPUT class', () => {
+    // Same fast-exit pattern, but non-empty-output class — no hint
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.BUILD_FAILURE, 1, 500), null,
+      'BUILD_FAILURE should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.SPAWN_ERROR, 1, 500), null,
+      'SPAWN_ERROR should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.TIMEOUT, 1, 500), null,
+      'TIMEOUT should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(undefined, 1, 500), null,
+      'Undefined failureClass should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for exit code 1', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 0, 500), null,
+      'Exit code 0 should not trigger hint (no failure)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 78, 500), null,
+      'Exit code 78 (config error) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 143, 500), null,
+      'Exit code 143 (SIGTERM) should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers when elapsed < 3000ms', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 3000), null,
+      '3000ms should not trigger (boundary — only strict <3s)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 5000), null,
+      'Long-running agents that produce no output are a different failure mode');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 2999) === 'string',
+      '2999ms should still trigger hint');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 0) === 'string',
+      '0ms (instant exit) should still trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: rejects invalid elapsed values', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, NaN), null,
+      'NaN elapsed (bad startedAt) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, -10), null,
+      'Negative elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, undefined), null,
+      'Undefined elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 'abc'), null,
+      'Non-numeric elapsed should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput is exported from lifecycle.js', () => {
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput === 'function',
+      'diagnoseEmptyOutput should be exported');
+  });
+
+  await test('onAgentClose annotates errorReason with diagnoseEmptyOutput hint', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('diagnoseEmptyOutput'),
+      'engine.js onAgentClose should call diagnoseEmptyOutput to annotate the empty-output failure');
+    // The annotation should compose with the elapsed time computed from startedAt.
+    assert.ok(/Date\.parse\(startedAt\)|Date\.now\(\)\s*-\s*Date\.parse\(startedAt\)/.test(src),
+      'engine.js should compute elapsed time from startedAt for the diagnostic hint');
   });
 
   await test('completeDispatch stores failureClass on error entries', () => {
@@ -19701,6 +20971,35 @@ async function testPrReviewFixFlows() {
       'All votes extraction in checkLiveReviewStatus must filter undefined values');
   });
 
+  // ── SEC-02: No curl shell-out in ado.js (token leak via process argv) ──
+
+  await test('ADO checkLiveReviewStatus uses adoFetch, not curl shell-out', () => {
+    const checkFn = adoSrc.slice(adoSrc.indexOf('async function checkLiveReviewStatus('), adoSrc.indexOf('\nasync function fetchAdoPrMetadata'));
+    assert.ok(!/curl\s/.test(checkFn),
+      'checkLiveReviewStatus must not shell out to curl (token would be exposed on argv)');
+    assert.ok(!checkFn.includes('execAsync('),
+      'checkLiveReviewStatus must not use execAsync (token would be exposed on argv)');
+    assert.ok(checkFn.includes('adoFetch('),
+      'checkLiveReviewStatus must use the in-process adoFetch wrapper');
+  });
+
+  await test('ADO ado.js has no curl shell-out in executable code', () => {
+    // Strip only comments (not string literals — curl shell-outs live inside template literals).
+    const stripped = adoSrc
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/\bcurl\b/.test(stripped),
+      'engine/ado.js must not reference curl outside comments (SEC-02: ADO bearer token leak via process argv)');
+  });
+
+  await test('adoFetch supports configurable timeout via opts.timeout', () => {
+    const adoFetchFn = adoSrc.slice(adoSrc.indexOf('async function adoFetch('), adoSrc.indexOf('\n/** Fetch raw text from ADO API'));
+    assert.ok(adoFetchFn.includes('opts.timeout') || adoFetchFn.includes('timeout ='),
+      'adoFetch should accept a timeout option so callers can override the 30s default');
+    assert.ok(adoFetchFn.includes('AbortSignal.timeout('),
+      'adoFetch should use AbortSignal.timeout() for request cancellation');
+  });
+
   await test('GitHub checkLiveReviewStatus filters undefined state values from reviews', () => {
     // Review objects from GitHub API may have undefined state — latestByUser.values() must not contain undefined
     const checkFn = ghSrc.slice(ghSrc.indexOf('async function checkLiveReviewStatus('), ghSrc.indexOf('\nmodule.exports'));
@@ -19748,6 +21047,24 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(parseReviewVerdict(null), null);
     assert.strictEqual(parseReviewVerdict(''), null);
     assert.strictEqual(parseReviewVerdict('This is just a comment, no verdict'), null);
+  });
+
+  await test('parseAgentOutput preserves VERDICT from long review output (#1234)', () => {
+    // Regression: review summaries with VERDICT at the end were truncated by
+    // parseAgentOutput's 2000-char slice from head, so parseReviewVerdict(null)
+    // re-queued the WI up to maxRetries times even on successful completion.
+    const { parseAgentOutput, parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    const longBody =
+      '# Review of PR #1234\n\n' +
+      'Walked through every changed file and checked the logic.\n'.repeat(80) +
+      'Ran the tests locally: 2201 passing, 0 failing.\n'.repeat(20) +
+      '\n## Summary\n\nLooks good overall.\n\nVERDICT: APPROVE\n';
+    assert.ok(longBody.length > 2000, 'test fixture must exceed the slice window to be meaningful');
+    const raw = JSON.stringify({ type: 'result', result: longBody, session_id: 'abc' });
+    const { resultSummary } = parseAgentOutput(raw);
+    assert.ok(resultSummary.includes('VERDICT: APPROVE'),
+      `resultSummary lost the VERDICT marker (got tail: ...${resultSummary.slice(-80)})`);
+    assert.strictEqual(parseReviewVerdict(resultSummary), 'approved');
   });
 
   await test('updatePrAfterReview falls back to verdict parsing when live check is pending', () => {
@@ -26200,12 +27517,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──
@@ -26318,7 +27641,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -26641,7 +27964,7 @@ async function testStatusGzipCache() {
   });
 
   await test('invalidateStatusCache clears _statusCacheGzip', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
       'invalidateStatusCache must clear _statusCacheGzip');
@@ -26711,12 +28034,18 @@ async function testStatusCacheTiers() {
 
   // ── invalidateStatusCache invalidates fast state only ──
 
-  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
-    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+  await test('invalidateStatusCache nullifies _fastState unconditionally and _slowState only on opt-in', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\s*\([^)]*\)[\s\S]*?^}/m);
     assert.ok(fn, 'invalidateStatusCache must exist');
     const body = fn[0];
-    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
-    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState unconditionally');
+    // _slowState = null (if present) must be gated behind includeSlow — default TTL behaviour preserved
+    const slowIdx = body.indexOf('_slowState = null');
+    if (slowIdx > 0) {
+      const before = body.slice(0, slowIdx);
+      assert.ok(/includeSlow/.test(before),
+        '_slowState = null must be inside an includeSlow branch — default must leave slow state on its TTL');
+    }
   });
 
   // ── mtime tracking applies to fast state only ──

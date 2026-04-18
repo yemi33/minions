@@ -89,7 +89,7 @@ function renderWatches(watchesData) {
     var lastTriggered = w.last_triggered ? timeAgo(w.last_triggered) : 'never';
     var triggerInfo = (w.triggerCount || 0) + (w.stopAfter > 0 ? '/' + w.stopAfter : '');
 
-    html += '<tr style="cursor:pointer" onclick="openWatchDetail(\'' + escHtml(w.id) + '\')">' +
+    html += '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openWatchDetail(\'' + escHtml(w.id) + '\')">' +
       '<td><span class="pr-id">' + escHtml(w.id) + '</span></td>' +
       '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(w.description || w.target) + '">' + escHtml(w.target) + '</td>' +
       '<td><span class="dispatch-type explore">' + escHtml(targetLabel) + '</span></td>' +

@@ -97,7 +97,21 @@ function parseCronExpr(expr) {
 
 /**
  * Check if a schedule should fire now, given its last run time.
- * Prevents double-firing within the same minute window.
+ * Prevents double-firing within the same cron minute.
+ *
+ * Uses a calendar-minute comparison (year/month/date/hour/minute) instead of a
+ * fixed elapsed-time threshold. A cron minute window spans a full 60 seconds
+ * (e.g. 05:00:00 → 05:00:59), so an elapsed-time guard must also be ≥ 60s —
+ * but then two fires at 04:59:58 and 05:00:00 (different cron windows) would
+ * collapse incorrectly. Calendar-minute comparison handles both cases cleanly:
+ * any two fires in the same wall-clock minute are the same cron window, and
+ * any two fires in different wall-clock minutes are distinct cron windows.
+ *
+ * Regression note (W-mo3zu273f8tm): the old 55s threshold let two fires 58s
+ * apart inside the same cron minute (05:00:01, 05:00:59) both pass the guard
+ * when the first work item failed fast and cleared engine.js's active-dedup
+ * check.
+ *
  * @param {{ cron: string }} schedule
  * @param {string|null} lastRunAt -- ISO timestamp of last run
  * @returns {boolean}
@@ -109,11 +123,17 @@ function shouldRunNow(schedule, lastRunAt) {
   const now = new Date();
   if (!cron.matches(now)) return false;
 
-  // Don't fire again if already ran within the last 55 seconds
-  // (uses elapsed time instead of field comparison to handle DST/clock adjustments)
+  // Don't fire twice in the same calendar minute (same cron window).
   if (lastRunAt) {
     const last = new Date(lastRunAt);
-    if (Date.now() - last.getTime() < 55000) return false;
+    if (!isNaN(last.getTime()) &&
+        last.getFullYear() === now.getFullYear() &&
+        last.getMonth() === now.getMonth() &&
+        last.getDate() === now.getDate() &&
+        last.getHours() === now.getHours() &&
+        last.getMinutes() === now.getMinutes()) {
+      return false;
+    }
   }
 
   return true;
@@ -143,8 +163,9 @@ function discoverScheduledWork(config) {
       // Substitute schedule-time template vars (e.g. {{date}}) before the work
       // item is written — single-pass playbook rendering can't reach placeholders
       // embedded inside task_description, so they must be resolved up front.
+      const workItemId = `sched-${sched.id}-${Date.now()}`;
       work.push({
-        id: `sched-${sched.id}-${Date.now()}`,
+        id: workItemId,
         title: resolveScheduleTemplateVars(sched.title),
         type: sched.type || 'implement',
         priority: sched.priority || 'medium',
@@ -157,9 +178,14 @@ function discoverScheduledWork(config) {
         _scheduleId: sched.id,
       });
 
-      // Record run time inside the lock — preserve existing fields (lastWorkItemId, lastResult, etc.)
+      // Record run time AND work-item ID at dispatch time — preserve existing
+      // completion fields (lastResult, lastCompletedAt). Writing lastWorkItemId
+      // here (not only on completion) keeps the schedule-runs entry durable if
+      // the dispatched work item crashes or the engine restarts before
+      // lifecycle.runPostCompletionHooks runs. This is the fix that closes
+      // the double-fire window alongside the same-minute guard (W-mo3zu273f8tm).
       const existing = typeof runs[sched.id] === 'object' && runs[sched.id] ? runs[sched.id] : {};
-      runs[sched.id] = { ...existing, lastRun: ts() };
+      runs[sched.id] = { ...existing, lastRun: ts(), lastWorkItemId: workItemId };
     }
   }, { defaultValue: {} });
 

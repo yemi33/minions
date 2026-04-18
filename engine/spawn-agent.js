@@ -7,6 +7,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { exec, runFile, cleanChildEnv, killGracefully, killImmediate, ts, safeJson, safeWrite } = require('./shared');
 
@@ -103,16 +104,27 @@ if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const debugPath = path.join(tmpDir, 'spawn-debug.log');
 fs.writeFile(debugPath, `spawn-agent.js at ${ts()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`, () => {});
 
+// Skill discovery dirs — agents run with CWD set to an external repo worktree,
+// so skills in the minions repo and the user's global ~/.claude dir are otherwise
+// invisible. Pass them via --add-dir on every invocation (resume included, since
+// each resume spawns a fresh CLI process with the same CWD). See issue #1231.
+const minionsDir = path.resolve(__dirname, '..');
+const userClaudeDir = path.join(os.homedir(), '.claude');
+const addDirArgs = ['--add-dir', minionsDir];
+if (fs.existsSync(userClaudeDir) && path.resolve(userClaudeDir) !== path.resolve(minionsDir)) {
+  addDirArgs.push('--add-dir', userClaudeDir);
+}
+
 // When resuming a session, skip system prompt (it's baked into the session)
 const isResume = extraArgs.includes('--resume');
 const sysTmpPath = sysPromptFile + '.tmp';
 let cliArgs;
 if (isResume) {
-  cliArgs = ['-p', ...extraArgs];
+  cliArgs = ['-p', ...addDirArgs, ...extraArgs];
 } else {
   // Pass system prompt via file to avoid ENAMETOOLONG on Windows (32KB arg limit)
   fs.writeFileSync(sysTmpPath, sysPrompt);
-  cliArgs = ['-p', '--system-prompt-file', sysTmpPath, ...extraArgs];
+  cliArgs = ['-p', '--system-prompt-file', sysTmpPath, ...addDirArgs, ...extraArgs];
 }
 
 if (!claudeBin) {

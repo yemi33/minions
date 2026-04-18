@@ -149,7 +149,9 @@ function _createStreamAccumulator({
     if (obj.session_id) sessionId = obj.session_id;
     if (obj.type === 'result') {
       if (typeof obj.result === 'string') {
-        text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
+        // Tail-slice: VERDICTs, completion blocks, and PR URLs live at the END
+        // of agent output. Head-slicing dropped them (#1234).
+        text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
       }
       if (obj.total_cost_usd || obj.usage) {
         usage = {
@@ -166,7 +168,8 @@ function _createStreamAccumulator({
     if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
       for (const block of obj.message.content) {
         if (block?.type === 'text' && block.text) {
-          text = maxTextLength ? block.text.slice(0, maxTextLength) : block.text;
+          // Tail-slice for consistency with the result branch (see #1234).
+          text = maxTextLength ? block.text.slice(-maxTextLength) : block.text;
           if (onChunk && block.text !== lastTextSent) {
             lastTextSent = block.text;
             onChunk(block.text);

@@ -129,6 +129,26 @@ function statusColor(s) {
   return s === 'working' ? 'working' : s === 'done' ? 'done' : s === 'error' ? 'error' : '';
 }
 
+var SELECTION_CLICK_GUARD_MS = 300;
+var _lastTextSelectionAt = 0;
+
+function _selectionHasText() {
+  var sel = window.getSelection ? window.getSelection() : null;
+  return !!(sel && !sel.isCollapsed && sel.toString().trim());
+}
+
+function _markRecentTextSelection() {
+  if (_selectionHasText()) _lastTextSelectionAt = Date.now();
+}
+
+document.addEventListener('selectionchange', _markRecentTextSelection);
+document.addEventListener('mouseup', _markRecentTextSelection);
+
+function shouldIgnoreSelectionClick() {
+  if (_selectionHasText()) return true;
+  return (Date.now() - _lastTextSelectionAt) < SELECTION_CLICK_GUARD_MS;
+}
+
 function llmCopyBtn() {
   return '<button class="llm-copy-btn" onclick="event.stopPropagation();copyLlmText(this)" title="Copy">&#x2398;</button>';
 }
@@ -462,4 +482,4 @@ async function submitBugReport() {
   }
 }
 
-window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
+window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
