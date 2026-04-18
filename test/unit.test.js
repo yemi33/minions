@@ -11056,6 +11056,182 @@ async function testSchedulerCronParsing() {
   });
 }
 
+// ─── scheduler.js — shouldRunNow & dispatch-time persistence ────────────────
+// W-mo3zu273f8tm: scheduler fires same cron twice in one minute when first
+// dispatch fails fast — the 55s elapsed-time guard did not cover the full
+// 60-second cron minute window. Fix: compare calendar-minute buckets so any
+// two fires within the same cron minute are collapsed to one.
+
+async function testSchedulerSameMinuteGuard() {
+  console.log('\n── scheduler.js — same-minute guard (W-mo3zu273f8tm) ──');
+
+  // Regression: two ticks 58s apart inside the same cron minute (e.g. 05:00:01
+  // and 05:00:59) used to both fire because 58000 < 55000 is false. The guard
+  // must now skip the second call regardless of the 55s threshold.
+  await test('shouldRunNow skips second fire within the same calendar minute (58s apart)', () => {
+    const schedule = { cron: '* * *' }; // matches every minute — forces guard to do the work
+    // Freeze Date.now / new Date() to a specific second inside the cron minute
+    const nowMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59
+    const lastMs = new Date(2026, 3, 18, 5, 0, 1).getTime(); // 05:00:01 — 58s earlier
+    const origNow = Date.now;
+    const origDate = global.Date;
+    try {
+      // Patch Date so both `new Date()` (no args) and Date.now() return our fixed "now".
+      // Calls with args (e.g. new Date(isoString)) must still work normally.
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, false,
+        'second fire within the same cron minute must be suppressed even when elapsed > 55s');
+    } finally {
+      global.Date = origDate;
+      Date.now = origNow;
+    }
+  });
+
+  // Positive: crossing a minute boundary must still allow firing
+  await test('shouldRunNow allows firing when now is in a different calendar minute than lastRun', () => {
+    const schedule = { cron: '* * *' };
+    const nowMs = new Date(2026, 3, 18, 5, 1, 0).getTime(); // 05:01:00
+    const lastMs = new Date(2026, 3, 18, 5, 0, 59).getTime(); // 05:00:59 — 1s earlier, different minute
+    const origDate = global.Date;
+    try {
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(nowMs);
+          return new origDate(...args);
+        }
+        static now() { return nowMs; }
+      };
+      const result = scheduler.shouldRunNow(schedule, new origDate(lastMs).toISOString());
+      assert.strictEqual(result, true,
+        'crossing the minute boundary must allow firing, even when elapsed < 55s');
+    } finally {
+      global.Date = origDate;
+    }
+  });
+
+  // Source-level guard: the shouldRunNow function must compare calendar-minute
+  // buckets rather than rely solely on a 55s elapsed-time check.
+  await test('shouldRunNow source uses calendar-minute comparison for same-cron-window dedup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function shouldRunNow'), src.indexOf('\nfunction ', src.indexOf('function shouldRunNow') + 1));
+    assert.ok(fn.includes('getMinutes') && fn.includes('getHours'),
+      'shouldRunNow must compare calendar-minute (hours + minutes + date) so any two fires in the same cron minute are collapsed');
+  });
+}
+
+async function testSchedulerDispatchTimePersistence() {
+  console.log('\n── scheduler.js — dispatch-time persistence (W-mo3zu273f8tm) ──');
+
+  // Helper: snapshot + reset schedule-runs.json AND its .backup sidecar.
+  // safeJson auto-restores from a .backup file when the main file is missing,
+  // so both must be cleared for a true blank slate inside tests.
+  function _snapshotAndClearScheduleRuns(realPath) {
+    const backupPath = realPath + '.backup';
+    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
+    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+    try { fs.unlinkSync(realPath); } catch {}
+    try { fs.unlinkSync(backupPath); } catch {}
+    return function restoreFiles() {
+      if (snapshot) fs.writeFileSync(realPath, snapshot);
+      else { try { fs.unlinkSync(realPath); } catch {} }
+      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+      else { try { fs.unlinkSync(backupPath); } catch {} }
+    };
+  }
+
+  // Behavioral: discoverScheduledWork records both lastRun AND lastWorkItemId
+  // at dispatch time so the run is durable even if the dispatched work item
+  // crashes before lifecycle.runPostCompletionHooks can update the file.
+  await test('discoverScheduledWork writes lastRun and lastWorkItemId at dispatch time', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // scheduler.js resolves SCHEDULE_RUNS_PATH once at require time relative
+      // to __dirname, so we can't redirect via MINIONS_TEST_DIR alone. Snapshot
+      // and clear the real file (and its .backup sidecar) for this test.
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-dispatch-time-persistence',
+            cron: '* * *', // matches now
+            title: 'dispatch-time persistence regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const work = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1, 'schedule matching now should produce one work item');
+        const wi = work[0];
+        const runs = shared.safeJson(realPath) || {};
+        const entry = runs['test-dispatch-time-persistence'];
+        assert.ok(entry && typeof entry === 'object',
+          'schedule-runs entry must be written at dispatch time as an object');
+        assert.ok(entry.lastRun,
+          'lastRun timestamp must be written at dispatch time (not only on completion)');
+        assert.strictEqual(entry.lastWorkItemId, wi.id,
+          'lastWorkItemId must be written at dispatch time so the run is durable across crashes');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Regression: back-to-back calls to discoverScheduledWork within the same
+  // cron minute must only produce the schedule once — the dispatch-time write
+  // plus the same-minute guard together prevent the duplicate-fire bug.
+  await test('discoverScheduledWork does not double-fire within the same cron minute', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      try {
+        const config = {
+          schedules: [{
+            id: 'test-no-double-fire',
+            cron: '* * *',
+            title: 'no-double-fire regression',
+            type: 'test',
+            enabled: true,
+          }],
+        };
+        const first = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(first.length, 1, 'first call should fire the schedule');
+        const second = schedulerMod.discoverScheduledWork(config);
+        assert.strictEqual(second.length, 0,
+          'second call within the same cron minute must not fire again');
+      } finally {
+        restoreFiles();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  // Defense-in-depth: the lifecycle completion path must preserve lastRun and
+  // lastWorkItemId from dispatch time (not clobber them with fresh values).
+  await test('lifecycle completion update preserves dispatch-time lastRun', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const block = src.slice(src.indexOf('schedule-runs.json'), src.indexOf('schedule-runs.json') + 1000);
+    assert.ok(block.includes('lastRun:'),
+      'completion update must preserve lastRun — never blindly overwrite it');
+    // It must read the existing lastRun before writing, not default to ts() unconditionally.
+    assert.ok(block.includes('runs[scheduleId]?.lastRun') || block.includes("runs[scheduleId] && runs[scheduleId].lastRun"),
+      'completion update must read existing lastRun so the dispatch-time value is preserved');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -11220,6 +11396,8 @@ async function main() {
 
     // Scheduler tests
     await testSchedulerCronParsing();
+    await testSchedulerSameMinuteGuard();
+    await testSchedulerDispatchTimePersistence();
 
     // P-b8c7d6e5: shared imports refactor (no circular requires)
     await testSharedImportsNoCircular();
