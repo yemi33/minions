@@ -371,6 +371,134 @@ async function testBranchSanitization() {
   });
 }
 
+async function testIsAllowedOrigin() {
+  console.log('\n── shared.js — isAllowedOrigin (dashboard origin allowlist) ──');
+
+  // Allowed hosts — port-agnostic
+  await test('isAllowedOrigin accepts http://localhost without port', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://localhost:7331', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:7331'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://localhost:65535 (any port)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:65535'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://127.0.0.1 and http://127.0.0.1:3000', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1:3000'), true);
+  });
+
+  await test('isAllowedOrigin accepts IPv6 http://[::1] and http://[::1]:7331', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://[::1]'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://[::1]:7331'), true);
+  });
+
+  await test('isAllowedOrigin accepts Referer-style full URL (path ignored)', () => {
+    // Referer headers include the full URL; helper must tolerate path/query
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:7331/api/status'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1:7331/dashboard?x=1'), true);
+  });
+
+  // Disallowed hosts
+  await test('isAllowedOrigin rejects arbitrary public origins', () => {
+    assert.strictEqual(shared.isAllowedOrigin('https://evil.example'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://evil.example:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://attacker.localhost.com'), false);
+  });
+
+  await test('isAllowedOrigin rejects private-network hosts not on allowlist', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://10.0.0.1'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://192.168.1.5:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://0.0.0.0'), false);
+  });
+
+  await test('isAllowedOrigin rejects https scheme (allowlist is http-only for local dev)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('https://localhost:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('https://127.0.0.1'), false);
+  });
+
+  await test('isAllowedOrigin rejects non-http schemes (file, data, ws, chrome-extension)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('file:///etc/passwd'), false);
+    assert.strictEqual(shared.isAllowedOrigin('data:text/html,<script>1</script>'), false);
+    assert.strictEqual(shared.isAllowedOrigin('ws://localhost:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('chrome-extension://abc'), false);
+  });
+
+  // Null / empty / malformed
+  await test('isAllowedOrigin rejects null, undefined, empty, and non-string inputs', () => {
+    assert.strictEqual(shared.isAllowedOrigin(null), false);
+    assert.strictEqual(shared.isAllowedOrigin(undefined), false);
+    assert.strictEqual(shared.isAllowedOrigin(''), false);
+    assert.strictEqual(shared.isAllowedOrigin('   '), false);
+    assert.strictEqual(shared.isAllowedOrigin(42), false);
+    assert.strictEqual(shared.isAllowedOrigin({}), false);
+  });
+
+  await test('isAllowedOrigin rejects literal "null" (sandboxed iframe / data URI origin)', () => {
+    // Browsers send `Origin: null` for sandboxed iframes, opaque origins, data: URIs
+    assert.strictEqual(shared.isAllowedOrigin('null'), false);
+  });
+
+  await test('isAllowedOrigin rejects malformed URLs', () => {
+    assert.strictEqual(shared.isAllowedOrigin('notaurl'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http:// localhost'), false);
+    assert.strictEqual(shared.isAllowedOrigin('javascript:alert(1)'), false);
+  });
+
+  await test('isAllowedOrigin rejects subdomain-spoof attempts', () => {
+    // Prevents attacker.localhost or 127.0.0.1.evil.com from sneaking through
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost.evil.com'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1.nip.io'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://not-localhost'), false);
+  });
+}
+
+async function testBuildSecurityHeaders() {
+  console.log('\n── shared.js — buildSecurityHeaders ──');
+
+  await test('buildSecurityHeaders returns exactly the four required headers', () => {
+    const h = shared.buildSecurityHeaders();
+    assert.ok(h && typeof h === 'object', 'must return an object');
+    const keys = Object.keys(h).sort();
+    assert.deepStrictEqual(keys, [
+      'Content-Security-Policy',
+      'Referrer-Policy',
+      'X-Content-Type-Options',
+      'X-Frame-Options',
+    ], 'must return exactly the four required keys');
+  });
+
+  await test('buildSecurityHeaders returns strict CSP (self-only scripts, inline styles permitted)', () => {
+    const h = shared.buildSecurityHeaders();
+    const csp = h['Content-Security-Policy'];
+    assert.ok(csp.includes("default-src 'self'"), 'CSP must include default-src self');
+    assert.ok(csp.includes("script-src 'self'"), 'CSP must include script-src self');
+    assert.ok(csp.includes("style-src 'self' 'unsafe-inline'"), 'CSP must allow inline styles');
+    // script-src must NOT include 'unsafe-inline' — that would defeat XSS protection
+    assert.ok(!/script-src[^;]*'unsafe-inline'/.test(csp), "script-src must not allow 'unsafe-inline'");
+  });
+
+  await test('buildSecurityHeaders sets X-Frame-Options: DENY and nosniff + same-origin referrer', () => {
+    const h = shared.buildSecurityHeaders();
+    assert.strictEqual(h['X-Frame-Options'], 'DENY');
+    assert.strictEqual(h['X-Content-Type-Options'], 'nosniff');
+    assert.strictEqual(h['Referrer-Policy'], 'same-origin');
+  });
+
+  await test('buildSecurityHeaders returns a fresh object each call (no shared mutation)', () => {
+    const a = shared.buildSecurityHeaders();
+    const b = shared.buildSecurityHeaders();
+    assert.notStrictEqual(a, b, 'each call must return a distinct object');
+    a['X-Frame-Options'] = 'TAMPERED';
+    assert.strictEqual(b['X-Frame-Options'], 'DENY', 'mutation of one result must not affect a later call');
+  });
+}
+
 async function testSanitizePath() {
   console.log('\n── shared.js — Path Sanitization ──');
 
@@ -11640,6 +11768,8 @@ async function main() {
     await testSharedUtilities();
     await testIdGeneration();
     await testBranchSanitization();
+    await testIsAllowedOrigin();
+    await testBuildSecurityHeaders();
     await testSanitizePath();
     await testValidatePid();
     await testValidateProjectName();
