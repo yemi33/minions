@@ -465,6 +465,11 @@ async function pollPrStatus(config) {
       } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }
 
+    // Record actual poll time — makes lastBuildCheck reflect when the engine last
+    // talked to ADO, not when the agent was dispatched. Issue #1233.
+    pr.lastBuildCheck = ts();
+    updated = true;
+
     if (pr.buildStatus !== buildStatus) {
       log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
       pr.buildStatus = buildStatus;
@@ -475,9 +480,17 @@ async function pollPrStatus(config) {
       if (buildStatus === 'failing') delete pr._autoCompleted;
       if (buildStatus !== 'failing') {
         delete pr._buildFailNotified;
-        delete pr.buildErrorLog;
-        // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
-        if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+        // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+        // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
+        // can also occur when ADO recomputes the merge commit after a target-branch
+        // update but no new builds have been triggered yet (filter by sourceVersion
+        // returns []), which previously wiped the last known error log and caused
+        // fix agents to be dispatched blind.
+        if (buildStatus === 'passing') {
+          delete pr.buildErrorLog;
+          // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
+          if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+        }
       }
       updated = true;
 
