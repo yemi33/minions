@@ -422,9 +422,8 @@ async function pollPrStatus(config) {
     if (prData.state === 'open' && prData.head?.sha) {
       const checksData = await ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
       if (checksData && checksData.check_runs) {
-        // Record actual poll time so lastBuildCheck reflects when the engine last
-        // talked to GitHub, not the dispatch timestamp (#1233). Forces a disk
-        // merge-back so the field becomes visible to the dashboard and debugging.
+        // Record actual poll time — makes lastBuildCheck reflect when the engine last
+        // talked to GitHub, not when the agent was dispatched. Issue #1233.
         pr.lastBuildCheck = ts();
         updated = true;
         const runs = checksData.check_runs;
@@ -456,13 +455,11 @@ async function pollPrStatus(config) {
           delete pr._buildFixPushedAt;
           if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
-            // _buildFailNotified clears on any non-failing transition so a subsequent
-            // failing run can re-notify the author (new commit = new failure cycle).
             delete pr._buildFailNotified;
-            // buildErrorLog and the retry counters must ONLY clear on confirmed
-            // `passing` (true recovery). `none` (new builds queued) and `running`
-            // (build in progress) are transient — clearing here would dispatch the
-            // next fix agent blind if the build ends up failing again (#1232).
+            // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+            // transitions — only clear on confirmed 'passing' recovery. Issue #1232:
+            // clearing on every non-failing transition blinded the next fix agent
+            // while a queued build was still running.
             if (buildStatus === 'passing') {
               delete pr.buildErrorLog;
               // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again

@@ -203,7 +203,7 @@ function renderPrdProgress(prog) {
       ? '<span onclick="event.stopPropagation();prdItemReopen(\'' + escHtml(i.source || '') + '\',\'' + escHtml(i.id) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Re-open: set to updated so engine re-dispatches on existing branch">re-open</span>'
       : '';
 
-    return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
+    return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status, i.id) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
@@ -488,7 +488,9 @@ function renderPrdProgress(prog) {
   }
 
   function renderE2eSection(planFile) {
-    const prs = e2eByPlan[planFile] || [];
+    // Filter out abandoned E2E PRs — superseded aggregate branches should not
+    // linger in the E2E section after their constituents merged individually.
+    const prs = (e2eByPlan[planFile] || []).filter(pr => pr.status !== 'abandoned');
     const guide = guideByPlan[planFile];
     if (prs.length === 0 && !guide) return '';
     let html = '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">';
@@ -577,7 +579,7 @@ function openArchivedPrdModal() {
       const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
       const completed = g.completedAt ? new Date(g.completedAt).toLocaleDateString() : '';
-      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">' +
+      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="if(shouldIgnoreSelectionClick(event))return;showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
         '<div class="plan-card-meta">' +
           (g._projects.length > 0 ? g._projects.map(function(p) { return '<span>' + escHtml(p) + '</span>'; }).join(' ') : '') +

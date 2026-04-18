@@ -465,9 +465,8 @@ async function pollPrStatus(config) {
       } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }
 
-    // Record actual poll time so lastBuildCheck reflects when the engine last
-    // talked to ADO, not the dispatch timestamp (#1233). Forces a disk merge-back
-    // for this PR so the field becomes visible to the dashboard and debugging.
+    // Record actual poll time — makes lastBuildCheck reflect when the engine last
+    // talked to ADO, not when the agent was dispatched. Issue #1233.
     pr.lastBuildCheck = ts();
     updated = true;
 
@@ -480,13 +479,13 @@ async function pollPrStatus(config) {
       delete pr._buildFixPushedAt;
       if (buildStatus === 'failing') delete pr._autoCompleted;
       if (buildStatus !== 'failing') {
-        // _buildFailNotified clears on any non-failing transition so a subsequent
-        // failing run can re-notify the author (new commit = new failure cycle).
         delete pr._buildFailNotified;
-        // buildErrorLog and the retry counters must ONLY clear on confirmed
-        // `passing` (true recovery). `none` (new builds queued) and `running`
-        // (build in progress) are transient — clearing here would dispatch the
-        // next fix agent blind if the build ends up failing again (#1232).
+        // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+        // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
+        // can also occur when ADO recomputes the merge commit after a target-branch
+        // update but no new builds have been triggered yet (filter by sourceVersion
+        // returns []), which previously wiped the last known error log and caused
+        // fix agents to be dispatched blind.
         if (buildStatus === 'passing') {
           delete pr.buildErrorLog;
           // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again

@@ -4,7 +4,7 @@ function renderAgents(agents) {
   agentData = agents;
   const grid = document.getElementById('agents-grid');
   grid.innerHTML = agents.map(a => `
-    <div class="agent-card ${statusColor(a.status)}" onclick="openAgentDetail('${escHtml(a.id)}')">
+    <div class="agent-card ${statusColor(a.status)}" onclick="if(shouldIgnoreSelectionClick(event))return;openAgentDetail('${escHtml(a.id)}')">
       <div class="agent-card-header">
         <span class="agent-name"><span class="agent-emoji">${escHtml(a.emoji)}</span>${escHtml(a.name)}</span>
         <span class="status-badge ${escHtml(a.status)}">${escHtml(a.status)}</span>

@@ -13,7 +13,7 @@ function renderPinned(entries) {
   el.innerHTML = entries.map((e, i) =>
     '<div class="pinned-card" data-file="pinned:' + escHtml(e.title) + '" style="padding:8px 12px;margin-bottom:6px;background:var(--surface2);border-left:3px solid ' +
       (e.level === 'critical' ? 'var(--red)' : e.level === 'warning' ? 'var(--yellow)' : 'var(--blue)') +
-      ';border-radius:4px;cursor:pointer" onclick="openPinnedView(' + i + ')">' +
+      ';border-radius:4px;cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openPinnedView(' + i + ')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:var(--text-md)">' + escHtml(e.title) + '</strong>' +
         '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" data-pin-title="' + escHtml(e.title) + '" onclick="event.stopPropagation();removePinnedNote(this.dataset.pinTitle)">Unpin</button>' +

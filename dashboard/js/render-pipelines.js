@@ -277,7 +277,7 @@ function renderPipelines(pipelines) {
     var allResources = _collectMonitoredResources(p);
     var resourcesHtml = _renderMonitoredResources(allResources, { compact: true });
 
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:13px">' + escHtml(p.title) + '</strong>' +
         '<div style="display:flex;align-items:center;gap:8px">' +

@@ -138,7 +138,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconcilePrdStatuses, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, diagnoseEmptyOutput, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -1231,6 +1231,13 @@ async function spawnAgent(dispatchItem, config) {
     let errorReason = '';
     if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
+      // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the
+      // "silent crash" pattern seen during scheduled tasks when the box went to sleep
+      // or lost network), prepend a diagnostic hint so failReason/dispatch log carry
+      // the actual elapsed time and likely root causes rather than a bare "[empty-output]".
+      const elapsedMs = Date.now() - Date.parse(startedAt);
+      const hint = diagnoseEmptyOutput(failureClass, code, elapsedMs);
+      if (hint) errorReason = errorReason ? `${hint} ${errorReason}` : hint;
     }
     completeDispatch(id, effectiveResult, errorReason, resultSummary, completeOpts);
 

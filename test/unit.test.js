@@ -475,6 +475,20 @@ async function testParseStreamJsonOutput() {
     assert.strictEqual(text.length, 50);
   });
 
+  await test('parseStreamJsonOutput keeps tail, not head, when maxTextLength is set (#1234)', () => {
+    // Regression: review agents write long findings with VERDICT markers at the
+    // end; slicing from head dropped the verdict, causing parseReviewVerdict to
+    // return null and the engine to re-dispatch the review up to maxRetries times.
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"result","result":"' + body + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(text.length, 500);
+    assert.ok(text.includes('VERDICT: APPROVE'),
+      'tail slice must preserve VERDICT marker at end of output');
+    assert.ok(!text.startsWith('PREAMBLE_'),
+      'tail slice must drop the preamble, not the tail');
+  });
+
   await test('parseStreamJsonOutput finds result scanning from end', () => {
     const lines = [];
     for (let i = 0; i < 100; i++) lines.push(`{"type":"assistant","message":"line ${i}"}`);
@@ -1319,6 +1333,86 @@ async function testQueriesPrd() {
       for (const item of archivedItems) {
         assert.ok(typeof item.sourcePlan === 'string', `archived item ${item.id} sourcePlan should be string`);
       }
+    }
+  });
+
+  await test('_getPrdInputHash tracks engine/pr-links.json mtime (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function _getPrdInputHash');
+    assert.ok(fnStart > -1, 'Should have _getPrdInputHash function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart));
+    assert.ok(fnBody.includes("'pr-links.json'"),
+      '_getPrdInputHash must stat engine/pr-links.json — PR linkage changes via that static override must invalidate the cache');
+  });
+
+  await test('getPrdInfo skips aggregate/E2E PRs from per-item prdToPr (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fnStart = src.indexOf('function getPrdInfo');
+    assert.ok(fnStart > -1);
+    const fnBody = src.slice(fnStart, src.indexOf('function resetPrdInfoCache', fnStart));
+    // Must guard against aggregate (itemIds.length > 1), verify type, and [E2E] titles
+    assert.ok(/itemIds \|\| \[\]\)\.length > 1/.test(fnBody),
+      'prLinks loop must skip PRs linked to more than one item (aggregate)');
+    assert.ok(fnBody.includes("pr?.itemType === 'verify'"),
+      'prLinks loop must skip verify-typed PRs from per-item mapping');
+    assert.ok(fnBody.includes("pr?.title?.startsWith('[E2E]')"),
+      'prLinks loop must skip [E2E] titled PRs from per-item mapping');
+  });
+
+  await test('getPrdInfo: aggregate PR does not bleed into per-item prs array (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with a single project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'TestProj', localPath: testDir, mainBranch: 'main' }],
+        agents: {}, engine: {},
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'test-plan.json'), JSON.stringify({
+        plan_summary: 'Aggregate bleed test',
+        project: 'TestProj',
+        missing_features: [
+          { id: 'AGG-001', title: 'Feature A', status: 'done' },
+          { id: 'AGG-002', title: 'Feature B', status: 'done' },
+        ],
+      }));
+
+      // Project state dir + pull-requests.json with one aggregate PR
+      // linking BOTH items (itemIds.length > 1) — PR IDs get lowercased by
+      // normalizePrRecord (canonical scope form is lowercase).
+      const projStateDir = path.join(testDir, 'projects', 'TestProj');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      fs.writeFileSync(path.join(projStateDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:testproj#999', prNumber: 999, title: '[E2E] aggregate', status: 'active',
+          prdItems: ['AGG-001', 'AGG-002'] },
+        { id: 'github:testproj#998', prNumber: 998, title: 'feat: just A', status: 'active',
+          prdItems: ['AGG-001'] },
+      ]));
+      fs.writeFileSync(path.join(projStateDir, 'work-items.json'), JSON.stringify([
+        { id: 'AGG-001', status: 'done', sourcePlan: 'test-plan.json' },
+        { id: 'AGG-002', status: 'done', sourcePlan: 'test-plan.json' },
+      ]));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      freshQueries.resetPrdInfoCache();
+      const info = freshQueries.getPrdInfo();
+      assert.ok(info.progress, 'Should return progress');
+      const byId = Object.fromEntries(info.progress.items.map(i => [i.id, i]));
+
+      // Aggregate PR #999 must NOT appear in prs[] for either constituent item
+      for (const id of ['AGG-001', 'AGG-002']) {
+        const prs = byId[id]?.prs || [];
+        assert.ok(!prs.some(p => String(p.id).endsWith('#999')),
+          `Item ${id} must not have aggregate PR #999 in its prs[] — it links to multiple items`);
+      }
+      // Single-item PR #998 must still appear for AGG-001
+      assert.ok((byId['AGG-001']?.prs || []).some(p => String(p.id).endsWith('#998')),
+        'Single-item PR #998 must still appear in AGG-001.prs[]');
+    } finally {
+      restore();
     }
   });
 }
@@ -7654,6 +7748,15 @@ async function testVerifyWorkflow() {
     assert.ok(src.includes('Manual Testing Guide'), 'Should show Manual Testing Guide link');
   });
 
+  await test('PRD view renderE2eSection filters abandoned PRs (#1220)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fnStart = src.indexOf('function renderE2eSection');
+    assert.ok(fnStart > -1, 'Should have renderE2eSection function');
+    const fnBody = src.slice(fnStart, src.indexOf('\n  }', fnStart));
+    assert.ok(fnBody.includes("pr.status !== 'abandoned'"),
+      'renderE2eSection must filter PRs with status abandoned — superseded aggregate branches should not linger');
+  });
+
   await test('PRD view calls renderE2eSection for both active and archived groups', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     // Active groups
@@ -7730,6 +7833,38 @@ async function testSpawnAgentScript() {
       'Should pass system prompt via file to avoid Windows arg length limits');
     assert.ok(!src.includes('spawnSync') || !src.includes("'--help'"),
       'Should not use spawnSync --help for capability detection (removed as bottleneck)');
+  });
+
+  // Issue #1231: skills discovery across external repo worktrees
+  await test('spawn-agent.js passes --add-dir for minions project dir', () => {
+    assert.ok(src.includes("require('os')"),
+      'Should import os module for homedir()');
+    // Minions dir resolves up one from engine/ to repo root
+    assert.ok(src.includes("path.resolve(__dirname, '..')"),
+      'Should resolve minions project dir via path.resolve(__dirname, "..")');
+    assert.ok(src.includes("'--add-dir'"),
+      'Should pass --add-dir flag to claude CLI for skill discovery');
+  });
+
+  await test('spawn-agent.js passes --add-dir for user ~/.claude dir', () => {
+    // Must use os.homedir() per CLAUDE.md cross-platform rule, not $HOME/$USERPROFILE
+    assert.ok(src.includes('os.homedir()'),
+      'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
+    assert.ok(src.includes("'.claude'"),
+      'Should target the .claude subdirectory under home for global skill discovery');
+  });
+
+  await test('spawn-agent.js includes --add-dir on both resume and non-resume paths', () => {
+    // Agents run as fresh processes even on resume — CWD is still the external worktree,
+    // so skill discovery dirs must be passed in both branches of the cliArgs assignment.
+    const resumeIdx = src.indexOf('if (isResume)');
+    assert.ok(resumeIdx !== -1, 'isResume branch must exist');
+    const closeBrace = src.indexOf('\n}\n', resumeIdx);
+    assert.ok(closeBrace !== -1, 'isResume branch should end with closing brace');
+    const branchBlock = src.slice(resumeIdx, closeBrace);
+    const addDirSpreadMatches = branchBlock.match(/\.\.\.addDirArgs/g) || [];
+    assert.ok(addDirSpreadMatches.length >= 2,
+      'Both resume and non-resume cliArgs must spread ...addDirArgs (got ' + addDirSpreadMatches.length + ')');
   });
 }
 
@@ -8946,6 +9081,38 @@ async function testDashboardUIFunctions() {
       'Detail modal description should render in a scrollable container');
     assert.ok(!wiSrc.includes("renderMd((item.description || item.title || '—').slice(0, 1000))"),
       'Detail modal should not truncate description content to 1000 chars');
+  });
+
+  await test('dashboard cards ignore click-to-open while user is selecting text', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const plansCardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function shouldIgnoreSelectionClick()'),
+      'dashboard utils should expose a shared selection-click guard');
+    assert.ok(utilsSrc.includes("document.addEventListener('selectionchange', _markRecentTextSelection)") &&
+      utilsSrc.includes("document.addEventListener('mouseup', _markRecentTextSelection)"),
+      'selection-click guard should track live and recent text selections');
+    assert.ok(wiSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail('),
+      'work item rows should not open detail when text is being selected');
+    assert.ok(pipelineSrc.includes('if(shouldIgnoreSelectionClick(event))return;openPipelineDetail('),
+      'pipeline cards should not open detail when text is being selected');
+    assert.ok(meetingsSrc.includes('if(shouldIgnoreSelectionClick(event))return;openMeetingDetail('),
+      'meeting cards should not open detail when text is being selected');
+    assert.ok(plansCardSrc.includes('if(shouldIgnoreSelectionClick(event))return;planView('),
+      'plan cards should not open detail when text is being selected');
+    assert.ok(prdSrc.includes('if(shouldIgnoreSelectionClick(event))return;prdItemEdit('),
+      'PRD rows should not open detail when text is being selected');
+    assert.ok(schedulesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openScheduleDetail('),
+      'schedule cards and rows should not open detail when text is being selected');
+    assert.ok(watchesSrc.includes('if(shouldIgnoreSelectionClick(event))return;openWatchDetail('),
+      'watch rows should not open detail when text is being selected');
+    assert.ok(agentsSrc.includes("if(shouldIgnoreSelectionClick(event))return;openAgentDetail("),
+      'agent cards should not open detail when text is being selected');
   });
 
   // Feedback rating state
@@ -15234,6 +15401,106 @@ async function testPrDuplicateRaceFix() {
       '_adoPollHadAuthFailure = true should appear exactly once in pollPrStatus (in auth error catch block only)');
   });
 
+  // ── Issues #1232 / #1233: buildErrorLog preservation + lastBuildCheck ──────
+  await test('ado.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+
+    // There must NOT be an unconditional `delete pr.buildErrorLog` inside the
+    // `if (buildStatus !== 'failing')` block — it previously cleared logs on
+    // transient 'none'/'running' transitions, blinding fix agents.
+    // The gate must check for 'passing' before deleting.
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Must reference 'passing' to gate buildErrorLog deletion
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    // Verify the delete buildErrorLog inside the block is gated (not at top level of the if)
+    // Simplest invariant: every `delete pr.buildErrorLog` inside the non-failing block
+    // must be under a `buildStatus === 'passing'` condition.
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('ado.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Every `delete pr.buildFixAttempts` in the non-failing block must be under a passing guard
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('ado.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    // Must assign pr.lastBuildCheck = ts() — makes lastBuildCheck reflect actual poll time, not dispatch time
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+  });
+
+  await test('github.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('github.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('github.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+  });
+
   await test('engine.js imports needsAdoPollRetry and uses it in tick cadence', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');
@@ -16681,6 +16948,116 @@ async function testAutoRecoveryAndAtomicity() {
       'getPrdInfo must use DONE_STATUSES to guard against done overriding rework');
     assert.ok(prdFn.includes('prdFlaggedForRework'),
       'getPrdInfo must compute prdFlaggedForRework before rawStatus');
+  });
+
+  await test('BEHAVIORAL: getPrdInfo cache busts when pr-links.json changes (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Config with one project
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // Minimal PRD file with one item
+      const prdPath = path.join(testDir, 'prd', 'demo-plan.json');
+      fs.writeFileSync(prdPath, JSON.stringify({
+        plan_summary: 'Demo plan', status: 'active', project: 'demo', source_plan: 'demo-plan.md',
+        missing_features: [{ id: 'P-demo1', name: 'Demo item', status: 'dispatched', depends_on: [] }]
+      }));
+
+      // Project has one PR, no links yet
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#77', prNumber: 77, url: 'https://github.com/octo/demo/pull/77', title: 'Individual PR', status: 'active', _project: 'demo', prdItems: [] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-demo1', title: 'Demo item', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+
+      // First call: pr-links.json is empty, so prs array should be empty
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+      const info1 = freshQueries.getPrdInfo();
+      const item1 = info1.progress && info1.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item1, 'PRD item P-demo1 must be present');
+      assert.deepStrictEqual(item1.prs, [], 'Before link: item should have no PRs');
+
+      // Write new pr-links.json and bump mtime to simulate a real update
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({ 'github:octo/demo#77': ['P-demo1'] }));
+      const future = new Date(Date.now() + 5000);
+      fs.utimesSync(freshShared.PR_LINKS_PATH, future, future);
+
+      // Second call: cache must bust, prs array should now contain the PR
+      const info2 = freshQueries.getPrdInfo();
+      const item2 = info2.progress && info2.progress.items.find(i => i.id === 'P-demo1');
+      assert.ok(item2, 'PRD item P-demo1 must still be present');
+      assert.strictEqual(item2.prs.length, 1, 'After link: item should have exactly 1 PR');
+      assert.strictEqual(item2.prs[0].id, 'github:octo/demo#77', 'After link: PR id must match');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('BEHAVIORAL: getPrdInfo excludes aggregate/E2E PRs from individual PRD items (#1220)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo', prUrlBase: 'https://github.com/octo/demo/pull/' }],
+        agents: {}, engine: {}
+      }));
+
+      // PRD with two items
+      fs.writeFileSync(path.join(testDir, 'prd', 'demo-plan.json'), JSON.stringify({
+        plan_summary: 'Demo', status: 'active', project: 'demo', source_plan: 'demo.md',
+        missing_features: [
+          { id: 'P-alpha', name: 'alpha', status: 'dispatched', depends_on: [] },
+          { id: 'P-beta',  name: 'beta',  status: 'dispatched', depends_on: [] }
+        ]
+      }));
+
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      // Three PRs: two individual, one aggregate/E2E
+      fs.writeFileSync(path.join(projDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'github:octo/demo#1', prNumber: 1, url: 'https://github.com/octo/demo/pull/1', title: 'Implement alpha',    status: 'active', _project: 'demo', prdItems: ['P-alpha'] },
+        { id: 'github:octo/demo#2', prNumber: 2, url: 'https://github.com/octo/demo/pull/2', title: 'Implement beta',     status: 'active', _project: 'demo', prdItems: ['P-beta']  },
+        { id: 'github:octo/demo#9', prNumber: 9, url: 'https://github.com/octo/demo/pull/9', title: '[E2E] Demo verify',  status: 'active', _project: 'demo', itemType: 'verify', prdItems: ['P-alpha', 'P-beta'] }
+      ]));
+      fs.writeFileSync(path.join(projDir, 'work-items.json'), JSON.stringify([
+        { id: 'P-alpha', title: 'alpha', status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' },
+        { id: 'P-beta',  title: 'beta',  status: 'dispatched', sourcePlan: 'demo-plan.json', project: 'demo' }
+      ]));
+      fs.writeFileSync(freshShared.PR_LINKS_PATH, JSON.stringify({}));
+
+      const info = freshQueries.getPrdInfo();
+      const alpha = info.progress.items.find(i => i.id === 'P-alpha');
+      const beta  = info.progress.items.find(i => i.id === 'P-beta');
+      assert.ok(alpha && beta, 'Both PRD items must be present');
+
+      // Aggregate/E2E PR #9 must NOT appear in either individual item's prs array
+      const alphaIds = alpha.prs.map(p => p.id);
+      const betaIds  = beta.prs.map(p => p.id);
+      assert.ok(!alphaIds.includes('github:octo/demo#9'),
+        `P-alpha must not include aggregate E2E PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(!betaIds.includes('github:octo/demo#9'),
+        `P-beta must not include aggregate E2E PR; got ${JSON.stringify(betaIds)}`);
+      // Individual PRs still present
+      assert.ok(alphaIds.includes('github:octo/demo#1'),
+        `P-alpha must still include its individual PR; got ${JSON.stringify(alphaIds)}`);
+      assert.ok(betaIds.includes('github:octo/demo#2'),
+        `P-beta must still include its individual PR; got ${JSON.stringify(betaIds)}`);
+    } finally {
+      restore();
+    }
   });
 
   await test('areDependenciesMet returns failed when dep item is failed', () => {
@@ -18434,6 +18811,82 @@ async function testFailureClassEnum() {
       shared.FAILURE_CLASS.UNKNOWN);
   });
 
+  // W-mo3zul9pirjb — surface meaningful error when claude CLI exits immediately with code 1
+  // and no output. Before this fix, such failures were logged only as "[empty-output]" with
+  // no hint about the likely cause (machine sleep, network loss, auth failure).
+  await test('diagnoseEmptyOutput: fast-exit empty-output returns annotated hint', () => {
+    const hint = lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 1200);
+    assert.ok(typeof hint === 'string' && hint.length > 0,
+      'Should return a hint string for empty-output + code 1 + elapsed < 3000ms');
+    assert.ok(hint.includes('1200ms') || hint.includes('1200 ms'),
+      'Hint should include the elapsed time in milliseconds');
+    assert.ok(/machine sleep/i.test(hint),
+      'Hint should mention machine sleep as a possible cause');
+    assert.ok(/network/i.test(hint),
+      'Hint should mention network unavailability as a possible cause');
+    assert.ok(/auth/i.test(hint),
+      'Hint should mention auth failure as a possible cause');
+    assert.ok(/empty-output/i.test(hint),
+      'Hint should be tagged with the empty-output class');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for EMPTY_OUTPUT class', () => {
+    // Same fast-exit pattern, but non-empty-output class — no hint
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.BUILD_FAILURE, 1, 500), null,
+      'BUILD_FAILURE should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.SPAWN_ERROR, 1, 500), null,
+      'SPAWN_ERROR should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.TIMEOUT, 1, 500), null,
+      'TIMEOUT should not trigger empty-output hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(undefined, 1, 500), null,
+      'Undefined failureClass should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers for exit code 1', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 0, 500), null,
+      'Exit code 0 should not trigger hint (no failure)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 78, 500), null,
+      'Exit code 78 (config error) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 143, 500), null,
+      'Exit code 143 (SIGTERM) should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: only triggers when elapsed < 3000ms', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 3000), null,
+      '3000ms should not trigger (boundary — only strict <3s)');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 5000), null,
+      'Long-running agents that produce no output are a different failure mode');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 2999) === 'string',
+      '2999ms should still trigger hint');
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 0) === 'string',
+      '0ms (instant exit) should still trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput: rejects invalid elapsed values', () => {
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, NaN), null,
+      'NaN elapsed (bad startedAt) should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, -10), null,
+      'Negative elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, undefined), null,
+      'Undefined elapsed should not trigger hint');
+    assert.strictEqual(lifecycle.diagnoseEmptyOutput(shared.FAILURE_CLASS.EMPTY_OUTPUT, 1, 'abc'), null,
+      'Non-numeric elapsed should not trigger hint');
+  });
+
+  await test('diagnoseEmptyOutput is exported from lifecycle.js', () => {
+    assert.ok(typeof lifecycle.diagnoseEmptyOutput === 'function',
+      'diagnoseEmptyOutput should be exported');
+  });
+
+  await test('onAgentClose annotates errorReason with diagnoseEmptyOutput hint', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('diagnoseEmptyOutput'),
+      'engine.js onAgentClose should call diagnoseEmptyOutput to annotate the empty-output failure');
+    // The annotation should compose with the elapsed time computed from startedAt.
+    assert.ok(/Date\.parse\(startedAt\)|Date\.now\(\)\s*-\s*Date\.parse\(startedAt\)/.test(src),
+      'engine.js should compute elapsed time from startedAt for the diagnostic hint');
+  });
+
   await test('completeDispatch stores failureClass on error entries', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('failureClass') && src.includes('item.failureClass'),
@@ -19839,6 +20292,24 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(parseReviewVerdict(null), null);
     assert.strictEqual(parseReviewVerdict(''), null);
     assert.strictEqual(parseReviewVerdict('This is just a comment, no verdict'), null);
+  });
+
+  await test('parseAgentOutput preserves VERDICT from long review output (#1234)', () => {
+    // Regression: review summaries with VERDICT at the end were truncated by
+    // parseAgentOutput's 2000-char slice from head, so parseReviewVerdict(null)
+    // re-queued the WI up to maxRetries times even on successful completion.
+    const { parseAgentOutput, parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    const longBody =
+      '# Review of PR #1234\n\n' +
+      'Walked through every changed file and checked the logic.\n'.repeat(80) +
+      'Ran the tests locally: 2201 passing, 0 failing.\n'.repeat(20) +
+      '\n## Summary\n\nLooks good overall.\n\nVERDICT: APPROVE\n';
+    assert.ok(longBody.length > 2000, 'test fixture must exceed the slice window to be meaningful');
+    const raw = JSON.stringify({ type: 'result', result: longBody, session_id: 'abc' });
+    const { resultSummary } = parseAgentOutput(raw);
+    assert.ok(resultSummary.includes('VERDICT: APPROVE'),
+      `resultSummary lost the VERDICT marker (got tail: ...${resultSummary.slice(-80)})`);
+    assert.strictEqual(parseReviewVerdict(resultSummary), 'approved');
   });
 
   await test('updatePrAfterReview falls back to verdict parsing when live check is pending', () => {
