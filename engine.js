@@ -2164,6 +2164,7 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
+    const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
@@ -2189,7 +2190,7 @@ async function discoverFromPrs(config, project) {
       }
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
@@ -2251,7 +2252,7 @@ async function discoverFromPrs(config, project) {
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
-      if (!withinLag && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         const agentId = resolveAgent('fix', config, pr.agent);
         if (agentId) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
@@ -3129,6 +3130,13 @@ async function discoverWork(config) {
       if (fs.existsSync(prdDir)) {
         for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
           if (completedPlanCache.has(f)) continue;
+          if (fs.existsSync(path.join(prdDir, 'archive', f))) {
+            // Orphaned backup restore — plan is already archived. Purge the ghost copy.
+            try { fs.unlinkSync(path.join(prdDir, f)); } catch { }
+            try { fs.unlinkSync(path.join(prdDir, f + '.backup')); } catch { }
+            completedPlanCache.add(f);
+            continue;
+          }
           const plan = safeJson(path.join(prdDir, f));
           if (!plan?.missing_features || plan.status === 'completed') {
             if (plan?.status === 'completed') completedPlanCache.add(f);
@@ -3308,6 +3316,13 @@ async function tickInner() {
       const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
       for (const file of prdFiles) {
         if (completedPlanCache.has(file)) continue;
+        if (fs.existsSync(path.join(PRD_DIR, 'archive', file))) {
+          // Orphaned backup restore — plan is already archived. Purge the ghost copy.
+          try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch { }
+          try { fs.unlinkSync(path.join(PRD_DIR, file + '.backup')); } catch { }
+          completedPlanCache.add(file);
+          continue;
+        }
         const plan = safeJson(path.join(PRD_DIR, file));
         if (plan && plan.missing_features && plan.status !== 'completed') {
           const completed = checkPlanCompletion({ item: { sourcePlan: file } }, config);

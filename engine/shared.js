@@ -20,6 +20,46 @@ function ts() { return new Date().toISOString(); }
 function logTs() { return new Date().toLocaleTimeString(); }
 function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
+// ── Secret Redaction (SEC-09) ──────────────────────────────────────────────
+// Pure, side-effect-free redactor applied to every entry on the log write path
+// so ADO tokens, JWTs, and azureauth stdout dumps never land in engine/log.json
+// (2500-entry ring buffer readable by any local process).
+//
+// Replacements (order matters — azureauth first, then Bearer, then bare JWT):
+//   1. `"token":"<20+ char base64-ish>"` → `"token":"[REDACTED_AZUREAUTH]"`
+//      Redacts the value only, not the whole line, so surrounding JSON
+//      context (e.g. expiresOn) remains debuggable.
+//   2. `Bearer <20+ char base64-ish>`   → `Bearer [REDACTED]`
+//   3. `ey<b64url>.<b64url>[.<b64url>]` → `[REDACTED_JWT]`
+//      Catches bare JWTs in error messages or stack traces (anything left
+//      after Bearer replacement has consumed its tokens).
+//
+// `redactSecrets` also recurses into objects and arrays — used by `log()` to
+// sanitize both the message and the meta payload before persistence.
+const _BEARER_RE = /Bearer\s+[A-Za-z0-9+/=._\-]{20,}/g;
+const _JWT_RE = /ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(?:\.[A-Za-z0-9_\-]{10,})?/g;
+const _AZUREAUTH_RE = /"token"\s*:\s*"[A-Za-z0-9+/=._\-]{20,}"/g;
+
+function _redactString(s) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  return s
+    .replace(_AZUREAUTH_RE, '"token":"[REDACTED_AZUREAUTH]"')
+    .replace(_BEARER_RE, 'Bearer [REDACTED]')
+    .replace(_JWT_RE, '[REDACTED_JWT]');
+}
+
+function redactSecrets(value) {
+  if (value == null) return value;
+  if (typeof value === 'string') return _redactString(value);
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k]);
+    return out;
+  }
+  return value;
+}
+
 // ── Log Buffering ──────────────────────────────────────────────────────────
 // Buffer log entries in memory and flush to disk periodically to reduce lock
 // contention (~139 calls/tick → 1 lock acquisition per flush).
@@ -27,9 +67,14 @@ const _logBuffer = [];
 let _logFlushTimer = null;
 
 function log(level, msg, meta = {}) {
-  const entry = { timestamp: ts(), level, message: msg, ...meta };
-  // Console output remains immediate
-  console.log(`[${logTs()}] [${level}] ${msg}`);
+  // SEC-09: redact sensitive patterns (ADO tokens, JWTs, azureauth stdout)
+  // before both the in-memory buffer push and the console echo — ensures
+  // nothing sensitive is persisted to engine/log.json or engine stdout logs.
+  const safeMsg = typeof msg === 'string' ? _redactString(msg) : msg;
+  const safeMeta = redactSecrets(meta) || {};
+  const entry = { timestamp: ts(), level, message: safeMsg, ...safeMeta };
+  // Console output remains immediate (also redacted)
+  console.log(`[${logTs()}] [${level}] ${safeMsg}`);
 
   _logBuffer.push(entry);
 
@@ -50,7 +95,9 @@ function log(level, msg, meta = {}) {
 
 function _flushLogBuffer() {
   if (_logBuffer.length === 0) return;
-  const entries = _logBuffer.splice(0);
+  // SEC-09 defense-in-depth: redact again at flush time so any direct
+  // `_logBuffer.push(entry)` callers (tests, future paths) can't leak secrets.
+  const entries = _logBuffer.splice(0).map(redactSecrets);
   try {
     mutateJsonFileLocked(LOG_PATH, (logData) => {
       if (!Array.isArray(logData)) logData = logData?.entries || [];
@@ -1011,6 +1058,61 @@ function sanitizePath(file, baseDir) {
   return resolved;
 }
 
+// ── Prototype Pollution Guard ────────────────────────────────────────────────
+
+const _DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Detect the presence of prototype-pollution attack keys in a JSON-decoded payload.
+ *
+ * Belt-and-braces defence for endpoints that call `JSON.parse` on untrusted
+ * request bodies and then feed the result into `Object.assign`, spread, or
+ * deep-merge utilities. `JSON.parse` itself is safe — it installs `__proto__`
+ * as a regular own data property and does not mutate the prototype chain —
+ * but downstream code that shallow-merges the payload into a target object
+ * CAN elevate it into a prototype write.
+ *
+ * Contract is **rejection, not sanitization**: we inspect the top level plus
+ * one level deep and return a boolean. Deeper walks are intentionally skipped
+ * to avoid their own DoS pathologies on adversarial inputs.
+ *
+ * - Null / undefined / primitives → false.
+ * - Arrays are transparent: each element is checked at the same depth as the
+ *   array itself (an array does NOT consume a depth level).
+ * - Max object nesting inspected: 1. Dangerous keys at object-depth 2+
+ *   are intentionally NOT flagged.
+ * - Never mutates the input.
+ *
+ * @param {*} obj - any JSON-decoded value
+ * @param {number} [_depth=0] - internal recursion counter; do not pass externally
+ * @returns {boolean} true if any forbidden key is present at object-depth ≤ 1
+ */
+function hasDangerousKey(obj, _depth = 0) {
+  if (obj === null || obj === undefined || typeof obj !== 'object') return false;
+
+  // Arrays are transparent — preserve depth when recursing into elements.
+  if (Array.isArray(obj)) {
+    for (const elt of obj) {
+      if (hasDangerousKey(elt, _depth)) return true;
+    }
+    return false;
+  }
+
+  // Object: check own keys at the current depth.
+  for (const key of Object.keys(obj)) {
+    if (_DANGEROUS_KEYS.has(key)) return true;
+  }
+
+  // Stop after one level of object nesting. Deeper recursion is an explicit
+  // non-goal (see DoS note in the header).
+  if (_depth >= 1) return false;
+
+  for (const v of Object.values(obj)) {
+    if (hasDangerousKey(v, _depth + 1)) return true;
+  }
+  return false;
+}
+
 /**
  * Validate that a PID value is a positive integer. Returns the numeric PID.
  * Throws if the value could be used for command injection.
@@ -1077,6 +1179,82 @@ function buildSecurityHeaders() {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'same-origin',
   };
+}
+
+// ── Project Name / Path Validation (SEC-04 / SEC-05) ─────────────────────────
+// Enforced at API boundaries (e.g. POST /api/projects/add). Callers that skip
+// these validators leak caller-controlled strings into worktree paths, config
+// keys, and shell invocations — never bypass them for "internal" callers.
+
+const PROJECT_NAME_RE = /^[a-zA-Z0-9_\-]{1,64}$/;
+
+function _httpError(status, message, extra) {
+  const err = new Error(message);
+  err.statusCode = status;
+  if (extra) Object.assign(err, extra);
+  return err;
+}
+
+/**
+ * Validate a project name against a strict allowlist before it ever reaches
+ * filesystem paths, config keys, or shell arguments.
+ *
+ * Allowlist: `/^[a-zA-Z0-9_\-]{1,64}$/` (letters, digits, underscore, hyphen).
+ * Rejects anything else — path separators, dots, whitespace, shell
+ * metacharacters, null bytes. Returns the validated name; throws a 400 Error.
+ */
+function validateProjectName(name) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw _httpError(400, 'Invalid project name: name is required and must be a string');
+  }
+  if (name.length > 64) {
+    throw _httpError(400, `Invalid project name: "${name}" is ${name.length} characters (max 64)`);
+  }
+  if (!PROJECT_NAME_RE.test(name)) {
+    throw _httpError(400, `Invalid project name: "${name}". Must match /^[a-zA-Z0-9_\\-]{1,64}$/ (letters, digits, underscore, hyphen; no path separators, spaces, or shell metacharacters)`);
+  }
+  return name;
+}
+
+/**
+ * Validate a project path before it is persisted to config.json or used as a
+ * worktree parent.
+ *
+ * Default requires `fs.existsSync(path.join(pathStr, '.git'))` — accepts either
+ * a `.git` directory (normal repo) or a `.git` file (worktree pointer).
+ *
+ * To register a non-repo path, the caller must pass BOTH
+ *   `allowNonRepo: true`
+ *   `confirmToken: <uuid>`
+ * and supply an `isValidToken(token)` callback that consumes/validates the
+ * token against a freshly generated server-side token. This prevents a
+ * single POST from silently creating a broken project entry and forces the
+ * client through an explicit confirmation step (D-5: Rebecca / UUID vote).
+ *
+ * Returns the resolved absolute path; throws a 400 Error (with
+ * `needsConfirmation: true` when the only problem is the missing `.git`).
+ */
+function validateProjectPath(pathStr, options = {}) {
+  if (typeof pathStr !== 'string' || pathStr.length === 0) {
+    throw _httpError(400, 'Invalid project path: path is required and must be a string');
+  }
+  const resolved = path.resolve(pathStr);
+  if (!fs.existsSync(resolved)) {
+    throw _httpError(400, `Invalid project path: directory does not exist: ${resolved}`);
+  }
+  const gitMarker = path.join(resolved, '.git');
+  if (fs.existsSync(gitMarker)) return resolved; // .git dir OR worktree .git file
+
+  // Not a git repo — only accept with explicit confirmation.
+  const { allowNonRepo, confirmToken, isValidToken } = options;
+  if (allowNonRepo === true && typeof confirmToken === 'string' && typeof isValidToken === 'function' && isValidToken(confirmToken)) {
+    return resolved;
+  }
+  throw _httpError(
+    400,
+    `Invalid project path: "${resolved}" is not a git repository (no .git directory or file). Retry with allowNonRepo:true and a confirmToken from POST /api/projects/confirm-token to override.`,
+    { needsConfirmation: true },
+  );
 }
 
 // ── Skill Frontmatter Parser ─────────────────────────────────────────────────
@@ -1683,6 +1861,9 @@ module.exports = {
   sanitizeBranch,
   isAllowedOrigin,
   buildSecurityHeaders,
+  hasDangerousKey,
+  validateProjectName,
+  validateProjectPath,
   validatePid,
   parseSkillFrontmatter,
   sleepMs,
@@ -1693,6 +1874,7 @@ module.exports = {
   _WIN_RESERVED_NAMES, // exported for testing
   LOCK_STALE_MS,
   flushLogs,
+  redactSecrets,
   slugify,
   safeSlugComponent,
   formatTranscriptEntry,

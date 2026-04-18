@@ -104,11 +104,12 @@ async function adoFetch(url, token, opts = {}) {
   const _retryCount = typeof opts === 'number' ? opts : (opts._retryCount || 0); // backward compat
   const method = (typeof opts === 'object' && opts.method) || 'GET';
   const body = (typeof opts === 'object' && opts.body) || undefined;
+  const timeout = (typeof opts === 'object' && Number.isFinite(opts.timeout)) ? opts.timeout : 30000;
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
     method,
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeout),
     body,
   });
   // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
@@ -448,7 +449,8 @@ async function pollPrStatus(config) {
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
+        const allBuilds = buildsData?.value || [];
+        const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
           buildStatus = classifyBuildStatus(prBuilds);
@@ -461,6 +463,17 @@ async function pollPrStatus(config) {
               _buildId: String(b.id),
             }));
           }
+        } else if (allBuilds.length > 0 && pr.buildStatus) {
+          // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
+          // but none target the current `mergeCommitId`. Most likely the target branch
+          // moved, ADO recomputed the merge commit, but no new source-side changes
+          // triggered a rebuild. Preserve the previous `pr.buildStatus` so the tracker
+          // reflects the last known truth instead of flipping to a spurious 'none'.
+          // Also log a warn so stale states are detectable in engine logs. Issue #1233.
+          const sampleSv = (allBuilds[0]?.sourceVersion || '').slice(0, 8);
+          log('warn', `PR ${pr.id} build: merge-commit mismatch — ${allBuilds.length} build(s) on merge ref, none target current merge commit ${String(mergeCommitId).slice(0, 8)} (sample sourceVersion ${sampleSv}); preserving previous buildStatus '${pr.buildStatus}'`);
+          buildStatus = pr.buildStatus;
+          if (pr.buildFailReason) buildFailReason = pr.buildFailReason;
         }
       } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }
@@ -811,8 +824,11 @@ async function checkLiveReviewStatus(pr, project) {
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
-    const result = await execAsync(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-    const prData = JSON.parse(result);
+    // SEC-02: use in-process adoFetch rather than a shell-out — keeps the bearer
+    // token out of the process argv list where any local process could read it.
+    // 4s timeout preserves the original request-cancellation semantics via AbortSignal.
+    const prData = await adoFetch(url, token, { timeout: 4000 });
+    if (!prData) return null;
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';
     return votesToReviewStatus(votes);
