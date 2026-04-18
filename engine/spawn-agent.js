@@ -36,55 +36,59 @@ if (caps?.claudeBin && fs.existsSync(caps.claudeBin)) {
   _cacheHit = true;
 }
 
-// Strategy 1: Check if `claude` is on PATH (native installer or npm global bin)
+// Strategy 1: Find `claude` on PATH, then resolve to the actual binary
+// Don't parse wrapper scripts — probe known binary locations relative to the wrapper's directory.
 if (!claudeBin) try {
   const isWin = process.platform === 'win32';
   const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
   const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
   if (which) {
     const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
-    // Check if it's a node wrapper (npm install) or native binary
-    try {
-      const content = fs.readFileSync(whichNative, 'utf8');
-      // npm wrapper scripts reference cli.js — extract the path
-      const m = content.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js/);
-      if (m) {
-        const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-        if (fs.existsSync(candidate)) { claudeBin = candidate; }
-      }
-      // npm wrapper may reference native binary (claude.exe) instead of cli.js
-      if (!claudeBin) {
-        const exeMatch = content.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]bin[\\/]claude(?:\.exe)?/);
-        if (exeMatch) {
-          const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', isWin ? 'claude.exe' : 'claude');
-          if (fs.existsSync(candidate)) { claudeBin = candidate; claudeIsNative = true; }
-        }
-      }
-    } catch {
-      // Can't read as text — it's a compiled binary
-    }
-    if (!claudeBin) {
-      // Native binary or wrapper without cli.js reference — use directly
-      claudeBin = whichNative;
+    const baseDir = path.dirname(whichNative);
+    const ccPkg = path.join(baseDir, 'node_modules', '@anthropic-ai', 'claude-code');
+
+    // Probe in priority order: native binary > cli.js > wrapper itself
+    const nativeBin = path.join(ccPkg, 'bin', isWin ? 'claude.exe' : 'claude');
+    const cliJs = path.join(ccPkg, 'cli.js');
+
+    if (fs.existsSync(nativeBin)) {
+      claudeBin = nativeBin;
       claudeIsNative = true;
+    } else if (fs.existsSync(cliJs)) {
+      claudeBin = cliJs;
+    } else {
+      // Not an npm wrapper — check if the path itself is a native binary
+      // On Windows, only trust .exe files; shell scripts can't be spawned directly
+      const ext = path.extname(whichNative).toLowerCase();
+      if (!isWin || ext === '.exe') {
+        claudeBin = whichNative;
+        claudeIsNative = true;
+      }
     }
   }
 } catch { /* optional */ }
 
 // Strategy 2: Known node_modules locations (npm global installs)
+// Check for native binary first, then cli.js
 if (!claudeBin) {
-  const searchPaths = [
-    process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
-    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
-    '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-    '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-    path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-    path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+  const isWin = process.platform === 'win32';
+  const prefixes = [
+    process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code') : '',
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code') : '',
+    '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
+    '/usr/lib/node_modules/@anthropic-ai/claude-code',
+    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code',
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code'),
+    path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code'),
+    path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code'),
   ].filter(Boolean);
-  for (const p of searchPaths) {
-    try { if (fs.existsSync(p)) { claudeBin = p; break; } } catch {}
+  for (const pkg of prefixes) {
+    try {
+      const nativeBin = path.join(pkg, 'bin', isWin ? 'claude.exe' : 'claude');
+      if (fs.existsSync(nativeBin)) { claudeBin = nativeBin; claudeIsNative = true; break; }
+      const cliJs = path.join(pkg, 'cli.js');
+      if (fs.existsSync(cliJs)) { claudeBin = cliJs; break; }
+    } catch {}
   }
 }
 

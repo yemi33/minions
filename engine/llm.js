@@ -246,6 +246,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
     proc.on('error', (err) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
+      console.error(`[LLM] spawn error (${label}): ${err.message}`);
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '', toolUses: [] });
     });
   });
@@ -307,6 +308,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
     proc.on('error', (err) => {
       clearTimeout(timer);
       for (const f of cleanupFiles) safeUnlink(f);
+      console.error(`[LLM-stream] spawn error (${label}): ${err.message}`);
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '', toolUses: [] });
     });
   });
