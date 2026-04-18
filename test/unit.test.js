@@ -15369,6 +15369,106 @@ async function testPrDuplicateRaceFix() {
       '_adoPollHadAuthFailure = true should appear exactly once in pollPrStatus (in auth error catch block only)');
   });
 
+  // ── Issues #1232 / #1233: buildErrorLog preservation + lastBuildCheck ──────
+  await test('ado.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+
+    // There must NOT be an unconditional `delete pr.buildErrorLog` inside the
+    // `if (buildStatus !== 'failing')` block — it previously cleared logs on
+    // transient 'none'/'running' transitions, blinding fix agents.
+    // The gate must check for 'passing' before deleting.
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Must reference 'passing' to gate buildErrorLog deletion
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    // Verify the delete buildErrorLog inside the block is gated (not at top level of the if)
+    // Simplest invariant: every `delete pr.buildErrorLog` inside the non-failing block
+    // must be under a `buildStatus === 'passing'` condition.
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('ado.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:      )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    // Every `delete pr.buildFixAttempts` in the non-failing block must be under a passing guard
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('ado.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    // Must assign pr.lastBuildCheck = ts() — makes lastBuildCheck reflect actual poll time, not dispatch time
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+  });
+
+  await test('github.js pollPrStatus preserves buildErrorLog through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    assert.ok(/buildStatus === 'passing'/.test(block),
+      "buildErrorLog deletion must be gated by `buildStatus === 'passing'` (not applied on transient none/running)");
+    const deleteLines = [...block.matchAll(/delete pr\.buildErrorLog/g)];
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 200), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildErrorLog in non-failing block must be preceded by a `buildStatus === \'passing\'` guard');
+    }
+  });
+
+  await test('github.js pollPrStatus preserves buildFixAttempts through none/running (only clears on passing)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    const nonFailingBlock = body.match(/if \(buildStatus !== 'failing'\)\s*\{[\s\S]*?\n(?:        )?\}/);
+    assert.ok(nonFailingBlock, "must have `if (buildStatus !== 'failing')` block");
+    const block = nonFailingBlock[0];
+    const deleteLines = [...block.matchAll(/delete pr\.buildFixAttempts/g)];
+    assert.ok(deleteLines.length > 0, 'block must still contain a delete pr.buildFixAttempts under a passing guard');
+    for (const m of deleteLines) {
+      const contextBefore = block.slice(Math.max(0, m.index - 400), m.index);
+      assert.ok(/buildStatus === 'passing'/.test(contextBefore),
+        'delete pr.buildFixAttempts must be gated by `buildStatus === \'passing\'` to avoid resetting mid-fix cycle');
+    }
+  });
+
+  await test('github.js pollPrStatus updates pr.lastBuildCheck on every successful poll', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    const body = pollFn[0];
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(body),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+  });
+
   await test('engine.js imports needsAdoPollRetry and uses it in tick cadence', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');

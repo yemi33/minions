@@ -422,6 +422,10 @@ async function pollPrStatus(config) {
     if (prData.state === 'open' && prData.head?.sha) {
       const checksData = await ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
       if (checksData && checksData.check_runs) {
+        // Record actual poll time — makes lastBuildCheck reflect when the engine last
+        // talked to GitHub, not when the agent was dispatched. Issue #1233.
+        pr.lastBuildCheck = ts();
+        updated = true;
         const runs = checksData.check_runs;
         let buildStatus = 'none';
         let buildFailReason = '';
@@ -452,9 +456,15 @@ async function pollPrStatus(config) {
           if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
             delete pr._buildFailNotified;
-            delete pr.buildErrorLog;
-            // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
-            if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+            // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+            // transitions — only clear on confirmed 'passing' recovery. Issue #1232:
+            // clearing on every non-failing transition blinded the next fix agent
+            // while a queued build was still running.
+            if (buildStatus === 'passing') {
+              delete pr.buildErrorLog;
+              // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
+              if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+            }
           }
           updated = true;
 
