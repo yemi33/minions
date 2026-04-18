@@ -381,10 +381,15 @@ function _mtimesChanged(prev, curr) {
   return false;
 }
 
-function invalidateStatusCache() {
+function invalidateStatusCache(opts) {
   _fastState = null;
   _fastStateTs = 0;
-  // Slow state continues on its own TTL — not invalidated by mutations
+  // Slow state continues on its own TTL by default — mutations of slow-state data
+  // (pinned.md, schedules, etc.) must opt in via { includeSlow: true } for immediate visibility.
+  if (opts && opts.includeSlow) {
+    _slowState = null;
+    _slowStateTs = 0;
+  }
   _statusCache = null;
   _statusCacheJson = null;
   _statusCacheGzip = null;
@@ -4726,7 +4731,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const levelTag = level === 'critical' ? '🔴 ' : level === 'warning' ? '🟡 ' : '';
       const entry = '\n\n### ' + levelTag + title + '\n\n' + content + '\n\n*Pinned by human on ' + new Date().toISOString().slice(0, 10) + '*';
       safeWrite(pinnedPath, (existing || '# Pinned Context\n\nCritical notes visible to all agents.') + entry);
-      invalidateStatusCache();
+      // pinned.md is in slow-state cache — opt-in invalidation so the new entry is visible immediately (closes #1295)
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
     }},
     { method: 'POST', path: '/api/pinned/remove', desc: 'Remove a pinned note by title', params: 'title', handler: async (req, res) => {
@@ -4739,7 +4745,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const regex = new RegExp('\\n\\n###\\s*(?:🔴\\s*|🟡\\s*)?' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n[\\s\\S]*?(?=\\n\\n###|$)', 'i');
       content = content.replace(regex, '');
       safeWrite(pinnedPath, content);
-      invalidateStatusCache();
+      // pinned.md is in slow-state cache — opt-in invalidation so the unpin is visible immediately
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
     }},
 
