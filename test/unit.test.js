@@ -3763,6 +3763,216 @@ async function testStateIntegrity() {
     }
   });
 
+  // ─── SEC-09: redactSecrets() — token/JWT/azureauth redaction ──────────────
+  await test('redactSecrets is exported from shared.js', () => {
+    assert.strictEqual(typeof shared.redactSecrets, 'function',
+      'redactSecrets should be exported from engine/shared.js');
+  });
+
+  await test('redactSecrets replaces Bearer tokens with [REDACTED]', () => {
+    const input = 'Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.payload.sig';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('Bearer [REDACTED]'),
+      `Bearer token should be replaced with "Bearer [REDACTED]", got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw token payload must not survive redaction');
+    // Surrounding context preserved
+    assert.ok(out.startsWith('Authorization: Bearer [REDACTED]'),
+      'surrounding context ("Authorization:") should be preserved');
+  });
+
+  await test('redactSecrets handles lowercase bearer too (boundary case)', () => {
+    // Spec regex is case-sensitive on `Bearer` — documents the contract
+    const input = 'bearer abc';
+    assert.strictEqual(shared.redactSecrets(input), 'bearer abc',
+      'lowercase "bearer" is NOT redacted (regex is case-sensitive, by spec)');
+  });
+
+  await test('redactSecrets does not redact short Bearer values (< 20 chars)', () => {
+    const input = 'Bearer short';
+    assert.strictEqual(shared.redactSecrets(input), 'Bearer short',
+      'short values after Bearer should not match the 20+ char token regex');
+  });
+
+  await test('redactSecrets replaces JWT-shaped strings with [REDACTED_JWT]', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT';
+    const input = `got response token=${jwt} end`;
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      `JWT should be replaced with [REDACTED_JWT], got: ${out}`);
+    assert.ok(!out.includes('SflKxwRJSMeKKF2QT'),
+      'JWT signature segment must not survive redaction');
+    assert.ok(out.startsWith('got response token=') && out.endsWith(' end'),
+      'JWT redaction must preserve surrounding context');
+  });
+
+  await test('redactSecrets handles 2-segment JWT shape', () => {
+    const two = 'eyAAAAAAAAAA.bbbbbbbbbbbbb';
+    const out = shared.redactSecrets(`prefix ${two} suffix`);
+    assert.ok(out.includes('[REDACTED_JWT]'),
+      '2-segment JWT shape (header.payload) should also match');
+    assert.ok(!out.includes('bbbbbbbbbbbbb'), 'JWT payload must not survive');
+  });
+
+  await test('redactSecrets replaces azureauth "token" JSON key output', () => {
+    const input = '{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.aaaaa.bbbbb","expiresOn":"2026-05-01"}';
+    const out = shared.redactSecrets(input);
+    assert.ok(out.includes('[REDACTED_AZUREAUTH]'),
+      `azureauth-shaped "token" JSON field should be replaced, got: ${out}`);
+    assert.ok(!out.includes('eyJ0eXAiOiJKV1Q'),
+      'raw azureauth token value must not survive');
+    // Surrounding context preserved — expiresOn still visible
+    assert.ok(out.includes('"expiresOn":"2026-05-01"'),
+      'non-sensitive surrounding context (expiresOn) should be preserved');
+  });
+
+  await test('redactSecrets is a no-op on clean strings', () => {
+    const clean = 'PR 1234 status: approved — build passing';
+    assert.strictEqual(shared.redactSecrets(clean), clean,
+      'clean string should pass through unchanged');
+  });
+
+  await test('redactSecrets is a no-op on empty / non-string primitives', () => {
+    assert.strictEqual(shared.redactSecrets(''), '', 'empty string passes through');
+    assert.strictEqual(shared.redactSecrets(42), 42, 'numbers pass through');
+    assert.strictEqual(shared.redactSecrets(true), true, 'booleans pass through');
+    assert.strictEqual(shared.redactSecrets(null), null, 'null passes through');
+    assert.strictEqual(shared.redactSecrets(undefined), undefined, 'undefined passes through');
+  });
+
+  await test('redactSecrets recurses into nested objects', () => {
+    const input = {
+      level: 'warn',
+      message: 'auth failed: Bearer eyJlonglongtoken_aaaaaaaaaaaaaaaaaaa',
+      context: {
+        headers: { Authorization: 'Bearer eyJotherlongtoken_bbbbbbbbbbbbbbb' },
+        raw: '{"token":"eyJstdoutdumpAAAAAAAAAAAAAAAA.payload.sig"}',
+      },
+      safe: 42,
+    };
+    const out = shared.redactSecrets(input);
+    assert.ok(out.message.includes('Bearer [REDACTED]'), 'top-level string redacted');
+    assert.ok(out.context.headers.Authorization.includes('Bearer [REDACTED]'),
+      'nested object string redacted');
+    assert.ok(out.context.raw.includes('[REDACTED_AZUREAUTH]'),
+      'deeply nested azureauth payload redacted');
+    assert.strictEqual(out.safe, 42, 'non-string primitives preserved');
+    assert.strictEqual(out.level, 'warn', 'clean strings preserved verbatim');
+    // Original object NOT mutated
+    assert.ok(input.message.includes('eyJlonglongtoken'),
+      'redactSecrets must not mutate the input object');
+  });
+
+  await test('redactSecrets recurses into arrays', () => {
+    const input = ['Bearer eyJonelongtoken_aaaaaaaaaaaaaaaa', 'clean', { t: 'Bearer eyJtwolongtoken_bbbbbbbbbbb' }];
+    const out = shared.redactSecrets(input);
+    assert.ok(Array.isArray(out), 'array stays an array');
+    assert.ok(out[0].includes('Bearer [REDACTED]'), 'array[0] redacted');
+    assert.strictEqual(out[1], 'clean', 'clean array element untouched');
+    assert.ok(out[2].t.includes('Bearer [REDACTED]'), 'object inside array redacted');
+  });
+
+  await test('redactSecrets handles multiple occurrences in one string', () => {
+    const input = 'req1: Bearer eyJfirsttoken_aaaaaaaaaaaaaa / req2: Bearer eyJsecondtoken_bbbbbbbbbbbbbb';
+    const out = shared.redactSecrets(input);
+    const matches = out.match(/Bearer \[REDACTED\]/g) || [];
+    assert.strictEqual(matches.length, 2, 'both Bearer tokens should be redacted');
+    assert.ok(!/eyJfirst|eyJsecond/.test(out), 'no raw token substrings remain');
+  });
+
+  await test('redactSecrets prefers Bearer replacement over JWT when both match', () => {
+    // A JWT after Bearer should yield "Bearer [REDACTED]", not "Bearer [REDACTED_JWT]"
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signatureAAA';
+    const out = shared.redactSecrets(`Bearer ${jwt}`);
+    assert.strictEqual(out, 'Bearer [REDACTED]',
+      'Bearer + JWT should produce a single "Bearer [REDACTED]", not a double-redacted form');
+  });
+
+  await test('log.json writes are redacted end-to-end', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('warn', 'Live review check failed: Error: Command failed: curl -H "Authorization: Bearer eyJ0eXAiOiJKV1QLongTokenAAAAAAAAAA.payload.signature"');
+      s.log('info', 'fetched azureauth stdout: {"token":"eyJfreshLongTokenBBBBBBBBBB.payload.sig","expiresOn":"2026-05-01"}');
+      s.log('info', 'normal message without secrets');
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const messages = logData.map(e => e.message).join('\n');
+
+      assert.ok(messages.includes('Bearer [REDACTED]'),
+        'log.json should contain Bearer [REDACTED] sentinel');
+      assert.ok(messages.includes('[REDACTED_AZUREAUTH]'),
+        'log.json should contain [REDACTED_AZUREAUTH] sentinel');
+      assert.ok(!messages.includes('eyJ0eXAiOiJKV1QLongToken'),
+        'raw Bearer token must not appear in log.json');
+      assert.ok(!messages.includes('eyJfreshLongToken'),
+        'raw azureauth token must not appear in log.json');
+      assert.ok(messages.includes('normal message without secrets'),
+        'clean messages should pass through unchanged');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('log.json redacts string fields in meta payload', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      s._logBuffer.length = 0;
+      s.log('debug', 'request failed', {
+        url: 'https://dev.azure.com/org/project',
+        header: 'Bearer eyJlongmetatoken_cccccccccccccc',
+        code: 401,
+      });
+      s.flushLogs();
+
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      const entry = logData.find(e => e.message === 'request failed');
+      assert.ok(entry, 'the logged entry should be persisted');
+      assert.strictEqual(entry.code, 401, 'non-string meta fields preserved');
+      assert.strictEqual(entry.url, 'https://dev.azure.com/org/project', 'clean URL preserved');
+      assert.ok(entry.header && entry.header.includes('Bearer [REDACTED]'),
+        'sensitive meta string redacted');
+      assert.ok(!entry.header || !entry.header.includes('eyJlongmetatoken'),
+        'raw token must not survive in meta field');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('engine/ado.js has no raw console.log/console.error token leaks', () => {
+    // SEC-09: acceptance criterion — grep verifies no raw token-logging console calls
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Strip line comments so documentation references don't trip the guard
+    const stripped = src.split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    // Match console.log / console.error / console.warn / console.info with token-ish content
+    const leakPattern = /console\.(log|error|warn|info)\s*\([^)]*(Bearer|token|azureauth|Authorization)/i;
+    assert.ok(!leakPattern.test(stripped),
+      'engine/ado.js must not call console.* with raw token/Bearer/azureauth/Authorization strings — use the log() helper so redaction applies');
+  });
+
+  await test('_flushLogBuffer wires redactSecrets before persistence', () => {
+    // Source-level guardrail: ensures future refactors don't bypass redaction at the write site
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('redactSecrets'),
+      'engine/shared.js must reference redactSecrets');
+    // The flush path must invoke redaction (either via map() at flush or via log() at push)
+    const flushBlock = src.slice(src.indexOf('function _flushLogBuffer'),
+      src.indexOf('function flushLogs'));
+    const logBlock = src.slice(src.indexOf('function log('),
+      src.indexOf('function _flushLogBuffer'));
+    assert.ok(flushBlock.includes('redactSecrets') || logBlock.includes('redactSecrets'),
+      'redactSecrets must be invoked either in log() push-time or _flushLogBuffer() flush-time');
+  });
+
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('mutateJsonFileLocked'),
