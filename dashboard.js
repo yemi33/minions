@@ -4918,7 +4918,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           mutateJsonFileLocked(prPath, (prs) => {
             const pr = prs.find(p => p.id === prId);
             if (!pr) return prs;
-            if (!title && prData.title) pr.title = prData.title.slice(0, 120);
+            // Remote title always wins — any user-supplied title is a placeholder (closes #1283)
+            if (prData.title) pr.title = prData.title.slice(0, 120);
             if (prData.description) pr.description = prData.description.slice(0, 500);
             if (!pr.branch && prData.branch) pr.branch = prData.branch;
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;

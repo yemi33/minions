@@ -9170,6 +9170,33 @@ async function testRecentFeatures() {
       'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
+  await test('PR link enrichment always overrides title from remote (closes #1283)', () => {
+    // Find the link handler — starts at the route path and runs to '{ method:' for next route
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    assert.ok(start > 0, 'link handler must exist');
+    // Scan forward until the next route declaration
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    assert.ok(next > start, 'delete handler must come after link handler');
+    const linkHandler = dashSrc.slice(start, next);
+
+    // Enrichment must call fetchAdoPrMetadata or gh api to get remote metadata
+    assert.ok(
+      linkHandler.includes('fetchAdoPrMetadata') || linkHandler.includes('gh api'),
+      'link handler must call remote API to fetch PR metadata'
+    );
+    // Title override must NOT be gated on user-supplied title being empty — real title always wins
+    assert.ok(
+      !/if\s*\(\s*!title\s*&&\s*prData\.title\s*\)/.test(linkHandler),
+      'link handler must NOT gate title override on !title — remote title must always win over user placeholder (closes #1283)'
+    );
+    // Title override must still exist, just unconditional on prData.title presence
+    assert.ok(
+      /prData\.title\s*\)\s*pr\.title\s*=/.test(linkHandler)
+        || /pr\.title\s*=\s*prData\.title/.test(linkHandler),
+      'link handler must still assign pr.title from prData.title when remote returns a title'
+    );
+  });
+
   // Plan creation from dashboard
   await test('POST /api/plans/create endpoint exists', () => {
     assert.ok(dashSrc.includes('/api/plans/create'),
