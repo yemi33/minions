@@ -381,10 +381,15 @@ function _mtimesChanged(prev, curr) {
   return false;
 }
 
-function invalidateStatusCache() {
+function invalidateStatusCache(opts) {
   _fastState = null;
   _fastStateTs = 0;
-  // Slow state continues on its own TTL — not invalidated by mutations
+  // Slow state continues on its own TTL by default — mutations of slow-state data
+  // (pinned.md, schedules, etc.) must opt in via { includeSlow: true } for immediate visibility.
+  if (opts && opts.includeSlow) {
+    _slowState = null;
+    _slowStateTs = 0;
+  }
   _statusCache = null;
   _statusCacheJson = null;
   _statusCacheGzip = null;
@@ -3671,12 +3676,58 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
+  // ── Non-repo confirmation tokens (SEC-05) ───────────────────────────────
+  // Single-use, short-TTL tokens that the client must obtain from
+  // POST /api/projects/confirm-token before a non-repo path can be added.
+  // This forces an explicit round-trip — a single forged POST to /add
+  // can no longer silently register a non-repo path as a project.
+  const _projectConfirmTokens = new Map(); // token → expiresAt (ms epoch)
+  const PROJECT_CONFIRM_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  function _sweepProjectConfirmTokens() {
+    const now = Date.now();
+    for (const [t, exp] of _projectConfirmTokens) {
+      if (exp <= now) _projectConfirmTokens.delete(t);
+    }
+  }
+
+  function _consumeProjectConfirmToken(token) {
+    if (typeof token !== 'string' || !token) return false;
+    _sweepProjectConfirmTokens();
+    const exp = _projectConfirmTokens.get(token);
+    if (!exp) return false;
+    _projectConfirmTokens.delete(token); // single-use
+    return exp > Date.now();
+  }
+
+  async function handleProjectsConfirmToken(req, res) {
+    _sweepProjectConfirmTokens();
+    const token = require('crypto').randomUUID();
+    _projectConfirmTokens.set(token, Date.now() + PROJECT_CONFIRM_TOKEN_TTL_MS);
+    return jsonReply(res, 200, { confirmToken: token, ttlMs: PROJECT_CONFIRM_TOKEN_TTL_MS });
+  }
+
   async function handleProjectsAdd(req, res) {
     try {
       const body = await readBody(req);
       if (!body.path) return jsonReply(res, 400, { error: 'path required' });
-      const target = path.resolve(body.path);
-      if (!fs.existsSync(target)) return jsonReply(res, 400, { error: 'Directory not found: ' + target });
+
+      // SEC-05: validate path (must be a git repo, unless caller supplies
+      // allowNonRepo + a valid single-use confirmation token). Runs BEFORE any
+      // mutation of config.json so a rejected path leaves no side effects.
+      let target;
+      try {
+        target = shared.validateProjectPath(body.path, {
+          allowNonRepo: body.allowNonRepo === true,
+          confirmToken: body.confirmToken,
+          isValidToken: _consumeProjectConfirmToken,
+        });
+      } catch (e) {
+        return jsonReply(res, e.statusCode || 400, {
+          error: e.message,
+          ...(e.needsConfirmation ? { needsConfirmation: true } : {}),
+        });
+      }
 
       const configPath = path.join(MINIONS_DIR, 'config.json');
       const config = safeJsonObj(configPath);
@@ -3724,7 +3775,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       } catch { /* optional */ }
 
-      const name = body.name || detected.name;
+      const rawName = body.name || detected.name;
+
+      // SEC-04: validate project name — rejects path traversal, shell
+      // metacharacters, whitespace, overly long names. Runs BEFORE any
+      // mutation of config.json. Auto-detected names (from package.json /
+      // directory basename) also go through this check so a maliciously
+      // named repo on disk can't inject metacharacters either.
+      let name;
+      try {
+        name = shared.validateProjectName(rawName);
+      } catch (e) {
+        return jsonReply(res, e.statusCode || 400, { error: e.message });
+      }
+
       const prUrlBase = detected.repoHost === 'github'
         ? (detected.org && detected.repoName ? `https://github.com/${detected.org}/${detected.repoName}/pull/` : '')
         : (detected.org && detected.project && detected.repoName
@@ -4747,7 +4811,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const levelTag = level === 'critical' ? '🔴 ' : level === 'warning' ? '🟡 ' : '';
       const entry = '\n\n### ' + levelTag + title + '\n\n' + content + '\n\n*Pinned by human on ' + new Date().toISOString().slice(0, 10) + '*';
       safeWrite(pinnedPath, (existing || '# Pinned Context\n\nCritical notes visible to all agents.') + entry);
-      invalidateStatusCache();
+      // pinned.md is in slow-state cache — opt-in invalidation so the new entry is visible immediately (closes #1295)
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
     }},
     { method: 'POST', path: '/api/pinned/remove', desc: 'Remove a pinned note by title', params: 'title', handler: async (req, res) => {
@@ -4760,7 +4825,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const regex = new RegExp('\\n\\n###\\s*(?:🔴\\s*|🟡\\s*)?' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n[\\s\\S]*?(?=\\n\\n###|$)', 'i');
       content = content.replace(regex, '');
       safeWrite(pinnedPath, content);
-      invalidateStatusCache();
+      // pinned.md is in slow-state cache — opt-in invalidation so the unpin is visible immediately
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
     }},
 
@@ -4880,7 +4946,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           mutateJsonFileLocked(prPath, (prs) => {
             const pr = prs.find(p => p.id === prId);
             if (!pr) return prs;
-            if (!title && prData.title) pr.title = prData.title.slice(0, 120);
+            // Remote title always wins — any user-supplied title is a placeholder (closes #1283)
+            if (prData.title) pr.title = prData.title.slice(0, 120);
             if (prData.description) pr.description = prData.description.slice(0, 500);
             if (!pr.branch && prData.branch) pr.branch = prData.branch;
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;
@@ -5028,7 +5095,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Projects
     { method: 'POST', path: '/api/projects/browse', desc: 'Open folder picker dialog, return selected path', handler: handleProjectsBrowse },
     { method: 'POST', path: '/api/projects/scan', desc: 'Scan a directory for git repos', params: 'path?, depth?', handler: handleProjectsScan },
-    { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config', params: 'path, name?', handler: handleProjectsAdd },
+    { method: 'POST', path: '/api/projects/confirm-token', desc: 'Mint a single-use UUID token required to add a non-repo path (SEC-05)', handler: handleProjectsConfirmToken },
+    { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config (name validated SEC-04; path validated SEC-05)', params: 'path, name?, allowNonRepo?, confirmToken?', handler: handleProjectsAdd },
 
     // Bug Filing
     { method: 'POST', path: '/api/issues/create', desc: 'File a bug on the Minions repo (yemi33/minions)', params: 'title, description?, labels?', handler: handleFileBug },
