@@ -1058,6 +1058,61 @@ function sanitizePath(file, baseDir) {
   return resolved;
 }
 
+// ── Prototype Pollution Guard ────────────────────────────────────────────────
+
+const _DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Detect the presence of prototype-pollution attack keys in a JSON-decoded payload.
+ *
+ * Belt-and-braces defence for endpoints that call `JSON.parse` on untrusted
+ * request bodies and then feed the result into `Object.assign`, spread, or
+ * deep-merge utilities. `JSON.parse` itself is safe — it installs `__proto__`
+ * as a regular own data property and does not mutate the prototype chain —
+ * but downstream code that shallow-merges the payload into a target object
+ * CAN elevate it into a prototype write.
+ *
+ * Contract is **rejection, not sanitization**: we inspect the top level plus
+ * one level deep and return a boolean. Deeper walks are intentionally skipped
+ * to avoid their own DoS pathologies on adversarial inputs.
+ *
+ * - Null / undefined / primitives → false.
+ * - Arrays are transparent: each element is checked at the same depth as the
+ *   array itself (an array does NOT consume a depth level).
+ * - Max object nesting inspected: 1. Dangerous keys at object-depth 2+
+ *   are intentionally NOT flagged.
+ * - Never mutates the input.
+ *
+ * @param {*} obj - any JSON-decoded value
+ * @param {number} [_depth=0] - internal recursion counter; do not pass externally
+ * @returns {boolean} true if any forbidden key is present at object-depth ≤ 1
+ */
+function hasDangerousKey(obj, _depth = 0) {
+  if (obj === null || obj === undefined || typeof obj !== 'object') return false;
+
+  // Arrays are transparent — preserve depth when recursing into elements.
+  if (Array.isArray(obj)) {
+    for (const elt of obj) {
+      if (hasDangerousKey(elt, _depth)) return true;
+    }
+    return false;
+  }
+
+  // Object: check own keys at the current depth.
+  for (const key of Object.keys(obj)) {
+    if (_DANGEROUS_KEYS.has(key)) return true;
+  }
+
+  // Stop after one level of object nesting. Deeper recursion is an explicit
+  // non-goal (see DoS note in the header).
+  if (_depth >= 1) return false;
+
+  for (const v of Object.values(obj)) {
+    if (hasDangerousKey(v, _depth + 1)) return true;
+  }
+  return false;
+}
+
 /**
  * Validate that a PID value is a positive integer. Returns the numeric PID.
  * Throws if the value could be used for command injection.
@@ -1806,6 +1861,7 @@ module.exports = {
   sanitizeBranch,
   isAllowedOrigin,
   buildSecurityHeaders,
+  hasDangerousKey,
   validateProjectName,
   validateProjectPath,
   validatePid,

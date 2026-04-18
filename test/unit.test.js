@@ -563,6 +563,93 @@ async function testValidatePid() {
   });
 }
 
+async function testHasDangerousKey() {
+  console.log('\n── shared.js — hasDangerousKey (Prototype Pollution Guard) ──');
+
+  await test('hasDangerousKey flags top-level __proto__', () => {
+    // JSON.parse creates __proto__ as own enumerable data property
+    const obj = JSON.parse('{"__proto__":{"x":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags top-level constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ constructor: 1 }), true);
+  });
+
+  await test('hasDangerousKey flags top-level prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ prototype: null }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep __proto__', () => {
+    const obj = JSON.parse('{"foo":{"__proto__":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { constructor: 1 } }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { prototype: {} } }), true);
+  });
+
+  await test('hasDangerousKey does NOT recurse beyond one level by design', () => {
+    // Two levels deep is intentionally ignored — guard is belt-and-braces, not deep sanitizer.
+    const obj = JSON.parse('{"foo":{"bar":{"__proto__":1}}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), false);
+  });
+
+  await test('hasDangerousKey returns false for empty object', () => {
+    assert.strictEqual(shared.hasDangerousKey({}), false);
+  });
+
+  await test('hasDangerousKey returns false for null', () => {
+    assert.strictEqual(shared.hasDangerousKey(null), false);
+  });
+
+  await test('hasDangerousKey returns false for undefined', () => {
+    assert.strictEqual(shared.hasDangerousKey(undefined), false);
+  });
+
+  await test('hasDangerousKey returns false for primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey('string'), false);
+    assert.strictEqual(shared.hasDangerousKey(42), false);
+    assert.strictEqual(shared.hasDangerousKey(true), false);
+    assert.strictEqual(shared.hasDangerousKey(false), false);
+  });
+
+  await test('hasDangerousKey returns false for plain safe object', () => {
+    assert.strictEqual(shared.hasDangerousKey({ a: 1, b: 'two', c: [1, 2, 3], d: { nested: true } }), false);
+  });
+
+  await test('hasDangerousKey flags arrays with dangerous elements (top-level treatment)', () => {
+    const arr = [JSON.parse('{"__proto__":{"x":1}}')];
+    assert.strictEqual(shared.hasDangerousKey(arr), true);
+  });
+
+  await test('hasDangerousKey flags arrays containing objects with forbidden keys', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ constructor: 1 }]), true);
+    assert.strictEqual(shared.hasDangerousKey([{ prototype: null }]), true);
+  });
+
+  await test('hasDangerousKey returns false for arrays of primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey([1, 2, 3]), false);
+    assert.strictEqual(shared.hasDangerousKey(['a', 'b', 'c']), false);
+    assert.strictEqual(shared.hasDangerousKey([]), false);
+  });
+
+  await test('hasDangerousKey returns false for arrays of safe objects', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ a: 1 }, { b: 2 }]), false);
+  });
+
+  await test('hasDangerousKey does NOT mutate input', () => {
+    const obj = JSON.parse('{"__proto__":{"polluted":true}}');
+    const before = JSON.stringify(obj);
+    shared.hasDangerousKey(obj);
+    assert.strictEqual(JSON.stringify(obj), before);
+  });
+}
+
 async function testValidateProjectName() {
   console.log('\n── shared.js — Project Name Validation (SEC-04) ──');
 
@@ -11578,6 +11665,97 @@ async function testSchedulerCronParsing() {
     assert.strictEqual(matcher(3), true);
     assert.strictEqual(matcher(2), false);
   });
+
+  // W-mo3zuc6usdut: scheduler must substitute {{date}} in title/description
+  // so downstream playbooks don't receive literal {{date}} strings that break
+  // single-pass template substitution in renderPlaybook.
+  console.log('\n── scheduler.js — Template Variable Substitution ──');
+
+  await test('resolveScheduleTemplateVars substitutes {{date}} with today YYYY-MM-DD', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('Test health report {{date}}'),
+      `Test health report ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars substitutes all occurrences of {{date}}', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('{{date}}: build report for {{date}}'),
+      `${today}: build report for ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars passes through strings without {{date}}', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars('nothing to substitute'), 'nothing to substitute');
+  });
+
+  await test('resolveScheduleTemplateVars handles undefined/null/empty without throwing', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(undefined), undefined);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(null), null);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(''), '');
+  });
+
+  await test('discoverScheduledWork substitutes {{date}} in title and description', () => {
+    // Preserve + restore real schedule-runs.json so the test doesn't leak state
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      // Wipe any prior run record for our test IDs so the cron fires now
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-sub'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-sub',
+          cron: '* * *', // matches every minute
+          type: 'explore',
+          title: 'health check {{date}}',
+          description: 'explore test-health-{{date}}.md',
+          project: 'minions',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-sub');
+      assert.ok(item, 'discoverScheduledWork should emit a work item for the enabled schedule');
+      assert.strictEqual(item.title, `health check ${today}`, 'title must have {{date}} substituted');
+      assert.strictEqual(item.description, `explore test-health-${today}.md`, 'description must have {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
+  });
+
+  await test('discoverScheduledWork falls back to substituted title when description is absent', () => {
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-title-fallback'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-title-fallback',
+          cron: '* * *',
+          type: 'explore',
+          title: 'daily probe {{date}}',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-title-fallback');
+      assert.ok(item, 'should emit a work item');
+      assert.strictEqual(item.description, `daily probe ${today}`,
+        'description should fall back to title with {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
+  });
 }
 
 // ─── scheduler.js — shouldRunNow & dispatch-time persistence ────────────────
@@ -11772,6 +11950,7 @@ async function main() {
     await testBuildSecurityHeaders();
     await testSanitizePath();
     await testValidatePid();
+    await testHasDangerousKey();
     await testValidateProjectName();
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
@@ -19292,6 +19471,118 @@ async function testBuildErrorLogFeature() {
       assert.ok(/updated\s*=\s*true/.test(after),
         `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
     }
+  });
+
+  // ─── Stale merge-commit fallback #1233 (item 3) ────────────────────────────
+  //
+  // When a target-branch update causes ADO to recompute the PR's merge commit
+  // but no new CI builds are triggered (source-side unchanged), `buildsData`
+  // still returns recent builds for this PR — but none match the new
+  // `mergeCommitId`, so `prBuilds` is empty and `buildStatus` resets to 'none'.
+  // The dashboard then shows "none" even though the real-world state hasn't
+  // changed from failing/passing. Fix: detect this specific case (buildsData
+  // has entries but filter returns empty), log a warning, and preserve the
+  // previous `pr.buildStatus` so the tracker reflects the last known truth.
+
+  await test('ado.js detects stale merge-commit and preserves previous buildStatus (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Must check the mismatch condition: builds returned but none match
+    // sourceVersion. Accept either naming (`buildsData.value` directly or a
+    // renamed binding like `allBuilds`) and either condition ordering, but
+    // require the two facts to co-occur:
+    //   - the filtered prBuilds is empty
+    //   - the pre-filter list has entries (prevents firing the fallback when
+    //     there are simply no builds at all)
+    //   - the previous pr.buildStatus is consulted
+    const fallbackMismatchPattern = /(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*(>\s*0|>\s*=?\s*0)[\s\S]{0,120}pr\.buildStatus/;
+    const mismatchOrderFlipped = /prBuilds\.length\s*===\s*0[\s\S]{0,120}(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*>\s*0/;
+    assert.ok(fallbackMismatchPattern.test(src) || mismatchOrderFlipped.test(src),
+      'ado.js must detect the stale merge-commit case (builds list non-empty but prBuilds filter returns empty) AND consult pr.buildStatus');
+    // Must log a warn-level diagnostic so operators can spot stale states
+    const warnRegex = /log\(\s*['"]warn['"][^)]*(stale|mismatch|merge commit|merge-commit|no builds match)/i;
+    assert.ok(warnRegex.test(src),
+      'ado.js must log a warning when builds exist but none target the current merge commit');
+  });
+
+  await test('ado.js preserves pr.buildStatus on merge-commit mismatch instead of resetting to none (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // The fallback branch must assign the previous pr.buildStatus back to
+    // the local buildStatus variable so the subsequent transition guard
+    // does not fire a spurious 'failing → none' log and state change.
+    // Accept either `buildStatus = pr.buildStatus` or an equivalent early-return.
+    assert.ok(
+      /buildStatus\s*=\s*pr\.buildStatus/.test(src)
+      || /buildStatus\s*=\s*\(?\s*pr\.buildStatus\s*\|\|/.test(src),
+      'ado.js must reassign the local buildStatus to the previous pr.buildStatus when builds mismatch the current merge commit');
+  });
+
+  // Behavioral simulation — document the intended decision table.
+  //   buildsData.value | prBuilds (filtered) | prev pr.buildStatus | expected
+  //   empty            | empty               | failing             | 'none'         (no builds ever — honest)
+  //   1+ builds        | empty               | failing             | 'failing'      (preserve — stale merge commit)
+  //   1+ builds        | empty               | 'passing'           | 'passing'      (preserve)
+  //   1+ builds        | empty               | undefined           | 'none'         (no prior knowledge)
+  //   1+ builds        | 1+ matches          | failing             | classify matches
+  const applyBuildStatusResolution = (buildsValue, mergeCommitId, prevStatus) => {
+    let buildStatus = 'none';
+    const prBuilds = (buildsValue || []).filter(b => b.sourceVersion === mergeCommitId);
+    if (prBuilds.length > 0) {
+      // Classify deterministically for the test — mimic classifyBuildStatus roughly
+      const hasFailed = prBuilds.some(b => b.result === 'failed');
+      const allDone = prBuilds.every(b => b.status === 'completed');
+      if (hasFailed) buildStatus = 'failing';
+      else if (allDone) buildStatus = 'passing';
+      else buildStatus = 'running';
+    } else if ((buildsValue || []).length > 0 && prevStatus) {
+      // Stale merge-commit fallback
+      buildStatus = prevStatus;
+    }
+    return buildStatus;
+  };
+
+  await test('behavioral: buildsData empty + prev failing → none (no builds ever)', () => {
+    assert.strictEqual(
+      applyBuildStatusResolution([], 'abc123', 'failing'),
+      'none',
+      'When ADO has no builds at all, report none regardless of prior status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev failing → failing (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'old-merge-hash-1', result: 'failed', status: 'completed' },
+      { sourceVersion: 'old-merge-hash-2', result: 'succeeded', status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new-merge-hash', 'failing'),
+      'failing',
+      'Stale merge commit: preserve previous failing status so dashboard does not show spurious none');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev passing → passing (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', 'passing'),
+      'passing',
+      'Stale merge commit: preserve previous passing status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + no prior status → none (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', undefined),
+      'none',
+      'First poll with mismatched builds and no prior status: stay at none (nothing to preserve)');
+  });
+
+  await test('behavioral: builds match current merge commit → classify matched builds, ignore previous (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'current-merge', result: 'succeeded', status: 'completed' },
+      { sourceVersion: 'old-merge',     result: 'failed',    status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'current-merge', 'failing'),
+      'passing',
+      'When builds match the current merge commit, classify those builds — do not fall back to previous status');
   });
 }
 

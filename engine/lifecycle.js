@@ -355,8 +355,12 @@ function archivePlan(planFile, plan, projects, config) {
     // Remove .backup sidecar — if left behind, safeJson() would restore the pre-completion
     // snapshot (status: approved, no _completionNotified) on engine restart, re-triggering
     // plan completion and spawning duplicate verify tasks for already-archived plans.
+    // On Windows, the unlink can fail due to file locking; overwrite with archived status
+    // as a fallback so a restored backup is inert even if deletion fails.
     const backupPath = planPath + '.backup';
-    if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+    try { fs.unlinkSync(backupPath); } catch {
+      try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { }
+    }
   } catch (err) {
     log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
   }
