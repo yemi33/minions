@@ -52,6 +52,14 @@ if (!claudeBin) try {
         const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
         if (fs.existsSync(candidate)) { claudeBin = candidate; }
       }
+      // npm wrapper may reference native binary (claude.exe) instead of cli.js
+      if (!claudeBin) {
+        const exeMatch = content.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]bin[\\/]claude(?:\.exe)?/);
+        if (exeMatch) {
+          const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', isWin ? 'claude.exe' : 'claude');
+          if (fs.existsSync(candidate)) { claudeBin = candidate; claudeIsNative = true; }
+        }
+      }
     } catch {
       // Can't read as text — it's a compiled binary
     }
