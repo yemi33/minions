@@ -17969,6 +17969,188 @@ async function testBuildErrorLogFeature() {
     assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
       'Should clear buildErrorLog when PR is merged/abandoned');
   });
+
+  // ─── Regression guard #1232: preserve buildErrorLog through none/running ───
+  //
+  // When a fix agent pushes a new commit, CI status goes failing → none (builds
+  // queued but not started) or failing → running. If buildErrorLog is cleared
+  // on either transition and CI subsequently fails again, the next fix agent
+  // is dispatched blind with no error context. Only the `passing` transition
+  // represents actual recovery — none/running are transient.
+
+  // Extract the transition-handling block (between the "buildStatus !== 'failing'"
+  // guard and its closing brace) so we can assert what happens there.
+  const extractTransitionBlock = (src) => {
+    const openIdx = src.indexOf("if (buildStatus !== 'failing') {");
+    assert.ok(openIdx > 0, 'Source must contain the non-failing transition guard');
+    // Walk from openIdx forward, tracking brace depth starting at the opening `{`
+    const braceStart = src.indexOf('{', openIdx);
+    let depth = 1;
+    let i = braceStart + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    return src.slice(braceStart, i);
+  };
+
+  await test('ado.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    // Must guard buildErrorLog delete behind a passing check so none/running preserve it
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('github.js only clears buildErrorLog when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    assert.ok(block.includes("buildStatus === 'passing'"),
+      'Non-failing transition block must contain a passing-specific guard');
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const deleteIdx = block.indexOf('delete pr.buildErrorLog');
+    assert.ok(deleteIdx > guardIdx,
+      'delete pr.buildErrorLog must appear AFTER the passing guard, not before it');
+  });
+
+  await test('ado.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  await test('github.js only resets buildFixAttempts when buildStatus === passing (#1232)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const block = extractTransitionBlock(src);
+    const guardIdx = block.indexOf("buildStatus === 'passing'");
+    const attemptsIdx = block.indexOf('delete pr.buildFixAttempts');
+    assert.ok(guardIdx > 0 && attemptsIdx > guardIdx,
+      'buildFixAttempts reset must appear AFTER the passing guard (transient states preserve the counter)');
+  });
+
+  // Behavioral simulation — document the expected state transitions so the
+  // intent is explicit, not just the source pattern.
+  // Mirrors the post-fix poller logic:
+  //   if (buildStatus !== 'failing') {
+  //     delete pr._buildFailNotified;
+  //     if (buildStatus === 'passing') {
+  //       delete pr.buildErrorLog;
+  //       if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+  //     }
+  //   }
+  const applyNonFailingCleanup = (pr, newStatus) => {
+    if (newStatus === 'failing') return;
+    delete pr._buildFailNotified;
+    if (newStatus === 'passing') {
+      delete pr.buildErrorLog;
+      if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+    }
+  };
+
+  await test('behavioral: failing → running preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-a', buildStatus: 'failing',
+      buildErrorLog: 'compile error: missing semicolon',
+      buildFixAttempts: 1, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'running');
+    assert.strictEqual(pr.buildErrorLog, 'compile error: missing semicolon',
+      'buildErrorLog must survive the transient running state so the next fix agent has context');
+    assert.strictEqual(pr.buildFixAttempts, 1,
+      'buildFixAttempts must survive running so the escalation cap is not defeated');
+    assert.strictEqual(pr._buildFailNotified, undefined,
+      '_buildFailNotified is cleared on any non-failing transition so new failures re-notify');
+  });
+
+  await test('behavioral: failing → none preserves buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-b', buildStatus: 'failing',
+      buildErrorLog: 'ETIMEDOUT',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'none');
+    assert.strictEqual(pr.buildErrorLog, 'ETIMEDOUT',
+      'buildErrorLog must survive the transient none state (new builds queued but not complete)');
+    assert.strictEqual(pr.buildFixAttempts, 2,
+      'buildFixAttempts must survive none so the escalation cap is not defeated');
+    assert.strictEqual(pr.buildFixEscalated, false, 'buildFixEscalated must survive none');
+  });
+
+  await test('behavioral: failing → passing clears buildErrorLog and buildFixAttempts (#1232)', () => {
+    const pr = {
+      id: 'PR-1232-c', buildStatus: 'failing',
+      buildErrorLog: 'compile error',
+      buildFixAttempts: 2, buildFixEscalated: false, _buildFailNotified: true,
+    };
+    applyNonFailingCleanup(pr, 'passing');
+    assert.strictEqual(pr.buildErrorLog, undefined, 'buildErrorLog must be cleared on true recovery');
+    assert.strictEqual(pr.buildFixAttempts, undefined, 'buildFixAttempts resets on true recovery');
+    assert.strictEqual(pr.buildFixEscalated, undefined, 'buildFixEscalated resets on true recovery');
+    assert.strictEqual(pr._buildFailNotified, undefined, '_buildFailNotified cleared');
+  });
+
+  // ─── Regression guard #1233: lastBuildCheck reflects actual poll time ──────
+  //
+  // Previously `lastBuildCheck` was written once at dispatch time and never
+  // refreshed, making debugging misleading ("build not checked in hours") when
+  // polling was in fact working. Both pollers must set pr.lastBuildCheck = ts()
+  // every time they talk to the build API.
+
+  await test('ado.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    // Must come AFTER the build query, before (or alongside) the buildStatus transition block
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('github.js pollPrStatus writes pr.lastBuildCheck = ts() on every poll (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(/pr\.lastBuildCheck\s*=\s*ts\(\)/.test(pollFn[0]),
+      'pollPrStatus must set pr.lastBuildCheck = ts() so the field reflects actual poll time');
+    const lastCheckIdx = pollFn[0].search(/pr\.lastBuildCheck\s*=\s*ts\(\)/);
+    const transitionIdx = pollFn[0].indexOf("if (pr.buildStatus !== buildStatus)");
+    assert.ok(lastCheckIdx > 0 && transitionIdx > 0,
+      'both lastBuildCheck write and buildStatus transition guard must be present');
+    assert.ok(lastCheckIdx < transitionIdx,
+      'lastBuildCheck must be set before the transition guard so it reflects a completed poll');
+  });
+
+  await test('lastBuildCheck is returned as updated=true so mutateJsonFileLocked persists it (#1233)', () => {
+    // Both pollers rely on the callback returning a truthy value to trigger
+    // the merge-back in forEachActivePr. Setting pr.lastBuildCheck without
+    // flipping `updated = true` would leave the field in-memory only and it
+    // would never reach disk — defeating the debugging utility entirely.
+    const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    for (const [label, src] of [['ado.js', adoSrc], ['github.js', ghSrc]]) {
+      const idx = src.indexOf('pr.lastBuildCheck = ts()');
+      assert.ok(idx > 0, `${label}: must contain pr.lastBuildCheck = ts()`);
+      // Within the next ~200 chars we should see `updated = true;` so the
+      // merge-back fires. This is lightweight structural proof, not behavioral
+      // — but the behavioral contract is narrow (just a one-line write).
+      const after = src.slice(idx, idx + 200);
+      assert.ok(/updated\s*=\s*true/.test(after),
+        `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
+    }
+  });
 }
 
 // ─── spawnEngine state preservation (#564) ──────────────────────────────────
