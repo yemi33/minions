@@ -15084,21 +15084,31 @@ async function testDashboardAuditXss() {
     const cardSection = src.match(/grid\.innerHTML = agents\.map[\s\S]*?\.join\(''\)/);
     assert.ok(cardSection, 'agent card template must exist');
     const card = cardSection[0];
-    // These fields must be escaped
-    assert.ok(card.includes('escHtml(a.id)'), 'a.id must be escaped in onclick');
-    assert.ok(card.includes('escHtml(a.name)'), 'a.name must be escaped');
-    assert.ok(card.includes('escHtml(a.emoji)'), 'a.emoji must be escaped');
-    assert.ok(card.includes('escHtml(a.status)'), 'a.status must be escaped');
-    assert.ok(card.includes('escHtml(a.role)'), 'a.role must be escaped');
+    // Post-SEC-03: hotspot renderers use the canonical escapeHtml helper (6-char, null-safe).
+    // These fields must be escaped via escapeHtml (or any *escape*Html helper).
+    const hasEscape = (s) => card.includes('escapeHtml(' + s + ')') || card.includes('escHtml(' + s + ')');
+    assert.ok(hasEscape('a.id'), 'a.id must be escaped in onclick');
+    assert.ok(hasEscape('a.name'), 'a.name must be escaped');
+    assert.ok(hasEscape('a.emoji'), 'a.emoji must be escaped');
+    assert.ok(hasEscape('a.status'), 'a.status must be escaped');
+    assert.ok(hasEscape('a.role'), 'a.role must be escaped');
   });
 
-  await test('render-agents.js detail header escapes agent fields', () => {
+  await test('render-agents.js detail header renders agent fields safely', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
-    const headerLine = src.match(/detail-agent-name.*innerHTML[\s\S]*?;/);
-    assert.ok(headerLine, 'detail header line must exist');
-    assert.ok(headerLine[0].includes('escHtml(agent.emoji)'), 'emoji must be escaped in detail');
-    assert.ok(headerLine[0].includes('escHtml(agent.name)'), 'name must be escaped in detail');
-    assert.ok(headerLine[0].includes('escHtml(agent.role)'), 'role must be escaped in detail');
+    // Post-SEC-03: the detail-agent-name header is built via DOM (`replaceChildren` +
+    // `textContent`) rather than innerHTML. textContent inherently neutralises HTML, so
+    // agent.emoji / agent.name / agent.role can't be script-injected regardless of the
+    // escape helper. Assert we haven't regressed to an innerHTML pattern for this node.
+    const detailBlock = src.match(/detail-agent-name[\s\S]*?\)\);/);
+    assert.ok(detailBlock, 'detail-agent-name header block must exist');
+    const block = detailBlock[0];
+    assert.ok(!/detail-agent-name[^)]*\)\.innerHTML\s*=/.test(block),
+      'detail-agent-name must not be populated via innerHTML (use textContent / replaceChildren)');
+    assert.ok(block.includes('textContent'), 'emoji/name/role must be set via textContent');
+    assert.ok(block.includes('agent.emoji'), 'must read agent.emoji');
+    assert.ok(block.includes('agent.name'), 'must read agent.name');
+    assert.ok(block.includes('agent.role'), 'must read agent.role');
   });
 
   await test('render-pinned.js uses data attributes instead of JS string injection', () => {
@@ -15177,7 +15187,9 @@ async function testDashboardAuditXss() {
 
   await test('render-inbox.js escapes item.age', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
-    assert.ok(src.includes("escHtml(item.age") , 'item.age must be escaped');
+    // Post-SEC-03: render-inbox.js migrated from escHtml to canonical escapeHtml.
+    assert.ok(src.includes('escapeHtml(item.age') || src.includes('escHtml(item.age'),
+      'item.age must be escaped');
   });
 
   await test('utils.js has safeUrl function that blocks javascript: protocol', () => {
@@ -15200,6 +15212,184 @@ async function testDashboardAuditXss() {
     const tdMatch = rowFn ? (rowFn[0].match(/<td>/g) || []) : [];
     assert.strictEqual(thMatch.length, tdMatch.length,
       `PR table headers (${thMatch.length}) must match cell count (${tdMatch.length})`);
+  });
+
+  // ─── SEC-03 Phase A: escapeHtml helper + no-regression gate ───────────────
+  //
+  // Phase A landed three things:
+  //   1. A canonical `escapeHtml(str)` helper in dashboard/js/utils.js that escapes six
+  //      HTML metacharacters (& < > " ' /) and returns '' for null/undefined — null-safety
+  //      prevents the literal strings "null"/"undefined" from rendering where a field is
+  //      missing, and the `/` escape closes the `</script>` break-out route that the
+  //      legacy 5-char `escHtml` left open.
+  //   2. Migration of the top-priority renderers (work items, agents, PRs, KB entries,
+  //      plans, inbox) from `escHtml` → `escapeHtml` for every user-controlled field that
+  //      reaches `.innerHTML`.
+  //   3. This ratchet: count dynamic `.innerHTML =` / `.innerHTML +=` assignments across
+  //      dashboard/ and assert the count does not exceed a frozen baseline. New unsafe
+  //      innerHTML lines fail CI; converting an existing line to textContent /
+  //      insertAdjacentText is always allowed.
+  //
+  // ── How to update the baseline ──
+  //   When you migrate an `.innerHTML` assignment to a safer alternative (textContent,
+  //   insertAdjacentText, or a structured DOM build via document.createElement), rerun
+  //   the counter (see _countDynamicInnerHtml below) and lower DYNAMIC_INNERHTML_BASELINE
+  //   to match the new total. Never raise the baseline to make a failing test pass —
+  //   that defeats the ratchet. If a new renderer genuinely needs innerHTML for HTML
+  //   markup (e.g., returning from renderMd()), wrap user-controlled fields in
+  //   escapeHtml() and accept the baseline increment only with explicit review.
+  await testSec03EscapeHtml();
+}
+
+// A line's RHS is "static" (safe) iff it is a single pure string literal — no `${`,
+// no `+`, no bare identifier. The same predicate is used by the regression gate and
+// documented in the commit that introduced it.
+function _isStaticInnerHtmlRhs(rhs) {
+  const cleaned = rhs.replace(/;\s*$/, '').trim();
+  if (/^'[^']*'$/.test(cleaned)) return true;
+  if (/^"[^"]*"$/.test(cleaned)) return true;
+  if (/^`[^`$]*`$/.test(cleaned)) return true;
+  return false;
+}
+
+function _countDynamicInnerHtml(dir) {
+  const files = [];
+  (function walk(d) {
+    for (const name of fs.readdirSync(d)) {
+      const p = path.join(d, name);
+      const stat = fs.statSync(p);
+      if (stat.isDirectory()) walk(p);
+      else if (/\.(js|html)$/.test(name)) files.push(p);
+    }
+  })(dir);
+  let total = 0;
+  const perFile = {};
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    const lines = src.split('\n');
+    let n = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/\.innerHTML\s*\+?=\s*(.+)$/);
+      if (!m) continue;
+      if (_isStaticInnerHtmlRhs(m[1])) continue;
+      n++;
+    }
+    if (n > 0) { perFile[f] = n; total += n; }
+  }
+  return { total, perFile };
+}
+
+async function testSec03EscapeHtml() {
+  console.log('\n── SEC-03 Phase A: escapeHtml ──');
+
+  // Extract escapeHtml from source and eval it in a fresh scope (no deps).
+  const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+  const escBody = utilsSrc.match(/function escapeHtml\([\s\S]*?^}/m);
+  if (!escBody) throw new Error('escapeHtml not found in dashboard/js/utils.js');
+  const escapeHtml = new Function(escBody[0] + '\nreturn escapeHtml;')();
+
+  await test('escapeHtml escapes all six HTML metacharacters', () => {
+    assert.strictEqual(escapeHtml('&'), '&amp;');
+    assert.strictEqual(escapeHtml('<'), '&lt;');
+    assert.strictEqual(escapeHtml('>'), '&gt;');
+    assert.strictEqual(escapeHtml('"'), '&quot;');
+    assert.strictEqual(escapeHtml("'"), '&#39;');
+    assert.strictEqual(escapeHtml('/'), '&#x2F;');
+  });
+
+  await test('escapeHtml escapes a realistic XSS payload', () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const escaped = escapeHtml(payload);
+    assert.ok(!escaped.includes('<img'), 'raw <img must not survive');
+    assert.ok(escaped.includes('&lt;img'), '< must be encoded');
+    assert.ok(escaped.includes('&gt;'), '> must be encoded');
+  });
+
+  await test('escapeHtml escapes </script> break-out (the `/` escape matters)', () => {
+    // This is the tangible win over the 5-char legacy escHtml — `/` blocks
+    // `</script>` from closing an inline <script> tag when a field is accidentally
+    // interpolated into script context rather than body context.
+    const escaped = escapeHtml('</script>');
+    assert.ok(!escaped.includes('</'), 'raw </ must not survive');
+    assert.ok(escaped.includes('&#x2F;'), 'forward slash must be encoded as &#x2F;');
+  });
+
+  await test('escapeHtml returns empty string for null / undefined', () => {
+    // Legacy escHtml renders the literal strings "null" / "undefined" — a correctness
+    // bug (not a security bug) that escapeHtml fixes so missing fields don't leak.
+    assert.strictEqual(escapeHtml(null), '');
+    assert.strictEqual(escapeHtml(undefined), '');
+  });
+
+  await test('escapeHtml coerces non-string input to string', () => {
+    assert.strictEqual(escapeHtml(0), '0');
+    assert.strictEqual(escapeHtml(42), '42');
+    assert.strictEqual(escapeHtml(false), 'false');
+    assert.strictEqual(escapeHtml(true), 'true');
+  });
+
+  await test('escapeHtml is idempotent for non-metacharacter input', () => {
+    // The only metacharacter that expands on second pass is `&` (→ &amp; → &amp;amp;).
+    // Text without metacharacters is a fixed point — important so that template
+    // literals can safely wrap already-escaped callsites without double-encoding text.
+    const safe = 'Hello, world. 42 is the answer.';
+    assert.strictEqual(escapeHtml(escapeHtml(safe)), escapeHtml(safe));
+  });
+
+  await test('escapeHtml is exported via window.MinionsUtils', () => {
+    assert.ok(utilsSrc.includes('window.MinionsUtils'), 'MinionsUtils export must exist');
+    const exportLine = utilsSrc.match(/window\.MinionsUtils\s*=\s*\{[^}]*\}/)[0];
+    assert.ok(exportLine.includes('escapeHtml'), 'escapeHtml must be exported');
+  });
+
+  // Hotspot migration: the renderers listed in the task description must use the
+  // canonical escapeHtml helper for user-controlled fields that reach .innerHTML.
+  // Every field escape in these files should be escapeHtml (not the legacy escHtml)
+  // so future greps can distinguish migrated from unmigrated code.
+  const migratedFiles = [
+    'render-work-items.js', 'render-agents.js', 'render-prs.js',
+    'render-kb.js', 'render-plans.js', 'render-inbox.js',
+  ];
+  for (const f of migratedFiles) {
+    await test(`${f} uses escapeHtml (not legacy escHtml) after SEC-03 migration`, () => {
+      const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', f), 'utf8');
+      assert.ok(src.includes('escapeHtml('),
+        `${f} must use canonical escapeHtml helper`);
+      // Legacy escHtml must not appear — enforces clean migration.
+      // (A renamed identifier like `mapEscHtml` would match; we scope the regex to
+      // the exact call form so false positives are impossible.)
+      assert.ok(!/\bescHtml\s*\(/.test(src),
+        `${f} must not use legacy escHtml( — migrate to escapeHtml(`);
+    });
+  }
+
+  // ── Regression gate ─────────────────────────────────────────────────────
+  // Baseline was measured after Phase A migrations and frozen here. The counter
+  // treats a line as "dynamic" (potentially unsafe) when the RHS of `.innerHTML`
+  // is anything other than a single quoted/template string literal — i.e. it
+  // contains `${`, `+`, or a bare identifier. Static literal assignments
+  // (`el.innerHTML = '<p class="empty">...</p>'`) are exempt because they
+  // cannot carry user data.
+  const DYNAMIC_INNERHTML_BASELINE = 172;
+
+  await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
+    const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
+    const { total, perFile } = _countDynamicInnerHtml(dashboardDir);
+    if (total > DYNAMIC_INNERHTML_BASELINE) {
+      // Surface the per-file breakdown so the reviewer can find the new offender(s).
+      const breakdown = Object.entries(perFile)
+        .sort((a, b) => b[1] - a[1])
+        .map(([f, n]) => `  ${n.toString().padStart(4)} ${path.relative(MINIONS_DIR, f)}`)
+        .join('\n');
+      assert.fail(
+        `Dynamic .innerHTML assignments in dashboard/ rose from baseline ${DYNAMIC_INNERHTML_BASELINE} to ${total}.\n` +
+        `Either wrap the new user-controlled field in escapeHtml() AND prefer textContent\n` +
+        `where the element holds only text, or — if this change is intentional progress in\n` +
+        `the other direction (a textContent conversion) — lower DYNAMIC_INNERHTML_BASELINE\n` +
+        `to ${total}.\n\nPer-file counts:\n${breakdown}`
+      );
+    }
+    assert.ok(total <= DYNAMIC_INNERHTML_BASELINE, `count=${total} <= baseline=${DYNAMIC_INNERHTML_BASELINE}`);
   });
 }
 
@@ -15944,8 +16134,9 @@ async function testEngineAuditMedium() {
 
   await test('render-kb.js escapes item.agent', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
-    assert.ok(src.includes("escHtml(item.agent)"),
-      'item.agent must be escaped via escHtml to prevent XSS');
+    // Post-SEC-03: render-kb.js migrated from escHtml to canonical escapeHtml.
+    assert.ok(src.includes('escapeHtml(item.agent)') || src.includes('escHtml(item.agent)'),
+      'item.agent must be escaped via escapeHtml/escHtml to prevent XSS');
   });
 
   await test('_archiveMeeting clears markDeleted on API failure', () => {
