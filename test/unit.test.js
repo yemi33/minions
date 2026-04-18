@@ -435,6 +435,93 @@ async function testValidatePid() {
   });
 }
 
+async function testHasDangerousKey() {
+  console.log('\n── shared.js — hasDangerousKey (Prototype Pollution Guard) ──');
+
+  await test('hasDangerousKey flags top-level __proto__', () => {
+    // JSON.parse creates __proto__ as own enumerable data property
+    const obj = JSON.parse('{"__proto__":{"x":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags top-level constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ constructor: 1 }), true);
+  });
+
+  await test('hasDangerousKey flags top-level prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ prototype: null }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep __proto__', () => {
+    const obj = JSON.parse('{"foo":{"__proto__":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { constructor: 1 } }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { prototype: {} } }), true);
+  });
+
+  await test('hasDangerousKey does NOT recurse beyond one level by design', () => {
+    // Two levels deep is intentionally ignored — guard is belt-and-braces, not deep sanitizer.
+    const obj = JSON.parse('{"foo":{"bar":{"__proto__":1}}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), false);
+  });
+
+  await test('hasDangerousKey returns false for empty object', () => {
+    assert.strictEqual(shared.hasDangerousKey({}), false);
+  });
+
+  await test('hasDangerousKey returns false for null', () => {
+    assert.strictEqual(shared.hasDangerousKey(null), false);
+  });
+
+  await test('hasDangerousKey returns false for undefined', () => {
+    assert.strictEqual(shared.hasDangerousKey(undefined), false);
+  });
+
+  await test('hasDangerousKey returns false for primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey('string'), false);
+    assert.strictEqual(shared.hasDangerousKey(42), false);
+    assert.strictEqual(shared.hasDangerousKey(true), false);
+    assert.strictEqual(shared.hasDangerousKey(false), false);
+  });
+
+  await test('hasDangerousKey returns false for plain safe object', () => {
+    assert.strictEqual(shared.hasDangerousKey({ a: 1, b: 'two', c: [1, 2, 3], d: { nested: true } }), false);
+  });
+
+  await test('hasDangerousKey flags arrays with dangerous elements (top-level treatment)', () => {
+    const arr = [JSON.parse('{"__proto__":{"x":1}}')];
+    assert.strictEqual(shared.hasDangerousKey(arr), true);
+  });
+
+  await test('hasDangerousKey flags arrays containing objects with forbidden keys', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ constructor: 1 }]), true);
+    assert.strictEqual(shared.hasDangerousKey([{ prototype: null }]), true);
+  });
+
+  await test('hasDangerousKey returns false for arrays of primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey([1, 2, 3]), false);
+    assert.strictEqual(shared.hasDangerousKey(['a', 'b', 'c']), false);
+    assert.strictEqual(shared.hasDangerousKey([]), false);
+  });
+
+  await test('hasDangerousKey returns false for arrays of safe objects', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ a: 1 }, { b: 2 }]), false);
+  });
+
+  await test('hasDangerousKey does NOT mutate input', () => {
+    const obj = JSON.parse('{"__proto__":{"polluted":true}}');
+    const before = JSON.stringify(obj);
+    shared.hasDangerousKey(obj);
+    assert.strictEqual(JSON.stringify(obj), before);
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -11070,6 +11157,7 @@ async function main() {
     await testBranchSanitization();
     await testSanitizePath();
     await testValidatePid();
+    await testHasDangerousKey();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
