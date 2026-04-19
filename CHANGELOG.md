@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1542 (2026-04-19)
+
+### Other
+- test(cooldown): add unit tests for loadCooldowns, isOnCooldown, setCooldownWithContext, getCoalescedContexts, isBranchActive (#1389)
+
 ## 0.1.1541 (2026-04-19)
 
 ### Features
