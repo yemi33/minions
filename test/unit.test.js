@@ -3662,12 +3662,22 @@ async function testConfigAndPlaybooks() {
       'publish workflow should read the publish admin PAT from repo secrets');
     assert.ok(src.includes('PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations.'),
       'publish workflow should fail clearly when the publish admin PAT is missing');
-    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --delete-branch --admin'),
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --subject "chore: publish $NEXT [skip ci]" --body "" --delete-branch --admin'),
       'publish workflow should use the admin PAT for direct admin merge after posting required checks');
     assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch'),
       'publish workflow should use the admin PAT when closing stale publish PRs');
     assert.ok(!src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
       'publish workflow should not use invalid --auto + --admin combination');
+  });
+
+  await test('publish workflow guards recursive skip-ci publishes and serializes runs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    assert.ok(src.includes("if: \"!contains(github.event.head_commit.message, '[skip ci]')\""),
+      'publish workflow should skip push events when the landing commit message includes [skip ci]');
+    assert.ok(src.includes('git commit -m "chore: publish $NEXT — changelog updated [skip ci]"'),
+      'publish workflow should include [skip ci] in the publish branch commit message');
+    assert.ok(src.includes('concurrency:') && src.includes('group: publish-${{ github.repository }}-${{ github.ref }}'),
+      'publish workflow should define workflow-level concurrency for publish runs');
   });
 }
 

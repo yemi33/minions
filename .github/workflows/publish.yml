@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
 
+concurrency:
+  group: publish-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -120,7 +124,7 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" || {
             BRANCH="chore/publish-$NEXT"
             git checkout -b "$BRANCH"
-            git commit -m "chore: publish $NEXT — changelog updated"
+            git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
             git push origin "$BRANCH"
             SHA=$(git rev-parse HEAD)
             gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
@@ -145,7 +149,7 @@ jobs:
             done
 
             # Merge immediately with admin bypass after tests and required checks succeed
-            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --delete-branch --admin
+            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --subject "chore: publish $NEXT [skip ci]" --body "" --delete-branch --admin
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
