@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.1.1315 (2026-04-19)
+
+### Features
+- Header gate — Origin allowlist, Content-Type enforcement, security response headers (#1336)
+- Header gate — Origin allowlist, Content-Type enforcement, security response headers (#1327)
+- escapeHtml helper, hotspot XSS migration, regression gate (#1323)
+- Prototype pollution guard in readBody (SEC-13) (#1300)
+- redact ADO tokens and JWTs from engine/log.json writes (#1297)
+- SEC-02 — replace curl shell-out in ado.js with adoFetch (#1296)
+- validate project name and path on POST /api/projects/add (SEC-04, SEC-05) (#1298)
+- seed realActivityMap at spawn time, stamp pid in live-output (#1200)
+
+### Fixes
+- ado merge-commit mismatch preserves prior buildStatus (closes #1233) (#1326)
+- scheduler substitutes {{date}} in title and description (#1275)
+-  prevent archived plans from re-triggering via orphaned .backup restore
+- pinned context optimistic save (closes #1295) (#1316)
+-  re-check throttle state per-PR iteration to avoid stale fixThrottled
+- preserve buildErrorLog through transient states, persist poll time (#1273)
+-  auto-fetch PR title on link-pr (closes #1283) (#1299)
+- scheduler double-fire within same cron minute (#1277)
+-  gate auto-fix dispatch on throttle state to prevent stale-data spurious fixes
+- preserve buildErrorLog through transient build states (#1232) (#1274)
+- annotate fast-exit empty-output failures with diagnostic hint (#1276)
+- invalidate PRD cache on pr-links.json change + guard aggregate PRs (#1220) (#1272)
+- pass --add-dir for minions + ~/.claude to agents (#1271)
+- preserve VERDICT marker by tail-slicing agent output (#1234) (#1270)
+- PRD info cache staleness and aggregate PR bleed-through (#1222)
+-  avoid no-op work item writes
+-  resilient claude binary resolution + surface spawn errors
+-  resolve native claude.exe from npm wrapper on Windows
+- cap temp-agent creation at maxConcurrent per tick (#1219)
+-  reassign pending items from unspawned temp agents to idle named agents (#1204) (#1212)
+
+### Other
+- test(scheduler): add unit tests for parseCronExpr, shouldRunNow, discoverScheduledWork (#1390)
+- refactor: hoist fixThrottled before PR loop and drop underscore prefix
+- docs(skill): add substitute-scheduler-template-vars (#1278)
+- Clarify PR poll labels
+- Prevent modal opens on text selection
+- refactor: clarify settings page section structure and PR polling dependencies
+- refactor: extract _probeClaudePackage helper, use shared.log for spawn errors
+- Make work item descriptions scrollable
+- Use PAT for publish merges
+- test(queries): add unit tests for invalidateDispatchCache/getInbox/getAgentCharter (#1214)
+- test(shared): add unit tests for truncateTextBytes/tailTextBytes/execSilent/trackReviewMetric/parseCanonicalPrId (#1215)
+- Fix publish workflow merge
+- chore: raise default meeting round timeout
+- Harden prompt context handling
+- Harden loop watch conversion
+- Add watches sidebar activity badge
+- test(cli): add unit tests for handleCommand, start, stop, kill, spawn (#1191)
+- chore: untrack pipeline files — local config only
+- restore: recover daily-arch-improvement and weekly-dead-code-cleanup pipelines
+- Harden CC stream resilience
+
 ## 0.1.1314 (2026-04-19)
 
 ### Features
