@@ -11934,6 +11934,505 @@ async function testSchedulerDispatchTimePersistence() {
   });
 }
 
+// ─── scheduler.js — Additional coverage (W-mo5u52v2aabv) ───────────────────
+
+async function testSchedulerAdditionalCoverage() {
+  console.log('\n── scheduler.js — additional parseCron/shouldRunNow/discoverScheduledWork coverage ──');
+
+  // Snapshot + clear schedule-runs.json (and its .backup sidecar). safeJson auto-
+  // restores from .backup when the main file is missing, so both must be cleared
+  // for a true blank slate inside tests. Returns a restore function that puts
+  // whatever was there back — keeps tests atomic with respect to real engine state.
+  function snapshotAndClearScheduleRuns() {
+    const realPath = scheduler.SCHEDULE_RUNS_PATH;
+    const backupPath = realPath + '.backup';
+    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
+    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+    try { fs.unlinkSync(realPath); } catch {}
+    try { fs.unlinkSync(backupPath); } catch {}
+    return function restoreFiles() {
+      if (snapshot) fs.writeFileSync(realPath, snapshot);
+      else { try { fs.unlinkSync(realPath); } catch {} }
+      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+      else { try { fs.unlinkSync(backupPath); } catch {} }
+    };
+  }
+
+  // Patch Date so `new Date()` and Date.now() return the fixed timestamp. Calls
+  // with explicit args (e.g. new Date(isoString)) still use the real Date.
+  // Always invoke via try/finally so global.Date is restored on assertion failure.
+  function withFixedNow(fixedMs, fn) {
+    const origDate = global.Date;
+    try {
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(fixedMs);
+          return new origDate(...args);
+        }
+        static now() { return fixedMs; }
+      };
+      return fn();
+    } finally {
+      global.Date = origDate;
+    }
+  }
+
+  // ─── parseCronField ───────────────────────────────────────────────────────
+
+  await test('parseCronField: single exact value matches only itself', () => {
+    const matcher = scheduler.parseCronField('5', 0, 59);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(4), false);
+    assert.strictEqual(matcher(6), false);
+    assert.strictEqual(matcher(0), false);
+  });
+
+  await test('parseCronField: step syntax with zero step returns always-false matcher', () => {
+    // */0 would cause div-by-zero if we actually evaluated val % 0 — guard returns noop matcher.
+    const matcher = scheduler.parseCronField('*/0', 0, 59);
+    assert.strictEqual(typeof matcher, 'function');
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(15), false);
+  });
+
+  await test('parseCronField: step syntax with non-numeric step returns always-false matcher', () => {
+    const matcher = scheduler.parseCronField('*/abc', 0, 59);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(15), false);
+  });
+
+  await test('parseCronField: list syntax drops non-numeric entries silently', () => {
+    const matcher = scheduler.parseCronField('1,abc,3', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(3), true);
+    assert.strictEqual(matcher(2), false);
+  });
+
+  await test('parseCronField: list syntax tolerates whitespace around entries', () => {
+    const matcher = scheduler.parseCronField('1, 3 , 5', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(3), true);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(2), false);
+  });
+
+  await test('parseCronField: wholly unparseable syntax returns always-false matcher', () => {
+    // Neither "*", "*/N", "N,M,..." nor a leading numeric → fall through to () => false.
+    const matcher = scheduler.parseCronField('@@foo', 0, 59);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(59), false);
+  });
+
+  await test('parseCronField: trims surrounding whitespace on a single value', () => {
+    const matcher = scheduler.parseCronField('  7  ', 0, 59);
+    assert.strictEqual(matcher(7), true);
+    assert.strictEqual(matcher(0), false);
+  });
+
+  // ─── parseCronExpr ────────────────────────────────────────────────────────
+
+  await test('parseCronExpr: dayOfWeek field gates the match', () => {
+    const cron = scheduler.parseCronExpr('0 9 1'); // Mondays 09:00
+    // March 30, 2026 is a Monday — matches.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);
+    // March 31, 2026 (Tuesday) at 09:00 — dow mismatch.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 31, 9, 0)), false);
+  });
+
+  await test('parseCronExpr: step syntax is honored in the hour field', () => {
+    const cron = scheduler.parseCronExpr('0 */6 *');
+    // */6 ⇒ hours 0, 6, 12, 18.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 0, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 6, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 12, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 18, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 3, 0)), false);
+    // Minute still has to match (0).
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 6, 1)), false);
+  });
+
+  await test('parseCronExpr: list syntax in dayOfWeek matches all listed days', () => {
+    const cron = scheduler.parseCronExpr('0 9 1,3,5'); // Mon/Wed/Fri at 09:00
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);  // Mon
+    assert.strictEqual(cron.matches(new Date(2026, 3, 1, 9, 0)), true);   // Wed
+    assert.strictEqual(cron.matches(new Date(2026, 3, 3, 9, 0)), true);   // Fri
+    assert.strictEqual(cron.matches(new Date(2026, 2, 31, 9, 0)), false); // Tue
+    assert.strictEqual(cron.matches(new Date(2026, 3, 5, 9, 0)), false);  // Sun (day 0)
+  });
+
+  await test('parseCronExpr: collapses multiple spaces between fields', () => {
+    const cron = scheduler.parseCronExpr('0   9   1');
+    assert.ok(cron, 'multi-space expression should parse via \\s+ split');
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);
+  });
+
+  await test('parseCronExpr: rejects non-string inputs', () => {
+    assert.strictEqual(scheduler.parseCronExpr(1234), null);
+    assert.strictEqual(scheduler.parseCronExpr({}), null);
+    assert.strictEqual(scheduler.parseCronExpr([]), null);
+    assert.strictEqual(scheduler.parseCronExpr(true), null);
+  });
+
+  // ─── shouldRunNow ─────────────────────────────────────────────────────────
+
+  await test('shouldRunNow: returns false when cron expression is invalid', () => {
+    assert.strictEqual(scheduler.shouldRunNow({ cron: 'not a cron' }, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({ cron: null }, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({}, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({ cron: '0 2' }, null), false); // 2 fields
+  });
+
+  await test('shouldRunNow: returns false when current time does not match cron', () => {
+    const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime(); // Tuesday 09:00
+    withFixedNow(tuesdayNine, () => {
+      const result = scheduler.shouldRunNow({ cron: '0 9 1' }, null); // Mon-only
+      assert.strictEqual(result, false,
+        'Tuesday 09:00 must not match a Monday-only schedule');
+    });
+  });
+
+  await test('shouldRunNow: returns true when matching cron and lastRunAt is null', () => {
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, null), true);
+    });
+  });
+
+  await test('shouldRunNow: returns true when matching cron and lastRunAt is undefined', () => {
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, undefined), true);
+    });
+  });
+
+  await test('shouldRunNow: ignores an unparseable lastRunAt string and fires', () => {
+    // new Date('not-a-date').getTime() === NaN → guard block skipped.
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, 'not-a-date'), true);
+    });
+  });
+
+  await test('shouldRunNow: returns true when lastRunAt is in a previous calendar minute', () => {
+    const now = new Date(2026, 2, 30, 9, 1, 0).getTime();      // 09:01:00
+    const lastMs = new Date(2026, 2, 30, 9, 0, 30).getTime();  // 09:00:30
+    withFixedNow(now, () => {
+      const result = scheduler.shouldRunNow(
+        { cron: '* * *' },
+        new Date(lastMs).toISOString()
+      );
+      assert.strictEqual(result, true,
+        'a prior-minute lastRunAt must not suppress a fresh fire');
+    });
+  });
+
+  await test('shouldRunNow: returns false when lastRunAt is in the same calendar minute', () => {
+    const now = new Date(2026, 2, 30, 9, 0, 30).getTime();    // 09:00:30
+    const lastMs = new Date(2026, 2, 30, 9, 0, 1).getTime();  // 09:00:01 — same minute
+    withFixedNow(now, () => {
+      const result = scheduler.shouldRunNow(
+        { cron: '* * *' },
+        new Date(lastMs).toISOString()
+      );
+      assert.strictEqual(result, false,
+        'a same-minute lastRunAt must suppress a duplicate fire');
+    });
+  });
+
+  // ─── discoverScheduledWork ───────────────────────────────────────────────
+
+  await test('discoverScheduledWork: returns [] when config.schedules is missing', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({}), []);
+  });
+
+  await test('discoverScheduledWork: returns [] when config.schedules is not an array', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: null }), []);
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: 'oops' }), []);
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: {} }), []);
+  });
+
+  await test('discoverScheduledWork: returns [] when config.schedules is empty', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: [] }), []);
+  });
+
+  await test('discoverScheduledWork: skips schedules missing id, cron, or title', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [
+          { cron: '* * *', title: 'no-id' },
+          { id: 'no-cron', title: 'no-cron' },
+          { id: 'no-title', cron: '* * *' },
+        ],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 0,
+        'all three entries should be skipped — missing required field(s)');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: skips schedules with enabled === false', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-disabled',
+          cron: '* * *',
+          title: 'disabled schedule',
+          enabled: false,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 0, 'enabled:false must skip the schedule');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: enabled=undefined defaults to enabled (strict false check)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-enabled-undef',
+          cron: '* * *',
+          title: 'default-enabled',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1,
+        'enabled:undefined must NOT be treated as disabled — schema default is enabled');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: enabled=null defaults to enabled (only strict false skips)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-enabled-null',
+          cron: '* * *',
+          title: 'null-enabled',
+          enabled: null,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1,
+        'enabled:null must NOT be treated as disabled — only enabled===false skips');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: skips schedules whose cron does not match now', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime();
+      withFixedNow(tuesdayNine, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-mondays-only',
+            cron: '0 9 1',
+            title: 'Mondays only',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 0,
+          'Tuesday 09:00 does not match a Monday-only schedule');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: produces a work item with sane defaults', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-defaults',
+          cron: '* * *',
+          title: 'Do the thing',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1);
+      const wi = work[0];
+      assert.ok(wi.id.startsWith('sched-W-mo5u52v2aabv-defaults-'),
+        `id must be "sched-<scheduleId>-<timestamp>", got: ${wi.id}`);
+      assert.strictEqual(wi.title, 'Do the thing');
+      assert.strictEqual(wi.type, 'implement',  'type must default to "implement"');
+      assert.strictEqual(wi.priority, 'medium', 'priority must default to "medium"');
+      assert.strictEqual(wi.description, 'Do the thing',
+        'description must fall back to title when absent');
+      assert.strictEqual(wi.status, shared.WI_STATUS.PENDING);
+      assert.strictEqual(wi.createdBy, 'scheduler');
+      assert.strictEqual(wi.agent, null);
+      assert.strictEqual(wi.project, null);
+      assert.strictEqual(wi._scheduleId, 'W-mo5u52v2aabv-defaults');
+      assert.ok(wi.created, 'created timestamp must be populated');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: carries over custom type/priority/description/agent/project', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-custom',
+          cron: '* * *',
+          title: 'custom',
+          type: 'test',
+          priority: 'high',
+          description: 'Custom body text',
+          agent: 'ripley',
+          project: 'minions',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1);
+      const wi = work[0];
+      assert.strictEqual(wi.type, 'test');
+      assert.strictEqual(wi.priority, 'high');
+      assert.strictEqual(wi.description, 'Custom body text');
+      assert.strictEqual(wi.agent, 'ripley');
+      assert.strictEqual(wi.project, 'minions');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: legacy string lastRun entry is honored for same-minute dedup', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Pre-seed the OLD format: runs[id] = "<iso>" (a bare string, not an object).
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 0, 30).getTime(); // 09:00:30
+      const sameMinuteIso = new Date(2026, 2, 30, 9, 0, 1).toISOString(); // 09:00:01
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-legacy-string': sameMinuteIso,
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-legacy-string',
+            cron: '* * *',
+            title: 'legacy string format',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 0,
+          'a legacy string-format lastRun in the current minute must dedupe');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: upgrades legacy string entry to object shape on dispatch', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Seed a legacy string entry from a PRIOR calendar minute so it does NOT suppress.
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 5, 30).getTime();          // 09:05:30
+      const priorMinuteIso = new Date(2026, 2, 30, 9, 0, 30).toISOString(); // 09:00:30
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-legacy-upgrade': priorMinuteIso,
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-legacy-upgrade',
+            cron: '* * *',
+            title: 'upgrade me',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1,
+          'prior-minute legacy entry must not suppress — schedule should fire');
+        const runs = JSON.parse(fs.readFileSync(realPath, 'utf8'));
+        const entry = runs['W-mo5u52v2aabv-legacy-upgrade'];
+        assert.ok(entry && typeof entry === 'object',
+          'post-dispatch entry must be an object (upgraded from legacy string)');
+        assert.ok(entry.lastRun, 'lastRun must be populated');
+        assert.strictEqual(entry.lastWorkItemId, work[0].id,
+          'lastWorkItemId must match the dispatched work item id');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: mixed set — fires only the matching, enabled, well-formed schedules', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime();
+      withFixedNow(tuesdayNine, () => {
+        const config = {
+          schedules: [
+            { id: 'W-mo5u52v2aabv-mix-a', cron: '0 9 1', title: 'Mondays' },            // dow mismatch
+            { id: 'W-mo5u52v2aabv-mix-b', cron: '* * *', title: 'always' },             // fires
+            { id: 'W-mo5u52v2aabv-mix-c', cron: '* * *', title: 'off', enabled: false }, // skipped
+            { cron: '* * *', title: 'no id' },                                          // skipped (missing id)
+          ],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1, 'only the "mix-b" schedule should fire');
+        assert.strictEqual(work[0]._scheduleId, 'W-mo5u52v2aabv-mix-b');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: preserves existing object-shape fields on re-write (spread over existing)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Seed an object entry with prior lastResult / lastCompletedAt from a PRIOR minute
+      // — these must survive the dispatch-time write (not be clobbered).
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 5, 30).getTime();           // 09:05:30
+      const priorMinuteIso = new Date(2026, 2, 30, 9, 0, 30).toISOString(); // 09:00:30
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-preserve': {
+          lastRun: priorMinuteIso,
+          lastWorkItemId: 'sched-W-mo5u52v2aabv-preserve-PREVIOUS',
+          lastResult: 'success',
+          lastCompletedAt: priorMinuteIso,
+        },
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-preserve',
+            cron: '* * *',
+            title: 'preserve fields',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1);
+        const runs = JSON.parse(fs.readFileSync(realPath, 'utf8'));
+        const entry = runs['W-mo5u52v2aabv-preserve'];
+        assert.strictEqual(entry.lastResult, 'success',
+          'lastResult must be preserved across dispatch-time rewrite');
+        assert.strictEqual(entry.lastCompletedAt, priorMinuteIso,
+          'lastCompletedAt must be preserved across dispatch-time rewrite');
+        assert.notStrictEqual(entry.lastWorkItemId, 'sched-W-mo5u52v2aabv-preserve-PREVIOUS',
+          'lastWorkItemId must be updated to the new dispatched work item id');
+        assert.strictEqual(entry.lastWorkItemId, work[0].id);
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -12105,6 +12604,7 @@ async function main() {
     await testSchedulerCronParsing();
     await testSchedulerSameMinuteGuard();
     await testSchedulerDispatchTimePersistence();
+    await testSchedulerAdditionalCoverage();
 
     // P-b8c7d6e5: shared imports refactor (no circular requires)
     await testSharedImportsNoCircular();
