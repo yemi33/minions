@@ -5719,6 +5719,624 @@ async function testCooldownSystem() {
   });
 }
 
+// ─── engine/cooldown.js — Behavioral Tests ─────────────────────────────────
+// These exercise the real module (not string-match against source). Each test
+// creates a fresh MINIONS_TEST_DIR sandbox and re-requires cooldown.js so the
+// module-level dispatchCooldowns Map and COOLDOWN_PATH are isolated.
+
+function _freshCooldownModule() {
+  // createTestMinionsDir() already invalidates shared + queries. cooldown.js
+  // isn't in that list, so its module-scoped Map + COOLDOWN_PATH would leak
+  // across tests unless we explicitly bust its cache too.
+  try { delete require.cache[require.resolve('../engine/cooldown')]; } catch {}
+  return require('../engine/cooldown');
+}
+
+async function testCooldownBehavioral() {
+  console.log('\n── engine/cooldown.js — Behavioral ──');
+
+  // ── loadCooldowns ──
+
+  await test('loadCooldowns tolerates a missing cooldowns.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      // File does not exist — should not throw, map stays empty
+      cooldown.loadCooldowns();
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 0,
+        'Missing file should leave dispatchCooldowns empty');
+    } finally { restore(); }
+  });
+
+  await test('loadCooldowns loads entries from disk into the in-memory Map', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const now = Date.now();
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        'key-A': { timestamp: now, failures: 0 },
+        'key-B': { timestamp: now - 1000, failures: 2 },
+      });
+      cooldown.loadCooldowns();
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 2, 'Should load both entries');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('key-A').failures, 0);
+      assert.strictEqual(cooldown.dispatchCooldowns.get('key-B').failures, 2);
+    } finally { restore(); }
+  });
+
+  await test('loadCooldowns prunes entries older than 24 hours', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const now = Date.now();
+      const day = 24 * 60 * 60 * 1000;
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        'fresh': { timestamp: now - 1000, failures: 0 },
+        'stale': { timestamp: now - day - 1000, failures: 0 }, // > 24h old
+        'boundary': { timestamp: now - day + 500, failures: 0 }, // just under 24h
+      });
+      cooldown.loadCooldowns();
+      assert.ok(cooldown.dispatchCooldowns.has('fresh'), 'fresh entry should load');
+      assert.ok(cooldown.dispatchCooldowns.has('boundary'), 'boundary entry (<24h) should load');
+      assert.ok(!cooldown.dispatchCooldowns.has('stale'), 'stale entry (>24h) should be pruned');
+    } finally { restore(); }
+  });
+
+  // ── saveCooldowns (debounced — one write test that waits the full 1100ms) ──
+
+  await test('saveCooldowns round-trips entries to disk (debounced)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      cooldown.setCooldown('persist-me');
+      assert.ok(!fs.existsSync(cooldown.COOLDOWN_PATH),
+        'saveCooldowns is debounced — nothing on disk yet');
+      await new Promise(r => setTimeout(r, 1100)); // wait past 1s debounce
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.ok(saved && saved['persist-me'], 'Entry should be on disk after debounce');
+      assert.strictEqual(typeof saved['persist-me'].timestamp, 'number');
+      assert.strictEqual(saved['persist-me'].failures, 0);
+    } finally { restore(); }
+  });
+
+  await test('saveCooldowns caps pendingContexts at maxPendingContexts (#1167)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const cap = freshShared.ENGINE_DEFAULTS.maxPendingContexts;
+      // Seed the map directly with an oversized pendingContexts array — this
+      // simulates an entry already bloated in memory before saveCooldowns runs.
+      cooldown.dispatchCooldowns.set('bloated', {
+        timestamp: Date.now(),
+        failures: 0,
+        pendingContexts: Array.from({ length: cap + 15 }, (_, i) => `ctx-${i}`),
+      });
+      cooldown.saveCooldowns();
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.strictEqual(saved.bloated.pendingContexts.length, cap,
+        `saveCooldowns should trim pendingContexts to maxPendingContexts (${cap})`);
+      // slice(-cap) keeps the most recent entries — first survivor is index 15
+      assert.strictEqual(saved.bloated.pendingContexts[0], 'ctx-15');
+    } finally { restore(); }
+  });
+
+  await test('saveCooldowns truncates oversized pendingContexts entries (#1167)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const limit = freshShared.ENGINE_DEFAULTS.maxPendingContextEntryBytes;
+      const huge = 'X'.repeat(limit + 1024); // 1 KB over the cap
+      cooldown.dispatchCooldowns.set('huge', {
+        timestamp: Date.now(),
+        failures: 0,
+        pendingContexts: [{ comment: huge, other: 'small' }],
+      });
+      cooldown.saveCooldowns();
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      const entry = saved.huge.pendingContexts[0];
+      assert.ok(entry.comment.length < huge.length,
+        'Oversized string field should be truncated on save');
+      assert.ok(entry.comment.includes('truncated'),
+        'Truncated field should carry a truncation marker so downstream agents know');
+      assert.strictEqual(entry.other, 'small',
+        'Small fields on the same entry should be preserved unchanged');
+    } finally { restore(); }
+  });
+
+  // ── isOnCooldown ──
+
+  await test('isOnCooldown returns false when no entry exists for the key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.isOnCooldown('nobody-home', 60000), false);
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown returns true inside the window, false after expiry (0 failures)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      // Fresh entry — 10s old, 60s window, 0 failures (1x multiplier)
+      cooldown.dispatchCooldowns.set('fresh', { timestamp: now - 10000, failures: 0 });
+      assert.strictEqual(cooldown.isOnCooldown('fresh', 60000), true,
+        '10s < 60s window with 0 failures → still on cooldown');
+      // Expired — 61s old, 60s window
+      cooldown.dispatchCooldowns.set('expired', { timestamp: now - 61000, failures: 0 });
+      assert.strictEqual(cooldown.isOnCooldown('expired', 60000), false,
+        '61s > 60s window with 0 failures → cooldown expired');
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown applies exponential backoff based on failure count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      const cooldownMs = 1000;
+      // 3s old: 3x the 1s base window
+      // - 0 failures → 1x window = 1s → 3s > 1s → false (expired)
+      // - 2 failures → 4x window = 4s → 3s < 4s → true (still on cooldown)
+      cooldown.dispatchCooldowns.set('k0', { timestamp: now - 3000, failures: 0 });
+      cooldown.dispatchCooldowns.set('k2', { timestamp: now - 3000, failures: 2 });
+      assert.strictEqual(cooldown.isOnCooldown('k0', cooldownMs), false,
+        '0 failures: 1x window, 3s > 1s → expired');
+      assert.strictEqual(cooldown.isOnCooldown('k2', cooldownMs), true,
+        '2 failures: 4x window, 3s < 4s → still on cooldown');
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown backoff multiplier caps at 8x even for high failure counts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      // 9s old, 1s base, 20 failures. 2^20 would be huge but cap is 8 → 8s window.
+      // 9s > 8s → should be expired (NOT still on cooldown).
+      cooldown.dispatchCooldowns.set('manyFails', { timestamp: now - 9000, failures: 20 });
+      assert.strictEqual(cooldown.isOnCooldown('manyFails', 1000), false,
+        'Backoff cap of 8x must apply — 9s > 8s window → expired');
+      // 7s old with same 20 failures should still be on cooldown (7s < 8s)
+      cooldown.dispatchCooldowns.set('manyFailsFresh', { timestamp: now - 7000, failures: 20 });
+      assert.strictEqual(cooldown.isOnCooldown('manyFailsFresh', 1000), true,
+        '7s < 8s window (capped) → still on cooldown');
+    } finally { restore(); }
+  });
+
+  // ── setCooldown / setCooldownWithContext ──
+
+  await test('setCooldown writes a new entry with current timestamp and 0 failures', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const before = Date.now();
+      cooldown.setCooldown('new-key');
+      const entry = cooldown.dispatchCooldowns.get('new-key');
+      assert.ok(entry, 'Entry should be present after setCooldown');
+      assert.ok(entry.timestamp >= before, 'Timestamp should be recent');
+      assert.strictEqual(entry.failures, 0, 'New entry should start with 0 failures');
+    } finally { restore(); }
+  });
+
+  await test('setCooldown preserves the existing failures count when re-stamping', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', { timestamp: Date.now() - 5000, failures: 3 });
+      cooldown.setCooldown('k');
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.failures, 3,
+        'setCooldown should carry forward existing failures so backoff is not reset');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext appends context to pendingContexts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { comment: 'first' });
+      cooldown.setCooldownWithContext('k', { comment: 'second' });
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.pendingContexts.length, 2);
+      assert.strictEqual(entry.pendingContexts[0].comment, 'first');
+      assert.strictEqual(entry.pendingContexts[1].comment, 'second');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext ignores null/undefined context', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', null);
+      cooldown.setCooldownWithContext('k', undefined);
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.ok(entry, 'Entry should still be created');
+      assert.deepStrictEqual(entry.pendingContexts, [],
+        'Null/undefined contexts should not pollute pendingContexts');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext caps pendingContexts at maxPendingContexts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const cap = freshShared.ENGINE_DEFAULTS.maxPendingContexts;
+      for (let i = 0; i < cap + 10; i++) {
+        cooldown.setCooldownWithContext('k', { i });
+      }
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.pendingContexts.length, cap,
+        `pendingContexts should be capped at ${cap} entries on append`);
+      // slice(-cap) keeps most recent → first survivor is index 10
+      assert.strictEqual(entry.pendingContexts[0].i, 10,
+        'Oldest entries should be dropped, newest retained');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext truncates oversized string fields before storing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const limit = freshShared.ENGINE_DEFAULTS.maxPendingContextEntryBytes;
+      const huge = 'Y'.repeat(limit + 2048);
+      cooldown.setCooldownWithContext('k', { log: huge, small: 'ok' });
+      const entry = cooldown.dispatchCooldowns.get('k').pendingContexts[0];
+      assert.ok(entry.log.length < huge.length,
+        'Oversized field should be truncated at write time, not deferred to save');
+      assert.ok(entry.log.includes('truncated'), 'Truncation marker should be appended');
+      assert.strictEqual(entry.small, 'ok', 'Small fields untouched');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext preserves existing failures count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', {
+        timestamp: Date.now() - 1000, failures: 2, pendingContexts: [],
+      });
+      cooldown.setCooldownWithContext('k', { comment: 'c' });
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 2,
+        'Failure count should survive context appends');
+    } finally { restore(); }
+  });
+
+  // ── getCoalescedContexts ──
+
+  await test('getCoalescedContexts returns the pendingContexts array', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { a: 1 });
+      cooldown.setCooldownWithContext('k', { a: 2 });
+      const out = cooldown.getCoalescedContexts('k');
+      assert.deepStrictEqual(out, [{ a: 1 }, { a: 2 }]);
+    } finally { restore(); }
+  });
+
+  await test('getCoalescedContexts clears pendingContexts after a non-empty read', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { a: 1 });
+      const first = cooldown.getCoalescedContexts('k');
+      assert.strictEqual(first.length, 1);
+      const second = cooldown.getCoalescedContexts('k');
+      assert.deepStrictEqual(second, [],
+        'Contexts must be cleared after retrieval so they are not re-processed');
+      // And the entry's pendingContexts should now be empty
+      assert.deepStrictEqual(cooldown.dispatchCooldowns.get('k').pendingContexts, []);
+    } finally { restore(); }
+  });
+
+  await test('getCoalescedContexts returns [] for unknown key and does not create an entry', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const out = cooldown.getCoalescedContexts('unknown');
+      assert.deepStrictEqual(out, []);
+      assert.ok(!cooldown.dispatchCooldowns.has('unknown'),
+        'Reading for unknown key should not create a phantom entry');
+    } finally { restore(); }
+  });
+
+  // ── setCooldownFailure ──
+
+  await test('setCooldownFailure increments failures from 0 to 1 for a new key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownFailure('k');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 1);
+    } finally { restore(); }
+  });
+
+  await test('setCooldownFailure accumulates across multiple calls', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownFailure('k');
+      cooldown.setCooldownFailure('k');
+      cooldown.setCooldownFailure('k');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 3);
+    } finally { restore(); }
+  });
+
+  await test('setCooldownFailure resets the timestamp so backoff measures from latest failure', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', { timestamp: Date.now() - 100000, failures: 1 });
+      const before = Date.now();
+      cooldown.setCooldownFailure('k');
+      assert.ok(cooldown.dispatchCooldowns.get('k').timestamp >= before,
+        'Timestamp should be refreshed to now');
+    } finally { restore(); }
+  });
+
+  // ── clearCooldown ──
+
+  await test('clearCooldown returns false when key is absent', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.clearCooldown('absent'), false);
+    } finally { restore(); }
+  });
+
+  await test('clearCooldown removes the entry and returns true when key is present', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldown('k');
+      assert.strictEqual(cooldown.clearCooldown('k'), true);
+      assert.ok(!cooldown.dispatchCooldowns.has('k'),
+        'clearCooldown should actually delete the entry');
+    } finally { restore(); }
+  });
+
+  // ── isAlreadyDispatched ──
+
+  await test('isAlreadyDispatched returns false when dispatch.json has no matching key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'd1', meta: { dispatchKey: 'other-key' } }],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('my-key'), false);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched detects a matching key in the pending queue', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'd1', meta: { dispatchKey: 'match-me' } }],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('match-me'), true);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched detects a matching key in the active queue', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{ id: 'd1', meta: { dispatchKey: 'active-key' } }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('active-key'), true);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched uses a 1-hour window for recently-succeeded dispatches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const now = Date.now();
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [
+          // 30 min ago, success → within 1h window, should match
+          { id: 'd1', result: 'success', completed_at: new Date(now - 30 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'recent-success' } },
+          // 2h ago, success → outside 1h window, should NOT match
+          { id: 'd2', result: 'success', completed_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'old-success' } },
+        ],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('recent-success'), true,
+        'Successful dispatch within 1h should count as already-dispatched');
+      assert.strictEqual(cooldown.isAlreadyDispatched('old-success'), false,
+        'Successful dispatch >1h ago should NOT count — retry is allowed');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched uses a 15-minute window for errored dispatches (#593)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const now = Date.now();
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [
+          // 10 min ago, error → within 15-min window, should match (don't thrash)
+          { id: 'd1', result: 'error', completed_at: new Date(now - 10 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'recent-error' } },
+          // 20 min ago, error → outside 15-min window, should NOT match (retry allowed)
+          { id: 'd2', result: 'error', completed_at: new Date(now - 20 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'old-error' } },
+        ],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('recent-error'), true,
+        'Errored dispatch within 15min should count — prevents rapid retry loops');
+      assert.strictEqual(cooldown.isAlreadyDispatched('old-error'), false,
+        'Errored dispatch >15min ago should NOT count — retry is allowed');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched ignores completed entries with missing completed_at', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [{ id: 'd1', result: 'success', meta: { dispatchKey: 'no-timestamp' } }],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('no-timestamp'), false,
+        'Missing completed_at should not trigger a match — we cannot tell if it is in-window');
+    } finally { restore(); }
+  });
+
+  // ── isBranchActive ──
+
+  await test('isBranchActive returns null for falsy branch input', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.isBranchActive(''), null);
+      assert.strictEqual(cooldown.isBranchActive(null), null);
+      assert.strictEqual(cooldown.isBranchActive(undefined), null);
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive returns null when no active dispatch references the branch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'd1', meta: { branch: 'work/other-branch' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/W-abc123'), null);
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive returns the matching dispatch when branch matches exactly', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'dX', meta: { branch: 'work/W-abc123' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work/W-abc123');
+      assert.ok(hit, 'Should return the conflicting active dispatch, not null');
+      assert.strictEqual(hit.id, 'dX', 'Returned value should be the dispatch record');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive normalizes both sides via sanitizeBranch before comparison', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      // Stored branch has a disallowed character (space) that sanitizeBranch
+      // converts to '-'. The query uses the raw form — both sides normalize,
+      // so they should match.
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'dY', meta: { branch: 'work/weird branch' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work/weird branch');
+      assert.ok(hit, 'Both sides should run through sanitizeBranch, producing equal keys');
+      assert.strictEqual(hit.id, 'dY');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive only looks at active queue (ignores pending and completed)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'dP', meta: { branch: 'work/target' } }],
+        active: [],
+        completed: [{ id: 'dC', meta: { branch: 'work/target' } }],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/target'), null,
+        'Branch locks only care about in-flight work; pending and completed do not block');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive ignores active entries with no branch metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'd1', meta: {} }, // no branch key at all
+          { id: 'd2', meta: { branch: null } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/anything'), null,
+        'Active dispatches without branch metadata should not cause phantom matches');
+    } finally { restore(); }
+  });
+}
+
 // ─── engine.js — resolveAgent Tests ─────────────────────────────────────────
 
 async function testResolveAgent() {
@@ -12543,6 +13161,7 @@ async function main() {
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
+    await testCooldownBehavioral();
     await testDispatchPromptSidecar();
     await testResolveAgent();
     await testTempAgentBudget();
