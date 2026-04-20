@@ -5080,6 +5080,686 @@ async function testPreflightDeep() {
   });
 }
 
+// ─── engine/preflight.js Behavioral Tests ───────────────────────────────────
+//
+// These tests exercise real code paths (failure injection, stubbed process.exit,
+// fake MINIONS_HOME for doctor) rather than matching on source strings. The
+// two suites above are source-string heavy; these cover the actual branches.
+
+async function testPreflightBehavioral() {
+  console.log('\n── engine/preflight.js (behavioral) ──');
+
+  const PREFLIGHT_ABS = require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'));
+
+  // Load fresh each test so env/execSync stubs apply.
+  function freshPreflight() {
+    delete require.cache[PREFLIGHT_ABS];
+    return require(PREFLIGHT_ABS);
+  }
+
+  // Capture console.log/error; also stub process.exit so failure paths don't nuke the runner.
+  function withCapture(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    let result;
+    try { result = fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    return { logs, errs, exits, threw, result };
+  }
+
+  async function withCaptureAsync(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    let result;
+    try { result = await fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    return { logs, errs, exits, threw, result };
+  }
+
+  // Inject an execSync stub by mutating the child_process module exports
+  // BEFORE re-requiring preflight. preflight destructures `execSync` at module
+  // load, so this only takes effect on a fresh require.
+  function withStubbedExecSync(predicateMatcher, stubImpl, fn) {
+    const cp = require('child_process');
+    const orig = cp.execSync;
+    cp.execSync = function stubExec(cmd, opts) {
+      if (predicateMatcher(cmd)) return stubImpl(cmd, opts);
+      return orig.call(this, cmd, opts);
+    };
+    try {
+      return fn();
+    } finally {
+      cp.execSync = orig;
+      delete require.cache[PREFLIGHT_ABS]; // ensure next caller gets un-stubbed execSync
+    }
+  }
+
+  // ── findClaudeBinary: MINIONS_DEBUG debug logging (behavioral) ──
+
+  await test('findClaudeBinary: MINIONS_DEBUG=1 prints "Dropped empty" for each empty path', () => {
+    const origDebug = process.env.MINIONS_DEBUG;
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    process.env.MINIONS_DEBUG = '1';
+    // Force both env-derived path entries to become empty strings (falsy → dropped)
+    delete process.env.npm_config_prefix;
+    delete process.env.APPDATA;
+
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      fresh.findClaudeBinary();
+    });
+
+    try {
+      const dropLogs = cap.logs.filter(l => l.includes('Dropped empty CLI search path'));
+      // npm_config_prefix and APPDATA both unset → 2 empty entries in searchPaths array
+      assert.ok(dropLogs.length >= 2,
+        `Should log at least 2 dropped paths (npm_config_prefix + APPDATA), got ${dropLogs.length}`);
+      assert.ok(!cap.threw, `Should not throw: ${cap.threw && cap.threw.message}`);
+    } finally {
+      if (origDebug !== undefined) process.env.MINIONS_DEBUG = origDebug;
+      else delete process.env.MINIONS_DEBUG;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  await test('findClaudeBinary: MINIONS_DEBUG unset silences dropped-path logging', () => {
+    const origDebug = process.env.MINIONS_DEBUG;
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    delete process.env.MINIONS_DEBUG;
+    delete process.env.npm_config_prefix;
+    delete process.env.APPDATA;
+
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      fresh.findClaudeBinary();
+    });
+
+    try {
+      const dropLogs = cap.logs.filter(l => l.includes('Dropped empty CLI search path'));
+      assert.strictEqual(dropLogs.length, 0,
+        'Should NOT log dropped paths when MINIONS_DEBUG is unset');
+    } finally {
+      if (origDebug !== undefined) process.env.MINIONS_DEBUG = origDebug;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── findClaudeBinary: returns null when binary is completely absent ──
+
+  await test('findClaudeBinary: returns null when all search paths fail and which/npm throw', () => {
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    // Point the env-derived paths at a directory that definitely won't contain cli.js
+    const nowhereDir = createTmpDir();
+    process.env.npm_config_prefix = nowhereDir;
+    process.env.APPDATA = nowhereDir;
+
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && (/where\s+claude/.test(cmd) || /which\s+claude/.test(cmd) || /npm\s+root/.test(cmd)),
+      () => { throw new Error('__mocked_not_found__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.findClaudeBinary();
+      }
+    );
+
+    try {
+      // On most dev machines /usr/local/lib, /opt/homebrew, etc. won't contain cli.js;
+      // on Windows they'll be absent entirely. With which/npm stubbed, result must be null.
+      // Exception: if /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js genuinely
+      // exists on the test host, result would be that path. Guard that as pass too.
+      if (result !== null) {
+        assert.ok(result.endsWith('cli.js'),
+          `Non-null result must be a valid cli.js path; got: ${result}`);
+        assert.ok(result.includes('@anthropic-ai'),
+          'Non-null result must be in @anthropic-ai package tree');
+      } else {
+        assert.strictEqual(result, null);
+      }
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      else delete process.env.APPDATA;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── runPreflight: Git failure path (behavioral via execSync injection) ──
+
+  await test('runPreflight: Git check reports ok=false when git --version throws', () => {
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+      () => { throw new Error('__mocked_git_missing__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.runPreflight();
+      }
+    );
+
+    const gitCheck = result.results.find(r => r.name === 'Git');
+    assert.ok(gitCheck, 'Git check must exist');
+    assert.strictEqual(gitCheck.ok, false, 'Git check should fail when git --version throws');
+    assert.ok(gitCheck.message.includes('not found'), `message should mention not found, got: ${gitCheck.message}`);
+    assert.ok(gitCheck.message.includes('git-scm.com'), 'message should include install URL');
+    assert.strictEqual(result.passed, false, 'passed should be false with failing Git check');
+  });
+
+  await test('runPreflight: Claude CLI failure reports correct message when binary absent', () => {
+    // Point env paths at a dir without cli.js AND stub which/where/npm to throw.
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    const nowhereDir = createTmpDir();
+    process.env.npm_config_prefix = nowhereDir;
+    process.env.APPDATA = nowhereDir;
+
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && (/where\s+claude/.test(cmd) || /which\s+claude/.test(cmd) || /npm\s+root/.test(cmd)),
+      () => { throw new Error('__mocked_not_found__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.runPreflight();
+      }
+    );
+
+    try {
+      const claudeCheck = result.results.find(r => r.name === 'Claude Code CLI');
+      assert.ok(claudeCheck, 'Claude Code CLI check must exist');
+      // If the test host has /usr/local/lib or similar actually containing claude-code,
+      // we'd hit an early return. Guard that.
+      if (claudeCheck.ok === false) {
+        assert.ok(claudeCheck.message.includes('not found'),
+          `message should mention not found, got: ${claudeCheck.message}`);
+        assert.ok(claudeCheck.message.includes('claude.ai/download') || claudeCheck.message.includes('@anthropic-ai/claude-code'),
+          'message should include install instructions');
+        assert.strictEqual(result.passed, false, 'passed=false when Claude CLI missing');
+      }
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      else delete process.env.APPDATA;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── checkOrExit: behavioral exit paths (stubbed process.exit) ──
+
+  await test('checkOrExit: exitOnFail=true calls process.exit(1) when a critical check fails', () => {
+    const cap = withCapture(() => {
+      return withStubbedExecSync(
+        cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+        () => { throw new Error('__mocked_git_missing__'); },
+        () => {
+          const fresh = freshPreflight();
+          fresh.checkOrExit({ exitOnFail: true });
+        }
+      );
+    });
+
+    assert.deepStrictEqual(cap.exits, [1],
+      `Should call process.exit(1) exactly once on failure; got exits=${JSON.stringify(cap.exits)}`);
+    assert.ok(cap.errs.some(l => l.includes('Fix the issues above')),
+      'Should print "Fix the issues above" to stderr before exit');
+  });
+
+  await test('checkOrExit: exitOnFail=true does NOT exit when preflight passes', () => {
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      return fresh.checkOrExit({ exitOnFail: true });
+    });
+
+    // On this dev machine, runPreflight should pass (node/git/claude all present).
+    // If the host lacks any of them, this test degrades to asserting consistent behavior.
+    if (cap.exits.length === 0) {
+      assert.strictEqual(cap.exits.length, 0, 'Should not exit when all checks pass');
+      assert.strictEqual(cap.result, true, 'Should return true when all checks pass');
+    } else {
+      // Environment lacks a prerequisite — not our concern, just assert consistency
+      assert.deepStrictEqual(cap.exits, [1], 'Exit, if any, should be code 1');
+    }
+  });
+
+  await test('checkOrExit: exitOnFail=false returns false on failure without exiting', () => {
+    const cap = withCapture(() => {
+      return withStubbedExecSync(
+        cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+        () => { throw new Error('__mocked_git_missing__'); },
+        () => {
+          const fresh = freshPreflight();
+          return fresh.checkOrExit({ exitOnFail: false });
+        }
+      );
+    });
+
+    assert.strictEqual(cap.exits.length, 0, 'Should NOT call process.exit when exitOnFail=false');
+    assert.strictEqual(cap.result, false, 'Should return false when a check fails');
+    assert.ok(!cap.errs.some(l => l.includes('Fix the issues above')),
+      'Should NOT print "Fix the issues above" when exitOnFail=false');
+  });
+
+  await test('checkOrExit: custom label is passed through to printPreflight', () => {
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      return fresh.checkOrExit({ exitOnFail: false, label: 'Custom-Behavioral-Label-XYZ' });
+    });
+
+    assert.ok(cap.logs.some(l => l.includes('Custom-Behavioral-Label-XYZ')),
+      `Custom label should appear in output; got logs: ${cap.logs.slice(0,5).join('\n')}`);
+  });
+
+  // ── doctor: behavioral tests with fake MINIONS_HOME ──
+
+  // Build a minimal MINIONS_HOME on disk with controllable fields.
+  function setupDoctorHome({
+    engineJs = true,
+    config, // if undefined → no config.json written; if null → written as invalid JSON; else serialized
+    control, // same convention as config
+    playbooks = ['implement.md', 'review.md'],
+  } = {}) {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, 'engine'), { recursive: true });
+    if (engineJs) fs.writeFileSync(path.join(dir, 'engine.js'), '// test fixture');
+    if (config === null) {
+      fs.writeFileSync(path.join(dir, 'config.json'), '{not valid json}');
+    } else if (config !== undefined) {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
+    }
+    if (control === null) {
+      fs.writeFileSync(path.join(dir, 'engine', 'control.json'), '{not valid}');
+    } else if (control !== undefined) {
+      fs.writeFileSync(path.join(dir, 'engine', 'control.json'), JSON.stringify(control));
+    }
+    if (playbooks && playbooks.length > 0) {
+      fs.mkdirSync(path.join(dir, 'playbooks'), { recursive: true });
+      for (const pb of playbooks) fs.writeFileSync(path.join(dir, 'playbooks', pb), '# pb');
+    }
+    return dir;
+  }
+
+  // Lines from printPreflight follow the pattern:
+  //   "  <icon> <name>: <message>"
+  // where icon is ✓ (U+2713), ✗ (U+2717), or !
+  // Using a structured parser against captured logs lets us assert per-check outcomes.
+  function parseResultLine(line) {
+    // Strip leading whitespace, match one icon glyph, capture name: message
+    const m = line.match(/^\s*([\u2713\u2717!])\s+([^:]+):\s*(.*)$/);
+    if (!m) return null;
+    const iconToOk = { '\u2713': true, '\u2717': false, '!': 'warn' };
+    return { ok: iconToOk[m[1]], name: m[2].trim(), message: m[3].trim() };
+  }
+
+  function findCheck(logs, name) {
+    for (const line of logs) {
+      const parsed = parseResultLine(line);
+      if (parsed && parsed.name === name) return parsed;
+    }
+    return null;
+  }
+
+  await test('doctor: returns a Promise resolving to a boolean', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: { role: 'Engineer' } },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => {
+      const fresh = freshPreflight();
+      const p = fresh.doctor(dir);
+      assert.ok(p && typeof p.then === 'function', 'doctor must return a thenable');
+      return await p;
+    });
+    assert.ok(typeof cap.result === 'boolean', `Expected boolean, got ${typeof cap.result}`);
+    assert.ok(!cap.threw, `Should not throw: ${cap.threw && cap.threw.message}`);
+  });
+
+  await test('doctor: reports "Minions installed" OK when engine.js exists', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Minions installed');
+    assert.ok(check, `"Minions installed" row missing from output:\n${cap.logs.join('\n')}`);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes(dir) || check.message.length > 0, 'message should reference home dir');
+  });
+
+  await test('doctor: reports "Minions installed" FAIL when engine.js is missing', async () => {
+    const dir = setupDoctorHome({
+      engineJs: false,
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Minions installed');
+    assert.ok(check, '"Minions installed" row must appear');
+    assert.strictEqual(check.ok, false, 'should fail when engine.js missing');
+    assert.ok(check.message.includes('not found'), `message should say "not found"; got: ${check.message}`);
+    // And doctor should ultimately resolve to false (printPreflight returns false on any ok=false)
+    assert.strictEqual(cap.result, false, 'doctor should return false when any critical check fails');
+  });
+
+  await test('doctor: reports "Config" FAIL when config.json is missing', async () => {
+    const dir = setupDoctorHome({ control: { state: 'stopped' } });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Config');
+    assert.ok(check, '"Config" row must appear when config.json is absent');
+    assert.strictEqual(check.ok, false, 'should fail when config.json missing');
+    assert.ok(check.message.includes('missing or invalid'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false);
+  });
+
+  await test('doctor: reports "Config" FAIL when config.json is malformed', async () => {
+    const dir = setupDoctorHome({ config: null, control: { state: 'stopped' } });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Config');
+    assert.ok(check, '"Config" row must appear when config.json is malformed');
+    assert.strictEqual(check.ok, false);
+  });
+
+  await test('doctor: reports "Projects configured" FAIL with only placeholder projects (YOUR_*)', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'YOUR_PROJECT_NAME', localPath: 'x' }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Projects configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false, 'Placeholder projects should not count');
+    assert.ok(check.message.includes('no projects'), `got: ${check.message}`);
+  });
+
+  await test('doctor: reports per-project FAIL when localPath does not exist', async () => {
+    const bogusPath = path.join(createTmpDir(), 'definitely-does-not-exist');
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'BrokenProj', localPath: bogusPath }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Project "BrokenProj"');
+    assert.ok(check, `Expected per-project row for BrokenProj; logs:\n${cap.logs.join('\n')}`);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('path not found'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false, 'missing project path is critical');
+  });
+
+  await test('doctor: reports "Agents configured" FAIL when config.agents is empty', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: {},
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Agents configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('no agents'), `got: ${check.message}`);
+  });
+
+  await test('doctor: reports "Agents configured" OK with count when agents present', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {}, ripley: {}, lambert: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Agents configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(/3 agent/.test(check.message), `should show "3 agent(s)"; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration OK with client-secret auth (appId + appPassword)', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: { enabled: true, appId: 'abc-123', appPassword: 'secret' },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes('client secret'),
+      `message should identify client-secret auth; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration OK with certificate auth', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: {
+          enabled: true, appId: 'abc-123',
+          certPath: '/fake/cert', privateKeyPath: '/fake/key', tenantId: 'tenant-1',
+        },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes('certificate'),
+      `message should identify cert auth; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration WARN (not fail) when enabled but incomplete', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: { enabled: true, appId: 'abc-123' }, // no secret, no cert
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn', 'Incomplete Teams config should warn, not fail');
+    assert.ok(check.message.includes('missing'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration WARN when teams block absent or disabled', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        // no teams block
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn', 'Disabled/absent Teams → warn only');
+    assert.ok(check.message.includes('disabled'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine WARN when control.json is missing', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      // control omitted
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn');
+    assert.ok(check.message.includes('not started'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine WARN when control.state is "stopped"', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn');
+    assert.ok(check.message.includes('stopped') || check.message.includes('not started'),
+      `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine FAIL when control.state=running but PID is stale', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      // 999999 is extremely unlikely to be a live node.exe on the test machine
+      control: { state: 'running', pid: 999999 },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false, 'Stale PID should fail the engine check');
+    assert.ok(check.message.includes('stale') || check.message.includes('PID'),
+      `got: ${check.message}`);
+    assert.strictEqual(cap.result, false, 'Stale engine is a critical failure');
+  });
+
+  await test('doctor: Playbooks OK with count when playbooks exist', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: ['a.md', 'b.md', 'c.md', 'not-a-playbook.txt'],
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Playbooks');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    // Only .md files should count → 3 (a, b, c), not 4
+    assert.ok(/3 playbooks/.test(check.message), `Expected "3 playbooks", got: ${check.message}`);
+  });
+
+  await test('doctor: Playbooks FAIL when directory is empty or missing', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: [], // no playbooks dir created
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Playbooks');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('no playbooks'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false);
+  });
+
+  await test('doctor: Port 7331 WARN appears only when Dashboard is not reachable', async () => {
+    // We can't force the dashboard on/off reliably in unit tests, but we CAN assert:
+    //   - if Dashboard row is NOT ok:true → Port 7331 row SHOULD be present
+    //   - if Dashboard row IS ok:true → Port 7331 row should NOT be present
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const dash = findCheck(cap.logs, 'Dashboard');
+    const port = findCheck(cap.logs, 'Port 7331');
+    assert.ok(dash, 'Dashboard row must appear');
+    if (dash.ok === true) {
+      assert.strictEqual(port, null, 'Port 7331 row should be absent when Dashboard is running');
+    } else {
+      assert.ok(port, 'Port 7331 row must appear when Dashboard is not running');
+      assert.strictEqual(port.ok, 'warn');
+    }
+  });
+
+  await test('doctor: summary line reflects criticalFails and warnings counts', async () => {
+    // Force one critical failure (no playbooks) and no auth → at least 1 fail + some warns
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: [],
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    // Summary is one of:
+    //   "  All checks passed.\n"
+    //   "  N warning(s), no critical issues.\n"
+    //   "  N issue(s) to fix, M warning(s).\n"
+    const summaryLine = cap.logs.find(l => /issue\(s\) to fix/.test(l) || /warning\(s\)/.test(l) || /All checks passed/.test(l));
+    assert.ok(summaryLine, `Expected a summary line; got logs tail:\n${cap.logs.slice(-5).join('\n')}`);
+    assert.ok(/issue\(s\) to fix/.test(summaryLine),
+      `Summary should report critical issues when playbooks missing; got: ${summaryLine}`);
+  });
+
+  // ── cleanup: make sure subsequent tests get an untainted preflight ──
+  delete require.cache[PREFLIGHT_ABS];
+}
+
 // ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
 
 async function testCleanChildEnv() {
@@ -13153,6 +13833,7 @@ async function main() {
     // New coverage: preflight, shared helpers, engine core, lifecycle, spawn-agent
     await testPreflightModule();
     await testPreflightDeep();
+    await testPreflightBehavioral();
     await testCleanChildEnv();
     await testGitEnv();
     await testProjectPathHelpers();
