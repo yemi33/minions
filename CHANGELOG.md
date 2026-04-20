@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1543 (2026-04-20)
+
+### Other
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit, doctor (#1735)
+
 ## 0.1.1542 (2026-04-19)
 
 ### Other
