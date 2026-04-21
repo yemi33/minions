@@ -3375,6 +3375,284 @@ async function testLlmModule() {
     assert.ok(src.includes('maxLineBufferBytes'), 'Should cap the incremental line buffer');
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
   });
+
+  // ── Export Shape ─────────────────────────────────────────────────────────
+  await test('llm module exports callLLMStreaming', () => {
+    assert.ok(typeof llm.callLLMStreaming === 'function');
+  });
+
+  await test('llm module exports exactly the documented surface', () => {
+    const exported = Object.keys(llm).sort();
+    assert.deepStrictEqual(exported, [
+      'callLLM',
+      'callLLMStreaming',
+      'isResumeSessionStillValid',
+      'trackEngineUsage',
+    ]);
+  });
+
+  // ── trackEngineUsage — persistence, accumulation, guards ─────────────────
+  // These tests run against a temp MINIONS_TEST_DIR so they do not pollute
+  // real engine/metrics.json. The module is re-required after createTestMinionsDir
+  // so shared.MINIONS_DIR / llm.ENGINE_DIR resolve against the temp tree.
+
+  await test('trackEngineUsage initializes a new category with all fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('agent-dispatch', {
+        costUsd: 0.05, inputTokens: 1000, outputTokens: 500,
+        cacheRead: 200, cacheCreation: 100, durationMs: 3000,
+      });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['agent-dispatch'];
+      assert.strictEqual(cat.calls, 1);
+      assert.strictEqual(cat.costUsd, 0.05);
+      assert.strictEqual(cat.inputTokens, 1000);
+      assert.strictEqual(cat.outputTokens, 500);
+      assert.strictEqual(cat.cacheRead, 200);
+      assert.strictEqual(cat.cacheCreation, 100);
+      assert.strictEqual(cat.totalDurationMs, 3000);
+      assert.strictEqual(cat.timedCalls, 1);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage accumulates across multiple calls to the same category', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreation: 5, durationMs: 1000 });
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.02, inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreation: 10, durationMs: 2000 });
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.04, inputTokens: 400, outputTokens: 100, cacheRead: 30, cacheCreation: 15, durationMs: 1500 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['command-center'];
+      assert.strictEqual(cat.calls, 3);
+      assert.ok(Math.abs(cat.costUsd - 0.07) < 1e-9, `costUsd ≈ 0.07 (got ${cat.costUsd})`);
+      assert.strictEqual(cat.inputTokens, 700);
+      assert.strictEqual(cat.outputTokens, 230);
+      assert.strictEqual(cat.cacheRead, 60);
+      assert.strictEqual(cat.cacheCreation, 30);
+      assert.strictEqual(cat.totalDurationMs, 4500);
+      assert.strictEqual(cat.timedCalls, 3);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage treats missing usage fields as 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      // Only costUsd present — all other fields missing
+      freshLlm.trackEngineUsage('doc-chat', { costUsd: 0.001 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['doc-chat'];
+      assert.strictEqual(cat.calls, 1);
+      assert.ok(Math.abs(cat.costUsd - 0.001) < 1e-9);
+      assert.strictEqual(cat.inputTokens, 0);
+      assert.strictEqual(cat.outputTokens, 0);
+      assert.strictEqual(cat.cacheRead, 0);
+      assert.strictEqual(cat.cacheCreation, 0);
+      // No durationMs — totalDurationMs/timedCalls must not be initialized
+      assert.strictEqual(cat.totalDurationMs, undefined);
+      assert.strictEqual(cat.timedCalls, undefined);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage only increments totalDurationMs when durationMs is provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.01, durationMs: 500 });
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.02 }); // no duration
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.03, durationMs: 750 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['consolidation'];
+      assert.strictEqual(cat.calls, 3);
+      assert.strictEqual(cat.totalDurationMs, 1250, '500 + 750 — the untimed call must not contribute');
+      assert.strictEqual(cat.timedCalls, 2, 'timedCalls reflects only calls with durationMs');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage populates _daily bucket keyed by today (YYYY-MM-DD)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('agent-dispatch', {
+        costUsd: 0.5, inputTokens: 5000, outputTokens: 1000, cacheRead: 200,
+      });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const today = new Date().toISOString().slice(0, 10);
+      assert.ok(metrics._daily, '_daily bucket should exist');
+      assert.ok(metrics._daily[today], `today key ${today} should be present`);
+      const daily = metrics._daily[today];
+      assert.ok(Math.abs(daily.costUsd - 0.5) < 1e-9);
+      assert.strictEqual(daily.inputTokens, 5000);
+      assert.strictEqual(daily.outputTokens, 1000);
+      assert.strictEqual(daily.cacheRead, 200);
+      assert.strictEqual(daily.tasks, 0, 'tasks is initialized to 0 by trackEngineUsage (incremented elsewhere)');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage _daily aggregates totals across categories on the same day', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.1, inputTokens: 100, outputTokens: 50, cacheRead: 10 });
+      freshLlm.trackEngineUsage('consolidation',  { costUsd: 0.2, inputTokens: 200, outputTokens: 80, cacheRead: 20 });
+      freshLlm.trackEngineUsage('doc-chat',       { costUsd: 0.3, inputTokens: 300, outputTokens: 90, cacheRead: 30 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const today = new Date().toISOString().slice(0, 10);
+      const daily = metrics._daily[today];
+      assert.ok(Math.abs(daily.costUsd - 0.6) < 1e-9);
+      assert.strictEqual(daily.inputTokens, 600);
+      assert.strictEqual(daily.outputTokens, 220);
+      assert.strictEqual(daily.cacheRead, 60);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage skips categories prefixed with test- or _test', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('test-foo',  { costUsd: 0.5, inputTokens: 100 });
+      freshLlm.trackEngineUsage('_test_bar', { costUsd: 0.5, inputTokens: 100 });
+      freshLlm.trackEngineUsage('_testbaz',  { costUsd: 0.5, inputTokens: 100 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      // metrics.json stays as seed '{}' — no _engine bucket should have been created
+      assert.ok(!metrics._engine, 'no _engine key should exist when only skipped categories were recorded');
+      assert.ok(!metrics._daily,  'no _daily key should exist either');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage does not touch metrics.json when usage is null', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      freshLlm.trackEngineUsage('agent-dispatch', null);
+      freshLlm.trackEngineUsage('agent-dispatch', undefined);
+      assert.ok(!fs.existsSync(metricsPath), 'metrics.json must not be created for null/undefined usage');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage creates metrics.json if it does not yet exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      assert.ok(!fs.existsSync(metricsPath), 'precondition: file absent');
+      freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 50 });
+      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first call');
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(metrics._engine['agent-dispatch'].calls, 1);
+      assert.strictEqual(metrics._engine['agent-dispatch'].inputTokens, 50);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage preserves unrelated categories on each write', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      // Pre-seed metrics.json with an unrelated category we must not clobber
+      const seed = {
+        _engine: {
+          'other-cat': { calls: 7, costUsd: 0.7, inputTokens: 70, outputTokens: 30, cacheRead: 5, cacheCreation: 2 },
+        },
+        _daily: { '1999-01-01': { costUsd: 42, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 } },
+      };
+      fs.writeFileSync(metricsPath, JSON.stringify(seed));
+      freshLlm.trackEngineUsage('new-cat', { costUsd: 0.01, inputTokens: 100 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.deepStrictEqual(metrics._engine['other-cat'], seed._engine['other-cat'],
+        'unrelated category must be preserved byte-for-byte');
+      assert.strictEqual(metrics._engine['new-cat'].calls, 1);
+      assert.strictEqual(metrics._daily['1999-01-01'].costUsd, 42,
+        'unrelated _daily entries must be preserved');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage sequential calls produce exact accumulated totals (atomic writes)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      for (let i = 0; i < 25; i++) {
+        freshLlm.trackEngineUsage('stress-cat', { costUsd: 0.001, inputTokens: 10, outputTokens: 4, cacheRead: 1, cacheCreation: 0 });
+      }
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['stress-cat'];
+      assert.strictEqual(cat.calls, 25, 'every mutateJsonFileLocked call must land — no dropped writes');
+      assert.strictEqual(cat.inputTokens, 250);
+      assert.strictEqual(cat.outputTokens, 100);
+      assert.strictEqual(cat.cacheRead, 25);
+      assert.ok(Math.abs(cat.costUsd - 0.025) < 1e-9);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage swallows errors (e.g. metrics.json replaced by directory) without throwing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      fs.mkdirSync(metricsPath); // force any write attempt to fail
+      // Must not throw — trackEngineUsage catches and logs internally
+      const origErr = console.error;
+      let caught = false;
+      console.error = () => { caught = true; };
+      try {
+        freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 10 });
+      } finally {
+        console.error = origErr;
+      }
+      assert.ok(caught, 'should have logged an error but not thrown');
+      // Clean up our directory stub so restore() can nuke the tmp tree cleanly
+      fs.rmdirSync(metricsPath);
+    } finally { restore(); }
+  });
+
+  // ── isResumeSessionStillValid — additional edge cases ────────────────────
+  await test('isResumeSessionStillValid returns false for undefined result', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid(undefined), false);
+  });
+
+  await test('isResumeSessionStillValid treats empty-string sessionId as invalid and falls through to raw', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '' }), false);
+    // But a falsy sessionId with a live session_id marker in raw is still alive
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '"session_id":"s1"' }), true);
+  });
+
+  await test('isResumeSessionStillValid returns false when raw lacks any session_id marker', () => {
+    const result = {
+      sessionId: null, code: 1, text: '',
+      raw: '{"type":"assistant","message":"partial"}\n{"type":"error","code":"ETIMEDOUT"}',
+      stderr: 'tool timeout',
+    };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
+  });
+
+  await test('isResumeSessionStillValid handles non-string raw values gracefully', () => {
+    // Non-string raw (shape drift / truncation) must not throw — guard uses truthy + .includes
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: false }), false);
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: 0 }), false);
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: null }), false);
+  });
+
+  await test('isResumeSessionStillValid prefers parsed sessionId over raw scan', () => {
+    // If sessionId is truthy, we return true without scanning raw.
+    // Raw lacking the marker should NOT flip the answer.
+    const result = { sessionId: 'sess-live', code: 0, text: 'ok', raw: 'no marker here', stderr: '' };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  });
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
