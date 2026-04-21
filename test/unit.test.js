@@ -12911,6 +12911,341 @@ async function testMeetingsExtendedBehavioral() {
   });
 }
 
+// ─── Meeting — Isolated Gap Tests (W-mo79lrbnkc71) ──────────────────────────
+// Coverage for previously untested behaviors in engine/meeting.js:
+//   - EMPTY_OUTPUT_PATTERNS export shape + match semantics
+//   - advanceMeetingRound: archived meeting returns null; no-change branch
+//   - addMeetingNote: ordering + preserving existing notes
+//   - checkMeetingTimeouts: missing roundStartedAt is a no-op
+//   - collectMeetingFindings: unknown roundName is a silent no-op
+//   - discoverMeetingWork: no work when every participant has submitted
+//   - MEETINGS_DIR + DISPATCH_PATH both honor shared.MINIONS_DIR so
+//     createTestMinionsDir() can cleanly isolate state
+//   - deleteMeeting moves matching active dispatch entries to completed
+//
+// Isolated tests use createTestMinionsDir() so they cannot touch real
+// meetings/ or engine/dispatch.json. Non-isolated tests use unique TEST-GAP-*
+// IDs in the real meetings dir and clean up in finally blocks.
+async function testMeetingsIsolatedGaps() {
+  console.log('\n── meeting.js — Gap Coverage (W-mo79lrbnkc71) ──');
+
+  // Non-isolated: exercise the real module; use unique IDs + finally cleanup.
+  const meetingModReal = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const realMeetingsDir = meetingModReal.MEETINGS_DIR;
+  function cleanupReal(id) {
+    try { fs.unlinkSync(path.join(realMeetingsDir, id + '.json')); } catch {}
+  }
+
+  // ── EMPTY_OUTPUT_PATTERNS ──
+
+  await test('EMPTY_OUTPUT_PATTERNS is a non-empty exported array of strings', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    assert.ok(Array.isArray(patterns), 'should be exported as an array');
+    assert.ok(patterns.length >= 3, 'should cover at least 3 placeholder shapes');
+    assert.ok(patterns.every(p => typeof p === 'string' && p.length > 0),
+      'every entry should be a non-empty string');
+  });
+
+  await test('EMPTY_OUTPUT_PATTERNS covers the three known placeholder outputs', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    for (const expected of ['(no output)', '(no findings)', '(no response)']) {
+      assert.ok(patterns.includes(expected),
+        `EMPTY_OUTPUT_PATTERNS should include "${expected}"`);
+    }
+  });
+
+  await test('EMPTY_OUTPUT_PATTERNS match is exact, not substring (real content passes through)', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    // collectMeetingFindings uses .includes() on the exact trimmed string —
+    // a real finding that merely mentions "no output" in a sentence must NOT
+    // be rejected. Verify the array-level contract (EMPTY_OUTPUT_PATTERNS is
+    // the full set of bad values, not regexes).
+    assert.ok(!patterns.includes('The agent wrote (no output) as an example'),
+      'real findings that quote placeholder strings should not be in the reject set');
+    // And the real behavior: a legitimate finding that includes the
+    // phrase as a substring is accepted by collectMeetingFindings.
+    const testId = 'TEST-GAP-pattern-substring-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Substring', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const output = JSON.stringify({ type: 'result', result: 'Notes about (no output) handling and fallback paths' });
+      meetingModReal.collectMeetingFindings(testId, 'alice', 'investigate', output);
+      const m = meetingModReal.getMeeting(testId);
+      assert.ok(m.findings.alice, 'real finding that merely mentions a placeholder must be recorded');
+      assert.ok(m.findings.alice.content.includes('(no output)'),
+        'full content should be preserved verbatim');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── advanceMeetingRound — archived + no-change branches ──
+
+  await test('advanceMeetingRound returns null for archived meeting', () => {
+    const testId = 'TEST-GAP-adv-arch-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Archived', status: 'archived', round: 3,
+      participants: ['alice'], findings: {}, debate: {},
+      conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
+      roundStartedAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingModReal.advanceMeetingRound(testId);
+      assert.strictEqual(result, null, 'archived meeting should not advance');
+      const onDisk = meetingModReal.getMeeting(testId);
+      assert.strictEqual(onDisk.status, 'archived', 'status must remain archived');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  await test('advanceMeetingRound on unknown status returns meeting unchanged', () => {
+    // The "else return meeting" branch: any status not in the known set
+    // should short-circuit without touching roundStartedAt or round.
+    const testId = 'TEST-GAP-adv-unknown-' + Date.now();
+    const startedAt = new Date(Date.now() - 5000).toISOString();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Unknown Status', status: 'paused', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: startedAt,
+    });
+    try {
+      const result = meetingModReal.advanceMeetingRound(testId);
+      assert.ok(result, 'non-terminal unknown status should still return the meeting');
+      assert.strictEqual(result.status, 'paused', 'status should be untouched');
+      assert.strictEqual(result.round, 1, 'round should be untouched');
+      assert.strictEqual(result.roundStartedAt, startedAt,
+        'roundStartedAt should NOT be rewritten on the no-change branch');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── addMeetingNote — ordering + existing notes preserved ──
+
+  await test('addMeetingNote appends multiple notes in call order', () => {
+    const testId = 'TEST-GAP-note-order-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Note Order', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingModReal.addMeetingNote(testId, 'first');
+      meetingModReal.addMeetingNote(testId, 'second');
+      meetingModReal.addMeetingNote(testId, 'third');
+      const m = meetingModReal.getMeeting(testId);
+      assert.deepStrictEqual(m.humanNotes, ['first', 'second', 'third'],
+        'notes must be persisted in call order');
+      // Every note also appends a transcript entry.
+      const noteEntries = m.transcript.filter(t => t.type === 'note');
+      assert.strictEqual(noteEntries.length, 3, 'each note adds one transcript entry');
+      assert.deepStrictEqual(noteEntries.map(t => t.content),
+        ['first', 'second', 'third'], 'transcript order must match humanNotes order');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  await test('addMeetingNote preserves pre-existing human notes', () => {
+    const testId = 'TEST-GAP-note-preserve-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {},
+      humanNotes: ['seeded-1', 'seeded-2'],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingModReal.addMeetingNote(testId, 'new-note');
+      assert.deepStrictEqual(result.humanNotes,
+        ['seeded-1', 'seeded-2', 'new-note'],
+        'existing humanNotes must be preserved before appending');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
+
+  await test('checkMeetingTimeouts skips meeting with no roundStartedAt', () => {
+    const testId = 'TEST-GAP-tout-noStart-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      // no roundStartedAt intentionally
+    });
+    try {
+      // Tiny timeout — would fire immediately if roundStartedAt existed.
+      meetingModReal.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = meetingModReal.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating',
+        'meeting without roundStartedAt must not be auto-advanced');
+      assert.strictEqual(m.round, 1, 'round must not be bumped');
+      assert.strictEqual((m.transcript || []).length, 0,
+        'no transcript entry should be written for a no-op check');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── collectMeetingFindings — unknown roundName ──
+
+  await test('collectMeetingFindings is a no-op for unknown roundName', () => {
+    const testId = 'TEST-GAP-unknown-round-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const output = JSON.stringify({ type: 'result', result: 'legit content' });
+      // Should not throw and should not mutate findings/debate/conclusion.
+      meetingModReal.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
+      const m = meetingModReal.getMeeting(testId);
+      assert.deepStrictEqual(m.findings, {}, 'findings must not be touched');
+      assert.deepStrictEqual(m.debate, {}, 'debate must not be touched');
+      assert.strictEqual(m.conclusion, null, 'conclusion must not be set');
+      assert.strictEqual(m.status, 'investigating', 'status must not change');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── discoverMeetingWork — no work when all submitted ──
+
+  await test('discoverMeetingWork returns no items when every participant submitted findings', () => {
+    const testId = 'TEST-GAP-inv-all-done-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
+      round: 1, participants: ['alice', 'bob'],
+      findings: {
+        alice: { content: 'A-content' },
+        bob: { content: 'B-content' },
+      },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const config = { agents: { alice: { name: 'A' }, bob: { name: 'B' } } };
+      const work = meetingModReal.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0,
+        'no new work when all participants already submitted — the engine waits for the status advance instead');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── MINIONS_TEST_DIR isolation — MEETINGS_DIR path refactor verification ──
+
+  await test('MEETINGS_DIR resolves relative to shared.MINIONS_DIR (W-mo79lrbnkc71 refactor)', () => {
+    // Before the refactor, MEETINGS_DIR was hardcoded via __dirname and
+    // could not be redirected via MINIONS_TEST_DIR. The refactor routes
+    // it through shared.MINIONS_DIR so createTestMinionsDir() can isolate
+    // meeting state without monkey-patching module internals.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const expected = path.join(process.env.MINIONS_TEST_DIR, 'meetings');
+      assert.strictEqual(meetingMod.MEETINGS_DIR, expected,
+        'MEETINGS_DIR must point inside the test minions dir when MINIONS_TEST_DIR is set');
+    } finally {
+      restore();
+    }
+  });
+
+  // ── deleteMeeting + _killMeetingDispatches integration (isolated) ──
+
+  await test('deleteMeeting removes file AND moves matching active dispatches to completed', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-TEST-KILL-' + Date.now();
+
+      // Seed a meeting file
+      const meeting = {
+        id: meetingId, title: 'Kill Dispatch', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      };
+      meetingMod.saveMeeting(meeting);
+
+      // Seed dispatch.json with:
+      //   - one ACTIVE entry tied to this meeting (must be killed)
+      //   - one ACTIVE entry tied to a DIFFERENT meeting (must survive)
+      //   - one unrelated active entry with no meta.meetingId (must survive)
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      const dispatchBefore = {
+        pending: [],
+        active: [
+          { id: 'd-this', agent: 'alice', meta: { meetingId, dispatchKey: 'k1' } },
+          { id: 'd-other', agent: 'bob', meta: { meetingId: 'MTG-OTHER', dispatchKey: 'k2' } },
+          { id: 'd-bare', agent: 'carol', meta: { dispatchKey: 'k3' } },
+        ],
+        completed: [],
+      };
+      fs.writeFileSync(dispatchPath, JSON.stringify(dispatchBefore));
+
+      const meetingFp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      assert.ok(fs.existsSync(meetingFp), 'precondition: meeting file exists');
+
+      const result = meetingMod.deleteMeeting(meetingId);
+      assert.strictEqual(result, true, 'deleteMeeting returns true on success');
+      assert.ok(!fs.existsSync(meetingFp), 'meeting file should be removed');
+
+      const dispatchAfter = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      // Only the matching active entry should be removed.
+      assert.strictEqual(dispatchAfter.active.length, 2,
+        'only the one active dispatch tied to the deleted meeting should be removed');
+      assert.ok(dispatchAfter.active.find(d => d.id === 'd-other'),
+        'unrelated meeting dispatch must survive');
+      assert.ok(dispatchAfter.active.find(d => d.id === 'd-bare'),
+        'dispatch with no meetingId must survive');
+      // The killed entry should now be in completed with an error result.
+      const completedMatch = dispatchAfter.completed.find(d => d.id === 'd-this');
+      assert.ok(completedMatch, 'killed dispatch should be appended to completed');
+      assert.strictEqual(completedMatch.result, 'error',
+        'killed dispatch should be marked as error');
+      assert.ok(completedMatch.reason && /Meeting ended/.test(completedMatch.reason),
+        'killed dispatch should carry a human-readable reason');
+      assert.ok(completedMatch.completed_at, 'killed dispatch should have completed_at timestamp');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('deleteMeeting returns false (and does not touch dispatch) when meeting file is absent', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      const before = {
+        pending: [],
+        active: [{ id: 'd-unrelated', agent: 'alice', meta: { meetingId: 'MTG-OTHER' } }],
+        completed: [],
+      };
+      fs.writeFileSync(dispatchPath, JSON.stringify(before));
+
+      const result = meetingMod.deleteMeeting('MTG-NONEXISTENT-' + Date.now());
+      assert.strictEqual(result, false,
+        'deleteMeeting must return false when the meeting file does not exist');
+
+      const after = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      assert.deepStrictEqual(after, before,
+        'dispatch.json must be untouched when deleteMeeting targets a missing meeting');
+    } finally {
+      restore();
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -13899,6 +14234,7 @@ async function main() {
     await testMeetings();
     await testMeetingsBehavioral();
     await testMeetingsExtendedBehavioral();
+    await testMeetingsIsolatedGaps();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
