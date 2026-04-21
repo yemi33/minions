@@ -2498,6 +2498,373 @@ async function testContentHashCircuitBreaker() {
     const result = checkDuplicateHash(items);
     assert.strictEqual(result.isDuplicate, true);
   });
+
+  await test('checkDuplicateHash returns false for undefined input', () => {
+    assert.strictEqual(checkDuplicateHash(undefined).isDuplicate, false);
+  });
+
+  await test('checkDuplicateHash returns false for a single item', () => {
+    // One item is never >80% of itself in the circuit-breaker sense (1/1 = 100%
+    // but the check is on >0.8 ratio; however a single item hash comparison is
+    // meaningless — document intended behavior: single item still reports
+    // isDuplicate=true because 1/1 > 0.8, but count/total encode reality.
+    // This test locks in the *current* semantics so regressions surface.
+    const result = checkDuplicateHash([{ name: 'a.md', content: 'only one' }]);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 1);
+    assert.strictEqual(result.total, 1);
+  });
+
+  await test('checkDuplicateHash reports correct count/total for 100% duplicates', () => {
+    const items = [];
+    for (let i = 0; i < 7; i++) items.push({ name: `same-${i}.md`, content: 'identical' });
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 7);
+    assert.strictEqual(result.total, 7);
+    assert.ok(/^[0-9a-f]{64}$/.test(result.hash), 'hash should be 64-char hex SHA-256');
+  });
+
+  await test('checkDuplicateHash treats items missing `content` field as empty', () => {
+    // content === undefined collapses to '' in the hash (defensive: content || '')
+    const items = [];
+    for (let i = 0; i < 5; i++) items.push({ name: `no-content-${i}.md` }); // no content field
+    items.push({ name: 'real.md', content: 'something real' });
+    const result = checkDuplicateHash(items);
+    // 5 items share an empty-content hash → 5/6 = 83% > 80%
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 5);
+  });
+}
+
+// ─── classifyToKnowledgeBase — KB File Writing ─────────────────────────────
+
+async function testClassifyToKnowledgeBase() {
+  console.log('\n── consolidation.js — classifyToKnowledgeBase ──');
+
+  await test('classifyToKnowledgeBase creates all category directories even for empty input', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([]);
+      for (const cat of shared.KB_CATEGORIES) {
+        assert.ok(
+          fs.existsSync(path.join(testDir, 'knowledge', cat)),
+          `category dir knowledge/${cat} should be created`
+        );
+      }
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes review-named notes to reviews/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-feedback.md', content: '# Review findings\n- nit: naming' },
+      ]);
+      const reviewsDir = path.join(testDir, 'knowledge', 'reviews');
+      const entries = fs.readdirSync(reviewsDir);
+      assert.strictEqual(entries.length, 1, 'exactly one file should land in knowledge/reviews/');
+      const written = fs.readFileSync(path.join(reviewsDir, entries[0]), 'utf8');
+      assert.ok(written.startsWith('---\n'), 'KB file must start with YAML frontmatter');
+      assert.ok(written.includes('source: ripley-review-feedback.md'), 'frontmatter must carry source name');
+      assert.ok(written.includes('agent: ripley'), 'frontmatter must extract agent prefix from filename');
+      assert.ok(written.includes('category: reviews'), 'frontmatter must record routed category');
+      assert.ok(written.includes('# Review findings'), 'original content must be preserved after frontmatter');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes build-named notes to build-reports/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'bt-2026-04-21-build.md', content: '# Build pass\nAll green.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'build-reports'));
+      assert.strictEqual(entries.length, 1, 'build-named note should land in build-reports/');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes architecture-keyword content to architecture/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'dallas-notes.md', content: '# Walkthrough\nHere is the data flow through the dispatcher.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'architecture'));
+      assert.strictEqual(entries.length, 1);
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes convention-keyword content to conventions/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ralph-learnings.md', content: '# Style\nrule: always validate inputs before dispatch.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'conventions'));
+      assert.strictEqual(entries.length, 1);
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase falls back to project-notes for generic content', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // Content must avoid all trigger substrings: "review", "pr-", "feedback",
+      // "build", "lint", "architecture", "design doc", "data flow",
+      // "how it works", "convention" (note: "conventional" matches), "pattern",
+      // "always use", "never use", "rule:", "best practice".
+      consolidation.classifyToKnowledgeBase([
+        { name: 'generic-note.md', content: '# Status update\nAll items complete for plan X. Nothing special to report.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1, 'generic content should fall back to project-notes/');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase handles items with null/undefined content without throwing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // Should not crash — content || '' defensiveness in classifier and writer
+      consolidation.classifyToKnowledgeBase([
+        { name: 'null-content.md', content: null },
+        { name: 'no-content-field.md' },
+      ]);
+      // Both items fall through to project-notes (empty content → no keyword matches)
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 2, 'both malformed notes should still be classified');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase derives agent=unknown when filename has no agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        // Name without a word-char prefix followed by '-' — no agent match
+        { name: '.hidden.md', content: '# Orphan\nsome content' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1);
+      assert.ok(entries[0].includes('-unknown-'), 'filename should embed agent=unknown when prefix is unparseable');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase writes kb-checkpoint.json with count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review.md', content: '# Review 1' },
+        { name: 'dallas-notes.md', content: '# Data flow description' },
+      ]);
+      const checkpoint = JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'kb-checkpoint.json'), 'utf8'));
+      assert.strictEqual(typeof checkpoint.count, 'number', 'checkpoint.count must be numeric');
+      assert.ok(checkpoint.count >= 2, 'checkpoint.count should reflect files written across all categories');
+      assert.ok(typeof checkpoint.updatedAt === 'string' && checkpoint.updatedAt.length > 0,
+        'checkpoint.updatedAt must be a non-empty ISO timestamp');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase preserves original content verbatim after frontmatter', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const body = '# Heading\n\nBody line with **markdown** and `code`.\n\n- bullet 1\n- bullet 2';
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-x.md', content: body },
+      ]);
+      const reviewsDir = path.join(testDir, 'knowledge', 'reviews');
+      const entries = fs.readdirSync(reviewsDir);
+      const written = fs.readFileSync(path.join(reviewsDir, entries[0]), 'utf8');
+      assert.ok(written.endsWith(body), 'original body must be appended verbatim after frontmatter');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase uses unique filenames on title collision', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-a.md', content: '# Same Title\nfirst body' },
+        { name: 'ripley-review-b.md', content: '# Same Title\nsecond body' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'reviews'));
+      assert.strictEqual(entries.length, 2, 'colliding title slugs must produce two distinct files, not overwrite');
+      assert.strictEqual(new Set(entries).size, 2, 'filenames must be unique after uniquePath()');
+    } finally { restore(); }
+  });
+}
+
+// ─── consolidateInbox — Behavior ────────────────────────────────────────────
+
+async function testConsolidateInboxBehavior() {
+  console.log('\n── consolidation.js — consolidateInbox behavior ──');
+
+  await test('consolidateInbox no-ops on empty inbox (no spawn, no archive)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // No files in notes/inbox — threshold can't be met
+      consolidation.consolidateInbox({});
+      const inbox = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      const archive = fs.readdirSync(path.join(testDir, 'notes', 'archive'));
+      assert.strictEqual(inbox.length, 0, 'inbox should remain empty');
+      assert.strictEqual(archive.length, 0, 'archive should remain empty — no spawn or archive happened');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox no-ops when file count is below threshold', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Write 2 files; default threshold is 5 (ENGINE_DEFAULTS.inboxConsolidateThreshold)
+      fs.writeFileSync(path.join(inboxDir, 'ripley-a.md'), '# a\nbody');
+      fs.writeFileSync(path.join(inboxDir, 'ripley-b.md'), '# b\nbody');
+      consolidation.consolidateInbox({});
+      // Files should stay put — nothing consolidated
+      assert.deepStrictEqual(
+        fs.readdirSync(inboxDir).sort(),
+        ['ripley-a.md', 'ripley-b.md'],
+        'sub-threshold inbox should be untouched'
+      );
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 0);
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox honors config.engine.inboxConsolidateThreshold override', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Two identical files + very high threshold → no-op
+      fs.writeFileSync(path.join(inboxDir, 'r-a.md'), 'same');
+      fs.writeFileSync(path.join(inboxDir, 'r-b.md'), 'same');
+      consolidation.consolidateInbox({ engine: { inboxConsolidateThreshold: 100 } });
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 2, 'high threshold override must prevent consolidation');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox excludes pinned inbox notes from sweep count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+
+      // 4 pinned + 1 unpinned = 5 total on disk, but only 1 eligible (below threshold=5)
+      for (let i = 0; i < 4; i++) {
+        fs.writeFileSync(path.join(inboxDir, `pinned-${i}.md`), 'pinned body');
+      }
+      fs.writeFileSync(path.join(inboxDir, 'free-note.md'), 'free body');
+
+      freshShared.safeWrite(freshShared.PINNED_ITEMS_PATH, [
+        'notes/inbox/pinned-0.md',
+        'notes/inbox/pinned-1.md',
+        'notes/inbox/pinned-2.md',
+        'notes/inbox/pinned-3.md',
+      ]);
+
+      consolidation.consolidateInbox({});
+
+      // All five should still be in inbox — 1 eligible < 5 threshold
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 5, 'pinned notes must not trigger consolidation');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 0);
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox archives duplicate-content batch via circuit breaker (no LLM spawn)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const archiveDir = path.join(testDir, 'notes', 'archive');
+
+      // 5 identical files — meets default threshold (5) AND 100% duplicate hash
+      // hits the duplicate-archive shortcut inside consolidateWithLLM before any spawn.
+      const body = '# Duplicate\nSame content — plan X complete.';
+      const names = [];
+      for (let i = 0; i < 5; i++) {
+        const n = `ripley-dup-${i}.md`;
+        names.push(n);
+        fs.writeFileSync(path.join(inboxDir, n), body);
+      }
+
+      consolidation.consolidateInbox({});
+
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0, 'inbox must be drained after duplicate circuit breaker');
+      const archived = fs.readdirSync(archiveDir);
+      assert.strictEqual(archived.length, 5, 'all duplicate files must be moved into archive/');
+      // Archived files get a date prefix — base filename must still appear
+      for (const original of names) {
+        assert.ok(
+          archived.some(a => a.endsWith(original)),
+          `archived file for original "${original}" should exist in archive/`
+        );
+      }
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox tolerates non-markdown files in inbox without counting them', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Non-.md files are filtered by getInboxFiles — 4 .md below threshold
+      for (let i = 0; i < 4; i++) {
+        fs.writeFileSync(path.join(inboxDir, `agent-${i}.md`), 'body');
+      }
+      fs.writeFileSync(path.join(inboxDir, 'stray.txt'), 'noise');
+      fs.writeFileSync(path.join(inboxDir, 'junk.log'), 'log line');
+
+      // Should not throw and should not trigger consolidation
+      consolidation.consolidateInbox({});
+
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 6, 'stray non-md files must be left untouched');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox duplicate-archive path accepts files with unreadable agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // 5 identical-body files with unusual names — no agent prefix, dotfile-ish.
+      // Exercises the circuit-breaker archive path, which must not crash on
+      // weird filenames (uses uniquePath + safeRead under the hood).
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(inboxDir, `no-prefix-${i}.md`), 'identical body across all');
+      }
+      consolidation.consolidateInbox({});
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0, 'all files archived even without agent prefix');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 5);
+    } finally { restore(); }
+  });
 }
 
 // ─── Consolidation Force-Reset Race Condition Tests ─────────────────────────
@@ -14404,6 +14771,8 @@ async function main() {
     // consolidation.js tests
     await testConsolidationHelpers();
     await testContentHashCircuitBreaker();
+    await testClassifyToKnowledgeBase();
+    await testConsolidateInboxBehavior();
     await testConsolidationForceResetRace();
 
     // github.js tests
