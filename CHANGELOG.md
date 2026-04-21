@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1545 (2026-04-21)
+
+### Other
+- test(consolidation): add unit tests for checkDuplicateHash, classifyToKnowledgeBase, consolidateInbox (#1739)
+- test(llm): add unit tests for trackEngineUsage and isResumeSessionStillValid (#1738)
+- test(meeting): add unit tests for meeting lifecycle functions (#1736)
+
 ## 0.1.1543 (2026-04-20)
 
 ### Other
