@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1544 (2026-04-21)
+
+### Other
+- test(meeting): add unit tests for meeting lifecycle functions (#1736)
+
 ## 0.1.1543 (2026-04-20)
 
 ### Other
