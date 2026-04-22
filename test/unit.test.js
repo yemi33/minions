@@ -15032,6 +15032,10 @@ async function main() {
     // W-mnyao4dyz8w7: createThrottleTracker factory, adoFetchText throttle, GitHub throttle
     await testCreateThrottleTracker();
     await testAdoFetchTextThrottle();
+
+    // W-moa4gs7dpd7a: ado.js pure helpers — classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle
+    await testAdoPureHelpers();
+
     await testGhThrottle();
     await testGhThrottleEngineGuards();
     await testGhThrottleDashboard();
@@ -26867,6 +26871,277 @@ async function testAdoFetchTextThrottle() {
     }
   });
 
+  delete require.cache[require.resolve(adoPath)];
+}
+
+// ─── W-moa4gs7dpd7a: ado.js pure helper coverage ───────────────────────────
+// Covers classifyBuildStatus, votesToReviewStatus, isAdoAuthError, needsAdoPollRetry,
+// and the throttle state-machine testing helpers (_resetAdoThrottle / _setAdoThrottleForTest).
+
+async function testAdoPureHelpers() {
+  console.log('\n── W-moa4gs7dpd7a: ado.js pure helpers (classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle) ──');
+
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+  const adoSrc = fs.readFileSync(adoPath, 'utf8');
+
+  // Fresh require so module-level state (_adoPollHadAuthFailure, _adoThrottle) starts clean.
+  delete require.cache[require.resolve(adoPath)];
+  const ado = require(adoPath);
+
+  // classifyBuildStatus is a module-local function (not exported). Cover it via a safe eval
+  // of its source so we exercise the real code path rather than mirroring the logic.
+  //
+  // Extract: match the non-greedy body up to the first line-leading closing brace. The
+  // function body is small and self-contained (no closures over module state), so we can
+  // recover it as a `Function` and call it directly.
+  const classifyFnMatch = adoSrc.match(/function classifyBuildStatus\(prBuilds\) \{[\s\S]*?\n\}/m);
+  assert.ok(classifyFnMatch, 'classifyBuildStatus function must exist in ado.js');
+  // Wrap: turn the source into an expression that evaluates to the function.
+  const classifyBuildStatus = new Function(`${classifyFnMatch[0]}; return classifyBuildStatus;`)();
+
+  const votesFnMatch = adoSrc.match(/function votesToReviewStatus\(votes\) \{[\s\S]*?\n\}/m);
+  assert.ok(votesFnMatch, 'votesToReviewStatus function must exist in ado.js');
+  const votesToReviewStatus = new Function(`${votesFnMatch[0]}; return votesToReviewStatus;`)();
+
+  // ── classifyBuildStatus ────────────────────────────────────────────────
+
+  await test('classifyBuildStatus returns "none" for empty array', () => {
+    assert.strictEqual(classifyBuildStatus([]), 'none');
+  });
+
+  await test('classifyBuildStatus returns "passing" when all builds succeeded', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'succeeded' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'passing');
+  });
+
+  await test('classifyBuildStatus treats partiallySucceeded (warnings) as passing', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'partiallySucceeded' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'passing');
+  });
+
+  await test('classifyBuildStatus returns "failing" when any completed build failed', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'failed' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'failing');
+  });
+
+  await test('classifyBuildStatus treats canceled as failed', () => {
+    const builds = [{ status: 'completed', result: 'canceled' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'failing');
+  });
+
+  await test('classifyBuildStatus returns "running" when a build is inProgress', () => {
+    const builds = [{ status: 'inProgress' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when a build is notStarted', () => {
+    const builds = [{ status: 'notStarted' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when one build passed and another is inProgress', () => {
+    // Not all done → cannot be passing/failing yet.
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'inProgress' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when a failed build is mixed with inProgress (not yet terminal)', () => {
+    // hasFailed && !allDone → we do not short-circuit to "failing" until every build is done.
+    const builds = [
+      { status: 'completed', result: 'failed' },
+      { status: 'inProgress' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "none" for completed builds with unknown result fields', () => {
+    // allDone=true, allPassed=false (no succeeded/partiallySucceeded), hasFailed=false → "none".
+    const builds = [{ status: 'completed' /* no result */ }];
+    assert.strictEqual(classifyBuildStatus(builds), 'none');
+  });
+
+  // ── votesToReviewStatus ────────────────────────────────────────────────
+
+  await test('votesToReviewStatus returns "pending" for no votes', () => {
+    assert.strictEqual(votesToReviewStatus([]), 'pending');
+  });
+
+  await test('votesToReviewStatus returns "approved" for single +10 (approved)', () => {
+    assert.strictEqual(votesToReviewStatus([10]), 'approved');
+  });
+
+  await test('votesToReviewStatus returns "approved" for single +5 (approved with suggestions)', () => {
+    // ADO encodes approved-with-suggestions as +5; helper treats any v>=5 as approved.
+    assert.strictEqual(votesToReviewStatus([5]), 'approved');
+  });
+
+  await test('votesToReviewStatus returns "changes-requested" for single -10 (rejected)', () => {
+    assert.strictEqual(votesToReviewStatus([-10]), 'changes-requested');
+  });
+
+  await test('votesToReviewStatus returns "waiting" for single -5 (waiting for author)', () => {
+    assert.strictEqual(votesToReviewStatus([-5]), 'waiting');
+  });
+
+  await test('votesToReviewStatus returns "pending" for all-zero votes', () => {
+    assert.strictEqual(votesToReviewStatus([0, 0, 0]), 'pending');
+  });
+
+  await test('votesToReviewStatus: rejection (-10) overrides approval (+10) per ADO semantics', () => {
+    // Any -10 vote blocks the PR regardless of how many approvals exist.
+    assert.strictEqual(votesToReviewStatus([10, 10, -10]), 'changes-requested');
+  });
+
+  await test('votesToReviewStatus: approval beats a waiting vote when no rejection present', () => {
+    // No -10, but +10 present → approved wins over -5.
+    assert.strictEqual(votesToReviewStatus([10, -5]), 'approved');
+  });
+
+  await test('votesToReviewStatus: mixed approvals resolve to "approved"', () => {
+    assert.strictEqual(votesToReviewStatus([10, 0, 5]), 'approved');
+  });
+
+  await test('votesToReviewStatus: waiting (-5) resolves only when no approval present', () => {
+    assert.strictEqual(votesToReviewStatus([4, -5]), 'waiting');
+  });
+
+  await test('votesToReviewStatus: sub-threshold positive votes (<5) are "pending"', () => {
+    // +5 is the approval threshold; +4 is not enough.
+    assert.strictEqual(votesToReviewStatus([4, 4]), 'pending');
+  });
+
+  // ── isAdoAuthError ─────────────────────────────────────────────────────
+
+  await test('isAdoAuthError returns true for HTTP 401 errors', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 401: Unauthorized')), true);
+  });
+
+  await test('isAdoAuthError returns true for HTTP 403 errors', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 403: Forbidden')), true);
+  });
+
+  await test('isAdoAuthError returns true for HTML auth redirect errors', () => {
+    assert.strictEqual(
+      ado.isAdoAuthError(new Error('ADO returned HTML instead of JSON (likely auth redirect) for https://dev.azure.com/foo')),
+      true,
+    );
+  });
+
+  await test('isAdoAuthError returns false for non-auth HTTP errors (500)', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 500: Internal Server Error')), false);
+  });
+
+  await test('isAdoAuthError returns false for adjacent HTTP status codes (400, 404)', () => {
+    // Neither "400" nor "404" contains "401" or "403" as a substring, so the unanchored
+    // regex /ADO API (401|403)/ rejects them correctly.
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 400: Bad Request')), false);
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 404: Not Found')), false);
+  });
+
+  await test('isAdoAuthError returns false for null/undefined without throwing', () => {
+    assert.strictEqual(ado.isAdoAuthError(null), false);
+    assert.strictEqual(ado.isAdoAuthError(undefined), false);
+  });
+
+  await test('isAdoAuthError returns false for objects with no message', () => {
+    assert.strictEqual(ado.isAdoAuthError({}), false);
+    assert.strictEqual(ado.isAdoAuthError({ message: '' }), false);
+  });
+
+  await test('isAdoAuthError returns false for unrelated error messages', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('Network timeout')), false);
+    assert.strictEqual(ado.isAdoAuthError(new Error('ECONNRESET')), false);
+  });
+
+  // ── needsAdoPollRetry (ADO poll auth-failure flag) ─────────────────────
+  // Only pollPrStatus() flips the flag to true; the getter must start at false and be
+  // idempotent / independent of throttle state.
+
+  await test('needsAdoPollRetry returns false on a freshly-required module', () => {
+    // Fresh require above guarantees module-level _adoPollHadAuthFailure = false.
+    assert.strictEqual(ado.needsAdoPollRetry(), false);
+  });
+
+  await test('needsAdoPollRetry is idempotent (reads do not mutate state)', () => {
+    // Multiple calls must not flip the flag.
+    const first = ado.needsAdoPollRetry();
+    const second = ado.needsAdoPollRetry();
+    const third = ado.needsAdoPollRetry();
+    assert.strictEqual(first, false);
+    assert.strictEqual(second, false);
+    assert.strictEqual(third, false);
+  });
+
+  await test('needsAdoPollRetry is independent of throttle state (different failure modes)', () => {
+    // Throttle (429/503) and auth-failure (401/403) are tracked separately.
+    try {
+      ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 3, backoffMs: 240000 });
+      assert.strictEqual(ado.isAdoThrottled(), true, 'precondition: throttle flag set');
+      assert.strictEqual(ado.needsAdoPollRetry(), false,
+        'throttle state must NOT leak into needsAdoPollRetry');
+    } finally {
+      ado._resetAdoThrottle();
+    }
+  });
+
+  // ── _resetAdoThrottle / _setAdoThrottleForTest state machine ───────────
+
+  await test('_resetAdoThrottle returns tracker to its initial (not throttled) state', () => {
+    // Force a non-initial state, then reset.
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 5, backoffMs: 480000 });
+    assert.strictEqual(ado.isAdoThrottled(), true, 'precondition: throttle flag is set');
+    ado._resetAdoThrottle();
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, false, 'reset must clear throttled');
+    assert.strictEqual(state.consecutiveHits, 0, 'reset must clear consecutiveHits');
+    // retryAfter is reset to 0; isThrottled() treats Date.now() >= 0 as not-throttled anyway.
+    assert.strictEqual(state.retryAfter, 0, 'reset must zero retryAfter');
+  });
+
+  await test('_setAdoThrottleForTest + getAdoThrottleState: set-then-read roundtrips', () => {
+    ado._resetAdoThrottle();
+    const future = Date.now() + 120000;
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: future, consecutiveHits: 2, backoffMs: 120000 });
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, true, 'set throttled should round-trip');
+    assert.strictEqual(state.retryAfter, future, 'set retryAfter should round-trip');
+    assert.strictEqual(state.consecutiveHits, 2, 'set consecutiveHits should round-trip');
+    ado._resetAdoThrottle();
+  });
+
+  await test('_setAdoThrottleForTest partial overrides preserve un-named fields', () => {
+    // Start with a known state, apply a partial override, and assert the untouched field survives.
+    ado._resetAdoThrottle();
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 1, backoffMs: 60000 });
+    ado._setAdoThrottleForTest({ consecutiveHits: 7 }); // only override consecutiveHits
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.consecutiveHits, 7, 'partial override should update consecutiveHits');
+    assert.strictEqual(state.throttled, true, 'partial override must not reset other fields');
+    ado._resetAdoThrottle();
+  });
+
+  await test('_resetAdoThrottle is idempotent (safe to call twice)', () => {
+    ado._resetAdoThrottle();
+    ado._resetAdoThrottle();
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, false);
+    assert.strictEqual(state.consecutiveHits, 0);
+  });
+
+  // Final teardown — leave global module state clean for later test functions.
+  ado._resetAdoThrottle();
   delete require.cache[require.resolve(adoPath)];
 }
 
