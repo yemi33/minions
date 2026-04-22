@@ -791,10 +791,14 @@ module.exports = {
   isGhThrottled,
   getGhThrottleState,
   // Exported for testing
+  isGitHub,
+  getRepoSlug,
   isSlugInBackoff,
   recordSlugFailure,
   resetSlugBackoff,
   _ghPollBackoff,
   _ghThrottle, // exported for testing
   GH_MAX_BUFFER, // exported for testing
+  GH_POLL_BACKOFF_BASE_MS, // exported for testing
+  GH_POLL_BACKOFF_MAX_MS, // exported for testing
 };
