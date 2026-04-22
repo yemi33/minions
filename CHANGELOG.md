@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1547 (2026-04-22)
+
+### Other
+- test(ado): add unit tests for classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle helpers (#1743)
+- test(github): add unit tests for isGitHub, getRepoSlug, slug backoff helpers (#1742)
+
 ## 0.1.1544 (2026-04-21)
 
 ### Other
