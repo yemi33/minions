@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1546 (2026-04-22)
+
+### Other
+- test(github): add unit tests for isGitHub, getRepoSlug, slug backoff helpers (#1742)
+
 ## 0.1.1544 (2026-04-21)
 
 ### Other
