@@ -15962,6 +15962,184 @@ async function testPrDuplicateRaceFix() {
     assert.ok(src.includes('GH_POLL_BACKOFF_MAX_MS'), 'must use named constant for max backoff');
   });
 
+  // ── github.js isGitHub() detection ──
+
+  await test('github.js isGitHub exported as function', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(typeof gh.isGitHub, 'function', 'isGitHub must be exported as a function');
+  });
+
+  await test('github.js isGitHub returns true for repoHost="github"', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: 'github' }), true);
+  });
+
+  await test('github.js isGitHub returns false for repoHost="ado"', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: 'ado' }), false);
+  });
+
+  await test('github.js isGitHub returns false when repoHost missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P' }), false, 'missing repoHost should not match');
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: '' }), false, 'empty repoHost should not match');
+  });
+
+  await test('github.js isGitHub handles null/undefined project safely', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Uses optional chaining — must not throw on nullish input
+    assert.strictEqual(gh.isGitHub(null), false);
+    assert.strictEqual(gh.isGitHub(undefined), false);
+  });
+
+  await test('github.js isGitHub is case-sensitive ("GitHub" ≠ "github")', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Lowercase 'github' is the canonical value — uppercase variants should not match
+    assert.strictEqual(gh.isGitHub({ repoHost: 'GitHub' }), false);
+    assert.strictEqual(gh.isGitHub({ repoHost: 'GITHUB' }), false);
+  });
+
+  // ── github.js getRepoSlug() derivation ──
+
+  await test('github.js getRepoSlug exported as function', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(typeof gh.getRepoSlug, 'function', 'getRepoSlug must be exported as a function');
+  });
+
+  await test('github.js getRepoSlug returns "adoOrg/repoName" when both present', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const slug = gh.getRepoSlug({ adoOrg: 'x3-design', repoName: 'Bebop_Workspaces' });
+    assert.strictEqual(slug, 'x3-design/Bebop_Workspaces');
+  });
+
+  await test('github.js getRepoSlug returns null when adoOrg missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({ repoName: 'some-repo' }), null);
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: '', repoName: 'some-repo' }), null);
+  });
+
+  await test('github.js getRepoSlug returns null when repoName missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org' }), null);
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org', repoName: '' }), null);
+  });
+
+  await test('github.js getRepoSlug returns null when both fields missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({}), null);
+    assert.strictEqual(gh.getRepoSlug({ name: 'P', repoHost: 'github' }), null);
+  });
+
+  await test('github.js getRepoSlug preserves hyphens, underscores, and dots in slug', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // getRepoSlug is pure string concat — it must not mangle valid GitHub characters
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org', repoName: 'my.repo_name' }), 'my-org/my.repo_name');
+  });
+
+  // ── github.js expanded backoff state machine ──
+
+  await test('github.js isSlugInBackoff returns false after backoffUntil has elapsed', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-expired';
+    // Seed an entry whose backoffUntil is already in the past — simulates time passing
+    gh._ghPollBackoff.set(testSlug, { failures: 3, backoffUntil: Date.now() - 1000 });
+    assert.strictEqual(gh.isSlugInBackoff(testSlug), false, 'expired backoff should no longer block polling');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js recordSlugFailure caps backoff at GH_POLL_BACKOFF_MAX_MS', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-cap';
+    gh._ghPollBackoff.delete(testSlug);
+    // 2min base, doubling — 10 failures would be 2min * 2^9 = 1024 min; must cap at 30 min
+    for (let i = 0; i < 10; i++) gh.recordSlugFailure(testSlug);
+    const entry = gh._ghPollBackoff.get(testSlug);
+    assert.strictEqual(entry.failures, 10, 'failure counter should still accumulate past the cap');
+    const remaining = entry.backoffUntil - Date.now();
+    // Allow small slop for elapsed time between set and read
+    assert.ok(remaining <= gh.GH_POLL_BACKOFF_MAX_MS, `remaining ${remaining}ms must not exceed cap ${gh.GH_POLL_BACKOFF_MAX_MS}ms`);
+    assert.ok(remaining > gh.GH_POLL_BACKOFF_MAX_MS - 5000, `remaining ${remaining}ms should be near the cap (within 5s slop)`);
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js backoff state is isolated per-slug', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const slugA = '_test/backoff-isolated-a';
+    const slugB = '_test/backoff-isolated-b';
+    gh._ghPollBackoff.delete(slugA);
+    gh._ghPollBackoff.delete(slugB);
+    // Fail slugA three times
+    gh.recordSlugFailure(slugA);
+    gh.recordSlugFailure(slugA);
+    gh.recordSlugFailure(slugA);
+    // slugB untouched
+    assert.strictEqual(gh.isSlugInBackoff(slugA), true, 'slugA should be in backoff');
+    assert.strictEqual(gh.isSlugInBackoff(slugB), false, 'slugB must NOT inherit slugA backoff');
+    assert.strictEqual(gh._ghPollBackoff.get(slugA).failures, 3);
+    assert.strictEqual(gh._ghPollBackoff.has(slugB), false);
+    // Reset slugA must not affect slugB — the opposite invariant
+    gh.recordSlugFailure(slugB);
+    gh.resetSlugBackoff(slugA);
+    assert.strictEqual(gh._ghPollBackoff.has(slugA), false, 'slugA cleared');
+    assert.strictEqual(gh.isSlugInBackoff(slugB), true, 'slugB backoff survives slugA reset');
+    gh._ghPollBackoff.delete(slugB); // cleanup
+  });
+
+  await test('github.js resetSlugBackoff on unknown slug is a no-op', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Must not throw, and must leave the map unchanged
+    const sizeBefore = gh._ghPollBackoff.size;
+    gh.resetSlugBackoff('_test/never-failed');
+    assert.strictEqual(gh._ghPollBackoff.size, sizeBefore, 'unknown slug should not mutate the map');
+  });
+
+  await test('github.js resetSlugBackoff + recordSlugFailure restarts counter from 1', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-restart';
+    gh._ghPollBackoff.delete(testSlug);
+    gh.recordSlugFailure(testSlug);
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh._ghPollBackoff.get(testSlug).failures, 2);
+    gh.resetSlugBackoff(testSlug);
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh._ghPollBackoff.get(testSlug).failures, 1, 'post-reset failure should start fresh');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js recordSlugFailure first backoff equals GH_POLL_BACKOFF_BASE_MS', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-base';
+    gh._ghPollBackoff.delete(testSlug);
+    const before = Date.now();
+    gh.recordSlugFailure(testSlug);
+    const entry = gh._ghPollBackoff.get(testSlug);
+    const remaining = entry.backoffUntil - before;
+    // Formula: base * 2^(failures-1) = base * 1 on first failure
+    assert.ok(Math.abs(remaining - gh.GH_POLL_BACKOFF_BASE_MS) < 500,
+      `first backoff (${remaining}ms) should match base (${gh.GH_POLL_BACKOFF_BASE_MS}ms) within 500ms slop`);
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js backoff doubles on each consecutive failure until cap', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-doubles';
+    gh._ghPollBackoff.delete(testSlug);
+    const durations = [];
+    for (let i = 0; i < 4; i++) {
+      const before = Date.now();
+      gh.recordSlugFailure(testSlug);
+      durations.push(gh._ghPollBackoff.get(testSlug).backoffUntil - before);
+    }
+    // Each subsequent duration should be ~2× the prior one (doubling) while below the cap
+    for (let i = 1; i < durations.length; i++) {
+      const ratio = durations[i] / durations[i - 1];
+      // Allow 1.5×–2.5× because Date.now() advances between calls
+      assert.ok(ratio > 1.5 && ratio < 2.5,
+        `backoff #${i + 1} (${durations[i]}ms) should ~double #${i} (${durations[i - 1]}ms); ratio=${ratio.toFixed(2)}`);
+    }
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
   await test('ado.js reconcilePrs branch regex matches all work item ID prefixes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
     const reconcileFn = src.match(/async function reconcilePrs[\s\S]*?^}/m);
