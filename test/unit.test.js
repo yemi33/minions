@@ -9825,6 +9825,614 @@ async function testCheckPlanCompletionIdempotency() {
   restore();
 }
 
+// ─── lifecycle.js — Uncovered Functions (W-mobjwgrahkbb) ─────────────────────
+// Coverage for cleanupPlanWorktrees, updateAgentHistory,
+// createReviewFeedbackForAuthor, checkForLearnings, updatePrAfterFix.
+
+async function testLifecycleUncoveredFns() {
+  console.log('\n── lifecycle.js — Uncovered Functions (W-mobjwgrahkbb) ──');
+
+  // Helper to spy on console.log (shared.log routes through console.log).
+  function withConsoleCapture(fn) {
+    const orig = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.map(String).join(' ')); };
+    try { fn(lines); } finally { console.log = orig; }
+    return lines;
+  }
+
+  // ───────────── cleanupPlanWorktrees ─────────────
+
+  await test('cleanupPlanWorktrees: no-op when no branch slugs can be collected', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      // No plan, no work items, no projects → nothing to remove, no throw.
+      const calls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (...args) => { calls.push(args); return true; };
+      try {
+        lifecycle.cleanupPlanWorktrees('missing-plan.json', null, [], { engine: {}, agents: {}, projects: [] });
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.strictEqual(calls.length, 0, 'removeWorktree must not be called when branchSlugs is empty');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: silently skips when worktree root does not exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const projectRoot = createTmpDir();
+      const project = { name: 'wtproj-missing', localPath: projectRoot, mainBranch: 'main' };
+      // worktreeRoot points at a dir that doesn't exist
+      const nonexistent = path.join(createTmpDir(), 'worktrees-that-do-not-exist');
+      const config = { projects: [project], agents: {}, engine: { worktreeRoot: nonexistent } };
+
+      // Seed a work item so branchSlugs is non-empty
+      const projStateDir = path.join(testMinionsDir, 'projects', 'wtproj-missing');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-001', sourcePlan: 'plan-missing.json', branch: 'work/CPW-001', status: 'done' },
+      ]);
+
+      const calls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (...args) => { calls.push(args); return true; };
+      try {
+        lifecycle.cleanupPlanWorktrees('plan-missing.json', { feature_branch: 'feat/x' }, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.strictEqual(calls.length, 0, 'removeWorktree must not be called when worktreeRoot is absent');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: removes only matching dirs; leaves unrelated ones alone', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const projectRoot = createTmpDir();
+      const wtRoot = path.join(createTmpDir(), 'worktrees');
+      fs.mkdirSync(wtRoot, { recursive: true });
+
+      // Create worktree dirs:
+      //   matching: contains work item id, feature_branch slug, or PR branch slug
+      //   not-matching: unrelated-branch-xyz
+      const matchIdDir = path.join(wtRoot, 'CPW-002-abc');
+      const matchFeatureBranchDir = path.join(wtRoot, 'big-thing-xyz-runner');
+      const matchPrBranchDir = path.join(wtRoot, 'work-cpw-003-def');
+      const unrelatedDir = path.join(wtRoot, 'some-other-thing');
+      for (const d of [matchIdDir, matchFeatureBranchDir, matchPrBranchDir, unrelatedDir]) {
+        fs.mkdirSync(d, { recursive: true });
+      }
+
+      const project = { name: 'wtproj-match', localPath: projectRoot, mainBranch: 'main' };
+      const config = {
+        projects: [project], agents: {},
+        engine: { worktreeRoot: wtRoot },
+      };
+
+      // Seed work items (one matched by id, one matched by PR below)
+      const projStateDir = path.join(testMinionsDir, 'projects', 'wtproj-match');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-002', sourcePlan: 'plan-cpw.json', status: 'done' },
+        { id: 'CPW-003', sourcePlan: 'plan-cpw.json', status: 'done' },
+      ]);
+
+      // Seed PR file: one PR whose prdItems references CPW-003, branch "work/CPW-003-def"
+      const prId = 'github:test/repo#42';
+      sharedIsolated.safeWrite(path.join(projStateDir, 'pull-requests.json'), [
+        { id: prId, url: 'https://github.com/test/repo/pull/42', prNumber: 42,
+          branch: 'work/CPW-003-def', status: 'active', prdItems: ['CPW-003'] },
+      ]);
+
+      // feature_branch is a single-segment branch name — cleanup does substring match
+      // on single-level worktree dir names (readdirSync), so slashes won't match.
+      const plan = { feature_branch: 'big-thing-xyz' };
+
+      const removeCalls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (wtPath, root, rootArg) => {
+        removeCalls.push(path.basename(wtPath));
+        return true;
+      };
+      try {
+        lifecycle.cleanupPlanWorktrees('plan-cpw.json', plan, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+
+      // All three matching dirs should be removed; unrelated should not.
+      assert.ok(removeCalls.includes('CPW-002-abc'),
+        `expected CPW-002-abc removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(removeCalls.includes('big-thing-xyz-runner'),
+        `expected feature_branch dir removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(removeCalls.includes('work-cpw-003-def'),
+        `expected PR-branch dir removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(!removeCalls.includes('some-other-thing'),
+        'unrelated worktree must not be removed');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: swallows per-project PR read errors and keeps going', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const wtRoot = path.join(createTmpDir(), 'wts');
+      fs.mkdirSync(wtRoot, { recursive: true });
+      const matchDir = path.join(wtRoot, 'CPW-404');
+      fs.mkdirSync(matchDir, { recursive: true });
+
+      const project = { name: 'pr-read-fails', localPath: createTmpDir(), mainBranch: 'main' };
+      const config = { projects: [project], agents: {}, engine: { worktreeRoot: wtRoot } };
+
+      const projStateDir = path.join(testMinionsDir, 'projects', 'pr-read-fails');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-404', sourcePlan: 'plan-z.json', status: 'done' },
+      ]);
+      // Corrupt pull-requests.json so the inner try/catch swallows the failure
+      fs.writeFileSync(path.join(projStateDir, 'pull-requests.json'), '{not valid json');
+
+      const removeCalls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (wtPath) => { removeCalls.push(path.basename(wtPath)); return true; };
+      try {
+        // Should not throw even with corrupt PR file; still cleans by work-item id
+        lifecycle.cleanupPlanWorktrees('plan-z.json', null, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.ok(removeCalls.includes('CPW-404'),
+        `should still remove WI-id-matched worktree; got: ${removeCalls.join(', ')}`);
+    } finally { restore(); }
+  });
+
+  // ───────────── updateAgentHistory ─────────────
+
+  await test('updateAgentHistory: creates new history.md with default header and entry', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-agent', 'history.md');
+      assert.ok(!fs.existsSync(histPath), 'pre-condition: history.md should not exist');
+
+      const dispatchItem = {
+        id: 'D-uah-1',
+        task: 'Ship feature',
+        type: 'implement',
+        meta: { project: { name: 'ProjA' }, branch: 'work/UAH-1' },
+      };
+      lifecycle.updateAgentHistory('uah-agent', dispatchItem, 'success');
+
+      assert.ok(fs.existsSync(histPath), 'history.md must be created by safeWrite (auto-mkdir)');
+      const body = fs.readFileSync(histPath, 'utf8');
+      assert.ok(body.startsWith('# Agent History'), 'should keep the default header');
+      assert.ok(body.includes('— success'), 'entry must include the result tag');
+      assert.ok(body.includes('- **Task:** Ship feature'), 'entry must include task');
+      assert.ok(body.includes('- **Type:** implement'), 'entry must include type');
+      assert.ok(body.includes('- **Project:** ProjA'), 'entry must include project name');
+      assert.ok(body.includes('- **Branch:** work/UAH-1'), 'entry must include branch');
+      assert.ok(body.includes('- **Dispatch ID:** D-uah-1'), 'entry must include dispatch id');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: prepends new entries above old ones (newest first)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-order', 'history.md');
+
+      lifecycle.updateAgentHistory('uah-order', {
+        id: 'D-first', task: 'First', type: 'implement', meta: {},
+      }, 'success');
+      lifecycle.updateAgentHistory('uah-order', {
+        id: 'D-second', task: 'Second', type: 'review', meta: {},
+      }, 'success');
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      const firstIdx = body.indexOf('D-first');
+      const secondIdx = body.indexOf('D-second');
+      assert.ok(firstIdx > 0 && secondIdx > 0, 'both entries must be present');
+      assert.ok(secondIdx < firstIdx, 'newest entry must appear before older entry');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: uses fallbacks "central" / "none" when meta is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-fallback', 'history.md');
+
+      lifecycle.updateAgentHistory('uah-fallback', {
+        id: 'D-no-meta', task: 'No meta', type: 'ask', meta: {}, // no project, no branch
+      }, 'error');
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      assert.ok(body.includes('- **Project:** central'), 'missing meta.project.name should render "central"');
+      assert.ok(body.includes('- **Branch:** none'), 'missing meta.branch should render "none"');
+      assert.ok(body.includes('— error'), 'non-success result must still be tagged');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: trims history to 20 entries (ring buffer)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-ring', 'history.md');
+
+      for (let i = 1; i <= 25; i++) {
+        lifecycle.updateAgentHistory('uah-ring', {
+          id: `D-ring-${i}`, task: `Task ${i}`, type: 'implement', meta: {},
+        }, 'success');
+      }
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      const entries = body.split('### ').filter(Boolean);
+      // entries[0] is the header ("# Agent History\n\n"), the rest are entries.
+      const entryCount = entries.length - 1;
+      assert.ok(entryCount <= 20,
+        `history must trim to <=20 entries; found ${entryCount}`);
+      // Newest (D-ring-25) must be present; oldest ones (D-ring-1..5) must be gone.
+      assert.ok(body.includes('D-ring-25'), 'newest entry must be retained');
+      assert.ok(!body.includes('D-ring-1\n') && !body.includes('D-ring-2\n'),
+        'oldest entries must be trimmed out of the ring buffer');
+    } finally { restore(); }
+  });
+
+  // ───────────── createReviewFeedbackForAuthor ─────────────
+
+  await test('createReviewFeedbackForAuthor: no-op when pr is null or missing id', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const before = fs.readdirSync(inboxDir).length;
+
+      lifecycle.createReviewFeedbackForAuthor('ripley', null, { agents: { dallas: { name: 'Dallas' } } });
+      lifecycle.createReviewFeedbackForAuthor('ripley', { }, { agents: { dallas: { name: 'Dallas' } } });
+      lifecycle.createReviewFeedbackForAuthor('ripley', { id: 'X' /* no agent */ }, { agents: { dallas: { name: 'Dallas' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'inbox must be untouched when PR is invalid or has no author agent');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: no-op when author not in config.agents', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const before = fs.readdirSync(inboxDir).length;
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:o/r#1', agent: 'nobody' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'unknown author agent must be silently skipped');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: no-op when reviewer has no inbox files today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      // No inbox files at all → reviewFiles empty → early return
+      const before = fs.readdirSync(inboxDir).length;
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:o/r#2', agent: 'dallas', title: 'A PR' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'no reviewer inbox files → no feedback file written');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: writes feedback file with expected content', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      // Seed a reviewer inbox note so it'll be picked up by the date+agent filter
+      const reviewerNote = path.join(inboxDir, `ripley-review-notes-${today}.md`);
+      fs.writeFileSync(reviewerNote, '# Ripley review findings\n\nFound a race in dispatch.');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#999', agent: 'dallas', title: 'fix: race' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write a feedback-<author>-from-<reviewer>-*.md file to inbox');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('# Review Feedback for Dallas'), 'should address author by display name');
+      assert.ok(body.includes('github:yemi33/minions#999'), 'should reference the PR id');
+      assert.ok(body.includes('fix: race'), 'should include PR title when present');
+      assert.ok(body.includes('Reviewer:') && body.includes('Ripley'), 'should name the reviewer');
+      assert.ok(body.includes('Found a race in dispatch'), 'should inline the reviewer inbox content');
+      assert.ok(body.includes('Action Required'), 'should include the Action Required section');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: filename includes PR slug and date for dedup', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-r-${today}.md`), 'content');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'gh-12345', agent: 'dallas' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'feedback file must exist');
+      assert.ok(feedback.includes('gh-12345'), 'filename must include sluggified PR id');
+      assert.ok(feedback.includes(today), 'filename must include today\'s date');
+    } finally { restore(); }
+  });
+
+  // ───────────── checkForLearnings ─────────────
+
+  await test('checkForLearnings: warns when agent wrote no learnings today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('nolearn-agent', { name: 'NoLearn' }, 'some task');
+      });
+      assert.ok(logs.some(l => l.includes("didn't write learnings")),
+        `expected warn log about missing learnings; got: ${logs.join(' | ')}`);
+      assert.ok(logs.some(l => l.includes('NoLearn')),
+        'should use the display name from agentInfo.name');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: logs info count when agent did write files today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const today = new Date().toISOString().slice(0, 10);
+
+      fs.writeFileSync(path.join(inboxDir, `learn-agent-findings-${today}.md`), 'a');
+      fs.writeFileSync(path.join(inboxDir, `learn-agent-more-${today}.md`), 'b');
+
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('learn-agent', { name: 'Learner' }, 'task');
+      });
+      const countLog = logs.find(l => /wrote\s+(\d+)\s+finding/.test(l));
+      assert.ok(countLog, `expected "wrote N finding(s) to inbox" log; got: ${logs.join(' | ')}`);
+      const m = countLog.match(/wrote\s+(\d+)\s+finding/);
+      assert.strictEqual(parseInt(m[1], 10), 2, 'should count exactly the two seeded files');
+      assert.ok(logs.every(l => !l.includes("didn't write learnings")),
+        'should not warn about missing learnings when files exist');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: ignores files from other agents or other dates', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Other agent same day
+      fs.writeFileSync(path.join(inboxDir, `other-agent-findings-${today}.md`), 'x');
+      // Same agent different day
+      fs.writeFileSync(path.join(inboxDir, `target-agent-findings-2020-01-01.md`), 'y');
+
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('target-agent', { name: 'Target' }, 'task');
+      });
+      assert.ok(logs.some(l => l.includes("didn't write learnings")),
+        'should warn — no file matches both agent id AND today\'s date');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: falls back to agentId when agentInfo is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('bare-agent', null, 'task');
+      });
+      assert.ok(logs.some(l => l.includes('bare-agent')),
+        'should use raw agentId when agentInfo is null');
+    } finally { restore(); }
+  });
+
+  // ───────────── updatePrAfterFix ─────────────
+
+  await test('updatePrAfterFix: no-op for null pr or missing pr.id', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      // Both should simply return without throwing.
+      lifecycle.updatePrAfterFix(null, null, 'pr-review');
+      lifecycle.updatePrAfterFix({}, null, 'pr-review');
+      // No assertion needed beyond "does not throw" — reaching here == pass.
+      assert.ok(true);
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: resets non-approved reviewStatus to "waiting" and sets fixedAt', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const project = { name: 'fix-proj-a', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#10', url: 'https://github.com/o/r/pull/10', prNumber: 10,
+          reviewStatus: 'changes-requested', status: 'active',
+          humanFeedback: { pendingFix: true } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#10', url: 'https://github.com/o/r/pull/10', prNumber: 10 },
+        project, 'pr-review-comment');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'waiting',
+        'non-approved reviewStatus must be reset to "waiting"');
+      assert.ok(after[0].minionsReview?.fixedAt, 'minionsReview.fixedAt must be set');
+      assert.strictEqual(after[0].humanFeedback.pendingFix, false,
+        'humanFeedback.pendingFix must be cleared on any fix dispatch');
+      assert.strictEqual(after[0].minionsReview.note, 'Fixed, awaiting re-review',
+        'default source should use the generic note');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: preserves "approved" reviewStatus — never downgrades', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-approved', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#11', url: 'https://github.com/o/r/pull/11', prNumber: 11,
+          reviewStatus: 'approved', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#11', url: 'https://github.com/o/r/pull/11', prNumber: 11 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'approved',
+        'approved reviewStatus is a terminal state; must not be downgraded by updatePrAfterFix');
+      // fixedAt is still set so we can see the fix was recorded
+      assert.ok(after[0].minionsReview?.fixedAt,
+        'minionsReview.fixedAt should still be set even when reviewStatus is preserved');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: pr-human-feedback source uses specific note', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-human', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#12', url: 'https://github.com/o/r/pull/12', prNumber: 12,
+          reviewStatus: 'waiting', status: 'active',
+          humanFeedback: { pendingFix: true } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#12', url: 'https://github.com/o/r/pull/12', prNumber: 12 },
+        project, 'pr-human-feedback');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].minionsReview.note, 'Fixed human feedback, awaiting re-review',
+        'pr-human-feedback source must use the human-feedback specific note');
+      assert.strictEqual(after[0].humanFeedback.pendingFix, false,
+        'humanFeedback.pendingFix must still be cleared');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: no-op when matching PR record not found', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-miss', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      const snapshot = [
+        { id: 'github:o/r#20', url: 'https://github.com/o/r/pull/20', prNumber: 20,
+          reviewStatus: 'changes-requested', status: 'active' },
+      ];
+      sharedIsolated.safeWrite(prsPath, snapshot);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#9999', url: 'https://github.com/o/r/pull/9999', prNumber: 9999 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      // Untouched
+      assert.deepStrictEqual(after, snapshot,
+        'unmatched PR lookup must leave the PR file unchanged');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: handles PR with no humanFeedback field (no crash)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-nohf', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#13', url: 'https://github.com/o/r/pull/13', prNumber: 13,
+          reviewStatus: 'waiting', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#13', url: 'https://github.com/o/r/pull/13', prNumber: 13 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'waiting',
+        'reviewStatus stays "waiting" (reset from waiting to waiting is a no-op)');
+      assert.ok(after[0].minionsReview?.fixedAt, 'fixedAt must be set');
+      // humanFeedback should not have been spuriously created
+      assert.strictEqual(after[0].humanFeedback, undefined,
+        'must not spuriously create humanFeedback field when it was absent');
+    } finally { restore(); }
+  });
+}
+
 // ─── Verify Workflow Tests ──────────────────────────────────────────────────
 
 async function testVerifyWorkflow() {
@@ -14872,6 +15480,9 @@ async function main() {
 
     // checkPlanCompletion idempotency (functional)
     await testCheckPlanCompletionIdempotency();
+
+    // lifecycle.js — uncovered functions (W-mobjwgrahkbb)
+    await testLifecycleUncoveredFns();
 
     // Verify workflow tests
     await testVerifyWorkflow();
