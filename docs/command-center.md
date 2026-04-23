@@ -13,7 +13,7 @@ CC maintains a true multi-turn session using Claude CLI's `--resume` flag. Unlik
 **Session lifecycle:**
 - **Created** on first message (or after the system prompt changes, or when you click **New Session**)
 - **Resumed** on subsequent messages via `--resume <sessionId>`
-- **Invalidated** only when the CC system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. There is no time-based expiry and no turn cap (`CC_SESSION_MAX_TURNS = Infinity`).
+- **Invalidated** when the CC system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. Sessions are also bounded by `ENGINE_DEFAULTS.ccMaxTurns` (default 50 turns) and `ENGINE_DEFAULTS.ccSessionTtlMs` (default 2h — resumed sessions older than this get rotated).
 - **Persisted** to `engine/cc-session.json` — survives dashboard restarts
 - **Frontend messages** saved to `localStorage` — survive page refresh
 
@@ -117,9 +117,10 @@ POST /api/command-center  (or /api/doc-chat, /api/steer-document)
     │     timeout: 600s (CC) or 300s (doc-plan) or 60s (doc-other)
     │
     ▼
-spawn-agent.js
+engine/llm.js callLLM({ direct: true })  (bypasses engine/spawn-agent.js — CC + doc-chat only)
     │
-    ├── If --resume: skip system prompt file, pass -p --resume <id>
+    ├── Resolves claude CLI binary path from engine/claude-caps.json
+    ├── If --resume: pass -p --resume <id> (no system prompt file)
     ├── If new: pass -p --system-prompt-file <file>
     │
     ▼
@@ -143,8 +144,8 @@ Frontend
 
 | File | Role |
 |------|------|
-| `engine/llm.js` | `callLLM()` — single LLM function with optional `sessionId` for resume |
-| `engine/spawn-agent.js` | Spawns claude CLI; skips system prompt on `--resume` |
+| `engine/llm.js` | `callLLM()` / `callLLMStreaming()` — single LLM function with optional `sessionId` for resume; `direct: true` spawns claude CLI directly (used by CC + doc-chat) |
+| `engine/spawn-agent.js` | Agent dispatch wrapper — resolves claude CLI path and invokes it. **Not used by CC/doc-chat** (direct spawn path). |
 | `engine/shared.js` | `parseStreamJsonOutput()` extracts `sessionId` from result |
 | `engine/cc-session.json` | Persisted session state (sessionId, turnCount, timestamps) |
 | `dashboard.js` | CC endpoint, `buildCCStatePreamble()`, `ccDocCall()`, `parseCCActions()` |
