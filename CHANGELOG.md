@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1548 (2026-04-23)
+
+### Other
+- test(lifecycle): add unit tests for cleanupPlanWorktrees, updateAgentHistory, createReviewFeedbackForAuthor, checkForLearnings, updatePrAfterFix (#1747)
+
 ## 0.1.1546 (2026-04-22)
 
 ### Other
