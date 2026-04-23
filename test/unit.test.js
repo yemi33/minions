@@ -18929,6 +18929,44 @@ async function testSec03EscapeHtml() {
     }
     assert.ok(total <= DYNAMIC_INNERHTML_BASELINE, `count=${total} <= baseline=${DYNAMIC_INNERHTML_BASELINE}`);
   });
+
+  // ── Regression gate for issue #1746 ─────────────────────────────────────
+  // dashboard.js inlines every dashboard/js/*.js module into a single
+  // `<script>/* __JS__ */</script>` block in layout.html. The HTML tokenizer
+  // scans script-data looking for the byte sequence `</script` followed by
+  // one of `\t \n \f \r ' ' '/' '>'`; comments and string literals don't
+  // matter — it's a raw-text scan. A stray literal `</script>` (even inside
+  // a JS comment) therefore terminates the inline block early and spills the
+  // remaining JS into the document body as visible text.
+  //
+  // Fix when a comment or string needs to reference the token: insert a
+  // backslash between `<` and `/` (`<\/script>`). After `<` the HTML parser
+  // transitions to script-data-less-than-sign state, which only recognizes
+  // `/` (end-tag-open) or `!` (escape-start); `\` is "anything else" and
+  // emits `<` back to script-data state, breaking the match.
+  await test('no dashboard/js/*.js file contains a literal </script> end-tag sequence (issue #1746)', () => {
+    const jsDir = path.join(MINIONS_DIR, 'dashboard', 'js');
+    // Match the HTML5 end-tag rule exactly: `</script` followed by whitespace,
+    // '/', or '>'. Using this (not a bare `</script>`) catches the full set
+    // of byte sequences that would actually close the inline block, including
+    // forms like `</script ` or `</script/>`.
+    const endTagRe = /<\/script[\t\n\f\r \/>]/;
+    const offenders = [];
+    for (const name of fs.readdirSync(jsDir)) {
+      if (!name.endsWith('.js')) continue;
+      const fp = path.join(jsDir, name);
+      const src = fs.readFileSync(fp, 'utf8');
+      if (endTagRe.test(src)) {
+        const lines = src.split('\n');
+        const lineNo = lines.findIndex(l => endTagRe.test(l)) + 1;
+        offenders.push(`${name}:${lineNo}`);
+      }
+    }
+    assert.strictEqual(offenders.length, 0,
+      `Literal </script> end-tag sequence found in: ${offenders.join(', ')}. ` +
+      `Escape it as <\\/script> in comments/strings — the inline dashboard ` +
+      `<script> block will otherwise be terminated early by the HTML parser.`);
+  });
 }
 
 // ─── Dashboard Audit: Medium Bugs ───────────────────────────────────────────
