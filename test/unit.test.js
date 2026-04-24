@@ -12116,6 +12116,752 @@ async function testAgentSteering() {
   });
 }
 
+// ─── engine/timeout.js — Behavioral Coverage ────────────────────────────────
+// Exercises checkIdleThreshold, checkSteering, checkTimeouts end-to-end using a
+// fake engine module injected into require.cache. Uses createTestMinionsDir for
+// filesystem isolation and stubs shared.killImmediate/killGracefully to keep
+// tests from spawning real kill commands.
+
+async function testTimeoutBehavioral() {
+  console.log('\n── engine/timeout.js — Behavioral ──');
+
+  const enginePath = require.resolve(path.join(MINIONS_DIR, 'engine'));
+  const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+  const lifecyclePath = require.resolve(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const routingPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'routing'));
+  const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+  const queriesPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'queries'));
+  const dispatchPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'dispatch'));
+
+  // Build an isolated test environment: fresh MINIONS dir, fresh shared/queries/
+  // dispatch/timeout/routing modules, fake engine + stubbed lifecycle injected
+  // via require.cache. killImmediate/killGracefully/exec are replaced with
+  // no-op counters so the tests never spawn real processes.
+  function setupIsolated(fakeEngineOverrides) {
+    const restoreMinionsDir = createTestMinionsDir();
+    // createTestMinionsDir busts shared/queries/dispatch/timeout but not routing
+    try { delete require.cache[routingPath]; } catch {}
+
+    const savedEngine = require.cache[enginePath];
+    const savedLifecycle = require.cache[lifecyclePath];
+
+    const fakeEngine = {
+      activeProcesses: new Map(),
+      realActivityMap: new Map(),
+      engineRestartGraceUntil: 0,
+      engineRestartGraceExempt: new Set(),
+      ...(fakeEngineOverrides || {}),
+    };
+    require.cache[enginePath] = {
+      id: enginePath, filename: enginePath, loaded: true,
+      exports: fakeEngine, children: [], paths: [],
+    };
+    // Stub lifecycle so runPostCompletionHooks + updateWorkItemStatus don't do
+    // any I/O or require engine.js transitively.
+    require.cache[lifecyclePath] = {
+      id: lifecyclePath, filename: lifecyclePath, loaded: true,
+      exports: {
+        runPostCompletionHooks: async () => {},
+        updateWorkItemStatus: () => {},
+        resolveWorkItemPath: () => null,
+      },
+      children: [], paths: [],
+    };
+
+    // Load the fresh modules. Order matters: shared before timeout so the
+    // fresh timeout binds to fresh shared.
+    const freshShared = require(sharedPath);
+    const freshQueries = require(queriesPath);
+    const freshDispatch = require(dispatchPath);
+    const timeout = require(timeoutPath);
+
+    // Swap in no-op kill stubs + counters.
+    const counters = { killImmediate: 0, killGracefully: 0, exec: 0 };
+    const originalKillImmediate = freshShared.killImmediate;
+    const originalKillGracefully = freshShared.killGracefully;
+    const originalExec = freshShared.exec;
+    freshShared.killImmediate = () => { counters.killImmediate++; };
+    freshShared.killGracefully = () => { counters.killGracefully++; };
+    freshShared.exec = () => { counters.exec++; return ''; };
+
+    const testDir = process.env.MINIONS_TEST_DIR;
+
+    return {
+      timeout,
+      fakeEngine,
+      freshShared,
+      freshQueries,
+      freshDispatch,
+      testDir,
+      counters,
+      restore() {
+        // Drain any timers the fresh shared started so the tmp dir can be wiped
+        try { freshShared.flushLogs(); } catch {}
+        freshShared.killImmediate = originalKillImmediate;
+        freshShared.killGracefully = originalKillGracefully;
+        freshShared.exec = originalExec;
+        // Drop timeout so the next setupIsolated rebinds to whatever shared is
+        // active at that point.
+        try { delete require.cache[timeoutPath]; } catch {}
+        try { delete require.cache[routingPath]; } catch {}
+        if (savedEngine) require.cache[enginePath] = savedEngine;
+        else delete require.cache[enginePath];
+        if (savedLifecycle) require.cache[lifecyclePath] = savedLifecycle;
+        else delete require.cache[lifecyclePath];
+        restoreMinionsDir();
+      },
+    };
+  }
+
+  function writeDispatch(testDir, data) {
+    const dp = path.join(testDir, 'engine', 'dispatch.json');
+    fs.writeFileSync(dp, JSON.stringify({
+      pending: data.pending || [],
+      active: data.active || [],
+      completed: data.completed || [],
+    }));
+  }
+
+  function readDispatch(testDir) {
+    return JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'dispatch.json'), 'utf8'));
+  }
+
+  function readLogs(testDir, freshShared) {
+    try { freshShared.flushLogs(); } catch {}
+    try {
+      return JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'log.json'), 'utf8'));
+    } catch { return []; }
+  }
+
+  // ═══ checkIdleThreshold ═════════════════════════════════════════════════
+
+  await test('checkIdleThreshold: no-op when a configured agent is busy (active dispatch)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, { active: [{ id: 'd1', agent: 'a' }] });
+      env.freshQueries.invalidateDispatchCache();
+      const config = { agents: { a: {}, b: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT emit idle warning when any agent is active');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: no-op when pending work exists even if all agents idle', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, { pending: [{ id: 'p1' }] });
+      env.freshQueries.invalidateDispatchCache();
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT emit idle warning while pending work remains');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: emits warn after threshold when all idle + no pending', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      // Fresh module's _lastActivityTime = now. Wait past 60ms threshold.
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.ok(warn, 'Should emit idle warning after threshold breach');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: does not re-emit warn on subsequent calls (_idleAlertSent guard)', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config); // fires once
+      env.timeout.checkIdleThreshold(config); // should be suppressed
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warns = logs.filter(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.strictEqual(warns.length, 1, `Expected exactly 1 idle warn across 3 calls, got ${warns.length}`);
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: recovery resets the alert-sent flag so next idle burst re-fires', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config); // fires
+      // Simulate work arriving — should reset _lastActivityTime and _idleAlertSent
+      writeDispatch(env.testDir, { pending: [{ id: 'p1' }] });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkIdleThreshold(config); // resets
+      // Back to idle, wait again
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      env.timeout.checkIdleThreshold(config); // should fire again
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warns = logs.filter(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.strictEqual(warns.length, 2, `Expected 2 idle warns across idle→work→idle cycles, got ${warns.length}`);
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: respects config.engine.idleAlertMinutes (custom threshold, not fired)', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      // 1 minute threshold — 120ms of idle is nowhere close.
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 1 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT fire when idleMs is well under threshold');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: no agents configured — empty-array every() is true, treated as idle', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      // No agents at all — agents.every(isAgentIdle) returns true on empty array.
+      const config = { agents: {}, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(warn, 'Empty agents map + no pending should still trip idle warning');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: tolerates missing config.engine (defaults to 15 min)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      // No config.engine — must not throw, and default 15min threshold means no warn yet.
+      env.timeout.checkIdleThreshold({ agents: { a: {} } });
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Default threshold (15min) should not fire within test runtime');
+    } finally { env.restore(); }
+  });
+
+  // ═══ checkSteering ══════════════════════════════════════════════════════
+
+  await test('checkSteering: no activeProcesses — pure no-op, no throw', () => {
+    const env = setupIsolated();
+    try {
+      // fakeEngine.activeProcesses is empty by default
+      env.timeout.checkSteering({});
+      assert.strictEqual(env.counters.killImmediate, 0, 'Should not kill anything when no processes tracked');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent without steer.md — untouched', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot1';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = { agentId, proc: {}, sessionId: 'sess-abc' };
+      env.fakeEngine.activeProcesses.set('disp-1', info);
+      env.timeout.checkSteering({});
+      assert.strictEqual(env.counters.killImmediate, 0);
+      assert.strictEqual(info._steeringMessage, undefined, 'No steer.md should mean no state mutation');
+      assert.strictEqual(info._steeringAt, undefined);
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent with steer.md AND sessionId — sets flags, kills, deletes steer.md', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot2';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      const steerPath = path.join(agentDir, 'steer.md');
+      fs.writeFileSync(steerPath, 'please focus on the API endpoint');
+      const info = { agentId, proc: {}, sessionId: 'sess-abc' };
+      env.fakeEngine.activeProcesses.set('disp-2', info);
+
+      const tBefore = Date.now();
+      env.timeout.checkSteering({});
+      const tAfter = Date.now();
+
+      assert.strictEqual(info._steeringMessage, 'please focus on the API endpoint',
+        'Should capture the steering message from steer.md');
+      assert.strictEqual(info._steeringSessionId, 'sess-abc',
+        'Should snapshot sessionId for the resume spawn');
+      assert.ok(info._steeringAt >= tBefore && info._steeringAt <= tAfter,
+        '_steeringAt should be a fresh timestamp in [tBefore, tAfter]');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Should invoke killImmediate exactly once');
+      assert.ok(!fs.existsSync(steerPath), 'steer.md should be deleted after consumption');
+      assert.strictEqual(info._steeringNoSession, undefined,
+        'Session-present path must NOT set _steeringNoSession');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent with steer.md but NO sessionId — inbox forward path', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot3';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'try a smaller model');
+      const info = { agentId, proc: {} /* no sessionId */ };
+      env.fakeEngine.activeProcesses.set('disp-3', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringNoSession, true,
+        'No-session path should flag _steeringNoSession for close handler');
+      assert.ok(typeof info._steeringAt === 'number' && info._steeringAt > 0,
+        '_steeringAt must be set even on the no-session path');
+      assert.strictEqual(info._steeringMessage, undefined,
+        'No-session path does NOT stash _steeringMessage — it forwards via inbox instead');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Should still killImmediate the agent');
+
+      // Inbox file should exist with the forwarded message
+      const inboxDir = path.join(agentDir, 'inbox');
+      const inboxFiles = fs.readdirSync(inboxDir).filter(f => f.startsWith('steering-'));
+      assert.strictEqual(inboxFiles.length, 1, 'Expected exactly one forwarded steering file');
+      const body = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
+      assert.ok(body.includes('try a smaller model'), 'Forwarded inbox file should carry original message');
+      assert.ok(body.includes('Forwarded'), 'Forwarded inbox file should be clearly labeled');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: empty steer.md contents — deleted but flags stay clear', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot4';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      const steerPath = path.join(agentDir, 'steer.md');
+      fs.writeFileSync(steerPath, '');
+      const info = { agentId, proc: {}, sessionId: 'sess-zzz' };
+      env.fakeEngine.activeProcesses.set('disp-4', info);
+
+      env.timeout.checkSteering({});
+
+      assert.ok(!fs.existsSync(steerPath), 'Empty steer.md should still be deleted to prevent stale reads');
+      assert.strictEqual(info._steeringMessage, undefined,
+        'Empty message must not arm the steering state');
+      assert.strictEqual(env.counters.killImmediate, 0,
+        'Empty message should not trigger a kill');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: already-steered agent (recent _steeringAt) — skipped (double-kill guard)', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot5';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'ignored — guard blocks re-entry');
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringMessage: 'prior',
+        _steeringAt: Date.now() - 5000, // 5s ago — within retry window
+      };
+      env.fakeEngine.activeProcesses.set('disp-5', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringMessage, 'prior', 'Prior message must not be overwritten');
+      assert.strictEqual(env.counters.killImmediate, 0, 'No new kill while steering is in-flight');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: stale steering (>30s) — retries kill once, sets _steeringRetried', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot6';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringAt: Date.now() - 40000, // 40s ago — past STEERING_KILL_RETRY_MS (30s)
+      };
+      env.fakeEngine.activeProcesses.set('disp-6', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringRetried, true, 'Retry path should set _steeringRetried=true');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Retry path should killImmediate again');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: stale steering already retried — no second retry (idempotent)', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot7';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringAt: Date.now() - 40000,
+        _steeringRetried: true, // prior retry already happened
+      };
+      env.fakeEngine.activeProcesses.set('disp-7', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(env.counters.killImmediate, 0, 'Once _steeringRetried is set, no more kills');
+    } finally { env.restore(); }
+  });
+
+  // ═══ checkTimeouts ══════════════════════════════════════════════════════
+
+  await test('checkTimeouts: empty state (no processes, no dispatch) — no throw, no mutations', () => {
+    const env = setupIsolated();
+    try {
+      env.timeout.checkTimeouts({});
+      assert.strictEqual(env.counters.killGracefully, 0);
+      assert.strictEqual(env.counters.killImmediate, 0);
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hard timeout — tracked process past agentTimeout is killGracefully\'d', () => {
+    const env = setupIsolated();
+    try {
+      const info = {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 200).toISOString(),
+        meta: {},
+      };
+      env.fakeEngine.activeProcesses.set('disp-hard', info);
+      // Tiny agentTimeout — 100ms — forces immediate hard-timeout branch.
+      env.timeout.checkTimeouts({ engine: { agentTimeout: 100 } });
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Hard timeout should invoke killGracefully exactly once');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hard timeout honors per-item meta.deadline override', () => {
+    const env = setupIsolated();
+    try {
+      const startedAt = Date.now() - 500;
+      const info = {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(startedAt).toISOString(),
+        meta: { deadline: startedAt + 100 }, // deadline already 400ms in the past
+      };
+      env.fakeEngine.activeProcesses.set('disp-deadline', info);
+      // Large agentTimeout would normally let this run — deadline overrides it.
+      env.timeout.checkTimeouts({ engine: { agentTimeout: 18000000 } });
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Per-item deadline must override default agentTimeout and trigger kill');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: orphaned active dispatch past heartbeat — TIMED_OUT + moved to completed', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'orphan-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(), // 10min ago
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // No entry in activeProcesses — this is the orphan case. Default grace is 0.
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Orphaned item should be removed from active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Orphan should land in completed list');
+      assert.strictEqual(completed.result, 'error', 'Orphan cleanup result should be ERROR');
+      assert.ok(/Orphaned|silent/.test(completed.reason || ''),
+        'Reason should describe the orphan/silent failure');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: orphan within engineRestartGraceUntil — left alone', () => {
+    const env = setupIsolated({ engineRestartGraceUntil: Date.now() + 60000 });
+    try {
+      const itemId = 'orphan-grace';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Restart grace period should prevent orphan cleanup for untracked items');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: engineRestartGraceExempt bypasses grace period', () => {
+    const env = setupIsolated({
+      engineRestartGraceUntil: Date.now() + 60000,
+      engineRestartGraceExempt: new Set(['confirmed-dead']),
+    });
+    try {
+      writeDispatch(env.testDir, {
+        active: [{
+          id: 'confirmed-dead',
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Exempt dispatch IDs must skip the grace period and be reaped');
+      assert.strictEqual(dp.completed[0]?.id, 'confirmed-dead');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hung TRACKED process past heartbeat — killGracefully + TIMED_OUT', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'hung-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 600000).toISOString(),
+        meta: {},
+      });
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
+        'Hung detection should drop the process from activeProcesses');
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Hung detection should killGracefully the stuck process');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Hung item should leave the active list');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed && completed.result === 'error',
+        'Hung item should be marked ERROR in completed');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: recently-steered tracked process — skipped (no kill within 60s of steer)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'steering-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 600000).toISOString(),
+        meta: {},
+        _steeringAt: Date.now() - 10000, // 10s ago — inside the 60s skip window
+      });
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Recently-steered agents must be left alone by the timeout checker');
+      assert.ok(env.fakeEngine.activeProcesses.has(itemId),
+        'Steered process must remain tracked during its re-spawn window');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile stuck "dispatched" work item with no active dispatch — retried', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {}); // no active items
+      env.freshQueries.invalidateDispatchCache();
+      // Stuck work item — status=dispatched but nothing in dispatch.active references it.
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-stuck',
+        status: 'dispatched',
+        dispatched_at: '2020-01-01T00:00:00Z',
+        dispatched_to: 'bot',
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'pending',
+        'Reconcile should revert stuck dispatched items to pending for retry');
+      assert.strictEqual(items[0]._retryCount, 1, 'Should record the first retry attempt');
+      assert.strictEqual(items[0].dispatched_at, undefined, 'Should strip stale dispatched_at');
+      assert.strictEqual(items[0].dispatched_to, undefined, 'Should strip stale dispatched_to');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile marks work item FAILED after maxRetries exhausted', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      // _retryCount already at ENGINE_DEFAULTS.maxRetries (3) — next reconcile must give up.
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-exhausted',
+        status: 'dispatched',
+        _retryCount: shared.ENGINE_DEFAULTS.maxRetries,
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'failed',
+        'Retries exhausted → reconcile must mark the item failed');
+      assert.ok(/retries exhausted/i.test(items[0].failReason || ''),
+        'failReason should reference retry exhaustion');
+      assert.ok(items[0].failedAt, 'failedAt timestamp must be set');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile preserves work items whose dispatch IS still active', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {
+        active: [{
+          id: 'disp-live',
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          meta: { item: { id: 'W-live' } },
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set('disp-live', {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date().toISOString(),
+        meta: { item: { id: 'W-live' } },
+      });
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-live',
+        status: 'dispatched',
+        dispatched_to: 'bot',
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'dispatched',
+        'Live work item should not be touched by reconcile');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile leaves completed work items alone (never reverts DONE)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([
+        // status=dispatched but completedAt set — the reconcile must honor the done flag.
+        { id: 'W-done', status: 'dispatched', completedAt: '2025-01-01T00:00:00Z' },
+        { id: 'W-done2', status: 'done' },
+      ]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'dispatched',
+        'Item with completedAt must not be reverted by reconcile');
+      assert.strictEqual(items[1].status, 'done', 'Done items must not be touched');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: completion-via-output detection — moves item to completed with SUCCESS', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'output-done';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // Write a live-output.log containing the success result event.
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        '{"type":"result","subtype":"success","result":"ok"}\n');
+
+      env.timeout.checkTimeouts({});
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Item detected as completed via output should leave active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Completed item should land in completed list');
+      assert.strictEqual(completed.result, 'success',
+        'success subtype in live-output.log → SUCCESS result');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: completion-via-output detection — error subtype maps to ERROR', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'output-err';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // No success subtype — detection treats it as ERROR.
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        '{"type":"result","subtype":"error_during_execution"}\n');
+
+      env.timeout.checkTimeouts({});
+
+      const dp = readDispatch(env.testDir);
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Errored item should still be moved to completed');
+      assert.strictEqual(completed.result, 'error',
+        'Non-success subtype in result event → ERROR');
+    } finally { env.restore(); }
+  });
+}
+
 // ─── Recent Features Tests ─────────────────────────────────────────────────
 
 async function testRecentFeatures() {
@@ -15470,6 +16216,8 @@ async function main() {
 
     // Coverage gap tests
     await testAgentSteering();
+    // W-mobjwnvz5sbl: behavioral coverage for engine/timeout.js
+    await testTimeoutBehavioral();
     await testRecentFeatures();
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
