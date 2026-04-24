@@ -98,9 +98,15 @@ function toggleModalPin() {
 
 // Canonical HTML-escape helper (SEC-03). Use this in all new code and for any user-controlled
 // field that reaches `.innerHTML` / a template literal. Escapes the 6 HTML metacharacters
-// (& < > " ' /) — the `/` escape closes the `</script>` break-out path that a 5-char escape
+// (& < > " ' /) — the `/` escape closes the `<\/script>` break-out path that a 5-char escape
 // leaves open. Returns '' for null/undefined so missing fields never render the literal strings
 // "null"/"undefined". Idempotent for non-metacharacter input (double-escaping only expands `&`).
+// NOTE: the `<\/script>` spelling above is deliberate. dashboard.js inlines every module in
+// dashboard/js/ into a single inline <script> block; a raw closing-script-tag literal in any
+// comment or string closes that block early and spills the rest as document text (issue #1746).
+// The HTML5 tokenizer's script-data end-tag match is byte-level and ignores JS comment/string
+// boundaries, so the only safe way to reference the token in-source is to break the match —
+// `<` followed by `\/` works because after `<` only `/` (not `\`) triggers end-tag-open state.
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
   return String(str)
