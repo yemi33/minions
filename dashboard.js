@@ -5359,71 +5359,86 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n  Minions Mission Control`);
-  console.log(`  -----------------------------------`);
-  console.log(`  http://localhost:${PORT}`);
-  console.log(`\n  Watching:`);
-  console.log(`  Minions dir:  ${MINIONS_DIR}`);
-  console.log(`  Projects:   ${PROJECTS.map(p => `${p.name} (${p.localPath})`).join(', ')}`);
-  console.log(`\n  Auto-refreshes every 4s. Ctrl+C to stop.\n`);
+// Exported for testing — pure helpers with no hidden side effects.
+// Production entry points use the closures directly; tests import via require('./dashboard').
+module.exports = {
+  getMcpServers,
+  _filterCcTabSessions,
+  _getVersionCheckInterval,
+  _parseWatchInterval,
+  parsePinnedEntries,
+};
 
-  const { exec } = require('child_process');
-  try {
-    if (process.platform === 'win32') {
-      exec(`start "" "http://localhost:${PORT}"`);
-    } else if (process.platform === 'darwin') {
-      exec(`open http://localhost:${PORT}`);
-    } else {
-      exec(`xdg-open http://localhost:${PORT}`);
-    }
-  } catch (e) {
-    console.log(`  Could not auto-open browser: ${e.message}`);
-    console.log(`  Please open http://localhost:${PORT} manually.`);
-  }
+// Start the HTTP server only when run directly (node dashboard.js).
+// When required as a module (e.g. by unit tests), skip the listen/watchdog/signal
+// handlers so tests can import exported helpers without binding to port 7331.
+if (require.main === module) {
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`\n  Minions Mission Control`);
+    console.log(`  -----------------------------------`);
+    console.log(`  http://localhost:${PORT}`);
+    console.log(`\n  Watching:`);
+    console.log(`  Minions dir:  ${MINIONS_DIR}`);
+    console.log(`  Projects:   ${PROJECTS.map(p => `${p.name} (${p.localPath})`).join(', ')}`);
+    console.log(`\n  Auto-refreshes every 4s. Ctrl+C to stop.\n`);
 
-  // ─── Engine Watchdog ─────────────────────────────────────────────────────
-  // Every 30s, check if engine PID is alive. If dead but control.json says
-  // running, auto-restart it. Prevents silent engine death.
-  const { execSync } = require('child_process');
-  setInterval(() => {
+    const { exec } = require('child_process');
     try {
-      const control = getEngineState();
-      if (control.state !== 'running' || !control.pid) return;
-
-      // Check if PID is alive
-      let alive = false;
-      try {
-        if (process.platform === 'win32') {
-          const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-          alive = out.includes(String(control.pid));
-        } else {
-          process.kill(control.pid, 0); // signal 0 = check existence
-          alive = true;
-        }
-      } catch { alive = false; }
-
-      if (!alive) {
-        console.log(`[watchdog] Engine PID ${control.pid} is dead — auto-restarting...`);
-        restartEngine();
+      if (process.platform === 'win32') {
+        exec(`start "" "http://localhost:${PORT}"`);
+      } else if (process.platform === 'darwin') {
+        exec(`open http://localhost:${PORT}`);
+      } else {
+        exec(`xdg-open http://localhost:${PORT}`);
       }
     } catch (e) {
-      console.error(`[watchdog] Error: ${e.message}`);
+      console.log(`  Could not auto-open browser: ${e.message}`);
+      console.log(`  Please open http://localhost:${PORT} manually.`);
     }
-  }, 30000);
-  console.log(`  Engine watchdog: active (checks every 30s)`);
-});
 
-server.on('error', e => {
-  if (e.code === 'EADDRINUSE') {
-    console.error(`\n  Port ${PORT} already in use. Kill the existing process or change PORT.\n`);
-  } else {
-    console.error(e);
-  }
-  process.exit(1);
-});
+    // ─── Engine Watchdog ─────────────────────────────────────────────────────
+    // Every 30s, check if engine PID is alive. If dead but control.json says
+    // running, auto-restart it. Prevents silent engine death.
+    const { execSync } = require('child_process');
+    setInterval(() => {
+      try {
+        const control = getEngineState();
+        if (control.state !== 'running' || !control.pid) return;
 
-// ── Graceful shutdown: flush debounced writes ──────────────────────────────
-server.on('close', () => flushPendingDocSessions());
-process.on('SIGTERM', () => { flushPendingDocSessions(); process.exit(0); });
-process.on('SIGINT', () => { flushPendingDocSessions(); process.exit(0); });
+        // Check if PID is alive
+        let alive = false;
+        try {
+          if (process.platform === 'win32') {
+            const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+            alive = out.includes(String(control.pid));
+          } else {
+            process.kill(control.pid, 0); // signal 0 = check existence
+            alive = true;
+          }
+        } catch { alive = false; }
+
+        if (!alive) {
+          console.log(`[watchdog] Engine PID ${control.pid} is dead — auto-restarting...`);
+          restartEngine();
+        }
+      } catch (e) {
+        console.error(`[watchdog] Error: ${e.message}`);
+      }
+    }, 30000);
+    console.log(`  Engine watchdog: active (checks every 30s)`);
+  });
+
+  server.on('error', e => {
+    if (e.code === 'EADDRINUSE') {
+      console.error(`\n  Port ${PORT} already in use. Kill the existing process or change PORT.\n`);
+    } else {
+      console.error(e);
+    }
+    process.exit(1);
+  });
+
+  // ── Graceful shutdown: flush debounced writes ──────────────────────────────
+  server.on('close', () => flushPendingDocSessions());
+  process.on('SIGTERM', () => { flushPendingDocSessions(); process.exit(0); });
+  process.on('SIGINT', () => { flushPendingDocSessions(); process.exit(0); });
+}
