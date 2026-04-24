@@ -16,7 +16,9 @@ const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 
 // No lazy require needed — log comes from shared.js, no engine-specific APIs used
 
-const MEETINGS_DIR = path.join(__dirname, '..', 'meetings');
+// Derive from shared.MINIONS_DIR so createTestMinionsDir()/MINIONS_TEST_DIR
+// tests can redirect the meetings directory without patching module internals.
+const MEETINGS_DIR = path.join(shared.MINIONS_DIR, 'meetings');
 
 function truncateMeetingContext(text, maxBytes, label) {
   return shared.truncateTextBytes(text, maxBytes, `\n\n_...${label} truncated — review the meeting transcript if needed._`);
@@ -403,7 +405,7 @@ function addMeetingNote(meetingId, note) {
 
 function _killMeetingDispatches(meetingId) {
   try {
-    const DISPATCH_PATH = path.join(__dirname, '..', 'engine', 'dispatch.json');
+    const DISPATCH_PATH = path.join(shared.MINIONS_DIR, 'engine', 'dispatch.json');
     const dispatch = safeJson(DISPATCH_PATH) || {};
     const toKill = (dispatch.active || []).filter(d => d.meta?.meetingId === meetingId);
     if (toKill.length === 0) return 0;

@@ -96,6 +96,31 @@ function toggleModalPin() {
   else if (_modalFilePath.startsWith('knowledge/')) renderKnowledgeBase();
 }
 
+// Canonical HTML-escape helper (SEC-03). Use this in all new code and for any user-controlled
+// field that reaches `.innerHTML` / a template literal. Escapes the 6 HTML metacharacters
+// (& < > " ' /) — the `/` escape closes the `<\/script>` break-out path that a 5-char escape
+// leaves open. Returns '' for null/undefined so missing fields never render the literal strings
+// "null"/"undefined". Idempotent for non-metacharacter input (double-escaping only expands `&`).
+// NOTE: the `<\/script>` spelling above is deliberate. dashboard.js inlines every module in
+// dashboard/js/ into a single inline <script> block; a raw closing-script-tag literal in any
+// comment or string closes that block early and spills the rest as document text (issue #1746).
+// The HTML5 tokenizer's script-data end-tag match is byte-level and ignores JS comment/string
+// boundaries, so the only safe way to reference the token in-source is to break the match —
+// `<` followed by `\/` works because after `<` only `/` (not `\`) triggers end-tag-open state.
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
+
+// Legacy 5-char escape. Kept as a backward-compat alias so files not yet migrated under
+// SEC-03 Phase A still compile. Prefer `escapeHtml` in new code — it adds the `/` escape
+// and null/undefined handling. Phase B will remove this once the remaining renderers move.
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -482,4 +507,4 @@ async function submitBugReport() {
   }
 }
 
-window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
+window.MinionsUtils = { wakeEngine, escapeHtml, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };

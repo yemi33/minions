@@ -8,7 +8,7 @@ function _plansNext() { _plansPage++; refresh(); }
 
 function openCreatePlanModal() {
   const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
-    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
+    '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>'
   ).join('');
   const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
 
@@ -218,23 +218,23 @@ function renderPlans(plans) {
       // For awaiting-approval: show Execute (re-generate PRD from updated plan) + Approve (use current PRD as-is)
       if (effectiveStatus === 'awaiting-approval' && isDraft && prdFile) {
         actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
-          '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">Approve</button>' +
-          '<button class="plan-btn approve" style="opacity:0.7" onclick="planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project || '') + '\',this)">Re-execute</button>' +
-          '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
+          '<button class="plan-btn approve" onclick="planApprove(\'' + escapeHtml(actionTarget) + '\')">Approve</button>' +
+          '<button class="plan-btn approve" style="opacity:0.7" onclick="planExecute(\'' + escapeHtml(p.file) + '\',\'' + escapeHtml(p.project || '') + '\',this)">Re-execute</button>' +
+          '<button class="plan-btn reject" onclick="planReject(\'' + escapeHtml(actionTarget) + '\')">Reject</button>' +
         '</div>';
       } else {
         const actionLabel = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
         actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
-          '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">' + actionLabel + '</button>' +
-          '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
+          '<button class="plan-btn approve" onclick="planApprove(\'' + escapeHtml(actionTarget) + '\')">' + actionLabel + '</button>' +
+          '<button class="plan-btn reject" onclick="planReject(\'' + escapeHtml(actionTarget) + '\')">Reject</button>' +
         '</div>';
       }
     } else if (isRevision) {
-      actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
+      actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escapeHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
     }
 
     const executeBtn = isDraft && (effectiveStatus === 'active' || effectiveStatus === 'draft') && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
-      'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
+      'onclick="event.stopPropagation();planExecute(\'' + escapeHtml(p.file) + '\',\'' + escapeHtml(p.project) + '\',this)">Execute</button>' : '';
     const showPause = effectiveStatus === 'dispatched' && prdFile && !isArchived;
     // Resume pill not needed — paused state is handled by the actions block above
     const showResume = false;
@@ -242,37 +242,37 @@ function renderPlans(plans) {
     const hasVerifyWi = !!verifyWi;
     const showVerify = effectiveStatus === 'completed' && prdFile && !isArchived && !hasVerifyWi;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
-      'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>' : '';
+      'onclick="event.stopPropagation();planPause(\'' + escapeHtml(prdFile) + '\',this)">Pause</button>' : '';
     const resumeBtn = showResume
       ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
-        'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>'
+        'onclick="event.stopPropagation();planApprove(\'' + escapeHtml(prdFile) + '\',this)">Resume</button>'
       : '';
     const verifyBtn = showVerify ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
-      'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' : '';
+      'onclick="event.stopPropagation();triggerVerify(\'' + escapeHtml(prdFile) + '\',this)">Verify</button>' : '';
     const showArchive = !isArchived;
     const archiveFile = prdFile || p.file;
     const archiveReady = p.archiveReady && !isArchived;
     const archiveBtn = showArchive ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px' +
       (archiveReady ? ';color:var(--green);font-weight:600;border:1px solid var(--green)' : '') + '" ' +
-      'onclick="event.stopPropagation();planArchive(\'' + escHtml(archiveFile) + '\',this)">' +
+      'onclick="event.stopPropagation();planArchive(\'' + escapeHtml(archiveFile) + '\',this)">' +
       (archiveReady ? '✓ Archive' : 'Archive') + '</button>' : '';
     const archiveReadyBadge = archiveReady ? '<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--green);vertical-align:middle" title="Verification passed — ready to archive">Ready to archive</span>' : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
-      'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
+      'onclick="event.stopPropagation();planDelete(\'' + escapeHtml(p.file) + '\')">Delete</button>' : '';
 
     const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
     const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'converting': 'var(--yellow)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
     const cardClass = effectiveStatus === 'dispatched' || effectiveStatus === 'converting' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
-    return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escapeHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escapeHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
-        '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
+        '<div><div class="plan-card-title">' + escapeHtml(p.summary || p.file) + versionBadge + '</div>' +
           '<div class="plan-card-meta">' +
             '<span style="font-weight:600;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + label + '</span>' +
-            (p.project ? '<span>' + escHtml(p.project) + '</span>' : '') +
+            (p.project ? '<span>' + escapeHtml(p.project) + '</span>' : '') +
             '<span>' + p.itemCount + ' items</span>' +
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
-            (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
+            (p.generatedBy ? '<span>by ' + escapeHtml(p.generatedBy) + '</span>' : '') +
             executeBtn + pauseBtn + resumeBtn + verifyBtn + (hasVerifyWi ? _renderVerifyBadge(verifyWi) : '') + archiveReadyBadge + archiveBtn + deleteBtn +
           '</div>' +
         '</div>' +
@@ -323,15 +323,15 @@ function openArchivedPlansModal() {
   const html = plans.map(p => {
     const itemCount = p.itemCount || 0;
     const completed = p.completedAt ? p.completedAt.slice(0, 10) : '';
-    return '<div class="plan-card" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer;opacity:0.8" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card" data-file="plans/' + escapeHtml(p.file) + '" style="cursor:pointer;opacity:0.8" onclick="if(shouldIgnoreSelectionClick(event))return;planView(\'' + escapeHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
-        '<div><div class="plan-card-title" style="font-size:13px">' + escHtml(p.summary || p.file) + '</div>' +
+        '<div><div class="plan-card-title" style="font-size:13px">' + escapeHtml(p.summary || p.file) + '</div>' +
           '<div class="plan-card-meta">' +
             '<span style="color:var(--green);font-weight:600">Completed</span>' +
-            (p.project ? '<span>' + escHtml(p.project) + '</span>' : '') +
+            (p.project ? '<span>' + escapeHtml(p.project) + '</span>' : '') +
             '<span>' + itemCount + ' items</span>' +
             (completed ? '<span>' + completed + '</span>' : '') +
-            (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
+            (p.generatedBy ? '<span>by ' + escapeHtml(p.generatedBy) + '</span>' : '') +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -417,7 +417,7 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   if (normalizedFile.endsWith('.json')) {
     let plan;
     try { plan = JSON.parse(raw); } catch (e) {
-      document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to parse plan JSON: ' + escHtml(e.message) + '</p><pre style="font-size:10px;max-height:200px;overflow:auto">' + escHtml((raw || '').slice(0, 500)) + '</pre>';
+      document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to parse plan JSON: ' + escapeHtml(e.message) + '</p><pre style="font-size:10px;max-height:200px;overflow:auto">' + escapeHtml((raw || '').slice(0, 500)) + '</pre>';
       return;
     }
     title = plan.plan_summary || normalizedFile;
@@ -466,20 +466,20 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   if (isNeedsAction) {
     const target = prdFile || normalizedFile;
     const label = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="planApprove(\'' + escHtml(target) + '\',this)">' + label + '</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="planApprove(\'' + escapeHtml(target) + '\',this)">' + label + '</button> ';
     // Re-execute: re-generate PRD from updated plan (only for .md plans with existing awaiting PRD)
     if (effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile) {
-      modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);opacity:0.7" onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Re-execute</button> ';
+      modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);opacity:0.7" onclick="planExecute(\'' + escapeHtml(normalizedFile) + '\',\'\',this)">Re-execute</button> ';
     }
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planReject(\'' + escHtml(target) + '\')">Reject</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planReject(\'' + escapeHtml(target) + '\')">Reject</button> ';
   }
   // Execute (draft .md without PRD)
   if (isDraft && (effectiveStatus === 'active' || effectiveStatus === 'draft') && !isArchived) {
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);font-weight:600" onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);font-weight:600" onclick="planExecute(\'' + escapeHtml(normalizedFile) + '\',\'\',this)">Execute</button> ';
   }
   // Pause (active PRD, not completed)
   if (effectiveStatus === 'dispatched' && prdFile && !isArchived) {
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--yellow)" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--yellow)" onclick="planPause(\'' + escapeHtml(prdFile) + '\',this)">Pause</button> ';
   }
   // Completed label
   if (isCompleted && !isArchived) {
@@ -492,19 +492,19 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   // Verify / Verified badge
   const modalVerifyWi = (window._lastWorkItems || []).find(w => w.itemType === 'verify' && w.sourcePlan === (prdFile || normalizedFile));
   if (effectiveStatus === 'completed' && prdFile && !isArchived && !modalVerifyWi) {
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="triggerVerify(\'' + escapeHtml(prdFile) + '\',this)">Verify</button> ';
   }
   if (modalVerifyWi) modalActions += _renderVerifyBadge(modalVerifyWi);
   // Archive + Delete (always, unless archived)
   if (!isArchived) {
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--muted)" onclick="planArchive(\'' + escHtml(prdFile || normalizedFile) + '\')">Archive</button> ';
-    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--muted)" onclick="planArchive(\'' + escapeHtml(prdFile || normalizedFile) + '\')">Archive</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planDelete(\'' + escapeHtml(normalizedFile) + '\')">Delete</button>';
   }
 
   const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
   const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' + modalActions + '</div>';
 
-  document.getElementById('modal-title').innerHTML = escHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;
+  document.getElementById('modal-title').innerHTML = escapeHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escapeHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;
   const modalBody = document.getElementById('modal-body');
   const scrollTop = modalBody.scrollTop;
   if (normalizedFile.endsWith('.json')) {
@@ -742,11 +742,11 @@ function _renderVerifyBadge(verifyWi) {
   const planFile = verifyWi.sourcePlan || '';
   const planSlug = planFile.replace('.json', '');
   const verifyPr = allPrs.find(pr => (pr.prdItems || []).includes(verifyWi.id) || (pr.branch && pr.branch.includes(planSlug) && (pr.title || '').includes('[E2E]')));
-  const prLink = verifyPr?.url ? ' <a href="' + escHtml(verifyPr.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:underline;font-size:9px">' + escHtml(verifyPr.id || 'E2E PR') + '</a>' : '';
+  const prLink = verifyPr?.url ? ' <a href="' + escapeHtml(verifyPr.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:underline;font-size:9px">' + escapeHtml(verifyPr.id || 'E2E PR') + '</a>' : '';
   // Testing guide
   const guides = window._lastStatus?.verifyGuides || [];
   const guide = guides.find(g => g.planFile === planFile);
-  const guideLink = guide ? ' <span onclick="event.stopPropagation();openVerifyGuide(\'' + escHtml(guide.file) + '\')" style="color:var(--green);cursor:pointer;text-decoration:underline;font-size:9px">Testing Guide</span>' : '';
+  const guideLink = guide ? ' <span onclick="event.stopPropagation();openVerifyGuide(\'' + escapeHtml(guide.file) + '\')" style="color:var(--green);cursor:pointer;text-decoration:underline;font-size:9px">Testing Guide</span>' : '';
   return '<span style="font-size:9px;font-weight:600;color:' + color + ';padding:0 4px">' + label + '</span>' + prLink + guideLink;
 }
 

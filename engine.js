@@ -3759,6 +3759,8 @@ module.exports = {
   // Shared helpers (used by lifecycle.js and tests)
   reconcileItemsWithPrs, detectDependencyCycles,
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
+  isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
+  _maxTurnsForType, buildProjectContext, normalizeAc, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,

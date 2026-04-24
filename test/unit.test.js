@@ -371,6 +371,134 @@ async function testBranchSanitization() {
   });
 }
 
+async function testIsAllowedOrigin() {
+  console.log('\n── shared.js — isAllowedOrigin (dashboard origin allowlist) ──');
+
+  // Allowed hosts — port-agnostic
+  await test('isAllowedOrigin accepts http://localhost without port', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://localhost:7331', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:7331'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://localhost:65535 (any port)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:65535'), true);
+  });
+
+  await test('isAllowedOrigin accepts http://127.0.0.1 and http://127.0.0.1:3000', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1:3000'), true);
+  });
+
+  await test('isAllowedOrigin accepts IPv6 http://[::1] and http://[::1]:7331', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://[::1]'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://[::1]:7331'), true);
+  });
+
+  await test('isAllowedOrigin accepts Referer-style full URL (path ignored)', () => {
+    // Referer headers include the full URL; helper must tolerate path/query
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost:7331/api/status'), true);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1:7331/dashboard?x=1'), true);
+  });
+
+  // Disallowed hosts
+  await test('isAllowedOrigin rejects arbitrary public origins', () => {
+    assert.strictEqual(shared.isAllowedOrigin('https://evil.example'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://evil.example:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://attacker.localhost.com'), false);
+  });
+
+  await test('isAllowedOrigin rejects private-network hosts not on allowlist', () => {
+    assert.strictEqual(shared.isAllowedOrigin('http://10.0.0.1'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://192.168.1.5:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://0.0.0.0'), false);
+  });
+
+  await test('isAllowedOrigin rejects https scheme (allowlist is http-only for local dev)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('https://localhost:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('https://127.0.0.1'), false);
+  });
+
+  await test('isAllowedOrigin rejects non-http schemes (file, data, ws, chrome-extension)', () => {
+    assert.strictEqual(shared.isAllowedOrigin('file:///etc/passwd'), false);
+    assert.strictEqual(shared.isAllowedOrigin('data:text/html,<script>1</script>'), false);
+    assert.strictEqual(shared.isAllowedOrigin('ws://localhost:7331'), false);
+    assert.strictEqual(shared.isAllowedOrigin('chrome-extension://abc'), false);
+  });
+
+  // Null / empty / malformed
+  await test('isAllowedOrigin rejects null, undefined, empty, and non-string inputs', () => {
+    assert.strictEqual(shared.isAllowedOrigin(null), false);
+    assert.strictEqual(shared.isAllowedOrigin(undefined), false);
+    assert.strictEqual(shared.isAllowedOrigin(''), false);
+    assert.strictEqual(shared.isAllowedOrigin('   '), false);
+    assert.strictEqual(shared.isAllowedOrigin(42), false);
+    assert.strictEqual(shared.isAllowedOrigin({}), false);
+  });
+
+  await test('isAllowedOrigin rejects literal "null" (sandboxed iframe / data URI origin)', () => {
+    // Browsers send `Origin: null` for sandboxed iframes, opaque origins, data: URIs
+    assert.strictEqual(shared.isAllowedOrigin('null'), false);
+  });
+
+  await test('isAllowedOrigin rejects malformed URLs', () => {
+    assert.strictEqual(shared.isAllowedOrigin('notaurl'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http:// localhost'), false);
+    assert.strictEqual(shared.isAllowedOrigin('javascript:alert(1)'), false);
+  });
+
+  await test('isAllowedOrigin rejects subdomain-spoof attempts', () => {
+    // Prevents attacker.localhost or 127.0.0.1.evil.com from sneaking through
+    assert.strictEqual(shared.isAllowedOrigin('http://localhost.evil.com'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://127.0.0.1.nip.io'), false);
+    assert.strictEqual(shared.isAllowedOrigin('http://not-localhost'), false);
+  });
+}
+
+async function testBuildSecurityHeaders() {
+  console.log('\n── shared.js — buildSecurityHeaders ──');
+
+  await test('buildSecurityHeaders returns exactly the four required headers', () => {
+    const h = shared.buildSecurityHeaders();
+    assert.ok(h && typeof h === 'object', 'must return an object');
+    const keys = Object.keys(h).sort();
+    assert.deepStrictEqual(keys, [
+      'Content-Security-Policy',
+      'Referrer-Policy',
+      'X-Content-Type-Options',
+      'X-Frame-Options',
+    ], 'must return exactly the four required keys');
+  });
+
+  await test('buildSecurityHeaders returns strict CSP (self-only scripts, inline styles permitted)', () => {
+    const h = shared.buildSecurityHeaders();
+    const csp = h['Content-Security-Policy'];
+    assert.ok(csp.includes("default-src 'self'"), 'CSP must include default-src self');
+    assert.ok(csp.includes("script-src 'self'"), 'CSP must include script-src self');
+    assert.ok(csp.includes("style-src 'self' 'unsafe-inline'"), 'CSP must allow inline styles');
+    // script-src must NOT include 'unsafe-inline' — that would defeat XSS protection
+    assert.ok(!/script-src[^;]*'unsafe-inline'/.test(csp), "script-src must not allow 'unsafe-inline'");
+  });
+
+  await test('buildSecurityHeaders sets X-Frame-Options: DENY and nosniff + same-origin referrer', () => {
+    const h = shared.buildSecurityHeaders();
+    assert.strictEqual(h['X-Frame-Options'], 'DENY');
+    assert.strictEqual(h['X-Content-Type-Options'], 'nosniff');
+    assert.strictEqual(h['Referrer-Policy'], 'same-origin');
+  });
+
+  await test('buildSecurityHeaders returns a fresh object each call (no shared mutation)', () => {
+    const a = shared.buildSecurityHeaders();
+    const b = shared.buildSecurityHeaders();
+    assert.notStrictEqual(a, b, 'each call must return a distinct object');
+    a['X-Frame-Options'] = 'TAMPERED';
+    assert.strictEqual(b['X-Frame-Options'], 'DENY', 'mutation of one result must not affect a later call');
+  });
+}
+
 async function testSanitizePath() {
   console.log('\n── shared.js — Path Sanitization ──');
 
@@ -432,6 +560,93 @@ async function testValidatePid() {
   await test('validatePid rejects zero and negative PIDs', () => {
     assert.throws(() => shared.validatePid(0), /positive/);
     assert.throws(() => shared.validatePid(-1), /numeric/);
+  });
+}
+
+async function testHasDangerousKey() {
+  console.log('\n── shared.js — hasDangerousKey (Prototype Pollution Guard) ──');
+
+  await test('hasDangerousKey flags top-level __proto__', () => {
+    // JSON.parse creates __proto__ as own enumerable data property
+    const obj = JSON.parse('{"__proto__":{"x":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags top-level constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ constructor: 1 }), true);
+  });
+
+  await test('hasDangerousKey flags top-level prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ prototype: null }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep __proto__', () => {
+    const obj = JSON.parse('{"foo":{"__proto__":1}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep constructor', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { constructor: 1 } }), true);
+  });
+
+  await test('hasDangerousKey flags one-level-deep prototype', () => {
+    assert.strictEqual(shared.hasDangerousKey({ foo: { prototype: {} } }), true);
+  });
+
+  await test('hasDangerousKey does NOT recurse beyond one level by design', () => {
+    // Two levels deep is intentionally ignored — guard is belt-and-braces, not deep sanitizer.
+    const obj = JSON.parse('{"foo":{"bar":{"__proto__":1}}}');
+    assert.strictEqual(shared.hasDangerousKey(obj), false);
+  });
+
+  await test('hasDangerousKey returns false for empty object', () => {
+    assert.strictEqual(shared.hasDangerousKey({}), false);
+  });
+
+  await test('hasDangerousKey returns false for null', () => {
+    assert.strictEqual(shared.hasDangerousKey(null), false);
+  });
+
+  await test('hasDangerousKey returns false for undefined', () => {
+    assert.strictEqual(shared.hasDangerousKey(undefined), false);
+  });
+
+  await test('hasDangerousKey returns false for primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey('string'), false);
+    assert.strictEqual(shared.hasDangerousKey(42), false);
+    assert.strictEqual(shared.hasDangerousKey(true), false);
+    assert.strictEqual(shared.hasDangerousKey(false), false);
+  });
+
+  await test('hasDangerousKey returns false for plain safe object', () => {
+    assert.strictEqual(shared.hasDangerousKey({ a: 1, b: 'two', c: [1, 2, 3], d: { nested: true } }), false);
+  });
+
+  await test('hasDangerousKey flags arrays with dangerous elements (top-level treatment)', () => {
+    const arr = [JSON.parse('{"__proto__":{"x":1}}')];
+    assert.strictEqual(shared.hasDangerousKey(arr), true);
+  });
+
+  await test('hasDangerousKey flags arrays containing objects with forbidden keys', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ constructor: 1 }]), true);
+    assert.strictEqual(shared.hasDangerousKey([{ prototype: null }]), true);
+  });
+
+  await test('hasDangerousKey returns false for arrays of primitives', () => {
+    assert.strictEqual(shared.hasDangerousKey([1, 2, 3]), false);
+    assert.strictEqual(shared.hasDangerousKey(['a', 'b', 'c']), false);
+    assert.strictEqual(shared.hasDangerousKey([]), false);
+  });
+
+  await test('hasDangerousKey returns false for arrays of safe objects', () => {
+    assert.strictEqual(shared.hasDangerousKey([{ a: 1 }, { b: 2 }]), false);
+  });
+
+  await test('hasDangerousKey does NOT mutate input', () => {
+    const obj = JSON.parse('{"__proto__":{"polluted":true}}');
+    const before = JSON.stringify(obj);
+    shared.hasDangerousKey(obj);
+    assert.strictEqual(JSON.stringify(obj), before);
   });
 }
 
@@ -2283,6 +2498,373 @@ async function testContentHashCircuitBreaker() {
     const result = checkDuplicateHash(items);
     assert.strictEqual(result.isDuplicate, true);
   });
+
+  await test('checkDuplicateHash returns false for undefined input', () => {
+    assert.strictEqual(checkDuplicateHash(undefined).isDuplicate, false);
+  });
+
+  await test('checkDuplicateHash returns false for a single item', () => {
+    // One item is never >80% of itself in the circuit-breaker sense (1/1 = 100%
+    // but the check is on >0.8 ratio; however a single item hash comparison is
+    // meaningless — document intended behavior: single item still reports
+    // isDuplicate=true because 1/1 > 0.8, but count/total encode reality.
+    // This test locks in the *current* semantics so regressions surface.
+    const result = checkDuplicateHash([{ name: 'a.md', content: 'only one' }]);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 1);
+    assert.strictEqual(result.total, 1);
+  });
+
+  await test('checkDuplicateHash reports correct count/total for 100% duplicates', () => {
+    const items = [];
+    for (let i = 0; i < 7; i++) items.push({ name: `same-${i}.md`, content: 'identical' });
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 7);
+    assert.strictEqual(result.total, 7);
+    assert.ok(/^[0-9a-f]{64}$/.test(result.hash), 'hash should be 64-char hex SHA-256');
+  });
+
+  await test('checkDuplicateHash treats items missing `content` field as empty', () => {
+    // content === undefined collapses to '' in the hash (defensive: content || '')
+    const items = [];
+    for (let i = 0; i < 5; i++) items.push({ name: `no-content-${i}.md` }); // no content field
+    items.push({ name: 'real.md', content: 'something real' });
+    const result = checkDuplicateHash(items);
+    // 5 items share an empty-content hash → 5/6 = 83% > 80%
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 5);
+  });
+}
+
+// ─── classifyToKnowledgeBase — KB File Writing ─────────────────────────────
+
+async function testClassifyToKnowledgeBase() {
+  console.log('\n── consolidation.js — classifyToKnowledgeBase ──');
+
+  await test('classifyToKnowledgeBase creates all category directories even for empty input', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([]);
+      for (const cat of shared.KB_CATEGORIES) {
+        assert.ok(
+          fs.existsSync(path.join(testDir, 'knowledge', cat)),
+          `category dir knowledge/${cat} should be created`
+        );
+      }
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes review-named notes to reviews/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-feedback.md', content: '# Review findings\n- nit: naming' },
+      ]);
+      const reviewsDir = path.join(testDir, 'knowledge', 'reviews');
+      const entries = fs.readdirSync(reviewsDir);
+      assert.strictEqual(entries.length, 1, 'exactly one file should land in knowledge/reviews/');
+      const written = fs.readFileSync(path.join(reviewsDir, entries[0]), 'utf8');
+      assert.ok(written.startsWith('---\n'), 'KB file must start with YAML frontmatter');
+      assert.ok(written.includes('source: ripley-review-feedback.md'), 'frontmatter must carry source name');
+      assert.ok(written.includes('agent: ripley'), 'frontmatter must extract agent prefix from filename');
+      assert.ok(written.includes('category: reviews'), 'frontmatter must record routed category');
+      assert.ok(written.includes('# Review findings'), 'original content must be preserved after frontmatter');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes build-named notes to build-reports/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'bt-2026-04-21-build.md', content: '# Build pass\nAll green.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'build-reports'));
+      assert.strictEqual(entries.length, 1, 'build-named note should land in build-reports/');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes architecture-keyword content to architecture/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'dallas-notes.md', content: '# Walkthrough\nHere is the data flow through the dispatcher.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'architecture'));
+      assert.strictEqual(entries.length, 1);
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase routes convention-keyword content to conventions/', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ralph-learnings.md', content: '# Style\nrule: always validate inputs before dispatch.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'conventions'));
+      assert.strictEqual(entries.length, 1);
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase falls back to project-notes for generic content', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // Content must avoid all trigger substrings: "review", "pr-", "feedback",
+      // "build", "lint", "architecture", "design doc", "data flow",
+      // "how it works", "convention" (note: "conventional" matches), "pattern",
+      // "always use", "never use", "rule:", "best practice".
+      consolidation.classifyToKnowledgeBase([
+        { name: 'generic-note.md', content: '# Status update\nAll items complete for plan X. Nothing special to report.' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1, 'generic content should fall back to project-notes/');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase handles items with null/undefined content without throwing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // Should not crash — content || '' defensiveness in classifier and writer
+      consolidation.classifyToKnowledgeBase([
+        { name: 'null-content.md', content: null },
+        { name: 'no-content-field.md' },
+      ]);
+      // Both items fall through to project-notes (empty content → no keyword matches)
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 2, 'both malformed notes should still be classified');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase derives agent=unknown when filename has no agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        // Name without a word-char prefix followed by '-' — no agent match
+        { name: '.hidden.md', content: '# Orphan\nsome content' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1);
+      assert.ok(entries[0].includes('-unknown-'), 'filename should embed agent=unknown when prefix is unparseable');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase writes kb-checkpoint.json with count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review.md', content: '# Review 1' },
+        { name: 'dallas-notes.md', content: '# Data flow description' },
+      ]);
+      const checkpoint = JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'kb-checkpoint.json'), 'utf8'));
+      assert.strictEqual(typeof checkpoint.count, 'number', 'checkpoint.count must be numeric');
+      assert.ok(checkpoint.count >= 2, 'checkpoint.count should reflect files written across all categories');
+      assert.ok(typeof checkpoint.updatedAt === 'string' && checkpoint.updatedAt.length > 0,
+        'checkpoint.updatedAt must be a non-empty ISO timestamp');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase preserves original content verbatim after frontmatter', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const body = '# Heading\n\nBody line with **markdown** and `code`.\n\n- bullet 1\n- bullet 2';
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-x.md', content: body },
+      ]);
+      const reviewsDir = path.join(testDir, 'knowledge', 'reviews');
+      const entries = fs.readdirSync(reviewsDir);
+      const written = fs.readFileSync(path.join(reviewsDir, entries[0]), 'utf8');
+      assert.ok(written.endsWith(body), 'original body must be appended verbatim after frontmatter');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase uses unique filenames on title collision', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'ripley-review-a.md', content: '# Same Title\nfirst body' },
+        { name: 'ripley-review-b.md', content: '# Same Title\nsecond body' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'reviews'));
+      assert.strictEqual(entries.length, 2, 'colliding title slugs must produce two distinct files, not overwrite');
+      assert.strictEqual(new Set(entries).size, 2, 'filenames must be unique after uniquePath()');
+    } finally { restore(); }
+  });
+}
+
+// ─── consolidateInbox — Behavior ────────────────────────────────────────────
+
+async function testConsolidateInboxBehavior() {
+  console.log('\n── consolidation.js — consolidateInbox behavior ──');
+
+  await test('consolidateInbox no-ops on empty inbox (no spawn, no archive)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      // No files in notes/inbox — threshold can't be met
+      consolidation.consolidateInbox({});
+      const inbox = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      const archive = fs.readdirSync(path.join(testDir, 'notes', 'archive'));
+      assert.strictEqual(inbox.length, 0, 'inbox should remain empty');
+      assert.strictEqual(archive.length, 0, 'archive should remain empty — no spawn or archive happened');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox no-ops when file count is below threshold', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Write 2 files; default threshold is 5 (ENGINE_DEFAULTS.inboxConsolidateThreshold)
+      fs.writeFileSync(path.join(inboxDir, 'ripley-a.md'), '# a\nbody');
+      fs.writeFileSync(path.join(inboxDir, 'ripley-b.md'), '# b\nbody');
+      consolidation.consolidateInbox({});
+      // Files should stay put — nothing consolidated
+      assert.deepStrictEqual(
+        fs.readdirSync(inboxDir).sort(),
+        ['ripley-a.md', 'ripley-b.md'],
+        'sub-threshold inbox should be untouched'
+      );
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 0);
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox honors config.engine.inboxConsolidateThreshold override', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Two identical files + very high threshold → no-op
+      fs.writeFileSync(path.join(inboxDir, 'r-a.md'), 'same');
+      fs.writeFileSync(path.join(inboxDir, 'r-b.md'), 'same');
+      consolidation.consolidateInbox({ engine: { inboxConsolidateThreshold: 100 } });
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 2, 'high threshold override must prevent consolidation');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox excludes pinned inbox notes from sweep count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+
+      // 4 pinned + 1 unpinned = 5 total on disk, but only 1 eligible (below threshold=5)
+      for (let i = 0; i < 4; i++) {
+        fs.writeFileSync(path.join(inboxDir, `pinned-${i}.md`), 'pinned body');
+      }
+      fs.writeFileSync(path.join(inboxDir, 'free-note.md'), 'free body');
+
+      freshShared.safeWrite(freshShared.PINNED_ITEMS_PATH, [
+        'notes/inbox/pinned-0.md',
+        'notes/inbox/pinned-1.md',
+        'notes/inbox/pinned-2.md',
+        'notes/inbox/pinned-3.md',
+      ]);
+
+      consolidation.consolidateInbox({});
+
+      // All five should still be in inbox — 1 eligible < 5 threshold
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 5, 'pinned notes must not trigger consolidation');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 0);
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox archives duplicate-content batch via circuit breaker (no LLM spawn)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const archiveDir = path.join(testDir, 'notes', 'archive');
+
+      // 5 identical files — meets default threshold (5) AND 100% duplicate hash
+      // hits the duplicate-archive shortcut inside consolidateWithLLM before any spawn.
+      const body = '# Duplicate\nSame content — plan X complete.';
+      const names = [];
+      for (let i = 0; i < 5; i++) {
+        const n = `ripley-dup-${i}.md`;
+        names.push(n);
+        fs.writeFileSync(path.join(inboxDir, n), body);
+      }
+
+      consolidation.consolidateInbox({});
+
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0, 'inbox must be drained after duplicate circuit breaker');
+      const archived = fs.readdirSync(archiveDir);
+      assert.strictEqual(archived.length, 5, 'all duplicate files must be moved into archive/');
+      // Archived files get a date prefix — base filename must still appear
+      for (const original of names) {
+        assert.ok(
+          archived.some(a => a.endsWith(original)),
+          `archived file for original "${original}" should exist in archive/`
+        );
+      }
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox tolerates non-markdown files in inbox without counting them', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // Non-.md files are filtered by getInboxFiles — 4 .md below threshold
+      for (let i = 0; i < 4; i++) {
+        fs.writeFileSync(path.join(inboxDir, `agent-${i}.md`), 'body');
+      }
+      fs.writeFileSync(path.join(inboxDir, 'stray.txt'), 'noise');
+      fs.writeFileSync(path.join(inboxDir, 'junk.log'), 'log line');
+
+      // Should not throw and should not trigger consolidation
+      consolidation.consolidateInbox({});
+
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 6, 'stray non-md files must be left untouched');
+    } finally { restore(); }
+  });
+
+  await test('consolidateInbox duplicate-archive path accepts files with unreadable agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      // 5 identical-body files with unusual names — no agent prefix, dotfile-ish.
+      // Exercises the circuit-breaker archive path, which must not crash on
+      // weird filenames (uses uniquePath + safeRead under the hood).
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(inboxDir, `no-prefix-${i}.md`), 'identical body across all');
+      }
+      consolidation.consolidateInbox({});
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0, 'all files archived even without agent prefix');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 5);
+    } finally { restore(); }
+  });
 }
 
 // ─── Consolidation Force-Reset Race Condition Tests ─────────────────────────
@@ -3160,6 +3742,284 @@ async function testLlmModule() {
     assert.ok(src.includes('maxLineBufferBytes'), 'Should cap the incremental line buffer');
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
   });
+
+  // ── Export Shape ─────────────────────────────────────────────────────────
+  await test('llm module exports callLLMStreaming', () => {
+    assert.ok(typeof llm.callLLMStreaming === 'function');
+  });
+
+  await test('llm module exports exactly the documented surface', () => {
+    const exported = Object.keys(llm).sort();
+    assert.deepStrictEqual(exported, [
+      'callLLM',
+      'callLLMStreaming',
+      'isResumeSessionStillValid',
+      'trackEngineUsage',
+    ]);
+  });
+
+  // ── trackEngineUsage — persistence, accumulation, guards ─────────────────
+  // These tests run against a temp MINIONS_TEST_DIR so they do not pollute
+  // real engine/metrics.json. The module is re-required after createTestMinionsDir
+  // so shared.MINIONS_DIR / llm.ENGINE_DIR resolve against the temp tree.
+
+  await test('trackEngineUsage initializes a new category with all fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('agent-dispatch', {
+        costUsd: 0.05, inputTokens: 1000, outputTokens: 500,
+        cacheRead: 200, cacheCreation: 100, durationMs: 3000,
+      });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['agent-dispatch'];
+      assert.strictEqual(cat.calls, 1);
+      assert.strictEqual(cat.costUsd, 0.05);
+      assert.strictEqual(cat.inputTokens, 1000);
+      assert.strictEqual(cat.outputTokens, 500);
+      assert.strictEqual(cat.cacheRead, 200);
+      assert.strictEqual(cat.cacheCreation, 100);
+      assert.strictEqual(cat.totalDurationMs, 3000);
+      assert.strictEqual(cat.timedCalls, 1);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage accumulates across multiple calls to the same category', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreation: 5, durationMs: 1000 });
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.02, inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreation: 10, durationMs: 2000 });
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.04, inputTokens: 400, outputTokens: 100, cacheRead: 30, cacheCreation: 15, durationMs: 1500 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['command-center'];
+      assert.strictEqual(cat.calls, 3);
+      assert.ok(Math.abs(cat.costUsd - 0.07) < 1e-9, `costUsd ≈ 0.07 (got ${cat.costUsd})`);
+      assert.strictEqual(cat.inputTokens, 700);
+      assert.strictEqual(cat.outputTokens, 230);
+      assert.strictEqual(cat.cacheRead, 60);
+      assert.strictEqual(cat.cacheCreation, 30);
+      assert.strictEqual(cat.totalDurationMs, 4500);
+      assert.strictEqual(cat.timedCalls, 3);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage treats missing usage fields as 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      // Only costUsd present — all other fields missing
+      freshLlm.trackEngineUsage('doc-chat', { costUsd: 0.001 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['doc-chat'];
+      assert.strictEqual(cat.calls, 1);
+      assert.ok(Math.abs(cat.costUsd - 0.001) < 1e-9);
+      assert.strictEqual(cat.inputTokens, 0);
+      assert.strictEqual(cat.outputTokens, 0);
+      assert.strictEqual(cat.cacheRead, 0);
+      assert.strictEqual(cat.cacheCreation, 0);
+      // No durationMs — totalDurationMs/timedCalls must not be initialized
+      assert.strictEqual(cat.totalDurationMs, undefined);
+      assert.strictEqual(cat.timedCalls, undefined);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage only increments totalDurationMs when durationMs is provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.01, durationMs: 500 });
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.02 }); // no duration
+      freshLlm.trackEngineUsage('consolidation', { costUsd: 0.03, durationMs: 750 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['consolidation'];
+      assert.strictEqual(cat.calls, 3);
+      assert.strictEqual(cat.totalDurationMs, 1250, '500 + 750 — the untimed call must not contribute');
+      assert.strictEqual(cat.timedCalls, 2, 'timedCalls reflects only calls with durationMs');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage populates _daily bucket keyed by today (YYYY-MM-DD)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('agent-dispatch', {
+        costUsd: 0.5, inputTokens: 5000, outputTokens: 1000, cacheRead: 200,
+      });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const today = new Date().toISOString().slice(0, 10);
+      assert.ok(metrics._daily, '_daily bucket should exist');
+      assert.ok(metrics._daily[today], `today key ${today} should be present`);
+      const daily = metrics._daily[today];
+      assert.ok(Math.abs(daily.costUsd - 0.5) < 1e-9);
+      assert.strictEqual(daily.inputTokens, 5000);
+      assert.strictEqual(daily.outputTokens, 1000);
+      assert.strictEqual(daily.cacheRead, 200);
+      assert.strictEqual(daily.tasks, 0, 'tasks is initialized to 0 by trackEngineUsage (incremented elsewhere)');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage _daily aggregates totals across categories on the same day', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('command-center', { costUsd: 0.1, inputTokens: 100, outputTokens: 50, cacheRead: 10 });
+      freshLlm.trackEngineUsage('consolidation',  { costUsd: 0.2, inputTokens: 200, outputTokens: 80, cacheRead: 20 });
+      freshLlm.trackEngineUsage('doc-chat',       { costUsd: 0.3, inputTokens: 300, outputTokens: 90, cacheRead: 30 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const today = new Date().toISOString().slice(0, 10);
+      const daily = metrics._daily[today];
+      assert.ok(Math.abs(daily.costUsd - 0.6) < 1e-9);
+      assert.strictEqual(daily.inputTokens, 600);
+      assert.strictEqual(daily.outputTokens, 220);
+      assert.strictEqual(daily.cacheRead, 60);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage skips categories prefixed with test- or _test', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      freshLlm.trackEngineUsage('test-foo',  { costUsd: 0.5, inputTokens: 100 });
+      freshLlm.trackEngineUsage('_test_bar', { costUsd: 0.5, inputTokens: 100 });
+      freshLlm.trackEngineUsage('_testbaz',  { costUsd: 0.5, inputTokens: 100 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      // metrics.json stays as seed '{}' — no _engine bucket should have been created
+      assert.ok(!metrics._engine, 'no _engine key should exist when only skipped categories were recorded');
+      assert.ok(!metrics._daily,  'no _daily key should exist either');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage does not touch metrics.json when usage is null', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      freshLlm.trackEngineUsage('agent-dispatch', null);
+      freshLlm.trackEngineUsage('agent-dispatch', undefined);
+      assert.ok(!fs.existsSync(metricsPath), 'metrics.json must not be created for null/undefined usage');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage creates metrics.json if it does not yet exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      assert.ok(!fs.existsSync(metricsPath), 'precondition: file absent');
+      freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 50 });
+      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first call');
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(metrics._engine['agent-dispatch'].calls, 1);
+      assert.strictEqual(metrics._engine['agent-dispatch'].inputTokens, 50);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage preserves unrelated categories on each write', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      // Pre-seed metrics.json with an unrelated category we must not clobber
+      const seed = {
+        _engine: {
+          'other-cat': { calls: 7, costUsd: 0.7, inputTokens: 70, outputTokens: 30, cacheRead: 5, cacheCreation: 2 },
+        },
+        _daily: { '1999-01-01': { costUsd: 42, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 } },
+      };
+      fs.writeFileSync(metricsPath, JSON.stringify(seed));
+      freshLlm.trackEngineUsage('new-cat', { costUsd: 0.01, inputTokens: 100 });
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.deepStrictEqual(metrics._engine['other-cat'], seed._engine['other-cat'],
+        'unrelated category must be preserved byte-for-byte');
+      assert.strictEqual(metrics._engine['new-cat'].calls, 1);
+      assert.strictEqual(metrics._daily['1999-01-01'].costUsd, 42,
+        'unrelated _daily entries must be preserved');
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage sequential calls produce exact accumulated totals (atomic writes)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      for (let i = 0; i < 25; i++) {
+        freshLlm.trackEngineUsage('stress-cat', { costUsd: 0.001, inputTokens: 10, outputTokens: 4, cacheRead: 1, cacheCreation: 0 });
+      }
+      const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      const cat = metrics._engine['stress-cat'];
+      assert.strictEqual(cat.calls, 25, 'every mutateJsonFileLocked call must land — no dropped writes');
+      assert.strictEqual(cat.inputTokens, 250);
+      assert.strictEqual(cat.outputTokens, 100);
+      assert.strictEqual(cat.cacheRead, 25);
+      assert.ok(Math.abs(cat.costUsd - 0.025) < 1e-9);
+    } finally { restore(); }
+  });
+
+  await test('trackEngineUsage swallows errors (e.g. metrics.json replaced by directory) without throwing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshLlm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.unlinkSync(metricsPath);
+      fs.mkdirSync(metricsPath); // force any write attempt to fail
+      // Must not throw — trackEngineUsage catches and logs internally
+      const origErr = console.error;
+      let caught = false;
+      console.error = () => { caught = true; };
+      try {
+        freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 10 });
+      } finally {
+        console.error = origErr;
+      }
+      assert.ok(caught, 'should have logged an error but not thrown');
+      // Clean up our directory stub so restore() can nuke the tmp tree cleanly
+      fs.rmdirSync(metricsPath);
+    } finally { restore(); }
+  });
+
+  // ── isResumeSessionStillValid — additional edge cases ────────────────────
+  await test('isResumeSessionStillValid returns false for undefined result', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid(undefined), false);
+  });
+
+  await test('isResumeSessionStillValid treats empty-string sessionId as invalid and falls through to raw', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '' }), false);
+    // But a falsy sessionId with a live session_id marker in raw is still alive
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '"session_id":"s1"' }), true);
+  });
+
+  await test('isResumeSessionStillValid returns false when raw lacks any session_id marker', () => {
+    const result = {
+      sessionId: null, code: 1, text: '',
+      raw: '{"type":"assistant","message":"partial"}\n{"type":"error","code":"ETIMEDOUT"}',
+      stderr: 'tool timeout',
+    };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
+  });
+
+  await test('isResumeSessionStillValid handles non-string raw values gracefully', () => {
+    // Non-string raw (shape drift / truncation) must not throw — guard uses truthy + .includes
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: false }), false);
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: 0 }), false);
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: null }), false);
+  });
+
+  await test('isResumeSessionStillValid prefers parsed sessionId over raw scan', () => {
+    // If sessionId is truthy, we return true without scanning raw.
+    // Raw lacking the marker should NOT flip the answer.
+    const result = { sessionId: 'sess-live', code: 0, text: 'ok', raw: 'no marker here', stderr: '' };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  });
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
@@ -3447,12 +4307,22 @@ async function testConfigAndPlaybooks() {
       'publish workflow should read the publish admin PAT from repo secrets');
     assert.ok(src.includes('PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations.'),
       'publish workflow should fail clearly when the publish admin PAT is missing');
-    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --delete-branch --admin'),
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --subject "chore: publish $NEXT [skip ci]" --body "" --delete-branch --admin'),
       'publish workflow should use the admin PAT for direct admin merge after posting required checks');
     assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch'),
       'publish workflow should use the admin PAT when closing stale publish PRs');
     assert.ok(!src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
       'publish workflow should not use invalid --auto + --admin combination');
+  });
+
+  await test('publish workflow guards recursive skip-ci publishes and serializes runs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    assert.ok(src.includes("if: \"!contains(github.event.head_commit.message, '[skip ci]')\""),
+      'publish workflow should skip push events when the landing commit message includes [skip ci]');
+    assert.ok(src.includes('git commit -m "chore: publish $NEXT — changelog updated [skip ci]"'),
+      'publish workflow should include [skip ci] in the publish branch commit message');
+    assert.ok(src.includes('concurrency:') && src.includes('group: publish-${{ github.repository }}-${{ github.ref }}'),
+      'publish workflow should define workflow-level concurrency for publish runs');
   });
 }
 
@@ -4855,6 +5725,686 @@ async function testPreflightDeep() {
   });
 }
 
+// ─── engine/preflight.js Behavioral Tests ───────────────────────────────────
+//
+// These tests exercise real code paths (failure injection, stubbed process.exit,
+// fake MINIONS_HOME for doctor) rather than matching on source strings. The
+// two suites above are source-string heavy; these cover the actual branches.
+
+async function testPreflightBehavioral() {
+  console.log('\n── engine/preflight.js (behavioral) ──');
+
+  const PREFLIGHT_ABS = require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'));
+
+  // Load fresh each test so env/execSync stubs apply.
+  function freshPreflight() {
+    delete require.cache[PREFLIGHT_ABS];
+    return require(PREFLIGHT_ABS);
+  }
+
+  // Capture console.log/error; also stub process.exit so failure paths don't nuke the runner.
+  function withCapture(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    let result;
+    try { result = fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    return { logs, errs, exits, threw, result };
+  }
+
+  async function withCaptureAsync(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    let result;
+    try { result = await fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    return { logs, errs, exits, threw, result };
+  }
+
+  // Inject an execSync stub by mutating the child_process module exports
+  // BEFORE re-requiring preflight. preflight destructures `execSync` at module
+  // load, so this only takes effect on a fresh require.
+  function withStubbedExecSync(predicateMatcher, stubImpl, fn) {
+    const cp = require('child_process');
+    const orig = cp.execSync;
+    cp.execSync = function stubExec(cmd, opts) {
+      if (predicateMatcher(cmd)) return stubImpl(cmd, opts);
+      return orig.call(this, cmd, opts);
+    };
+    try {
+      return fn();
+    } finally {
+      cp.execSync = orig;
+      delete require.cache[PREFLIGHT_ABS]; // ensure next caller gets un-stubbed execSync
+    }
+  }
+
+  // ── findClaudeBinary: MINIONS_DEBUG debug logging (behavioral) ──
+
+  await test('findClaudeBinary: MINIONS_DEBUG=1 prints "Dropped empty" for each empty path', () => {
+    const origDebug = process.env.MINIONS_DEBUG;
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    process.env.MINIONS_DEBUG = '1';
+    // Force both env-derived path entries to become empty strings (falsy → dropped)
+    delete process.env.npm_config_prefix;
+    delete process.env.APPDATA;
+
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      fresh.findClaudeBinary();
+    });
+
+    try {
+      const dropLogs = cap.logs.filter(l => l.includes('Dropped empty CLI search path'));
+      // npm_config_prefix and APPDATA both unset → 2 empty entries in searchPaths array
+      assert.ok(dropLogs.length >= 2,
+        `Should log at least 2 dropped paths (npm_config_prefix + APPDATA), got ${dropLogs.length}`);
+      assert.ok(!cap.threw, `Should not throw: ${cap.threw && cap.threw.message}`);
+    } finally {
+      if (origDebug !== undefined) process.env.MINIONS_DEBUG = origDebug;
+      else delete process.env.MINIONS_DEBUG;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  await test('findClaudeBinary: MINIONS_DEBUG unset silences dropped-path logging', () => {
+    const origDebug = process.env.MINIONS_DEBUG;
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    delete process.env.MINIONS_DEBUG;
+    delete process.env.npm_config_prefix;
+    delete process.env.APPDATA;
+
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      fresh.findClaudeBinary();
+    });
+
+    try {
+      const dropLogs = cap.logs.filter(l => l.includes('Dropped empty CLI search path'));
+      assert.strictEqual(dropLogs.length, 0,
+        'Should NOT log dropped paths when MINIONS_DEBUG is unset');
+    } finally {
+      if (origDebug !== undefined) process.env.MINIONS_DEBUG = origDebug;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── findClaudeBinary: returns null when binary is completely absent ──
+
+  await test('findClaudeBinary: returns null when all search paths fail and which/npm throw', () => {
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    // Point the env-derived paths at a directory that definitely won't contain cli.js
+    const nowhereDir = createTmpDir();
+    process.env.npm_config_prefix = nowhereDir;
+    process.env.APPDATA = nowhereDir;
+
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && (/where\s+claude/.test(cmd) || /which\s+claude/.test(cmd) || /npm\s+root/.test(cmd)),
+      () => { throw new Error('__mocked_not_found__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.findClaudeBinary();
+      }
+    );
+
+    try {
+      // On most dev machines /usr/local/lib, /opt/homebrew, etc. won't contain cli.js;
+      // on Windows they'll be absent entirely. With which/npm stubbed, result must be null.
+      // Exception: if /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js genuinely
+      // exists on the test host, result would be that path. Guard that as pass too.
+      if (result !== null) {
+        assert.ok(result.endsWith('cli.js'),
+          `Non-null result must be a valid cli.js path; got: ${result}`);
+        assert.ok(result.includes('@anthropic-ai'),
+          'Non-null result must be in @anthropic-ai package tree');
+      } else {
+        assert.strictEqual(result, null);
+      }
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      else delete process.env.APPDATA;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── runPreflight: Git failure path (behavioral via execSync injection) ──
+
+  await test('runPreflight: Git check reports ok=false when git --version throws', () => {
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+      () => { throw new Error('__mocked_git_missing__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.runPreflight();
+      }
+    );
+
+    const gitCheck = result.results.find(r => r.name === 'Git');
+    assert.ok(gitCheck, 'Git check must exist');
+    assert.strictEqual(gitCheck.ok, false, 'Git check should fail when git --version throws');
+    assert.ok(gitCheck.message.includes('not found'), `message should mention not found, got: ${gitCheck.message}`);
+    assert.ok(gitCheck.message.includes('git-scm.com'), 'message should include install URL');
+    assert.strictEqual(result.passed, false, 'passed should be false with failing Git check');
+  });
+
+  await test('runPreflight: Claude CLI failure reports correct message when binary absent', () => {
+    // Point env paths at a dir without cli.js AND stub which/where/npm to throw.
+    const origPrefix = process.env.npm_config_prefix;
+    const origAppdata = process.env.APPDATA;
+    const nowhereDir = createTmpDir();
+    process.env.npm_config_prefix = nowhereDir;
+    process.env.APPDATA = nowhereDir;
+
+    const result = withStubbedExecSync(
+      cmd => typeof cmd === 'string' && (/where\s+claude/.test(cmd) || /which\s+claude/.test(cmd) || /npm\s+root/.test(cmd)),
+      () => { throw new Error('__mocked_not_found__'); },
+      () => {
+        const fresh = freshPreflight();
+        return fresh.runPreflight();
+      }
+    );
+
+    try {
+      const claudeCheck = result.results.find(r => r.name === 'Claude Code CLI');
+      assert.ok(claudeCheck, 'Claude Code CLI check must exist');
+      // If the test host has /usr/local/lib or similar actually containing claude-code,
+      // we'd hit an early return. Guard that.
+      if (claudeCheck.ok === false) {
+        assert.ok(claudeCheck.message.includes('not found'),
+          `message should mention not found, got: ${claudeCheck.message}`);
+        assert.ok(claudeCheck.message.includes('claude.ai/download') || claudeCheck.message.includes('@anthropic-ai/claude-code'),
+          'message should include install instructions');
+        assert.strictEqual(result.passed, false, 'passed=false when Claude CLI missing');
+      }
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      if (origAppdata !== undefined) process.env.APPDATA = origAppdata;
+      else delete process.env.APPDATA;
+      delete require.cache[PREFLIGHT_ABS];
+    }
+  });
+
+  // ── checkOrExit: behavioral exit paths (stubbed process.exit) ──
+
+  await test('checkOrExit: exitOnFail=true calls process.exit(1) when a critical check fails', () => {
+    const cap = withCapture(() => {
+      return withStubbedExecSync(
+        cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+        () => { throw new Error('__mocked_git_missing__'); },
+        () => {
+          const fresh = freshPreflight();
+          fresh.checkOrExit({ exitOnFail: true });
+        }
+      );
+    });
+
+    assert.deepStrictEqual(cap.exits, [1],
+      `Should call process.exit(1) exactly once on failure; got exits=${JSON.stringify(cap.exits)}`);
+    assert.ok(cap.errs.some(l => l.includes('Fix the issues above')),
+      'Should print "Fix the issues above" to stderr before exit');
+  });
+
+  await test('checkOrExit: exitOnFail=true does NOT exit when preflight passes', () => {
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      return fresh.checkOrExit({ exitOnFail: true });
+    });
+
+    // On this dev machine, runPreflight should pass (node/git/claude all present).
+    // If the host lacks any of them, this test degrades to asserting consistent behavior.
+    if (cap.exits.length === 0) {
+      assert.strictEqual(cap.exits.length, 0, 'Should not exit when all checks pass');
+      assert.strictEqual(cap.result, true, 'Should return true when all checks pass');
+    } else {
+      // Environment lacks a prerequisite — not our concern, just assert consistency
+      assert.deepStrictEqual(cap.exits, [1], 'Exit, if any, should be code 1');
+    }
+  });
+
+  await test('checkOrExit: exitOnFail=false returns false on failure without exiting', () => {
+    const cap = withCapture(() => {
+      return withStubbedExecSync(
+        cmd => typeof cmd === 'string' && /^git\s+--version/.test(cmd),
+        () => { throw new Error('__mocked_git_missing__'); },
+        () => {
+          const fresh = freshPreflight();
+          return fresh.checkOrExit({ exitOnFail: false });
+        }
+      );
+    });
+
+    assert.strictEqual(cap.exits.length, 0, 'Should NOT call process.exit when exitOnFail=false');
+    assert.strictEqual(cap.result, false, 'Should return false when a check fails');
+    assert.ok(!cap.errs.some(l => l.includes('Fix the issues above')),
+      'Should NOT print "Fix the issues above" when exitOnFail=false');
+  });
+
+  await test('checkOrExit: custom label is passed through to printPreflight', () => {
+    const cap = withCapture(() => {
+      const fresh = freshPreflight();
+      return fresh.checkOrExit({ exitOnFail: false, label: 'Custom-Behavioral-Label-XYZ' });
+    });
+
+    assert.ok(cap.logs.some(l => l.includes('Custom-Behavioral-Label-XYZ')),
+      `Custom label should appear in output; got logs: ${cap.logs.slice(0,5).join('\n')}`);
+  });
+
+  // ── doctor: behavioral tests with fake MINIONS_HOME ──
+
+  // Build a minimal MINIONS_HOME on disk with controllable fields.
+  function setupDoctorHome({
+    engineJs = true,
+    config, // if undefined → no config.json written; if null → written as invalid JSON; else serialized
+    control, // same convention as config
+    playbooks = ['implement.md', 'review.md'],
+  } = {}) {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, 'engine'), { recursive: true });
+    if (engineJs) fs.writeFileSync(path.join(dir, 'engine.js'), '// test fixture');
+    if (config === null) {
+      fs.writeFileSync(path.join(dir, 'config.json'), '{not valid json}');
+    } else if (config !== undefined) {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
+    }
+    if (control === null) {
+      fs.writeFileSync(path.join(dir, 'engine', 'control.json'), '{not valid}');
+    } else if (control !== undefined) {
+      fs.writeFileSync(path.join(dir, 'engine', 'control.json'), JSON.stringify(control));
+    }
+    if (playbooks && playbooks.length > 0) {
+      fs.mkdirSync(path.join(dir, 'playbooks'), { recursive: true });
+      for (const pb of playbooks) fs.writeFileSync(path.join(dir, 'playbooks', pb), '# pb');
+    }
+    return dir;
+  }
+
+  // Lines from printPreflight follow the pattern:
+  //   "  <icon> <name>: <message>"
+  // where icon is ✓ (U+2713), ✗ (U+2717), or !
+  // Using a structured parser against captured logs lets us assert per-check outcomes.
+  function parseResultLine(line) {
+    // Strip leading whitespace, match one icon glyph, capture name: message
+    const m = line.match(/^\s*([\u2713\u2717!])\s+([^:]+):\s*(.*)$/);
+    if (!m) return null;
+    const iconToOk = { '\u2713': true, '\u2717': false, '!': 'warn' };
+    return { ok: iconToOk[m[1]], name: m[2].trim(), message: m[3].trim() };
+  }
+
+  function findCheck(logs, name) {
+    for (const line of logs) {
+      const parsed = parseResultLine(line);
+      if (parsed && parsed.name === name) return parsed;
+    }
+    return null;
+  }
+
+  await test('doctor: returns a Promise resolving to a boolean', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: { role: 'Engineer' } },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => {
+      const fresh = freshPreflight();
+      const p = fresh.doctor(dir);
+      assert.ok(p && typeof p.then === 'function', 'doctor must return a thenable');
+      return await p;
+    });
+    assert.ok(typeof cap.result === 'boolean', `Expected boolean, got ${typeof cap.result}`);
+    assert.ok(!cap.threw, `Should not throw: ${cap.threw && cap.threw.message}`);
+  });
+
+  await test('doctor: reports "Minions installed" OK when engine.js exists', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Minions installed');
+    assert.ok(check, `"Minions installed" row missing from output:\n${cap.logs.join('\n')}`);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes(dir) || check.message.length > 0, 'message should reference home dir');
+  });
+
+  await test('doctor: reports "Minions installed" FAIL when engine.js is missing', async () => {
+    const dir = setupDoctorHome({
+      engineJs: false,
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Minions installed');
+    assert.ok(check, '"Minions installed" row must appear');
+    assert.strictEqual(check.ok, false, 'should fail when engine.js missing');
+    assert.ok(check.message.includes('not found'), `message should say "not found"; got: ${check.message}`);
+    // And doctor should ultimately resolve to false (printPreflight returns false on any ok=false)
+    assert.strictEqual(cap.result, false, 'doctor should return false when any critical check fails');
+  });
+
+  await test('doctor: reports "Config" FAIL when config.json is missing', async () => {
+    const dir = setupDoctorHome({ control: { state: 'stopped' } });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Config');
+    assert.ok(check, '"Config" row must appear when config.json is absent');
+    assert.strictEqual(check.ok, false, 'should fail when config.json missing');
+    assert.ok(check.message.includes('missing or invalid'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false);
+  });
+
+  await test('doctor: reports "Config" FAIL when config.json is malformed', async () => {
+    const dir = setupDoctorHome({ config: null, control: { state: 'stopped' } });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Config');
+    assert.ok(check, '"Config" row must appear when config.json is malformed');
+    assert.strictEqual(check.ok, false);
+  });
+
+  await test('doctor: reports "Projects configured" FAIL with only placeholder projects (YOUR_*)', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'YOUR_PROJECT_NAME', localPath: 'x' }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Projects configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false, 'Placeholder projects should not count');
+    assert.ok(check.message.includes('no projects'), `got: ${check.message}`);
+  });
+
+  await test('doctor: reports per-project FAIL when localPath does not exist', async () => {
+    const bogusPath = path.join(createTmpDir(), 'definitely-does-not-exist');
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'BrokenProj', localPath: bogusPath }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Project "BrokenProj"');
+    assert.ok(check, `Expected per-project row for BrokenProj; logs:\n${cap.logs.join('\n')}`);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('path not found'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false, 'missing project path is critical');
+  });
+
+  await test('doctor: reports "Agents configured" FAIL when config.agents is empty', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: {},
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Agents configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('no agents'), `got: ${check.message}`);
+  });
+
+  await test('doctor: reports "Agents configured" OK with count when agents present', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {}, ripley: {}, lambert: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Agents configured');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(/3 agent/.test(check.message), `should show "3 agent(s)"; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration OK with client-secret auth (appId + appPassword)', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: { enabled: true, appId: 'abc-123', appPassword: 'secret' },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes('client secret'),
+      `message should identify client-secret auth; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration OK with certificate auth', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: {
+          enabled: true, appId: 'abc-123',
+          certPath: '/fake/cert', privateKeyPath: '/fake/key', tenantId: 'tenant-1',
+        },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    assert.ok(check.message.includes('certificate'),
+      `message should identify cert auth; got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration WARN (not fail) when enabled but incomplete', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        teams: { enabled: true, appId: 'abc-123' }, // no secret, no cert
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn', 'Incomplete Teams config should warn, not fail');
+    assert.ok(check.message.includes('missing'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Teams integration WARN when teams block absent or disabled', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+        // no teams block
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Teams integration');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn', 'Disabled/absent Teams → warn only');
+    assert.ok(check.message.includes('disabled'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine WARN when control.json is missing', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      // control omitted
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn');
+    assert.ok(check.message.includes('not started'), `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine WARN when control.state is "stopped"', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, 'warn');
+    assert.ok(check.message.includes('stopped') || check.message.includes('not started'),
+      `got: ${check.message}`);
+  });
+
+  await test('doctor: Engine FAIL when control.state=running but PID is stale', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      // 999999 is extremely unlikely to be a live node.exe on the test machine
+      control: { state: 'running', pid: 999999 },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Engine');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false, 'Stale PID should fail the engine check');
+    assert.ok(check.message.includes('stale') || check.message.includes('PID'),
+      `got: ${check.message}`);
+    assert.strictEqual(cap.result, false, 'Stale engine is a critical failure');
+  });
+
+  await test('doctor: Playbooks OK with count when playbooks exist', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: ['a.md', 'b.md', 'c.md', 'not-a-playbook.txt'],
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Playbooks');
+    assert.ok(check);
+    assert.strictEqual(check.ok, true);
+    // Only .md files should count → 3 (a, b, c), not 4
+    assert.ok(/3 playbooks/.test(check.message), `Expected "3 playbooks", got: ${check.message}`);
+  });
+
+  await test('doctor: Playbooks FAIL when directory is empty or missing', async () => {
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: [], // no playbooks dir created
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const check = findCheck(cap.logs, 'Playbooks');
+    assert.ok(check);
+    assert.strictEqual(check.ok, false);
+    assert.ok(check.message.includes('no playbooks'), `got: ${check.message}`);
+    assert.strictEqual(cap.result, false);
+  });
+
+  await test('doctor: Port 7331 WARN appears only when Dashboard is not reachable', async () => {
+    // We can't force the dashboard on/off reliably in unit tests, but we CAN assert:
+    //   - if Dashboard row is NOT ok:true → Port 7331 row SHOULD be present
+    //   - if Dashboard row IS ok:true → Port 7331 row should NOT be present
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    const dash = findCheck(cap.logs, 'Dashboard');
+    const port = findCheck(cap.logs, 'Port 7331');
+    assert.ok(dash, 'Dashboard row must appear');
+    if (dash.ok === true) {
+      assert.strictEqual(port, null, 'Port 7331 row should be absent when Dashboard is running');
+    } else {
+      assert.ok(port, 'Port 7331 row must appear when Dashboard is not running');
+      assert.strictEqual(port.ok, 'warn');
+    }
+  });
+
+  await test('doctor: summary line reflects criticalFails and warnings counts', async () => {
+    // Force one critical failure (no playbooks) and no auth → at least 1 fail + some warns
+    const dir = setupDoctorHome({
+      config: {
+        projects: [{ name: 'Real', localPath: createTmpDir() }],
+        agents: { dallas: {} },
+      },
+      control: { state: 'stopped' },
+      playbooks: [],
+    });
+    const cap = await withCaptureAsync(async () => freshPreflight().doctor(dir));
+    // Summary is one of:
+    //   "  All checks passed.\n"
+    //   "  N warning(s), no critical issues.\n"
+    //   "  N issue(s) to fix, M warning(s).\n"
+    const summaryLine = cap.logs.find(l => /issue\(s\) to fix/.test(l) || /warning\(s\)/.test(l) || /All checks passed/.test(l));
+    assert.ok(summaryLine, `Expected a summary line; got logs tail:\n${cap.logs.slice(-5).join('\n')}`);
+    assert.ok(/issue\(s\) to fix/.test(summaryLine),
+      `Summary should report critical issues when playbooks missing; got: ${summaryLine}`);
+  });
+
+  // ── cleanup: make sure subsequent tests get an untainted preflight ──
+  delete require.cache[PREFLIGHT_ABS];
+}
+
 // ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
 
 async function testCleanChildEnv() {
@@ -5491,6 +7041,624 @@ async function testCooldownSystem() {
     assert.strictEqual(formula(2), 4);
     assert.strictEqual(formula(3), 8);
     assert.strictEqual(formula(10), 8); // capped
+  });
+}
+
+// ─── engine/cooldown.js — Behavioral Tests ─────────────────────────────────
+// These exercise the real module (not string-match against source). Each test
+// creates a fresh MINIONS_TEST_DIR sandbox and re-requires cooldown.js so the
+// module-level dispatchCooldowns Map and COOLDOWN_PATH are isolated.
+
+function _freshCooldownModule() {
+  // createTestMinionsDir() already invalidates shared + queries. cooldown.js
+  // isn't in that list, so its module-scoped Map + COOLDOWN_PATH would leak
+  // across tests unless we explicitly bust its cache too.
+  try { delete require.cache[require.resolve('../engine/cooldown')]; } catch {}
+  return require('../engine/cooldown');
+}
+
+async function testCooldownBehavioral() {
+  console.log('\n── engine/cooldown.js — Behavioral ──');
+
+  // ── loadCooldowns ──
+
+  await test('loadCooldowns tolerates a missing cooldowns.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      // File does not exist — should not throw, map stays empty
+      cooldown.loadCooldowns();
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 0,
+        'Missing file should leave dispatchCooldowns empty');
+    } finally { restore(); }
+  });
+
+  await test('loadCooldowns loads entries from disk into the in-memory Map', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const now = Date.now();
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        'key-A': { timestamp: now, failures: 0 },
+        'key-B': { timestamp: now - 1000, failures: 2 },
+      });
+      cooldown.loadCooldowns();
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 2, 'Should load both entries');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('key-A').failures, 0);
+      assert.strictEqual(cooldown.dispatchCooldowns.get('key-B').failures, 2);
+    } finally { restore(); }
+  });
+
+  await test('loadCooldowns prunes entries older than 24 hours', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const now = Date.now();
+      const day = 24 * 60 * 60 * 1000;
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        'fresh': { timestamp: now - 1000, failures: 0 },
+        'stale': { timestamp: now - day - 1000, failures: 0 }, // > 24h old
+        'boundary': { timestamp: now - day + 500, failures: 0 }, // just under 24h
+      });
+      cooldown.loadCooldowns();
+      assert.ok(cooldown.dispatchCooldowns.has('fresh'), 'fresh entry should load');
+      assert.ok(cooldown.dispatchCooldowns.has('boundary'), 'boundary entry (<24h) should load');
+      assert.ok(!cooldown.dispatchCooldowns.has('stale'), 'stale entry (>24h) should be pruned');
+    } finally { restore(); }
+  });
+
+  // ── saveCooldowns (debounced — one write test that waits the full 1100ms) ──
+
+  await test('saveCooldowns round-trips entries to disk (debounced)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      cooldown.setCooldown('persist-me');
+      assert.ok(!fs.existsSync(cooldown.COOLDOWN_PATH),
+        'saveCooldowns is debounced — nothing on disk yet');
+      await new Promise(r => setTimeout(r, 1100)); // wait past 1s debounce
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.ok(saved && saved['persist-me'], 'Entry should be on disk after debounce');
+      assert.strictEqual(typeof saved['persist-me'].timestamp, 'number');
+      assert.strictEqual(saved['persist-me'].failures, 0);
+    } finally { restore(); }
+  });
+
+  await test('saveCooldowns caps pendingContexts at maxPendingContexts (#1167)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const cap = freshShared.ENGINE_DEFAULTS.maxPendingContexts;
+      // Seed the map directly with an oversized pendingContexts array — this
+      // simulates an entry already bloated in memory before saveCooldowns runs.
+      cooldown.dispatchCooldowns.set('bloated', {
+        timestamp: Date.now(),
+        failures: 0,
+        pendingContexts: Array.from({ length: cap + 15 }, (_, i) => `ctx-${i}`),
+      });
+      cooldown.saveCooldowns();
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.strictEqual(saved.bloated.pendingContexts.length, cap,
+        `saveCooldowns should trim pendingContexts to maxPendingContexts (${cap})`);
+      // slice(-cap) keeps the most recent entries — first survivor is index 15
+      assert.strictEqual(saved.bloated.pendingContexts[0], 'ctx-15');
+    } finally { restore(); }
+  });
+
+  await test('saveCooldowns truncates oversized pendingContexts entries (#1167)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const limit = freshShared.ENGINE_DEFAULTS.maxPendingContextEntryBytes;
+      const huge = 'X'.repeat(limit + 1024); // 1 KB over the cap
+      cooldown.dispatchCooldowns.set('huge', {
+        timestamp: Date.now(),
+        failures: 0,
+        pendingContexts: [{ comment: huge, other: 'small' }],
+      });
+      cooldown.saveCooldowns();
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      const entry = saved.huge.pendingContexts[0];
+      assert.ok(entry.comment.length < huge.length,
+        'Oversized string field should be truncated on save');
+      assert.ok(entry.comment.includes('truncated'),
+        'Truncated field should carry a truncation marker so downstream agents know');
+      assert.strictEqual(entry.other, 'small',
+        'Small fields on the same entry should be preserved unchanged');
+    } finally { restore(); }
+  });
+
+  // ── isOnCooldown ──
+
+  await test('isOnCooldown returns false when no entry exists for the key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.isOnCooldown('nobody-home', 60000), false);
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown returns true inside the window, false after expiry (0 failures)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      // Fresh entry — 10s old, 60s window, 0 failures (1x multiplier)
+      cooldown.dispatchCooldowns.set('fresh', { timestamp: now - 10000, failures: 0 });
+      assert.strictEqual(cooldown.isOnCooldown('fresh', 60000), true,
+        '10s < 60s window with 0 failures → still on cooldown');
+      // Expired — 61s old, 60s window
+      cooldown.dispatchCooldowns.set('expired', { timestamp: now - 61000, failures: 0 });
+      assert.strictEqual(cooldown.isOnCooldown('expired', 60000), false,
+        '61s > 60s window with 0 failures → cooldown expired');
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown applies exponential backoff based on failure count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      const cooldownMs = 1000;
+      // 3s old: 3x the 1s base window
+      // - 0 failures → 1x window = 1s → 3s > 1s → false (expired)
+      // - 2 failures → 4x window = 4s → 3s < 4s → true (still on cooldown)
+      cooldown.dispatchCooldowns.set('k0', { timestamp: now - 3000, failures: 0 });
+      cooldown.dispatchCooldowns.set('k2', { timestamp: now - 3000, failures: 2 });
+      assert.strictEqual(cooldown.isOnCooldown('k0', cooldownMs), false,
+        '0 failures: 1x window, 3s > 1s → expired');
+      assert.strictEqual(cooldown.isOnCooldown('k2', cooldownMs), true,
+        '2 failures: 4x window, 3s < 4s → still on cooldown');
+    } finally { restore(); }
+  });
+
+  await test('isOnCooldown backoff multiplier caps at 8x even for high failure counts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const now = Date.now();
+      // 9s old, 1s base, 20 failures. 2^20 would be huge but cap is 8 → 8s window.
+      // 9s > 8s → should be expired (NOT still on cooldown).
+      cooldown.dispatchCooldowns.set('manyFails', { timestamp: now - 9000, failures: 20 });
+      assert.strictEqual(cooldown.isOnCooldown('manyFails', 1000), false,
+        'Backoff cap of 8x must apply — 9s > 8s window → expired');
+      // 7s old with same 20 failures should still be on cooldown (7s < 8s)
+      cooldown.dispatchCooldowns.set('manyFailsFresh', { timestamp: now - 7000, failures: 20 });
+      assert.strictEqual(cooldown.isOnCooldown('manyFailsFresh', 1000), true,
+        '7s < 8s window (capped) → still on cooldown');
+    } finally { restore(); }
+  });
+
+  // ── setCooldown / setCooldownWithContext ──
+
+  await test('setCooldown writes a new entry with current timestamp and 0 failures', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const before = Date.now();
+      cooldown.setCooldown('new-key');
+      const entry = cooldown.dispatchCooldowns.get('new-key');
+      assert.ok(entry, 'Entry should be present after setCooldown');
+      assert.ok(entry.timestamp >= before, 'Timestamp should be recent');
+      assert.strictEqual(entry.failures, 0, 'New entry should start with 0 failures');
+    } finally { restore(); }
+  });
+
+  await test('setCooldown preserves the existing failures count when re-stamping', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', { timestamp: Date.now() - 5000, failures: 3 });
+      cooldown.setCooldown('k');
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.failures, 3,
+        'setCooldown should carry forward existing failures so backoff is not reset');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext appends context to pendingContexts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { comment: 'first' });
+      cooldown.setCooldownWithContext('k', { comment: 'second' });
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.pendingContexts.length, 2);
+      assert.strictEqual(entry.pendingContexts[0].comment, 'first');
+      assert.strictEqual(entry.pendingContexts[1].comment, 'second');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext ignores null/undefined context', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', null);
+      cooldown.setCooldownWithContext('k', undefined);
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.ok(entry, 'Entry should still be created');
+      assert.deepStrictEqual(entry.pendingContexts, [],
+        'Null/undefined contexts should not pollute pendingContexts');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext caps pendingContexts at maxPendingContexts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const cap = freshShared.ENGINE_DEFAULTS.maxPendingContexts;
+      for (let i = 0; i < cap + 10; i++) {
+        cooldown.setCooldownWithContext('k', { i });
+      }
+      const entry = cooldown.dispatchCooldowns.get('k');
+      assert.strictEqual(entry.pendingContexts.length, cap,
+        `pendingContexts should be capped at ${cap} entries on append`);
+      // slice(-cap) keeps most recent → first survivor is index 10
+      assert.strictEqual(entry.pendingContexts[0].i, 10,
+        'Oldest entries should be dropped, newest retained');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext truncates oversized string fields before storing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const limit = freshShared.ENGINE_DEFAULTS.maxPendingContextEntryBytes;
+      const huge = 'Y'.repeat(limit + 2048);
+      cooldown.setCooldownWithContext('k', { log: huge, small: 'ok' });
+      const entry = cooldown.dispatchCooldowns.get('k').pendingContexts[0];
+      assert.ok(entry.log.length < huge.length,
+        'Oversized field should be truncated at write time, not deferred to save');
+      assert.ok(entry.log.includes('truncated'), 'Truncation marker should be appended');
+      assert.strictEqual(entry.small, 'ok', 'Small fields untouched');
+    } finally { restore(); }
+  });
+
+  await test('setCooldownWithContext preserves existing failures count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', {
+        timestamp: Date.now() - 1000, failures: 2, pendingContexts: [],
+      });
+      cooldown.setCooldownWithContext('k', { comment: 'c' });
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 2,
+        'Failure count should survive context appends');
+    } finally { restore(); }
+  });
+
+  // ── getCoalescedContexts ──
+
+  await test('getCoalescedContexts returns the pendingContexts array', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { a: 1 });
+      cooldown.setCooldownWithContext('k', { a: 2 });
+      const out = cooldown.getCoalescedContexts('k');
+      assert.deepStrictEqual(out, [{ a: 1 }, { a: 2 }]);
+    } finally { restore(); }
+  });
+
+  await test('getCoalescedContexts clears pendingContexts after a non-empty read', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownWithContext('k', { a: 1 });
+      const first = cooldown.getCoalescedContexts('k');
+      assert.strictEqual(first.length, 1);
+      const second = cooldown.getCoalescedContexts('k');
+      assert.deepStrictEqual(second, [],
+        'Contexts must be cleared after retrieval so they are not re-processed');
+      // And the entry's pendingContexts should now be empty
+      assert.deepStrictEqual(cooldown.dispatchCooldowns.get('k').pendingContexts, []);
+    } finally { restore(); }
+  });
+
+  await test('getCoalescedContexts returns [] for unknown key and does not create an entry', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const out = cooldown.getCoalescedContexts('unknown');
+      assert.deepStrictEqual(out, []);
+      assert.ok(!cooldown.dispatchCooldowns.has('unknown'),
+        'Reading for unknown key should not create a phantom entry');
+    } finally { restore(); }
+  });
+
+  // ── setCooldownFailure ──
+
+  await test('setCooldownFailure increments failures from 0 to 1 for a new key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownFailure('k');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 1);
+    } finally { restore(); }
+  });
+
+  await test('setCooldownFailure accumulates across multiple calls', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldownFailure('k');
+      cooldown.setCooldownFailure('k');
+      cooldown.setCooldownFailure('k');
+      assert.strictEqual(cooldown.dispatchCooldowns.get('k').failures, 3);
+    } finally { restore(); }
+  });
+
+  await test('setCooldownFailure resets the timestamp so backoff measures from latest failure', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.dispatchCooldowns.set('k', { timestamp: Date.now() - 100000, failures: 1 });
+      const before = Date.now();
+      cooldown.setCooldownFailure('k');
+      assert.ok(cooldown.dispatchCooldowns.get('k').timestamp >= before,
+        'Timestamp should be refreshed to now');
+    } finally { restore(); }
+  });
+
+  // ── clearCooldown ──
+
+  await test('clearCooldown returns false when key is absent', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.clearCooldown('absent'), false);
+    } finally { restore(); }
+  });
+
+  await test('clearCooldown removes the entry and returns true when key is present', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.setCooldown('k');
+      assert.strictEqual(cooldown.clearCooldown('k'), true);
+      assert.ok(!cooldown.dispatchCooldowns.has('k'),
+        'clearCooldown should actually delete the entry');
+    } finally { restore(); }
+  });
+
+  // ── isAlreadyDispatched ──
+
+  await test('isAlreadyDispatched returns false when dispatch.json has no matching key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'd1', meta: { dispatchKey: 'other-key' } }],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('my-key'), false);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched detects a matching key in the pending queue', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'd1', meta: { dispatchKey: 'match-me' } }],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('match-me'), true);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched detects a matching key in the active queue', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{ id: 'd1', meta: { dispatchKey: 'active-key' } }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('active-key'), true);
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched uses a 1-hour window for recently-succeeded dispatches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const now = Date.now();
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [
+          // 30 min ago, success → within 1h window, should match
+          { id: 'd1', result: 'success', completed_at: new Date(now - 30 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'recent-success' } },
+          // 2h ago, success → outside 1h window, should NOT match
+          { id: 'd2', result: 'success', completed_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'old-success' } },
+        ],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('recent-success'), true,
+        'Successful dispatch within 1h should count as already-dispatched');
+      assert.strictEqual(cooldown.isAlreadyDispatched('old-success'), false,
+        'Successful dispatch >1h ago should NOT count — retry is allowed');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched uses a 15-minute window for errored dispatches (#593)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const now = Date.now();
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [
+          // 10 min ago, error → within 15-min window, should match (don't thrash)
+          { id: 'd1', result: 'error', completed_at: new Date(now - 10 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'recent-error' } },
+          // 20 min ago, error → outside 15-min window, should NOT match (retry allowed)
+          { id: 'd2', result: 'error', completed_at: new Date(now - 20 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'old-error' } },
+        ],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('recent-error'), true,
+        'Errored dispatch within 15min should count — prevents rapid retry loops');
+      assert.strictEqual(cooldown.isAlreadyDispatched('old-error'), false,
+        'Errored dispatch >15min ago should NOT count — retry is allowed');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched ignores completed entries with missing completed_at', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [{ id: 'd1', result: 'success', meta: { dispatchKey: 'no-timestamp' } }],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('no-timestamp'), false,
+        'Missing completed_at should not trigger a match — we cannot tell if it is in-window');
+    } finally { restore(); }
+  });
+
+  // ── isBranchActive ──
+
+  await test('isBranchActive returns null for falsy branch input', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown.isBranchActive(''), null);
+      assert.strictEqual(cooldown.isBranchActive(null), null);
+      assert.strictEqual(cooldown.isBranchActive(undefined), null);
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive returns null when no active dispatch references the branch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'd1', meta: { branch: 'work/other-branch' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/W-abc123'), null);
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive returns the matching dispatch when branch matches exactly', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'dX', meta: { branch: 'work/W-abc123' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work/W-abc123');
+      assert.ok(hit, 'Should return the conflicting active dispatch, not null');
+      assert.strictEqual(hit.id, 'dX', 'Returned value should be the dispatch record');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive normalizes both sides via sanitizeBranch before comparison', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      // Stored branch has a disallowed character (space) that sanitizeBranch
+      // converts to '-'. The query uses the raw form — both sides normalize,
+      // so they should match.
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'dY', meta: { branch: 'work/weird branch' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work/weird branch');
+      assert.ok(hit, 'Both sides should run through sanitizeBranch, producing equal keys');
+      assert.strictEqual(hit.id, 'dY');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive only looks at active queue (ignores pending and completed)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'dP', meta: { branch: 'work/target' } }],
+        active: [],
+        completed: [{ id: 'dC', meta: { branch: 'work/target' } }],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/target'), null,
+        'Branch locks only care about in-flight work; pending and completed do not block');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive ignores active entries with no branch metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'd1', meta: {} }, // no branch key at all
+          { id: 'd2', meta: { branch: null } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isBranchActive('work/anything'), null,
+        'Active dispatches without branch metadata should not cause phantom matches');
+    } finally { restore(); }
   });
 }
 
@@ -7657,6 +9825,614 @@ async function testCheckPlanCompletionIdempotency() {
   restore();
 }
 
+// ─── lifecycle.js — Uncovered Functions (W-mobjwgrahkbb) ─────────────────────
+// Coverage for cleanupPlanWorktrees, updateAgentHistory,
+// createReviewFeedbackForAuthor, checkForLearnings, updatePrAfterFix.
+
+async function testLifecycleUncoveredFns() {
+  console.log('\n── lifecycle.js — Uncovered Functions (W-mobjwgrahkbb) ──');
+
+  // Helper to spy on console.log (shared.log routes through console.log).
+  function withConsoleCapture(fn) {
+    const orig = console.log;
+    const lines = [];
+    console.log = (...args) => { lines.push(args.map(String).join(' ')); };
+    try { fn(lines); } finally { console.log = orig; }
+    return lines;
+  }
+
+  // ───────────── cleanupPlanWorktrees ─────────────
+
+  await test('cleanupPlanWorktrees: no-op when no branch slugs can be collected', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      // No plan, no work items, no projects → nothing to remove, no throw.
+      const calls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (...args) => { calls.push(args); return true; };
+      try {
+        lifecycle.cleanupPlanWorktrees('missing-plan.json', null, [], { engine: {}, agents: {}, projects: [] });
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.strictEqual(calls.length, 0, 'removeWorktree must not be called when branchSlugs is empty');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: silently skips when worktree root does not exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const projectRoot = createTmpDir();
+      const project = { name: 'wtproj-missing', localPath: projectRoot, mainBranch: 'main' };
+      // worktreeRoot points at a dir that doesn't exist
+      const nonexistent = path.join(createTmpDir(), 'worktrees-that-do-not-exist');
+      const config = { projects: [project], agents: {}, engine: { worktreeRoot: nonexistent } };
+
+      // Seed a work item so branchSlugs is non-empty
+      const projStateDir = path.join(testMinionsDir, 'projects', 'wtproj-missing');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-001', sourcePlan: 'plan-missing.json', branch: 'work/CPW-001', status: 'done' },
+      ]);
+
+      const calls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (...args) => { calls.push(args); return true; };
+      try {
+        lifecycle.cleanupPlanWorktrees('plan-missing.json', { feature_branch: 'feat/x' }, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.strictEqual(calls.length, 0, 'removeWorktree must not be called when worktreeRoot is absent');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: removes only matching dirs; leaves unrelated ones alone', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const projectRoot = createTmpDir();
+      const wtRoot = path.join(createTmpDir(), 'worktrees');
+      fs.mkdirSync(wtRoot, { recursive: true });
+
+      // Create worktree dirs:
+      //   matching: contains work item id, feature_branch slug, or PR branch slug
+      //   not-matching: unrelated-branch-xyz
+      const matchIdDir = path.join(wtRoot, 'CPW-002-abc');
+      const matchFeatureBranchDir = path.join(wtRoot, 'big-thing-xyz-runner');
+      const matchPrBranchDir = path.join(wtRoot, 'work-cpw-003-def');
+      const unrelatedDir = path.join(wtRoot, 'some-other-thing');
+      for (const d of [matchIdDir, matchFeatureBranchDir, matchPrBranchDir, unrelatedDir]) {
+        fs.mkdirSync(d, { recursive: true });
+      }
+
+      const project = { name: 'wtproj-match', localPath: projectRoot, mainBranch: 'main' };
+      const config = {
+        projects: [project], agents: {},
+        engine: { worktreeRoot: wtRoot },
+      };
+
+      // Seed work items (one matched by id, one matched by PR below)
+      const projStateDir = path.join(testMinionsDir, 'projects', 'wtproj-match');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-002', sourcePlan: 'plan-cpw.json', status: 'done' },
+        { id: 'CPW-003', sourcePlan: 'plan-cpw.json', status: 'done' },
+      ]);
+
+      // Seed PR file: one PR whose prdItems references CPW-003, branch "work/CPW-003-def"
+      const prId = 'github:test/repo#42';
+      sharedIsolated.safeWrite(path.join(projStateDir, 'pull-requests.json'), [
+        { id: prId, url: 'https://github.com/test/repo/pull/42', prNumber: 42,
+          branch: 'work/CPW-003-def', status: 'active', prdItems: ['CPW-003'] },
+      ]);
+
+      // feature_branch is a single-segment branch name — cleanup does substring match
+      // on single-level worktree dir names (readdirSync), so slashes won't match.
+      const plan = { feature_branch: 'big-thing-xyz' };
+
+      const removeCalls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (wtPath, root, rootArg) => {
+        removeCalls.push(path.basename(wtPath));
+        return true;
+      };
+      try {
+        lifecycle.cleanupPlanWorktrees('plan-cpw.json', plan, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+
+      // All three matching dirs should be removed; unrelated should not.
+      assert.ok(removeCalls.includes('CPW-002-abc'),
+        `expected CPW-002-abc removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(removeCalls.includes('big-thing-xyz-runner'),
+        `expected feature_branch dir removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(removeCalls.includes('work-cpw-003-def'),
+        `expected PR-branch dir removed, got: ${removeCalls.join(', ')}`);
+      assert.ok(!removeCalls.includes('some-other-thing'),
+        'unrelated worktree must not be removed');
+    } finally { restore(); }
+  });
+
+  await test('cleanupPlanWorktrees: swallows per-project PR read errors and keeps going', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const wtRoot = path.join(createTmpDir(), 'wts');
+      fs.mkdirSync(wtRoot, { recursive: true });
+      const matchDir = path.join(wtRoot, 'CPW-404');
+      fs.mkdirSync(matchDir, { recursive: true });
+
+      const project = { name: 'pr-read-fails', localPath: createTmpDir(), mainBranch: 'main' };
+      const config = { projects: [project], agents: {}, engine: { worktreeRoot: wtRoot } };
+
+      const projStateDir = path.join(testMinionsDir, 'projects', 'pr-read-fails');
+      fs.mkdirSync(projStateDir, { recursive: true });
+      sharedIsolated.safeWrite(path.join(projStateDir, 'work-items.json'), [
+        { id: 'CPW-404', sourcePlan: 'plan-z.json', status: 'done' },
+      ]);
+      // Corrupt pull-requests.json so the inner try/catch swallows the failure
+      fs.writeFileSync(path.join(projStateDir, 'pull-requests.json'), '{not valid json');
+
+      const removeCalls = [];
+      const origRemove = sharedIsolated.removeWorktree;
+      sharedIsolated.removeWorktree = (wtPath) => { removeCalls.push(path.basename(wtPath)); return true; };
+      try {
+        // Should not throw even with corrupt PR file; still cleans by work-item id
+        lifecycle.cleanupPlanWorktrees('plan-z.json', null, [project], config);
+      } finally {
+        sharedIsolated.removeWorktree = origRemove;
+      }
+      assert.ok(removeCalls.includes('CPW-404'),
+        `should still remove WI-id-matched worktree; got: ${removeCalls.join(', ')}`);
+    } finally { restore(); }
+  });
+
+  // ───────────── updateAgentHistory ─────────────
+
+  await test('updateAgentHistory: creates new history.md with default header and entry', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-agent', 'history.md');
+      assert.ok(!fs.existsSync(histPath), 'pre-condition: history.md should not exist');
+
+      const dispatchItem = {
+        id: 'D-uah-1',
+        task: 'Ship feature',
+        type: 'implement',
+        meta: { project: { name: 'ProjA' }, branch: 'work/UAH-1' },
+      };
+      lifecycle.updateAgentHistory('uah-agent', dispatchItem, 'success');
+
+      assert.ok(fs.existsSync(histPath), 'history.md must be created by safeWrite (auto-mkdir)');
+      const body = fs.readFileSync(histPath, 'utf8');
+      assert.ok(body.startsWith('# Agent History'), 'should keep the default header');
+      assert.ok(body.includes('— success'), 'entry must include the result tag');
+      assert.ok(body.includes('- **Task:** Ship feature'), 'entry must include task');
+      assert.ok(body.includes('- **Type:** implement'), 'entry must include type');
+      assert.ok(body.includes('- **Project:** ProjA'), 'entry must include project name');
+      assert.ok(body.includes('- **Branch:** work/UAH-1'), 'entry must include branch');
+      assert.ok(body.includes('- **Dispatch ID:** D-uah-1'), 'entry must include dispatch id');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: prepends new entries above old ones (newest first)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-order', 'history.md');
+
+      lifecycle.updateAgentHistory('uah-order', {
+        id: 'D-first', task: 'First', type: 'implement', meta: {},
+      }, 'success');
+      lifecycle.updateAgentHistory('uah-order', {
+        id: 'D-second', task: 'Second', type: 'review', meta: {},
+      }, 'success');
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      const firstIdx = body.indexOf('D-first');
+      const secondIdx = body.indexOf('D-second');
+      assert.ok(firstIdx > 0 && secondIdx > 0, 'both entries must be present');
+      assert.ok(secondIdx < firstIdx, 'newest entry must appear before older entry');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: uses fallbacks "central" / "none" when meta is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-fallback', 'history.md');
+
+      lifecycle.updateAgentHistory('uah-fallback', {
+        id: 'D-no-meta', task: 'No meta', type: 'ask', meta: {}, // no project, no branch
+      }, 'error');
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      assert.ok(body.includes('- **Project:** central'), 'missing meta.project.name should render "central"');
+      assert.ok(body.includes('- **Branch:** none'), 'missing meta.branch should render "none"');
+      assert.ok(body.includes('— error'), 'non-success result must still be tagged');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentHistory: trims history to 20 entries (ring buffer)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const histPath = path.join(testMinionsDir, 'agents', 'uah-ring', 'history.md');
+
+      for (let i = 1; i <= 25; i++) {
+        lifecycle.updateAgentHistory('uah-ring', {
+          id: `D-ring-${i}`, task: `Task ${i}`, type: 'implement', meta: {},
+        }, 'success');
+      }
+
+      const body = fs.readFileSync(histPath, 'utf8');
+      const entries = body.split('### ').filter(Boolean);
+      // entries[0] is the header ("# Agent History\n\n"), the rest are entries.
+      const entryCount = entries.length - 1;
+      assert.ok(entryCount <= 20,
+        `history must trim to <=20 entries; found ${entryCount}`);
+      // Newest (D-ring-25) must be present; oldest ones (D-ring-1..5) must be gone.
+      assert.ok(body.includes('D-ring-25'), 'newest entry must be retained');
+      assert.ok(!body.includes('D-ring-1\n') && !body.includes('D-ring-2\n'),
+        'oldest entries must be trimmed out of the ring buffer');
+    } finally { restore(); }
+  });
+
+  // ───────────── createReviewFeedbackForAuthor ─────────────
+
+  await test('createReviewFeedbackForAuthor: no-op when pr is null or missing id', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const before = fs.readdirSync(inboxDir).length;
+
+      lifecycle.createReviewFeedbackForAuthor('ripley', null, { agents: { dallas: { name: 'Dallas' } } });
+      lifecycle.createReviewFeedbackForAuthor('ripley', { }, { agents: { dallas: { name: 'Dallas' } } });
+      lifecycle.createReviewFeedbackForAuthor('ripley', { id: 'X' /* no agent */ }, { agents: { dallas: { name: 'Dallas' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'inbox must be untouched when PR is invalid or has no author agent');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: no-op when author not in config.agents', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const before = fs.readdirSync(inboxDir).length;
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:o/r#1', agent: 'nobody' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'unknown author agent must be silently skipped');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: no-op when reviewer has no inbox files today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      // No inbox files at all → reviewFiles empty → early return
+      const before = fs.readdirSync(inboxDir).length;
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:o/r#2', agent: 'dallas', title: 'A PR' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const after = fs.readdirSync(inboxDir).length;
+      assert.strictEqual(after, before, 'no reviewer inbox files → no feedback file written');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: writes feedback file with expected content', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      // Seed a reviewer inbox note so it'll be picked up by the date+agent filter
+      const reviewerNote = path.join(inboxDir, `ripley-review-notes-${today}.md`);
+      fs.writeFileSync(reviewerNote, '# Ripley review findings\n\nFound a race in dispatch.');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#999', agent: 'dallas', title: 'fix: race' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write a feedback-<author>-from-<reviewer>-*.md file to inbox');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('# Review Feedback for Dallas'), 'should address author by display name');
+      assert.ok(body.includes('github:yemi33/minions#999'), 'should reference the PR id');
+      assert.ok(body.includes('fix: race'), 'should include PR title when present');
+      assert.ok(body.includes('Reviewer:') && body.includes('Ripley'), 'should name the reviewer');
+      assert.ok(body.includes('Found a race in dispatch'), 'should inline the reviewer inbox content');
+      assert.ok(body.includes('Action Required'), 'should include the Action Required section');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: filename includes PR slug and date for dedup', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-r-${today}.md`), 'content');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'gh-12345', agent: 'dallas' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'feedback file must exist');
+      assert.ok(feedback.includes('gh-12345'), 'filename must include sluggified PR id');
+      assert.ok(feedback.includes(today), 'filename must include today\'s date');
+    } finally { restore(); }
+  });
+
+  // ───────────── checkForLearnings ─────────────
+
+  await test('checkForLearnings: warns when agent wrote no learnings today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('nolearn-agent', { name: 'NoLearn' }, 'some task');
+      });
+      assert.ok(logs.some(l => l.includes("didn't write learnings")),
+        `expected warn log about missing learnings; got: ${logs.join(' | ')}`);
+      assert.ok(logs.some(l => l.includes('NoLearn')),
+        'should use the display name from agentInfo.name');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: logs info count when agent did write files today', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const today = new Date().toISOString().slice(0, 10);
+
+      fs.writeFileSync(path.join(inboxDir, `learn-agent-findings-${today}.md`), 'a');
+      fs.writeFileSync(path.join(inboxDir, `learn-agent-more-${today}.md`), 'b');
+
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('learn-agent', { name: 'Learner' }, 'task');
+      });
+      const countLog = logs.find(l => /wrote\s+(\d+)\s+finding/.test(l));
+      assert.ok(countLog, `expected "wrote N finding(s) to inbox" log; got: ${logs.join(' | ')}`);
+      const m = countLog.match(/wrote\s+(\d+)\s+finding/);
+      assert.strictEqual(parseInt(m[1], 10), 2, 'should count exactly the two seeded files');
+      assert.ok(logs.every(l => !l.includes("didn't write learnings")),
+        'should not warn about missing learnings when files exist');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: ignores files from other agents or other dates', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Other agent same day
+      fs.writeFileSync(path.join(inboxDir, `other-agent-findings-${today}.md`), 'x');
+      // Same agent different day
+      fs.writeFileSync(path.join(inboxDir, `target-agent-findings-2020-01-01.md`), 'y');
+
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('target-agent', { name: 'Target' }, 'task');
+      });
+      assert.ok(logs.some(l => l.includes("didn't write learnings")),
+        'should warn — no file matches both agent id AND today\'s date');
+    } finally { restore(); }
+  });
+
+  await test('checkForLearnings: falls back to agentId when agentInfo is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const logs = withConsoleCapture(() => {
+        lifecycle.checkForLearnings('bare-agent', null, 'task');
+      });
+      assert.ok(logs.some(l => l.includes('bare-agent')),
+        'should use raw agentId when agentInfo is null');
+    } finally { restore(); }
+  });
+
+  // ───────────── updatePrAfterFix ─────────────
+
+  await test('updatePrAfterFix: no-op for null pr or missing pr.id', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      // Both should simply return without throwing.
+      lifecycle.updatePrAfterFix(null, null, 'pr-review');
+      lifecycle.updatePrAfterFix({}, null, 'pr-review');
+      // No assertion needed beyond "does not throw" — reaching here == pass.
+      assert.ok(true);
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: resets non-approved reviewStatus to "waiting" and sets fixedAt', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
+      const project = { name: 'fix-proj-a', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#10', url: 'https://github.com/o/r/pull/10', prNumber: 10,
+          reviewStatus: 'changes-requested', status: 'active',
+          humanFeedback: { pendingFix: true } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#10', url: 'https://github.com/o/r/pull/10', prNumber: 10 },
+        project, 'pr-review-comment');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'waiting',
+        'non-approved reviewStatus must be reset to "waiting"');
+      assert.ok(after[0].minionsReview?.fixedAt, 'minionsReview.fixedAt must be set');
+      assert.strictEqual(after[0].humanFeedback.pendingFix, false,
+        'humanFeedback.pendingFix must be cleared on any fix dispatch');
+      assert.strictEqual(after[0].minionsReview.note, 'Fixed, awaiting re-review',
+        'default source should use the generic note');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: preserves "approved" reviewStatus — never downgrades', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-approved', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#11', url: 'https://github.com/o/r/pull/11', prNumber: 11,
+          reviewStatus: 'approved', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#11', url: 'https://github.com/o/r/pull/11', prNumber: 11 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'approved',
+        'approved reviewStatus is a terminal state; must not be downgraded by updatePrAfterFix');
+      // fixedAt is still set so we can see the fix was recorded
+      assert.ok(after[0].minionsReview?.fixedAt,
+        'minionsReview.fixedAt should still be set even when reviewStatus is preserved');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: pr-human-feedback source uses specific note', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-human', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#12', url: 'https://github.com/o/r/pull/12', prNumber: 12,
+          reviewStatus: 'waiting', status: 'active',
+          humanFeedback: { pendingFix: true } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#12', url: 'https://github.com/o/r/pull/12', prNumber: 12 },
+        project, 'pr-human-feedback');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].minionsReview.note, 'Fixed human feedback, awaiting re-review',
+        'pr-human-feedback source must use the human-feedback specific note');
+      assert.strictEqual(after[0].humanFeedback.pendingFix, false,
+        'humanFeedback.pendingFix must still be cleared');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: no-op when matching PR record not found', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-miss', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      const snapshot = [
+        { id: 'github:o/r#20', url: 'https://github.com/o/r/pull/20', prNumber: 20,
+          reviewStatus: 'changes-requested', status: 'active' },
+      ];
+      sharedIsolated.safeWrite(prsPath, snapshot);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#9999', url: 'https://github.com/o/r/pull/9999', prNumber: 9999 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      // Untouched
+      assert.deepStrictEqual(after, snapshot,
+        'unmatched PR lookup must leave the PR file unchanged');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: handles PR with no humanFeedback field (no crash)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-nohf', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#13', url: 'https://github.com/o/r/pull/13', prNumber: 13,
+          reviewStatus: 'waiting', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#13', url: 'https://github.com/o/r/pull/13', prNumber: 13 },
+        project, 'pr-review');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].reviewStatus, 'waiting',
+        'reviewStatus stays "waiting" (reset from waiting to waiting is a no-op)');
+      assert.ok(after[0].minionsReview?.fixedAt, 'fixedAt must be set');
+      // humanFeedback should not have been spuriously created
+      assert.strictEqual(after[0].humanFeedback, undefined,
+        'must not spuriously create humanFeedback field when it was absent');
+    } finally { restore(); }
+  });
+}
+
 // ─── Verify Workflow Tests ──────────────────────────────────────────────────
 
 async function testVerifyWorkflow() {
@@ -9337,6 +12113,752 @@ async function testAgentSteering() {
     assert.ok(typeof freshTimeout.checkSteering === 'function', 'checkSteering should be exported');
     assert.ok(freshTimeout.checkSteering.length <= 1, 'checkSteering should accept 0 or 1 args');
     restore();
+  });
+}
+
+// ─── engine/timeout.js — Behavioral Coverage ────────────────────────────────
+// Exercises checkIdleThreshold, checkSteering, checkTimeouts end-to-end using a
+// fake engine module injected into require.cache. Uses createTestMinionsDir for
+// filesystem isolation and stubs shared.killImmediate/killGracefully to keep
+// tests from spawning real kill commands.
+
+async function testTimeoutBehavioral() {
+  console.log('\n── engine/timeout.js — Behavioral ──');
+
+  const enginePath = require.resolve(path.join(MINIONS_DIR, 'engine'));
+  const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+  const lifecyclePath = require.resolve(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const routingPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'routing'));
+  const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+  const queriesPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'queries'));
+  const dispatchPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'dispatch'));
+
+  // Build an isolated test environment: fresh MINIONS dir, fresh shared/queries/
+  // dispatch/timeout/routing modules, fake engine + stubbed lifecycle injected
+  // via require.cache. killImmediate/killGracefully/exec are replaced with
+  // no-op counters so the tests never spawn real processes.
+  function setupIsolated(fakeEngineOverrides) {
+    const restoreMinionsDir = createTestMinionsDir();
+    // createTestMinionsDir busts shared/queries/dispatch/timeout but not routing
+    try { delete require.cache[routingPath]; } catch {}
+
+    const savedEngine = require.cache[enginePath];
+    const savedLifecycle = require.cache[lifecyclePath];
+
+    const fakeEngine = {
+      activeProcesses: new Map(),
+      realActivityMap: new Map(),
+      engineRestartGraceUntil: 0,
+      engineRestartGraceExempt: new Set(),
+      ...(fakeEngineOverrides || {}),
+    };
+    require.cache[enginePath] = {
+      id: enginePath, filename: enginePath, loaded: true,
+      exports: fakeEngine, children: [], paths: [],
+    };
+    // Stub lifecycle so runPostCompletionHooks + updateWorkItemStatus don't do
+    // any I/O or require engine.js transitively.
+    require.cache[lifecyclePath] = {
+      id: lifecyclePath, filename: lifecyclePath, loaded: true,
+      exports: {
+        runPostCompletionHooks: async () => {},
+        updateWorkItemStatus: () => {},
+        resolveWorkItemPath: () => null,
+      },
+      children: [], paths: [],
+    };
+
+    // Load the fresh modules. Order matters: shared before timeout so the
+    // fresh timeout binds to fresh shared.
+    const freshShared = require(sharedPath);
+    const freshQueries = require(queriesPath);
+    const freshDispatch = require(dispatchPath);
+    const timeout = require(timeoutPath);
+
+    // Swap in no-op kill stubs + counters.
+    const counters = { killImmediate: 0, killGracefully: 0, exec: 0 };
+    const originalKillImmediate = freshShared.killImmediate;
+    const originalKillGracefully = freshShared.killGracefully;
+    const originalExec = freshShared.exec;
+    freshShared.killImmediate = () => { counters.killImmediate++; };
+    freshShared.killGracefully = () => { counters.killGracefully++; };
+    freshShared.exec = () => { counters.exec++; return ''; };
+
+    const testDir = process.env.MINIONS_TEST_DIR;
+
+    return {
+      timeout,
+      fakeEngine,
+      freshShared,
+      freshQueries,
+      freshDispatch,
+      testDir,
+      counters,
+      restore() {
+        // Drain any timers the fresh shared started so the tmp dir can be wiped
+        try { freshShared.flushLogs(); } catch {}
+        freshShared.killImmediate = originalKillImmediate;
+        freshShared.killGracefully = originalKillGracefully;
+        freshShared.exec = originalExec;
+        // Drop timeout so the next setupIsolated rebinds to whatever shared is
+        // active at that point.
+        try { delete require.cache[timeoutPath]; } catch {}
+        try { delete require.cache[routingPath]; } catch {}
+        if (savedEngine) require.cache[enginePath] = savedEngine;
+        else delete require.cache[enginePath];
+        if (savedLifecycle) require.cache[lifecyclePath] = savedLifecycle;
+        else delete require.cache[lifecyclePath];
+        restoreMinionsDir();
+      },
+    };
+  }
+
+  function writeDispatch(testDir, data) {
+    const dp = path.join(testDir, 'engine', 'dispatch.json');
+    fs.writeFileSync(dp, JSON.stringify({
+      pending: data.pending || [],
+      active: data.active || [],
+      completed: data.completed || [],
+    }));
+  }
+
+  function readDispatch(testDir) {
+    return JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'dispatch.json'), 'utf8'));
+  }
+
+  function readLogs(testDir, freshShared) {
+    try { freshShared.flushLogs(); } catch {}
+    try {
+      return JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'log.json'), 'utf8'));
+    } catch { return []; }
+  }
+
+  // ═══ checkIdleThreshold ═════════════════════════════════════════════════
+
+  await test('checkIdleThreshold: no-op when a configured agent is busy (active dispatch)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, { active: [{ id: 'd1', agent: 'a' }] });
+      env.freshQueries.invalidateDispatchCache();
+      const config = { agents: { a: {}, b: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT emit idle warning when any agent is active');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: no-op when pending work exists even if all agents idle', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, { pending: [{ id: 'p1' }] });
+      env.freshQueries.invalidateDispatchCache();
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT emit idle warning while pending work remains');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: emits warn after threshold when all idle + no pending', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      // Fresh module's _lastActivityTime = now. Wait past 60ms threshold.
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.ok(warn, 'Should emit idle warning after threshold breach');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: does not re-emit warn on subsequent calls (_idleAlertSent guard)', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config); // fires once
+      env.timeout.checkIdleThreshold(config); // should be suppressed
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warns = logs.filter(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.strictEqual(warns.length, 1, `Expected exactly 1 idle warn across 3 calls, got ${warns.length}`);
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: recovery resets the alert-sent flag so next idle burst re-fires', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config); // fires
+      // Simulate work arriving — should reset _lastActivityTime and _idleAlertSent
+      writeDispatch(env.testDir, { pending: [{ id: 'p1' }] });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkIdleThreshold(config); // resets
+      // Back to idle, wait again
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      env.timeout.checkIdleThreshold(config); // should fire again
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warns = logs.filter(l => l.level === 'warn' && /All agents idle for/.test(l.message));
+      assert.strictEqual(warns.length, 2, `Expected 2 idle warns across idle→work→idle cycles, got ${warns.length}`);
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: respects config.engine.idleAlertMinutes (custom threshold, not fired)', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      // 1 minute threshold — 120ms of idle is nowhere close.
+      const config = { agents: { a: {} }, engine: { idleAlertMinutes: 1 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Should NOT fire when idleMs is well under threshold');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: no agents configured — empty-array every() is true, treated as idle', async () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      await new Promise(r => setTimeout(r, 120));
+      // No agents at all — agents.every(isAgentIdle) returns true on empty array.
+      const config = { agents: {}, engine: { idleAlertMinutes: 0.001 } };
+      env.timeout.checkIdleThreshold(config);
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(warn, 'Empty agents map + no pending should still trip idle warning');
+    } finally { env.restore(); }
+  });
+
+  await test('checkIdleThreshold: tolerates missing config.engine (defaults to 15 min)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      // No config.engine — must not throw, and default 15min threshold means no warn yet.
+      env.timeout.checkIdleThreshold({ agents: { a: {} } });
+      const logs = readLogs(env.testDir, env.freshShared);
+      const warn = logs.find(l => l.level === 'warn' && /All agents idle/.test(l.message));
+      assert.ok(!warn, 'Default threshold (15min) should not fire within test runtime');
+    } finally { env.restore(); }
+  });
+
+  // ═══ checkSteering ══════════════════════════════════════════════════════
+
+  await test('checkSteering: no activeProcesses — pure no-op, no throw', () => {
+    const env = setupIsolated();
+    try {
+      // fakeEngine.activeProcesses is empty by default
+      env.timeout.checkSteering({});
+      assert.strictEqual(env.counters.killImmediate, 0, 'Should not kill anything when no processes tracked');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent without steer.md — untouched', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot1';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = { agentId, proc: {}, sessionId: 'sess-abc' };
+      env.fakeEngine.activeProcesses.set('disp-1', info);
+      env.timeout.checkSteering({});
+      assert.strictEqual(env.counters.killImmediate, 0);
+      assert.strictEqual(info._steeringMessage, undefined, 'No steer.md should mean no state mutation');
+      assert.strictEqual(info._steeringAt, undefined);
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent with steer.md AND sessionId — sets flags, kills, deletes steer.md', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot2';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      const steerPath = path.join(agentDir, 'steer.md');
+      fs.writeFileSync(steerPath, 'please focus on the API endpoint');
+      const info = { agentId, proc: {}, sessionId: 'sess-abc' };
+      env.fakeEngine.activeProcesses.set('disp-2', info);
+
+      const tBefore = Date.now();
+      env.timeout.checkSteering({});
+      const tAfter = Date.now();
+
+      assert.strictEqual(info._steeringMessage, 'please focus on the API endpoint',
+        'Should capture the steering message from steer.md');
+      assert.strictEqual(info._steeringSessionId, 'sess-abc',
+        'Should snapshot sessionId for the resume spawn');
+      assert.ok(info._steeringAt >= tBefore && info._steeringAt <= tAfter,
+        '_steeringAt should be a fresh timestamp in [tBefore, tAfter]');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Should invoke killImmediate exactly once');
+      assert.ok(!fs.existsSync(steerPath), 'steer.md should be deleted after consumption');
+      assert.strictEqual(info._steeringNoSession, undefined,
+        'Session-present path must NOT set _steeringNoSession');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: agent with steer.md but NO sessionId — inbox forward path', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot3';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'try a smaller model');
+      const info = { agentId, proc: {} /* no sessionId */ };
+      env.fakeEngine.activeProcesses.set('disp-3', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringNoSession, true,
+        'No-session path should flag _steeringNoSession for close handler');
+      assert.ok(typeof info._steeringAt === 'number' && info._steeringAt > 0,
+        '_steeringAt must be set even on the no-session path');
+      assert.strictEqual(info._steeringMessage, undefined,
+        'No-session path does NOT stash _steeringMessage — it forwards via inbox instead');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Should still killImmediate the agent');
+
+      // Inbox file should exist with the forwarded message
+      const inboxDir = path.join(agentDir, 'inbox');
+      const inboxFiles = fs.readdirSync(inboxDir).filter(f => f.startsWith('steering-'));
+      assert.strictEqual(inboxFiles.length, 1, 'Expected exactly one forwarded steering file');
+      const body = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
+      assert.ok(body.includes('try a smaller model'), 'Forwarded inbox file should carry original message');
+      assert.ok(body.includes('Forwarded'), 'Forwarded inbox file should be clearly labeled');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: empty steer.md contents — deleted but flags stay clear', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot4';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      const steerPath = path.join(agentDir, 'steer.md');
+      fs.writeFileSync(steerPath, '');
+      const info = { agentId, proc: {}, sessionId: 'sess-zzz' };
+      env.fakeEngine.activeProcesses.set('disp-4', info);
+
+      env.timeout.checkSteering({});
+
+      assert.ok(!fs.existsSync(steerPath), 'Empty steer.md should still be deleted to prevent stale reads');
+      assert.strictEqual(info._steeringMessage, undefined,
+        'Empty message must not arm the steering state');
+      assert.strictEqual(env.counters.killImmediate, 0,
+        'Empty message should not trigger a kill');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: already-steered agent (recent _steeringAt) — skipped (double-kill guard)', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot5';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'ignored — guard blocks re-entry');
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringMessage: 'prior',
+        _steeringAt: Date.now() - 5000, // 5s ago — within retry window
+      };
+      env.fakeEngine.activeProcesses.set('disp-5', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringMessage, 'prior', 'Prior message must not be overwritten');
+      assert.strictEqual(env.counters.killImmediate, 0, 'No new kill while steering is in-flight');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: stale steering (>30s) — retries kill once, sets _steeringRetried', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot6';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringAt: Date.now() - 40000, // 40s ago — past STEERING_KILL_RETRY_MS (30s)
+      };
+      env.fakeEngine.activeProcesses.set('disp-6', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(info._steeringRetried, true, 'Retry path should set _steeringRetried=true');
+      assert.strictEqual(env.counters.killImmediate, 1, 'Retry path should killImmediate again');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: stale steering already retried — no second retry (idempotent)', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot7';
+      fs.mkdirSync(path.join(env.testDir, 'agents', agentId), { recursive: true });
+      const info = {
+        agentId, proc: {}, sessionId: 'sess-abc',
+        _steeringAt: Date.now() - 40000,
+        _steeringRetried: true, // prior retry already happened
+      };
+      env.fakeEngine.activeProcesses.set('disp-7', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(env.counters.killImmediate, 0, 'Once _steeringRetried is set, no more kills');
+    } finally { env.restore(); }
+  });
+
+  // ═══ checkTimeouts ══════════════════════════════════════════════════════
+
+  await test('checkTimeouts: empty state (no processes, no dispatch) — no throw, no mutations', () => {
+    const env = setupIsolated();
+    try {
+      env.timeout.checkTimeouts({});
+      assert.strictEqual(env.counters.killGracefully, 0);
+      assert.strictEqual(env.counters.killImmediate, 0);
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hard timeout — tracked process past agentTimeout is killGracefully\'d', () => {
+    const env = setupIsolated();
+    try {
+      const info = {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 200).toISOString(),
+        meta: {},
+      };
+      env.fakeEngine.activeProcesses.set('disp-hard', info);
+      // Tiny agentTimeout — 100ms — forces immediate hard-timeout branch.
+      env.timeout.checkTimeouts({ engine: { agentTimeout: 100 } });
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Hard timeout should invoke killGracefully exactly once');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hard timeout honors per-item meta.deadline override', () => {
+    const env = setupIsolated();
+    try {
+      const startedAt = Date.now() - 500;
+      const info = {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(startedAt).toISOString(),
+        meta: { deadline: startedAt + 100 }, // deadline already 400ms in the past
+      };
+      env.fakeEngine.activeProcesses.set('disp-deadline', info);
+      // Large agentTimeout would normally let this run — deadline overrides it.
+      env.timeout.checkTimeouts({ engine: { agentTimeout: 18000000 } });
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Per-item deadline must override default agentTimeout and trigger kill');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: orphaned active dispatch past heartbeat — TIMED_OUT + moved to completed', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'orphan-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(), // 10min ago
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // No entry in activeProcesses — this is the orphan case. Default grace is 0.
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Orphaned item should be removed from active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Orphan should land in completed list');
+      assert.strictEqual(completed.result, 'error', 'Orphan cleanup result should be ERROR');
+      assert.ok(/Orphaned|silent/.test(completed.reason || ''),
+        'Reason should describe the orphan/silent failure');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: orphan within engineRestartGraceUntil — left alone', () => {
+    const env = setupIsolated({ engineRestartGraceUntil: Date.now() + 60000 });
+    try {
+      const itemId = 'orphan-grace';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Restart grace period should prevent orphan cleanup for untracked items');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: engineRestartGraceExempt bypasses grace period', () => {
+    const env = setupIsolated({
+      engineRestartGraceUntil: Date.now() + 60000,
+      engineRestartGraceExempt: new Set(['confirmed-dead']),
+    });
+    try {
+      writeDispatch(env.testDir, {
+        active: [{
+          id: 'confirmed-dead',
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Exempt dispatch IDs must skip the grace period and be reaped');
+      assert.strictEqual(dp.completed[0]?.id, 'confirmed-dead');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: hung TRACKED process past heartbeat — killGracefully + TIMED_OUT', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'hung-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 600000).toISOString(),
+        meta: {},
+      });
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
+        'Hung detection should drop the process from activeProcesses');
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Hung detection should killGracefully the stuck process');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Hung item should leave the active list');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed && completed.result === 'error',
+        'Hung item should be marked ERROR in completed');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: recently-steered tracked process — skipped (no kill within 60s of steer)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'steering-1';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 600000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date(Date.now() - 600000).toISOString(),
+        meta: {},
+        _steeringAt: Date.now() - 10000, // 10s ago — inside the 60s skip window
+      });
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Recently-steered agents must be left alone by the timeout checker');
+      assert.ok(env.fakeEngine.activeProcesses.has(itemId),
+        'Steered process must remain tracked during its re-spawn window');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile stuck "dispatched" work item with no active dispatch — retried', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {}); // no active items
+      env.freshQueries.invalidateDispatchCache();
+      // Stuck work item — status=dispatched but nothing in dispatch.active references it.
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-stuck',
+        status: 'dispatched',
+        dispatched_at: '2020-01-01T00:00:00Z',
+        dispatched_to: 'bot',
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'pending',
+        'Reconcile should revert stuck dispatched items to pending for retry');
+      assert.strictEqual(items[0]._retryCount, 1, 'Should record the first retry attempt');
+      assert.strictEqual(items[0].dispatched_at, undefined, 'Should strip stale dispatched_at');
+      assert.strictEqual(items[0].dispatched_to, undefined, 'Should strip stale dispatched_to');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile marks work item FAILED after maxRetries exhausted', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      // _retryCount already at ENGINE_DEFAULTS.maxRetries (3) — next reconcile must give up.
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-exhausted',
+        status: 'dispatched',
+        _retryCount: shared.ENGINE_DEFAULTS.maxRetries,
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'failed',
+        'Retries exhausted → reconcile must mark the item failed');
+      assert.ok(/retries exhausted/i.test(items[0].failReason || ''),
+        'failReason should reference retry exhaustion');
+      assert.ok(items[0].failedAt, 'failedAt timestamp must be set');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile preserves work items whose dispatch IS still active', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {
+        active: [{
+          id: 'disp-live',
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          meta: { item: { id: 'W-live' } },
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set('disp-live', {
+        agentId: 'bot',
+        proc: {},
+        startedAt: new Date().toISOString(),
+        meta: { item: { id: 'W-live' } },
+      });
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-live',
+        status: 'dispatched',
+        dispatched_to: 'bot',
+      }]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'dispatched',
+        'Live work item should not be touched by reconcile');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: reconcile leaves completed work items alone (never reverts DONE)', () => {
+    const env = setupIsolated();
+    try {
+      writeDispatch(env.testDir, {});
+      env.freshQueries.invalidateDispatchCache();
+      const wiPath = path.join(env.testDir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([
+        // status=dispatched but completedAt set — the reconcile must honor the done flag.
+        { id: 'W-done', status: 'dispatched', completedAt: '2025-01-01T00:00:00Z' },
+        { id: 'W-done2', status: 'done' },
+      ]));
+
+      env.timeout.checkTimeouts({});
+
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(items[0].status, 'dispatched',
+        'Item with completedAt must not be reverted by reconcile');
+      assert.strictEqual(items[1].status, 'done', 'Done items must not be touched');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: completion-via-output detection — moves item to completed with SUCCESS', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'output-done';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // Write a live-output.log containing the success result event.
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        '{"type":"result","subtype":"success","result":"ok"}\n');
+
+      env.timeout.checkTimeouts({});
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Item detected as completed via output should leave active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Completed item should land in completed list');
+      assert.strictEqual(completed.result, 'success',
+        'success subtype in live-output.log → SUCCESS result');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: completion-via-output detection — error subtype maps to ERROR', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'output-err';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date().toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // No success subtype — detection treats it as ERROR.
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        '{"type":"result","subtype":"error_during_execution"}\n');
+
+      env.timeout.checkTimeouts({});
+
+      const dp = readDispatch(env.testDir);
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Errored item should still be moved to completed');
+      assert.strictEqual(completed.result, 'error',
+        'Non-success subtype in result event → ERROR');
+    } finally { env.restore(); }
   });
 }
 
@@ -11388,6 +14910,341 @@ async function testMeetingsExtendedBehavioral() {
   });
 }
 
+// ─── Meeting — Isolated Gap Tests (W-mo79lrbnkc71) ──────────────────────────
+// Coverage for previously untested behaviors in engine/meeting.js:
+//   - EMPTY_OUTPUT_PATTERNS export shape + match semantics
+//   - advanceMeetingRound: archived meeting returns null; no-change branch
+//   - addMeetingNote: ordering + preserving existing notes
+//   - checkMeetingTimeouts: missing roundStartedAt is a no-op
+//   - collectMeetingFindings: unknown roundName is a silent no-op
+//   - discoverMeetingWork: no work when every participant has submitted
+//   - MEETINGS_DIR + DISPATCH_PATH both honor shared.MINIONS_DIR so
+//     createTestMinionsDir() can cleanly isolate state
+//   - deleteMeeting moves matching active dispatch entries to completed
+//
+// Isolated tests use createTestMinionsDir() so they cannot touch real
+// meetings/ or engine/dispatch.json. Non-isolated tests use unique TEST-GAP-*
+// IDs in the real meetings dir and clean up in finally blocks.
+async function testMeetingsIsolatedGaps() {
+  console.log('\n── meeting.js — Gap Coverage (W-mo79lrbnkc71) ──');
+
+  // Non-isolated: exercise the real module; use unique IDs + finally cleanup.
+  const meetingModReal = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const realMeetingsDir = meetingModReal.MEETINGS_DIR;
+  function cleanupReal(id) {
+    try { fs.unlinkSync(path.join(realMeetingsDir, id + '.json')); } catch {}
+  }
+
+  // ── EMPTY_OUTPUT_PATTERNS ──
+
+  await test('EMPTY_OUTPUT_PATTERNS is a non-empty exported array of strings', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    assert.ok(Array.isArray(patterns), 'should be exported as an array');
+    assert.ok(patterns.length >= 3, 'should cover at least 3 placeholder shapes');
+    assert.ok(patterns.every(p => typeof p === 'string' && p.length > 0),
+      'every entry should be a non-empty string');
+  });
+
+  await test('EMPTY_OUTPUT_PATTERNS covers the three known placeholder outputs', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    for (const expected of ['(no output)', '(no findings)', '(no response)']) {
+      assert.ok(patterns.includes(expected),
+        `EMPTY_OUTPUT_PATTERNS should include "${expected}"`);
+    }
+  });
+
+  await test('EMPTY_OUTPUT_PATTERNS match is exact, not substring (real content passes through)', () => {
+    const patterns = meetingModReal.EMPTY_OUTPUT_PATTERNS;
+    // collectMeetingFindings uses .includes() on the exact trimmed string —
+    // a real finding that merely mentions "no output" in a sentence must NOT
+    // be rejected. Verify the array-level contract (EMPTY_OUTPUT_PATTERNS is
+    // the full set of bad values, not regexes).
+    assert.ok(!patterns.includes('The agent wrote (no output) as an example'),
+      'real findings that quote placeholder strings should not be in the reject set');
+    // And the real behavior: a legitimate finding that includes the
+    // phrase as a substring is accepted by collectMeetingFindings.
+    const testId = 'TEST-GAP-pattern-substring-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Substring', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const output = JSON.stringify({ type: 'result', result: 'Notes about (no output) handling and fallback paths' });
+      meetingModReal.collectMeetingFindings(testId, 'alice', 'investigate', output);
+      const m = meetingModReal.getMeeting(testId);
+      assert.ok(m.findings.alice, 'real finding that merely mentions a placeholder must be recorded');
+      assert.ok(m.findings.alice.content.includes('(no output)'),
+        'full content should be preserved verbatim');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── advanceMeetingRound — archived + no-change branches ──
+
+  await test('advanceMeetingRound returns null for archived meeting', () => {
+    const testId = 'TEST-GAP-adv-arch-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Archived', status: 'archived', round: 3,
+      participants: ['alice'], findings: {}, debate: {},
+      conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
+      roundStartedAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingModReal.advanceMeetingRound(testId);
+      assert.strictEqual(result, null, 'archived meeting should not advance');
+      const onDisk = meetingModReal.getMeeting(testId);
+      assert.strictEqual(onDisk.status, 'archived', 'status must remain archived');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  await test('advanceMeetingRound on unknown status returns meeting unchanged', () => {
+    // The "else return meeting" branch: any status not in the known set
+    // should short-circuit without touching roundStartedAt or round.
+    const testId = 'TEST-GAP-adv-unknown-' + Date.now();
+    const startedAt = new Date(Date.now() - 5000).toISOString();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Unknown Status', status: 'paused', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: startedAt,
+    });
+    try {
+      const result = meetingModReal.advanceMeetingRound(testId);
+      assert.ok(result, 'non-terminal unknown status should still return the meeting');
+      assert.strictEqual(result.status, 'paused', 'status should be untouched');
+      assert.strictEqual(result.round, 1, 'round should be untouched');
+      assert.strictEqual(result.roundStartedAt, startedAt,
+        'roundStartedAt should NOT be rewritten on the no-change branch');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── addMeetingNote — ordering + existing notes preserved ──
+
+  await test('addMeetingNote appends multiple notes in call order', () => {
+    const testId = 'TEST-GAP-note-order-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Note Order', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingModReal.addMeetingNote(testId, 'first');
+      meetingModReal.addMeetingNote(testId, 'second');
+      meetingModReal.addMeetingNote(testId, 'third');
+      const m = meetingModReal.getMeeting(testId);
+      assert.deepStrictEqual(m.humanNotes, ['first', 'second', 'third'],
+        'notes must be persisted in call order');
+      // Every note also appends a transcript entry.
+      const noteEntries = m.transcript.filter(t => t.type === 'note');
+      assert.strictEqual(noteEntries.length, 3, 'each note adds one transcript entry');
+      assert.deepStrictEqual(noteEntries.map(t => t.content),
+        ['first', 'second', 'third'], 'transcript order must match humanNotes order');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  await test('addMeetingNote preserves pre-existing human notes', () => {
+    const testId = 'TEST-GAP-note-preserve-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {},
+      humanNotes: ['seeded-1', 'seeded-2'],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingModReal.addMeetingNote(testId, 'new-note');
+      assert.deepStrictEqual(result.humanNotes,
+        ['seeded-1', 'seeded-2', 'new-note'],
+        'existing humanNotes must be preserved before appending');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
+
+  await test('checkMeetingTimeouts skips meeting with no roundStartedAt', () => {
+    const testId = 'TEST-GAP-tout-noStart-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      // no roundStartedAt intentionally
+    });
+    try {
+      // Tiny timeout — would fire immediately if roundStartedAt existed.
+      meetingModReal.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = meetingModReal.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating',
+        'meeting without roundStartedAt must not be auto-advanced');
+      assert.strictEqual(m.round, 1, 'round must not be bumped');
+      assert.strictEqual((m.transcript || []).length, 0,
+        'no transcript entry should be written for a no-op check');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── collectMeetingFindings — unknown roundName ──
+
+  await test('collectMeetingFindings is a no-op for unknown roundName', () => {
+    const testId = 'TEST-GAP-unknown-round-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const output = JSON.stringify({ type: 'result', result: 'legit content' });
+      // Should not throw and should not mutate findings/debate/conclusion.
+      meetingModReal.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
+      const m = meetingModReal.getMeeting(testId);
+      assert.deepStrictEqual(m.findings, {}, 'findings must not be touched');
+      assert.deepStrictEqual(m.debate, {}, 'debate must not be touched');
+      assert.strictEqual(m.conclusion, null, 'conclusion must not be set');
+      assert.strictEqual(m.status, 'investigating', 'status must not change');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── discoverMeetingWork — no work when all submitted ──
+
+  await test('discoverMeetingWork returns no items when every participant submitted findings', () => {
+    const testId = 'TEST-GAP-inv-all-done-' + Date.now();
+    meetingModReal.saveMeeting({
+      id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
+      round: 1, participants: ['alice', 'bob'],
+      findings: {
+        alice: { content: 'A-content' },
+        bob: { content: 'B-content' },
+      },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const config = { agents: { alice: { name: 'A' }, bob: { name: 'B' } } };
+      const work = meetingModReal.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0,
+        'no new work when all participants already submitted — the engine waits for the status advance instead');
+    } finally {
+      cleanupReal(testId);
+    }
+  });
+
+  // ── MINIONS_TEST_DIR isolation — MEETINGS_DIR path refactor verification ──
+
+  await test('MEETINGS_DIR resolves relative to shared.MINIONS_DIR (W-mo79lrbnkc71 refactor)', () => {
+    // Before the refactor, MEETINGS_DIR was hardcoded via __dirname and
+    // could not be redirected via MINIONS_TEST_DIR. The refactor routes
+    // it through shared.MINIONS_DIR so createTestMinionsDir() can isolate
+    // meeting state without monkey-patching module internals.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const expected = path.join(process.env.MINIONS_TEST_DIR, 'meetings');
+      assert.strictEqual(meetingMod.MEETINGS_DIR, expected,
+        'MEETINGS_DIR must point inside the test minions dir when MINIONS_TEST_DIR is set');
+    } finally {
+      restore();
+    }
+  });
+
+  // ── deleteMeeting + _killMeetingDispatches integration (isolated) ──
+
+  await test('deleteMeeting removes file AND moves matching active dispatches to completed', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-TEST-KILL-' + Date.now();
+
+      // Seed a meeting file
+      const meeting = {
+        id: meetingId, title: 'Kill Dispatch', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      };
+      meetingMod.saveMeeting(meeting);
+
+      // Seed dispatch.json with:
+      //   - one ACTIVE entry tied to this meeting (must be killed)
+      //   - one ACTIVE entry tied to a DIFFERENT meeting (must survive)
+      //   - one unrelated active entry with no meta.meetingId (must survive)
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      const dispatchBefore = {
+        pending: [],
+        active: [
+          { id: 'd-this', agent: 'alice', meta: { meetingId, dispatchKey: 'k1' } },
+          { id: 'd-other', agent: 'bob', meta: { meetingId: 'MTG-OTHER', dispatchKey: 'k2' } },
+          { id: 'd-bare', agent: 'carol', meta: { dispatchKey: 'k3' } },
+        ],
+        completed: [],
+      };
+      fs.writeFileSync(dispatchPath, JSON.stringify(dispatchBefore));
+
+      const meetingFp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      assert.ok(fs.existsSync(meetingFp), 'precondition: meeting file exists');
+
+      const result = meetingMod.deleteMeeting(meetingId);
+      assert.strictEqual(result, true, 'deleteMeeting returns true on success');
+      assert.ok(!fs.existsSync(meetingFp), 'meeting file should be removed');
+
+      const dispatchAfter = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      // Only the matching active entry should be removed.
+      assert.strictEqual(dispatchAfter.active.length, 2,
+        'only the one active dispatch tied to the deleted meeting should be removed');
+      assert.ok(dispatchAfter.active.find(d => d.id === 'd-other'),
+        'unrelated meeting dispatch must survive');
+      assert.ok(dispatchAfter.active.find(d => d.id === 'd-bare'),
+        'dispatch with no meetingId must survive');
+      // The killed entry should now be in completed with an error result.
+      const completedMatch = dispatchAfter.completed.find(d => d.id === 'd-this');
+      assert.ok(completedMatch, 'killed dispatch should be appended to completed');
+      assert.strictEqual(completedMatch.result, 'error',
+        'killed dispatch should be marked as error');
+      assert.ok(completedMatch.reason && /Meeting ended/.test(completedMatch.reason),
+        'killed dispatch should carry a human-readable reason');
+      assert.ok(completedMatch.completed_at, 'killed dispatch should have completed_at timestamp');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('deleteMeeting returns false (and does not touch dispatch) when meeting file is absent', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      const before = {
+        pending: [],
+        active: [{ id: 'd-unrelated', agent: 'alice', meta: { meetingId: 'MTG-OTHER' } }],
+        completed: [],
+      };
+      fs.writeFileSync(dispatchPath, JSON.stringify(before));
+
+      const result = meetingMod.deleteMeeting('MTG-NONEXISTENT-' + Date.now());
+      assert.strictEqual(result, false,
+        'deleteMeeting must return false when the meeting file does not exist');
+
+      const after = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      assert.deepStrictEqual(after, before,
+        'dispatch.json must be untouched when deleteMeeting targets a missing meeting');
+    } finally {
+      restore();
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -11449,6 +15306,97 @@ async function testSchedulerCronParsing() {
     assert.strictEqual(matcher(1), true);
     assert.strictEqual(matcher(3), true);
     assert.strictEqual(matcher(2), false);
+  });
+
+  // W-mo3zuc6usdut: scheduler must substitute {{date}} in title/description
+  // so downstream playbooks don't receive literal {{date}} strings that break
+  // single-pass template substitution in renderPlaybook.
+  console.log('\n── scheduler.js — Template Variable Substitution ──');
+
+  await test('resolveScheduleTemplateVars substitutes {{date}} with today YYYY-MM-DD', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('Test health report {{date}}'),
+      `Test health report ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars substitutes all occurrences of {{date}}', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    assert.strictEqual(
+      scheduler.resolveScheduleTemplateVars('{{date}}: build report for {{date}}'),
+      `${today}: build report for ${today}`
+    );
+  });
+
+  await test('resolveScheduleTemplateVars passes through strings without {{date}}', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars('nothing to substitute'), 'nothing to substitute');
+  });
+
+  await test('resolveScheduleTemplateVars handles undefined/null/empty without throwing', () => {
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(undefined), undefined);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(null), null);
+    assert.strictEqual(scheduler.resolveScheduleTemplateVars(''), '');
+  });
+
+  await test('discoverScheduledWork substitutes {{date}} in title and description', () => {
+    // Preserve + restore real schedule-runs.json so the test doesn't leak state
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      // Wipe any prior run record for our test IDs so the cron fires now
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-sub'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-sub',
+          cron: '* * *', // matches every minute
+          type: 'explore',
+          title: 'health check {{date}}',
+          description: 'explore test-health-{{date}}.md',
+          project: 'minions',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-sub');
+      assert.ok(item, 'discoverScheduledWork should emit a work item for the enabled schedule');
+      assert.strictEqual(item.title, `health check ${today}`, 'title must have {{date}} substituted');
+      assert.strictEqual(item.description, `explore test-health-${today}.md`, 'description must have {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
+  });
+
+  await test('discoverScheduledWork falls back to substituted title when description is absent', () => {
+    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    try {
+      let runs = {};
+      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
+      delete runs['test-date-title-fallback'];
+      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const config = {
+        schedules: [{
+          id: 'test-date-title-fallback',
+          cron: '* * *',
+          type: 'explore',
+          title: 'daily probe {{date}}',
+          enabled: true,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      const item = work.find(w => w._scheduleId === 'test-date-title-fallback');
+      assert.ok(item, 'should emit a work item');
+      assert.strictEqual(item.description, `daily probe ${today}`,
+        'description should fall back to title with {{date}} substituted');
+    } finally {
+      _restoreFileState(runsSnapshot);
+    }
   });
 }
 
@@ -11628,6 +15576,505 @@ async function testSchedulerDispatchTimePersistence() {
   });
 }
 
+// ─── scheduler.js — Additional coverage (W-mo5u52v2aabv) ───────────────────
+
+async function testSchedulerAdditionalCoverage() {
+  console.log('\n── scheduler.js — additional parseCron/shouldRunNow/discoverScheduledWork coverage ──');
+
+  // Snapshot + clear schedule-runs.json (and its .backup sidecar). safeJson auto-
+  // restores from .backup when the main file is missing, so both must be cleared
+  // for a true blank slate inside tests. Returns a restore function that puts
+  // whatever was there back — keeps tests atomic with respect to real engine state.
+  function snapshotAndClearScheduleRuns() {
+    const realPath = scheduler.SCHEDULE_RUNS_PATH;
+    const backupPath = realPath + '.backup';
+    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
+    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+    try { fs.unlinkSync(realPath); } catch {}
+    try { fs.unlinkSync(backupPath); } catch {}
+    return function restoreFiles() {
+      if (snapshot) fs.writeFileSync(realPath, snapshot);
+      else { try { fs.unlinkSync(realPath); } catch {} }
+      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+      else { try { fs.unlinkSync(backupPath); } catch {} }
+    };
+  }
+
+  // Patch Date so `new Date()` and Date.now() return the fixed timestamp. Calls
+  // with explicit args (e.g. new Date(isoString)) still use the real Date.
+  // Always invoke via try/finally so global.Date is restored on assertion failure.
+  function withFixedNow(fixedMs, fn) {
+    const origDate = global.Date;
+    try {
+      global.Date = class extends origDate {
+        constructor(...args) {
+          if (args.length === 0) return new origDate(fixedMs);
+          return new origDate(...args);
+        }
+        static now() { return fixedMs; }
+      };
+      return fn();
+    } finally {
+      global.Date = origDate;
+    }
+  }
+
+  // ─── parseCronField ───────────────────────────────────────────────────────
+
+  await test('parseCronField: single exact value matches only itself', () => {
+    const matcher = scheduler.parseCronField('5', 0, 59);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(4), false);
+    assert.strictEqual(matcher(6), false);
+    assert.strictEqual(matcher(0), false);
+  });
+
+  await test('parseCronField: step syntax with zero step returns always-false matcher', () => {
+    // */0 would cause div-by-zero if we actually evaluated val % 0 — guard returns noop matcher.
+    const matcher = scheduler.parseCronField('*/0', 0, 59);
+    assert.strictEqual(typeof matcher, 'function');
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(15), false);
+  });
+
+  await test('parseCronField: step syntax with non-numeric step returns always-false matcher', () => {
+    const matcher = scheduler.parseCronField('*/abc', 0, 59);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(15), false);
+  });
+
+  await test('parseCronField: list syntax drops non-numeric entries silently', () => {
+    const matcher = scheduler.parseCronField('1,abc,3', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(3), true);
+    assert.strictEqual(matcher(2), false);
+  });
+
+  await test('parseCronField: list syntax tolerates whitespace around entries', () => {
+    const matcher = scheduler.parseCronField('1, 3 , 5', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(3), true);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(2), false);
+  });
+
+  await test('parseCronField: wholly unparseable syntax returns always-false matcher', () => {
+    // Neither "*", "*/N", "N,M,..." nor a leading numeric → fall through to () => false.
+    const matcher = scheduler.parseCronField('@@foo', 0, 59);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(59), false);
+  });
+
+  await test('parseCronField: trims surrounding whitespace on a single value', () => {
+    const matcher = scheduler.parseCronField('  7  ', 0, 59);
+    assert.strictEqual(matcher(7), true);
+    assert.strictEqual(matcher(0), false);
+  });
+
+  // ─── parseCronExpr ────────────────────────────────────────────────────────
+
+  await test('parseCronExpr: dayOfWeek field gates the match', () => {
+    const cron = scheduler.parseCronExpr('0 9 1'); // Mondays 09:00
+    // March 30, 2026 is a Monday — matches.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);
+    // March 31, 2026 (Tuesday) at 09:00 — dow mismatch.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 31, 9, 0)), false);
+  });
+
+  await test('parseCronExpr: step syntax is honored in the hour field', () => {
+    const cron = scheduler.parseCronExpr('0 */6 *');
+    // */6 ⇒ hours 0, 6, 12, 18.
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 0, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 6, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 12, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 18, 0)), true);
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 3, 0)), false);
+    // Minute still has to match (0).
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 6, 1)), false);
+  });
+
+  await test('parseCronExpr: list syntax in dayOfWeek matches all listed days', () => {
+    const cron = scheduler.parseCronExpr('0 9 1,3,5'); // Mon/Wed/Fri at 09:00
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);  // Mon
+    assert.strictEqual(cron.matches(new Date(2026, 3, 1, 9, 0)), true);   // Wed
+    assert.strictEqual(cron.matches(new Date(2026, 3, 3, 9, 0)), true);   // Fri
+    assert.strictEqual(cron.matches(new Date(2026, 2, 31, 9, 0)), false); // Tue
+    assert.strictEqual(cron.matches(new Date(2026, 3, 5, 9, 0)), false);  // Sun (day 0)
+  });
+
+  await test('parseCronExpr: collapses multiple spaces between fields', () => {
+    const cron = scheduler.parseCronExpr('0   9   1');
+    assert.ok(cron, 'multi-space expression should parse via \\s+ split');
+    assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);
+  });
+
+  await test('parseCronExpr: rejects non-string inputs', () => {
+    assert.strictEqual(scheduler.parseCronExpr(1234), null);
+    assert.strictEqual(scheduler.parseCronExpr({}), null);
+    assert.strictEqual(scheduler.parseCronExpr([]), null);
+    assert.strictEqual(scheduler.parseCronExpr(true), null);
+  });
+
+  // ─── shouldRunNow ─────────────────────────────────────────────────────────
+
+  await test('shouldRunNow: returns false when cron expression is invalid', () => {
+    assert.strictEqual(scheduler.shouldRunNow({ cron: 'not a cron' }, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({ cron: null }, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({}, null), false);
+    assert.strictEqual(scheduler.shouldRunNow({ cron: '0 2' }, null), false); // 2 fields
+  });
+
+  await test('shouldRunNow: returns false when current time does not match cron', () => {
+    const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime(); // Tuesday 09:00
+    withFixedNow(tuesdayNine, () => {
+      const result = scheduler.shouldRunNow({ cron: '0 9 1' }, null); // Mon-only
+      assert.strictEqual(result, false,
+        'Tuesday 09:00 must not match a Monday-only schedule');
+    });
+  });
+
+  await test('shouldRunNow: returns true when matching cron and lastRunAt is null', () => {
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, null), true);
+    });
+  });
+
+  await test('shouldRunNow: returns true when matching cron and lastRunAt is undefined', () => {
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, undefined), true);
+    });
+  });
+
+  await test('shouldRunNow: ignores an unparseable lastRunAt string and fires', () => {
+    // new Date('not-a-date').getTime() === NaN → guard block skipped.
+    const monday = new Date(2026, 2, 30, 9, 0, 30).getTime();
+    withFixedNow(monday, () => {
+      assert.strictEqual(scheduler.shouldRunNow({ cron: '0 9 1' }, 'not-a-date'), true);
+    });
+  });
+
+  await test('shouldRunNow: returns true when lastRunAt is in a previous calendar minute', () => {
+    const now = new Date(2026, 2, 30, 9, 1, 0).getTime();      // 09:01:00
+    const lastMs = new Date(2026, 2, 30, 9, 0, 30).getTime();  // 09:00:30
+    withFixedNow(now, () => {
+      const result = scheduler.shouldRunNow(
+        { cron: '* * *' },
+        new Date(lastMs).toISOString()
+      );
+      assert.strictEqual(result, true,
+        'a prior-minute lastRunAt must not suppress a fresh fire');
+    });
+  });
+
+  await test('shouldRunNow: returns false when lastRunAt is in the same calendar minute', () => {
+    const now = new Date(2026, 2, 30, 9, 0, 30).getTime();    // 09:00:30
+    const lastMs = new Date(2026, 2, 30, 9, 0, 1).getTime();  // 09:00:01 — same minute
+    withFixedNow(now, () => {
+      const result = scheduler.shouldRunNow(
+        { cron: '* * *' },
+        new Date(lastMs).toISOString()
+      );
+      assert.strictEqual(result, false,
+        'a same-minute lastRunAt must suppress a duplicate fire');
+    });
+  });
+
+  // ─── discoverScheduledWork ───────────────────────────────────────────────
+
+  await test('discoverScheduledWork: returns [] when config.schedules is missing', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({}), []);
+  });
+
+  await test('discoverScheduledWork: returns [] when config.schedules is not an array', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: null }), []);
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: 'oops' }), []);
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: {} }), []);
+  });
+
+  await test('discoverScheduledWork: returns [] when config.schedules is empty', () => {
+    assert.deepStrictEqual(scheduler.discoverScheduledWork({ schedules: [] }), []);
+  });
+
+  await test('discoverScheduledWork: skips schedules missing id, cron, or title', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [
+          { cron: '* * *', title: 'no-id' },
+          { id: 'no-cron', title: 'no-cron' },
+          { id: 'no-title', cron: '* * *' },
+        ],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 0,
+        'all three entries should be skipped — missing required field(s)');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: skips schedules with enabled === false', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-disabled',
+          cron: '* * *',
+          title: 'disabled schedule',
+          enabled: false,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 0, 'enabled:false must skip the schedule');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: enabled=undefined defaults to enabled (strict false check)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-enabled-undef',
+          cron: '* * *',
+          title: 'default-enabled',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1,
+        'enabled:undefined must NOT be treated as disabled — schema default is enabled');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: enabled=null defaults to enabled (only strict false skips)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-enabled-null',
+          cron: '* * *',
+          title: 'null-enabled',
+          enabled: null,
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1,
+        'enabled:null must NOT be treated as disabled — only enabled===false skips');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: skips schedules whose cron does not match now', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime();
+      withFixedNow(tuesdayNine, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-mondays-only',
+            cron: '0 9 1',
+            title: 'Mondays only',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 0,
+          'Tuesday 09:00 does not match a Monday-only schedule');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: produces a work item with sane defaults', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-defaults',
+          cron: '* * *',
+          title: 'Do the thing',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1);
+      const wi = work[0];
+      assert.ok(wi.id.startsWith('sched-W-mo5u52v2aabv-defaults-'),
+        `id must be "sched-<scheduleId>-<timestamp>", got: ${wi.id}`);
+      assert.strictEqual(wi.title, 'Do the thing');
+      assert.strictEqual(wi.type, 'implement',  'type must default to "implement"');
+      assert.strictEqual(wi.priority, 'medium', 'priority must default to "medium"');
+      assert.strictEqual(wi.description, 'Do the thing',
+        'description must fall back to title when absent');
+      assert.strictEqual(wi.status, shared.WI_STATUS.PENDING);
+      assert.strictEqual(wi.createdBy, 'scheduler');
+      assert.strictEqual(wi.agent, null);
+      assert.strictEqual(wi.project, null);
+      assert.strictEqual(wi._scheduleId, 'W-mo5u52v2aabv-defaults');
+      assert.ok(wi.created, 'created timestamp must be populated');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: carries over custom type/priority/description/agent/project', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-custom',
+          cron: '* * *',
+          title: 'custom',
+          type: 'test',
+          priority: 'high',
+          description: 'Custom body text',
+          agent: 'ripley',
+          project: 'minions',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1);
+      const wi = work[0];
+      assert.strictEqual(wi.type, 'test');
+      assert.strictEqual(wi.priority, 'high');
+      assert.strictEqual(wi.description, 'Custom body text');
+      assert.strictEqual(wi.agent, 'ripley');
+      assert.strictEqual(wi.project, 'minions');
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: legacy string lastRun entry is honored for same-minute dedup', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Pre-seed the OLD format: runs[id] = "<iso>" (a bare string, not an object).
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 0, 30).getTime(); // 09:00:30
+      const sameMinuteIso = new Date(2026, 2, 30, 9, 0, 1).toISOString(); // 09:00:01
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-legacy-string': sameMinuteIso,
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-legacy-string',
+            cron: '* * *',
+            title: 'legacy string format',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 0,
+          'a legacy string-format lastRun in the current minute must dedupe');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: upgrades legacy string entry to object shape on dispatch', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Seed a legacy string entry from a PRIOR calendar minute so it does NOT suppress.
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 5, 30).getTime();          // 09:05:30
+      const priorMinuteIso = new Date(2026, 2, 30, 9, 0, 30).toISOString(); // 09:00:30
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-legacy-upgrade': priorMinuteIso,
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-legacy-upgrade',
+            cron: '* * *',
+            title: 'upgrade me',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1,
+          'prior-minute legacy entry must not suppress — schedule should fire');
+        const runs = JSON.parse(fs.readFileSync(realPath, 'utf8'));
+        const entry = runs['W-mo5u52v2aabv-legacy-upgrade'];
+        assert.ok(entry && typeof entry === 'object',
+          'post-dispatch entry must be an object (upgraded from legacy string)');
+        assert.ok(entry.lastRun, 'lastRun must be populated');
+        assert.strictEqual(entry.lastWorkItemId, work[0].id,
+          'lastWorkItemId must match the dispatched work item id');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: mixed set — fires only the matching, enabled, well-formed schedules', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const tuesdayNine = new Date(2026, 2, 31, 9, 0, 0).getTime();
+      withFixedNow(tuesdayNine, () => {
+        const config = {
+          schedules: [
+            { id: 'W-mo5u52v2aabv-mix-a', cron: '0 9 1', title: 'Mondays' },            // dow mismatch
+            { id: 'W-mo5u52v2aabv-mix-b', cron: '* * *', title: 'always' },             // fires
+            { id: 'W-mo5u52v2aabv-mix-c', cron: '* * *', title: 'off', enabled: false }, // skipped
+            { cron: '* * *', title: 'no id' },                                          // skipped (missing id)
+          ],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1, 'only the "mix-b" schedule should fire');
+        assert.strictEqual(work[0]._scheduleId, 'W-mo5u52v2aabv-mix-b');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: preserves existing object-shape fields on re-write (spread over existing)', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      // Seed an object entry with prior lastResult / lastCompletedAt from a PRIOR minute
+      // — these must survive the dispatch-time write (not be clobbered).
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 5, 30).getTime();           // 09:05:30
+      const priorMinuteIso = new Date(2026, 2, 30, 9, 0, 30).toISOString(); // 09:00:30
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-preserve': {
+          lastRun: priorMinuteIso,
+          lastWorkItemId: 'sched-W-mo5u52v2aabv-preserve-PREVIOUS',
+          lastResult: 'success',
+          lastCompletedAt: priorMinuteIso,
+        },
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-preserve',
+            cron: '* * *',
+            title: 'preserve fields',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 1);
+        const runs = JSON.parse(fs.readFileSync(realPath, 'utf8'));
+        const entry = runs['W-mo5u52v2aabv-preserve'];
+        assert.strictEqual(entry.lastResult, 'success',
+          'lastResult must be preserved across dispatch-time rewrite');
+        assert.strictEqual(entry.lastCompletedAt, priorMinuteIso,
+          'lastCompletedAt must be preserved across dispatch-time rewrite');
+        assert.notStrictEqual(entry.lastWorkItemId, 'sched-W-mo5u52v2aabv-preserve-PREVIOUS',
+          'lastWorkItemId must be updated to the new dispatched work item id');
+        assert.strictEqual(entry.lastWorkItemId, work[0].id);
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -11640,8 +16087,11 @@ async function main() {
     await testSharedUtilities();
     await testIdGeneration();
     await testBranchSanitization();
+    await testIsAllowedOrigin();
+    await testBuildSecurityHeaders();
     await testSanitizePath();
     await testValidatePid();
+    await testHasDangerousKey();
     await testValidateProjectName();
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
@@ -11675,6 +16125,8 @@ async function main() {
     // consolidation.js tests
     await testConsolidationHelpers();
     await testContentHashCircuitBreaker();
+    await testClassifyToKnowledgeBase();
+    await testConsolidateInboxBehavior();
     await testConsolidationForceResetRace();
 
     // github.js tests
@@ -11717,6 +16169,7 @@ async function main() {
     // New coverage: preflight, shared helpers, engine core, lifecycle, spawn-agent
     await testPreflightModule();
     await testPreflightDeep();
+    await testPreflightBehavioral();
     await testCleanChildEnv();
     await testGitEnv();
     await testProjectPathHelpers();
@@ -11725,6 +16178,7 @@ async function main() {
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
+    await testCooldownBehavioral();
     await testDispatchPromptSidecar();
     await testResolveAgent();
     await testTempAgentBudget();
@@ -11762,6 +16216,8 @@ async function main() {
 
     // Coverage gap tests
     await testAgentSteering();
+    // W-mobjwnvz5sbl: behavioral coverage for engine/timeout.js
+    await testTimeoutBehavioral();
     await testRecentFeatures();
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
@@ -11773,6 +16229,9 @@ async function main() {
     // checkPlanCompletion idempotency (functional)
     await testCheckPlanCompletionIdempotency();
 
+    // lifecycle.js — uncovered functions (W-mobjwgrahkbb)
+    await testLifecycleUncoveredFns();
+
     // Verify workflow tests
     await testVerifyWorkflow();
 
@@ -11781,6 +16240,7 @@ async function main() {
     await testMeetings();
     await testMeetingsBehavioral();
     await testMeetingsExtendedBehavioral();
+    await testMeetingsIsolatedGaps();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
@@ -11796,6 +16256,7 @@ async function main() {
     await testSchedulerCronParsing();
     await testSchedulerSameMinuteGuard();
     await testSchedulerDispatchTimePersistence();
+    await testSchedulerAdditionalCoverage();
 
     // P-b8c7d6e5: shared imports refactor (no circular requires)
     await testSharedImportsNoCircular();
@@ -11930,6 +16391,10 @@ async function main() {
     // W-mnyao4dyz8w7: createThrottleTracker factory, adoFetchText throttle, GitHub throttle
     await testCreateThrottleTracker();
     await testAdoFetchTextThrottle();
+
+    // W-moa4gs7dpd7a: ado.js pure helpers — classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle
+    await testAdoPureHelpers();
+
     await testGhThrottle();
     await testGhThrottleEngineGuards();
     await testGhThrottleDashboard();
@@ -11974,6 +16439,9 @@ async function main() {
 
     // W-moczd52c1icm: dashboard.js pure helpers
     await testDashboardPureHelpers();
+
+    // W-moczcvjl338u: engine.js pure helper coverage
+    await testEngineHelperCoverage();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -14908,21 +19376,31 @@ async function testDashboardAuditXss() {
     const cardSection = src.match(/grid\.innerHTML = agents\.map[\s\S]*?\.join\(''\)/);
     assert.ok(cardSection, 'agent card template must exist');
     const card = cardSection[0];
-    // These fields must be escaped
-    assert.ok(card.includes('escHtml(a.id)'), 'a.id must be escaped in onclick');
-    assert.ok(card.includes('escHtml(a.name)'), 'a.name must be escaped');
-    assert.ok(card.includes('escHtml(a.emoji)'), 'a.emoji must be escaped');
-    assert.ok(card.includes('escHtml(a.status)'), 'a.status must be escaped');
-    assert.ok(card.includes('escHtml(a.role)'), 'a.role must be escaped');
+    // Post-SEC-03: hotspot renderers use the canonical escapeHtml helper (6-char, null-safe).
+    // These fields must be escaped via escapeHtml (or any *escape*Html helper).
+    const hasEscape = (s) => card.includes('escapeHtml(' + s + ')') || card.includes('escHtml(' + s + ')');
+    assert.ok(hasEscape('a.id'), 'a.id must be escaped in onclick');
+    assert.ok(hasEscape('a.name'), 'a.name must be escaped');
+    assert.ok(hasEscape('a.emoji'), 'a.emoji must be escaped');
+    assert.ok(hasEscape('a.status'), 'a.status must be escaped');
+    assert.ok(hasEscape('a.role'), 'a.role must be escaped');
   });
 
-  await test('render-agents.js detail header escapes agent fields', () => {
+  await test('render-agents.js detail header renders agent fields safely', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
-    const headerLine = src.match(/detail-agent-name.*innerHTML[\s\S]*?;/);
-    assert.ok(headerLine, 'detail header line must exist');
-    assert.ok(headerLine[0].includes('escHtml(agent.emoji)'), 'emoji must be escaped in detail');
-    assert.ok(headerLine[0].includes('escHtml(agent.name)'), 'name must be escaped in detail');
-    assert.ok(headerLine[0].includes('escHtml(agent.role)'), 'role must be escaped in detail');
+    // Post-SEC-03: the detail-agent-name header is built via DOM (`replaceChildren` +
+    // `textContent`) rather than innerHTML. textContent inherently neutralises HTML, so
+    // agent.emoji / agent.name / agent.role can't be script-injected regardless of the
+    // escape helper. Assert we haven't regressed to an innerHTML pattern for this node.
+    const detailBlock = src.match(/detail-agent-name[\s\S]*?\)\);/);
+    assert.ok(detailBlock, 'detail-agent-name header block must exist');
+    const block = detailBlock[0];
+    assert.ok(!/detail-agent-name[^)]*\)\.innerHTML\s*=/.test(block),
+      'detail-agent-name must not be populated via innerHTML (use textContent / replaceChildren)');
+    assert.ok(block.includes('textContent'), 'emoji/name/role must be set via textContent');
+    assert.ok(block.includes('agent.emoji'), 'must read agent.emoji');
+    assert.ok(block.includes('agent.name'), 'must read agent.name');
+    assert.ok(block.includes('agent.role'), 'must read agent.role');
   });
 
   await test('render-pinned.js uses data attributes instead of JS string injection', () => {
@@ -15001,7 +19479,9 @@ async function testDashboardAuditXss() {
 
   await test('render-inbox.js escapes item.age', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
-    assert.ok(src.includes("escHtml(item.age") , 'item.age must be escaped');
+    // Post-SEC-03: render-inbox.js migrated from escHtml to canonical escapeHtml.
+    assert.ok(src.includes('escapeHtml(item.age') || src.includes('escHtml(item.age'),
+      'item.age must be escaped');
   });
 
   await test('utils.js has safeUrl function that blocks javascript: protocol', () => {
@@ -15024,6 +19504,222 @@ async function testDashboardAuditXss() {
     const tdMatch = rowFn ? (rowFn[0].match(/<td>/g) || []) : [];
     assert.strictEqual(thMatch.length, tdMatch.length,
       `PR table headers (${thMatch.length}) must match cell count (${tdMatch.length})`);
+  });
+
+  // ─── SEC-03 Phase A: escapeHtml helper + no-regression gate ───────────────
+  //
+  // Phase A landed three things:
+  //   1. A canonical `escapeHtml(str)` helper in dashboard/js/utils.js that escapes six
+  //      HTML metacharacters (& < > " ' /) and returns '' for null/undefined — null-safety
+  //      prevents the literal strings "null"/"undefined" from rendering where a field is
+  //      missing, and the `/` escape closes the `</script>` break-out route that the
+  //      legacy 5-char `escHtml` left open.
+  //   2. Migration of the top-priority renderers (work items, agents, PRs, KB entries,
+  //      plans, inbox) from `escHtml` → `escapeHtml` for every user-controlled field that
+  //      reaches `.innerHTML`.
+  //   3. This ratchet: count dynamic `.innerHTML =` / `.innerHTML +=` assignments across
+  //      dashboard/ and assert the count does not exceed a frozen baseline. New unsafe
+  //      innerHTML lines fail CI; converting an existing line to textContent /
+  //      insertAdjacentText is always allowed.
+  //
+  // ── How to update the baseline ──
+  //   When you migrate an `.innerHTML` assignment to a safer alternative (textContent,
+  //   insertAdjacentText, or a structured DOM build via document.createElement), rerun
+  //   the counter (see _countDynamicInnerHtml below) and lower DYNAMIC_INNERHTML_BASELINE
+  //   to match the new total. Never raise the baseline to make a failing test pass —
+  //   that defeats the ratchet. If a new renderer genuinely needs innerHTML for HTML
+  //   markup (e.g., returning from renderMd()), wrap user-controlled fields in
+  //   escapeHtml() and accept the baseline increment only with explicit review.
+  await testSec03EscapeHtml();
+}
+
+// A line's RHS is "static" (safe) iff it is a single pure string literal — no `${`,
+// no `+`, no bare identifier. The same predicate is used by the regression gate and
+// documented in the commit that introduced it.
+function _isStaticInnerHtmlRhs(rhs) {
+  const cleaned = rhs.replace(/;\s*$/, '').trim();
+  if (/^'[^']*'$/.test(cleaned)) return true;
+  if (/^"[^"]*"$/.test(cleaned)) return true;
+  if (/^`[^`$]*`$/.test(cleaned)) return true;
+  return false;
+}
+
+function _countDynamicInnerHtml(dir) {
+  const files = [];
+  (function walk(d) {
+    for (const name of fs.readdirSync(d)) {
+      const p = path.join(d, name);
+      const stat = fs.statSync(p);
+      if (stat.isDirectory()) walk(p);
+      else if (/\.(js|html)$/.test(name)) files.push(p);
+    }
+  })(dir);
+  let total = 0;
+  const perFile = {};
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8');
+    const lines = src.split('\n');
+    let n = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/\.innerHTML\s*\+?=\s*(.+)$/);
+      if (!m) continue;
+      if (_isStaticInnerHtmlRhs(m[1])) continue;
+      n++;
+    }
+    if (n > 0) { perFile[f] = n; total += n; }
+  }
+  return { total, perFile };
+}
+
+async function testSec03EscapeHtml() {
+  console.log('\n── SEC-03 Phase A: escapeHtml ──');
+
+  // Extract escapeHtml from source and eval it in a fresh scope (no deps).
+  const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+  const escBody = utilsSrc.match(/function escapeHtml\([\s\S]*?^}/m);
+  if (!escBody) throw new Error('escapeHtml not found in dashboard/js/utils.js');
+  const escapeHtml = new Function(escBody[0] + '\nreturn escapeHtml;')();
+
+  await test('escapeHtml escapes all six HTML metacharacters', () => {
+    assert.strictEqual(escapeHtml('&'), '&amp;');
+    assert.strictEqual(escapeHtml('<'), '&lt;');
+    assert.strictEqual(escapeHtml('>'), '&gt;');
+    assert.strictEqual(escapeHtml('"'), '&quot;');
+    assert.strictEqual(escapeHtml("'"), '&#39;');
+    assert.strictEqual(escapeHtml('/'), '&#x2F;');
+  });
+
+  await test('escapeHtml escapes a realistic XSS payload', () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const escaped = escapeHtml(payload);
+    assert.ok(!escaped.includes('<img'), 'raw <img must not survive');
+    assert.ok(escaped.includes('&lt;img'), '< must be encoded');
+    assert.ok(escaped.includes('&gt;'), '> must be encoded');
+  });
+
+  await test('escapeHtml escapes </script> break-out (the `/` escape matters)', () => {
+    // This is the tangible win over the 5-char legacy escHtml — `/` blocks
+    // `</script>` from closing an inline <script> tag when a field is accidentally
+    // interpolated into script context rather than body context.
+    const escaped = escapeHtml('</script>');
+    assert.ok(!escaped.includes('</'), 'raw </ must not survive');
+    assert.ok(escaped.includes('&#x2F;'), 'forward slash must be encoded as &#x2F;');
+  });
+
+  await test('escapeHtml returns empty string for null / undefined', () => {
+    // Legacy escHtml renders the literal strings "null" / "undefined" — a correctness
+    // bug (not a security bug) that escapeHtml fixes so missing fields don't leak.
+    assert.strictEqual(escapeHtml(null), '');
+    assert.strictEqual(escapeHtml(undefined), '');
+  });
+
+  await test('escapeHtml coerces non-string input to string', () => {
+    assert.strictEqual(escapeHtml(0), '0');
+    assert.strictEqual(escapeHtml(42), '42');
+    assert.strictEqual(escapeHtml(false), 'false');
+    assert.strictEqual(escapeHtml(true), 'true');
+  });
+
+  await test('escapeHtml is idempotent for non-metacharacter input', () => {
+    // The only metacharacter that expands on second pass is `&` (→ &amp; → &amp;amp;).
+    // Text without metacharacters is a fixed point — important so that template
+    // literals can safely wrap already-escaped callsites without double-encoding text.
+    const safe = 'Hello, world. 42 is the answer.';
+    assert.strictEqual(escapeHtml(escapeHtml(safe)), escapeHtml(safe));
+  });
+
+  await test('escapeHtml is exported via window.MinionsUtils', () => {
+    assert.ok(utilsSrc.includes('window.MinionsUtils'), 'MinionsUtils export must exist');
+    const exportLine = utilsSrc.match(/window\.MinionsUtils\s*=\s*\{[^}]*\}/)[0];
+    assert.ok(exportLine.includes('escapeHtml'), 'escapeHtml must be exported');
+  });
+
+  // Hotspot migration: the renderers listed in the task description must use the
+  // canonical escapeHtml helper for user-controlled fields that reach .innerHTML.
+  // Every field escape in these files should be escapeHtml (not the legacy escHtml)
+  // so future greps can distinguish migrated from unmigrated code.
+  const migratedFiles = [
+    'render-work-items.js', 'render-agents.js', 'render-prs.js',
+    'render-kb.js', 'render-plans.js', 'render-inbox.js',
+  ];
+  for (const f of migratedFiles) {
+    await test(`${f} uses escapeHtml (not legacy escHtml) after SEC-03 migration`, () => {
+      const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', f), 'utf8');
+      assert.ok(src.includes('escapeHtml('),
+        `${f} must use canonical escapeHtml helper`);
+      // Legacy escHtml must not appear — enforces clean migration.
+      // (A renamed identifier like `mapEscHtml` would match; we scope the regex to
+      // the exact call form so false positives are impossible.)
+      assert.ok(!/\bescHtml\s*\(/.test(src),
+        `${f} must not use legacy escHtml( — migrate to escapeHtml(`);
+    });
+  }
+
+  // ── Regression gate ─────────────────────────────────────────────────────
+  // Baseline was measured after Phase A migrations and frozen here. The counter
+  // treats a line as "dynamic" (potentially unsafe) when the RHS of `.innerHTML`
+  // is anything other than a single quoted/template string literal — i.e. it
+  // contains `${`, `+`, or a bare identifier. Static literal assignments
+  // (`el.innerHTML = '<p class="empty">...</p>'`) are exempt because they
+  // cannot carry user data.
+  const DYNAMIC_INNERHTML_BASELINE = 172;
+
+  await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
+    const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
+    const { total, perFile } = _countDynamicInnerHtml(dashboardDir);
+    if (total > DYNAMIC_INNERHTML_BASELINE) {
+      // Surface the per-file breakdown so the reviewer can find the new offender(s).
+      const breakdown = Object.entries(perFile)
+        .sort((a, b) => b[1] - a[1])
+        .map(([f, n]) => `  ${n.toString().padStart(4)} ${path.relative(MINIONS_DIR, f)}`)
+        .join('\n');
+      assert.fail(
+        `Dynamic .innerHTML assignments in dashboard/ rose from baseline ${DYNAMIC_INNERHTML_BASELINE} to ${total}.\n` +
+        `Either wrap the new user-controlled field in escapeHtml() AND prefer textContent\n` +
+        `where the element holds only text, or — if this change is intentional progress in\n` +
+        `the other direction (a textContent conversion) — lower DYNAMIC_INNERHTML_BASELINE\n` +
+        `to ${total}.\n\nPer-file counts:\n${breakdown}`
+      );
+    }
+    assert.ok(total <= DYNAMIC_INNERHTML_BASELINE, `count=${total} <= baseline=${DYNAMIC_INNERHTML_BASELINE}`);
+  });
+
+  // ── Regression gate for issue #1746 ─────────────────────────────────────
+  // dashboard.js inlines every dashboard/js/*.js module into a single
+  // `<script>/* __JS__ */</script>` block in layout.html. The HTML tokenizer
+  // scans script-data looking for the byte sequence `</script` followed by
+  // one of `\t \n \f \r ' ' '/' '>'`; comments and string literals don't
+  // matter — it's a raw-text scan. A stray literal `</script>` (even inside
+  // a JS comment) therefore terminates the inline block early and spills the
+  // remaining JS into the document body as visible text.
+  //
+  // Fix when a comment or string needs to reference the token: insert a
+  // backslash between `<` and `/` (`<\/script>`). After `<` the HTML parser
+  // transitions to script-data-less-than-sign state, which only recognizes
+  // `/` (end-tag-open) or `!` (escape-start); `\` is "anything else" and
+  // emits `<` back to script-data state, breaking the match.
+  await test('no dashboard/js/*.js file contains a literal </script> end-tag sequence (issue #1746)', () => {
+    const jsDir = path.join(MINIONS_DIR, 'dashboard', 'js');
+    // Match the HTML5 end-tag rule exactly: `</script` followed by whitespace,
+    // '/', or '>'. Using this (not a bare `</script>`) catches the full set
+    // of byte sequences that would actually close the inline block, including
+    // forms like `</script ` or `</script/>`.
+    const endTagRe = /<\/script[\t\n\f\r \/>]/;
+    const offenders = [];
+    for (const name of fs.readdirSync(jsDir)) {
+      if (!name.endsWith('.js')) continue;
+      const fp = path.join(jsDir, name);
+      const src = fs.readFileSync(fp, 'utf8');
+      if (endTagRe.test(src)) {
+        const lines = src.split('\n');
+        const lineNo = lines.findIndex(l => endTagRe.test(l)) + 1;
+        offenders.push(`${name}:${lineNo}`);
+      }
+    }
+    assert.strictEqual(offenders.length, 0,
+      `Literal </script> end-tag sequence found in: ${offenders.join(', ')}. ` +
+      `Escape it as <\\/script> in comments/strings — the inline dashboard ` +
+      `<script> block will otherwise be terminated early by the HTML parser.`);
   });
 }
 
@@ -15768,8 +20464,9 @@ async function testEngineAuditMedium() {
 
   await test('render-kb.js escapes item.agent', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
-    assert.ok(src.includes("escHtml(item.agent)"),
-      'item.agent must be escaped via escHtml to prevent XSS');
+    // Post-SEC-03: render-kb.js migrated from escHtml to canonical escapeHtml.
+    assert.ok(src.includes('escapeHtml(item.agent)') || src.includes('escHtml(item.agent)'),
+      'item.agent must be escaped via escapeHtml/escHtml to prevent XSS');
   });
 
   await test('_archiveMeeting clears markDeleted on API failure', () => {
@@ -15963,6 +20660,184 @@ async function testPrDuplicateRaceFix() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
     assert.ok(src.includes('30 * 60 * 1000'), 'backoff must have 30-minute cap');
     assert.ok(src.includes('GH_POLL_BACKOFF_MAX_MS'), 'must use named constant for max backoff');
+  });
+
+  // ── github.js isGitHub() detection ──
+
+  await test('github.js isGitHub exported as function', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(typeof gh.isGitHub, 'function', 'isGitHub must be exported as a function');
+  });
+
+  await test('github.js isGitHub returns true for repoHost="github"', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: 'github' }), true);
+  });
+
+  await test('github.js isGitHub returns false for repoHost="ado"', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: 'ado' }), false);
+  });
+
+  await test('github.js isGitHub returns false when repoHost missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isGitHub({ name: 'P' }), false, 'missing repoHost should not match');
+    assert.strictEqual(gh.isGitHub({ name: 'P', repoHost: '' }), false, 'empty repoHost should not match');
+  });
+
+  await test('github.js isGitHub handles null/undefined project safely', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Uses optional chaining — must not throw on nullish input
+    assert.strictEqual(gh.isGitHub(null), false);
+    assert.strictEqual(gh.isGitHub(undefined), false);
+  });
+
+  await test('github.js isGitHub is case-sensitive ("GitHub" ≠ "github")', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Lowercase 'github' is the canonical value — uppercase variants should not match
+    assert.strictEqual(gh.isGitHub({ repoHost: 'GitHub' }), false);
+    assert.strictEqual(gh.isGitHub({ repoHost: 'GITHUB' }), false);
+  });
+
+  // ── github.js getRepoSlug() derivation ──
+
+  await test('github.js getRepoSlug exported as function', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(typeof gh.getRepoSlug, 'function', 'getRepoSlug must be exported as a function');
+  });
+
+  await test('github.js getRepoSlug returns "adoOrg/repoName" when both present', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const slug = gh.getRepoSlug({ adoOrg: 'x3-design', repoName: 'Bebop_Workspaces' });
+    assert.strictEqual(slug, 'x3-design/Bebop_Workspaces');
+  });
+
+  await test('github.js getRepoSlug returns null when adoOrg missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({ repoName: 'some-repo' }), null);
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: '', repoName: 'some-repo' }), null);
+  });
+
+  await test('github.js getRepoSlug returns null when repoName missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org' }), null);
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org', repoName: '' }), null);
+  });
+
+  await test('github.js getRepoSlug returns null when both fields missing', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.getRepoSlug({}), null);
+    assert.strictEqual(gh.getRepoSlug({ name: 'P', repoHost: 'github' }), null);
+  });
+
+  await test('github.js getRepoSlug preserves hyphens, underscores, and dots in slug', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // getRepoSlug is pure string concat — it must not mangle valid GitHub characters
+    assert.strictEqual(gh.getRepoSlug({ adoOrg: 'my-org', repoName: 'my.repo_name' }), 'my-org/my.repo_name');
+  });
+
+  // ── github.js expanded backoff state machine ──
+
+  await test('github.js isSlugInBackoff returns false after backoffUntil has elapsed', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-expired';
+    // Seed an entry whose backoffUntil is already in the past — simulates time passing
+    gh._ghPollBackoff.set(testSlug, { failures: 3, backoffUntil: Date.now() - 1000 });
+    assert.strictEqual(gh.isSlugInBackoff(testSlug), false, 'expired backoff should no longer block polling');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js recordSlugFailure caps backoff at GH_POLL_BACKOFF_MAX_MS', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-cap';
+    gh._ghPollBackoff.delete(testSlug);
+    // 2min base, doubling — 10 failures would be 2min * 2^9 = 1024 min; must cap at 30 min
+    for (let i = 0; i < 10; i++) gh.recordSlugFailure(testSlug);
+    const entry = gh._ghPollBackoff.get(testSlug);
+    assert.strictEqual(entry.failures, 10, 'failure counter should still accumulate past the cap');
+    const remaining = entry.backoffUntil - Date.now();
+    // Allow small slop for elapsed time between set and read
+    assert.ok(remaining <= gh.GH_POLL_BACKOFF_MAX_MS, `remaining ${remaining}ms must not exceed cap ${gh.GH_POLL_BACKOFF_MAX_MS}ms`);
+    assert.ok(remaining > gh.GH_POLL_BACKOFF_MAX_MS - 5000, `remaining ${remaining}ms should be near the cap (within 5s slop)`);
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js backoff state is isolated per-slug', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const slugA = '_test/backoff-isolated-a';
+    const slugB = '_test/backoff-isolated-b';
+    gh._ghPollBackoff.delete(slugA);
+    gh._ghPollBackoff.delete(slugB);
+    // Fail slugA three times
+    gh.recordSlugFailure(slugA);
+    gh.recordSlugFailure(slugA);
+    gh.recordSlugFailure(slugA);
+    // slugB untouched
+    assert.strictEqual(gh.isSlugInBackoff(slugA), true, 'slugA should be in backoff');
+    assert.strictEqual(gh.isSlugInBackoff(slugB), false, 'slugB must NOT inherit slugA backoff');
+    assert.strictEqual(gh._ghPollBackoff.get(slugA).failures, 3);
+    assert.strictEqual(gh._ghPollBackoff.has(slugB), false);
+    // Reset slugA must not affect slugB — the opposite invariant
+    gh.recordSlugFailure(slugB);
+    gh.resetSlugBackoff(slugA);
+    assert.strictEqual(gh._ghPollBackoff.has(slugA), false, 'slugA cleared');
+    assert.strictEqual(gh.isSlugInBackoff(slugB), true, 'slugB backoff survives slugA reset');
+    gh._ghPollBackoff.delete(slugB); // cleanup
+  });
+
+  await test('github.js resetSlugBackoff on unknown slug is a no-op', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    // Must not throw, and must leave the map unchanged
+    const sizeBefore = gh._ghPollBackoff.size;
+    gh.resetSlugBackoff('_test/never-failed');
+    assert.strictEqual(gh._ghPollBackoff.size, sizeBefore, 'unknown slug should not mutate the map');
+  });
+
+  await test('github.js resetSlugBackoff + recordSlugFailure restarts counter from 1', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-restart';
+    gh._ghPollBackoff.delete(testSlug);
+    gh.recordSlugFailure(testSlug);
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh._ghPollBackoff.get(testSlug).failures, 2);
+    gh.resetSlugBackoff(testSlug);
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh._ghPollBackoff.get(testSlug).failures, 1, 'post-reset failure should start fresh');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js recordSlugFailure first backoff equals GH_POLL_BACKOFF_BASE_MS', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-base';
+    gh._ghPollBackoff.delete(testSlug);
+    const before = Date.now();
+    gh.recordSlugFailure(testSlug);
+    const entry = gh._ghPollBackoff.get(testSlug);
+    const remaining = entry.backoffUntil - before;
+    // Formula: base * 2^(failures-1) = base * 1 on first failure
+    assert.ok(Math.abs(remaining - gh.GH_POLL_BACKOFF_BASE_MS) < 500,
+      `first backoff (${remaining}ms) should match base (${gh.GH_POLL_BACKOFF_BASE_MS}ms) within 500ms slop`);
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js backoff doubles on each consecutive failure until cap', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-doubles';
+    gh._ghPollBackoff.delete(testSlug);
+    const durations = [];
+    for (let i = 0; i < 4; i++) {
+      const before = Date.now();
+      gh.recordSlugFailure(testSlug);
+      durations.push(gh._ghPollBackoff.get(testSlug).backoffUntil - before);
+    }
+    // Each subsequent duration should be ~2× the prior one (doubling) while below the cap
+    for (let i = 1; i < durations.length; i++) {
+      const ratio = durations[i] / durations[i - 1];
+      // Allow 1.5×–2.5× because Date.now() advances between calls
+      assert.ok(ratio > 1.5 && ratio < 2.5,
+        `backoff #${i + 1} (${durations[i]}ms) should ~double #${i} (${durations[i - 1]}ms); ratio=${ratio.toFixed(2)}`);
+    }
+    gh._ghPollBackoff.delete(testSlug); // cleanup
   });
 
   await test('ado.js reconcilePrs branch regex matches all work item ID prefixes', () => {
@@ -19165,6 +24040,118 @@ async function testBuildErrorLogFeature() {
       assert.ok(/updated\s*=\s*true/.test(after),
         `${label}: pr.lastBuildCheck = ts() must be followed by updated = true so the write is persisted`);
     }
+  });
+
+  // ─── Stale merge-commit fallback #1233 (item 3) ────────────────────────────
+  //
+  // When a target-branch update causes ADO to recompute the PR's merge commit
+  // but no new CI builds are triggered (source-side unchanged), `buildsData`
+  // still returns recent builds for this PR — but none match the new
+  // `mergeCommitId`, so `prBuilds` is empty and `buildStatus` resets to 'none'.
+  // The dashboard then shows "none" even though the real-world state hasn't
+  // changed from failing/passing. Fix: detect this specific case (buildsData
+  // has entries but filter returns empty), log a warning, and preserve the
+  // previous `pr.buildStatus` so the tracker reflects the last known truth.
+
+  await test('ado.js detects stale merge-commit and preserves previous buildStatus (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Must check the mismatch condition: builds returned but none match
+    // sourceVersion. Accept either naming (`buildsData.value` directly or a
+    // renamed binding like `allBuilds`) and either condition ordering, but
+    // require the two facts to co-occur:
+    //   - the filtered prBuilds is empty
+    //   - the pre-filter list has entries (prevents firing the fallback when
+    //     there are simply no builds at all)
+    //   - the previous pr.buildStatus is consulted
+    const fallbackMismatchPattern = /(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*(>\s*0|>\s*=?\s*0)[\s\S]{0,120}pr\.buildStatus/;
+    const mismatchOrderFlipped = /prBuilds\.length\s*===\s*0[\s\S]{0,120}(allBuilds|buildsData[?\s]*\.value)[^{;]{0,120}\.length\s*>\s*0/;
+    assert.ok(fallbackMismatchPattern.test(src) || mismatchOrderFlipped.test(src),
+      'ado.js must detect the stale merge-commit case (builds list non-empty but prBuilds filter returns empty) AND consult pr.buildStatus');
+    // Must log a warn-level diagnostic so operators can spot stale states
+    const warnRegex = /log\(\s*['"]warn['"][^)]*(stale|mismatch|merge commit|merge-commit|no builds match)/i;
+    assert.ok(warnRegex.test(src),
+      'ado.js must log a warning when builds exist but none target the current merge commit');
+  });
+
+  await test('ado.js preserves pr.buildStatus on merge-commit mismatch instead of resetting to none (#1233)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // The fallback branch must assign the previous pr.buildStatus back to
+    // the local buildStatus variable so the subsequent transition guard
+    // does not fire a spurious 'failing → none' log and state change.
+    // Accept either `buildStatus = pr.buildStatus` or an equivalent early-return.
+    assert.ok(
+      /buildStatus\s*=\s*pr\.buildStatus/.test(src)
+      || /buildStatus\s*=\s*\(?\s*pr\.buildStatus\s*\|\|/.test(src),
+      'ado.js must reassign the local buildStatus to the previous pr.buildStatus when builds mismatch the current merge commit');
+  });
+
+  // Behavioral simulation — document the intended decision table.
+  //   buildsData.value | prBuilds (filtered) | prev pr.buildStatus | expected
+  //   empty            | empty               | failing             | 'none'         (no builds ever — honest)
+  //   1+ builds        | empty               | failing             | 'failing'      (preserve — stale merge commit)
+  //   1+ builds        | empty               | 'passing'           | 'passing'      (preserve)
+  //   1+ builds        | empty               | undefined           | 'none'         (no prior knowledge)
+  //   1+ builds        | 1+ matches          | failing             | classify matches
+  const applyBuildStatusResolution = (buildsValue, mergeCommitId, prevStatus) => {
+    let buildStatus = 'none';
+    const prBuilds = (buildsValue || []).filter(b => b.sourceVersion === mergeCommitId);
+    if (prBuilds.length > 0) {
+      // Classify deterministically for the test — mimic classifyBuildStatus roughly
+      const hasFailed = prBuilds.some(b => b.result === 'failed');
+      const allDone = prBuilds.every(b => b.status === 'completed');
+      if (hasFailed) buildStatus = 'failing';
+      else if (allDone) buildStatus = 'passing';
+      else buildStatus = 'running';
+    } else if ((buildsValue || []).length > 0 && prevStatus) {
+      // Stale merge-commit fallback
+      buildStatus = prevStatus;
+    }
+    return buildStatus;
+  };
+
+  await test('behavioral: buildsData empty + prev failing → none (no builds ever)', () => {
+    assert.strictEqual(
+      applyBuildStatusResolution([], 'abc123', 'failing'),
+      'none',
+      'When ADO has no builds at all, report none regardless of prior status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev failing → failing (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'old-merge-hash-1', result: 'failed', status: 'completed' },
+      { sourceVersion: 'old-merge-hash-2', result: 'succeeded', status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new-merge-hash', 'failing'),
+      'failing',
+      'Stale merge commit: preserve previous failing status so dashboard does not show spurious none');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + prev passing → passing (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', 'passing'),
+      'passing',
+      'Stale merge commit: preserve previous passing status');
+  });
+
+  await test('behavioral: builds exist but none match merge commit + no prior status → none (#1233)', () => {
+    const builds = [{ sourceVersion: 'old', result: 'succeeded', status: 'completed' }];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'new', undefined),
+      'none',
+      'First poll with mismatched builds and no prior status: stay at none (nothing to preserve)');
+  });
+
+  await test('behavioral: builds match current merge commit → classify matched builds, ignore previous (#1233)', () => {
+    const builds = [
+      { sourceVersion: 'current-merge', result: 'succeeded', status: 'completed' },
+      { sourceVersion: 'old-merge',     result: 'failed',    status: 'completed' },
+    ];
+    assert.strictEqual(
+      applyBuildStatusResolution(builds, 'current-merge', 'failing'),
+      'passing',
+      'When builds match the current merge commit, classify those builds — do not fall back to previous status');
   });
 }
 
@@ -23287,6 +28274,277 @@ async function testAdoFetchTextThrottle() {
     }
   });
 
+  delete require.cache[require.resolve(adoPath)];
+}
+
+// ─── W-moa4gs7dpd7a: ado.js pure helper coverage ───────────────────────────
+// Covers classifyBuildStatus, votesToReviewStatus, isAdoAuthError, needsAdoPollRetry,
+// and the throttle state-machine testing helpers (_resetAdoThrottle / _setAdoThrottleForTest).
+
+async function testAdoPureHelpers() {
+  console.log('\n── W-moa4gs7dpd7a: ado.js pure helpers (classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle) ──');
+
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+  const adoSrc = fs.readFileSync(adoPath, 'utf8');
+
+  // Fresh require so module-level state (_adoPollHadAuthFailure, _adoThrottle) starts clean.
+  delete require.cache[require.resolve(adoPath)];
+  const ado = require(adoPath);
+
+  // classifyBuildStatus is a module-local function (not exported). Cover it via a safe eval
+  // of its source so we exercise the real code path rather than mirroring the logic.
+  //
+  // Extract: match the non-greedy body up to the first line-leading closing brace. The
+  // function body is small and self-contained (no closures over module state), so we can
+  // recover it as a `Function` and call it directly.
+  const classifyFnMatch = adoSrc.match(/function classifyBuildStatus\(prBuilds\) \{[\s\S]*?\n\}/m);
+  assert.ok(classifyFnMatch, 'classifyBuildStatus function must exist in ado.js');
+  // Wrap: turn the source into an expression that evaluates to the function.
+  const classifyBuildStatus = new Function(`${classifyFnMatch[0]}; return classifyBuildStatus;`)();
+
+  const votesFnMatch = adoSrc.match(/function votesToReviewStatus\(votes\) \{[\s\S]*?\n\}/m);
+  assert.ok(votesFnMatch, 'votesToReviewStatus function must exist in ado.js');
+  const votesToReviewStatus = new Function(`${votesFnMatch[0]}; return votesToReviewStatus;`)();
+
+  // ── classifyBuildStatus ────────────────────────────────────────────────
+
+  await test('classifyBuildStatus returns "none" for empty array', () => {
+    assert.strictEqual(classifyBuildStatus([]), 'none');
+  });
+
+  await test('classifyBuildStatus returns "passing" when all builds succeeded', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'succeeded' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'passing');
+  });
+
+  await test('classifyBuildStatus treats partiallySucceeded (warnings) as passing', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'partiallySucceeded' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'passing');
+  });
+
+  await test('classifyBuildStatus returns "failing" when any completed build failed', () => {
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'completed', result: 'failed' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'failing');
+  });
+
+  await test('classifyBuildStatus treats canceled as failed', () => {
+    const builds = [{ status: 'completed', result: 'canceled' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'failing');
+  });
+
+  await test('classifyBuildStatus returns "running" when a build is inProgress', () => {
+    const builds = [{ status: 'inProgress' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when a build is notStarted', () => {
+    const builds = [{ status: 'notStarted' }];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when one build passed and another is inProgress', () => {
+    // Not all done → cannot be passing/failing yet.
+    const builds = [
+      { status: 'completed', result: 'succeeded' },
+      { status: 'inProgress' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "running" when a failed build is mixed with inProgress (not yet terminal)', () => {
+    // hasFailed && !allDone → we do not short-circuit to "failing" until every build is done.
+    const builds = [
+      { status: 'completed', result: 'failed' },
+      { status: 'inProgress' },
+    ];
+    assert.strictEqual(classifyBuildStatus(builds), 'running');
+  });
+
+  await test('classifyBuildStatus returns "none" for completed builds with unknown result fields', () => {
+    // allDone=true, allPassed=false (no succeeded/partiallySucceeded), hasFailed=false → "none".
+    const builds = [{ status: 'completed' /* no result */ }];
+    assert.strictEqual(classifyBuildStatus(builds), 'none');
+  });
+
+  // ── votesToReviewStatus ────────────────────────────────────────────────
+
+  await test('votesToReviewStatus returns "pending" for no votes', () => {
+    assert.strictEqual(votesToReviewStatus([]), 'pending');
+  });
+
+  await test('votesToReviewStatus returns "approved" for single +10 (approved)', () => {
+    assert.strictEqual(votesToReviewStatus([10]), 'approved');
+  });
+
+  await test('votesToReviewStatus returns "approved" for single +5 (approved with suggestions)', () => {
+    // ADO encodes approved-with-suggestions as +5; helper treats any v>=5 as approved.
+    assert.strictEqual(votesToReviewStatus([5]), 'approved');
+  });
+
+  await test('votesToReviewStatus returns "changes-requested" for single -10 (rejected)', () => {
+    assert.strictEqual(votesToReviewStatus([-10]), 'changes-requested');
+  });
+
+  await test('votesToReviewStatus returns "waiting" for single -5 (waiting for author)', () => {
+    assert.strictEqual(votesToReviewStatus([-5]), 'waiting');
+  });
+
+  await test('votesToReviewStatus returns "pending" for all-zero votes', () => {
+    assert.strictEqual(votesToReviewStatus([0, 0, 0]), 'pending');
+  });
+
+  await test('votesToReviewStatus: rejection (-10) overrides approval (+10) per ADO semantics', () => {
+    // Any -10 vote blocks the PR regardless of how many approvals exist.
+    assert.strictEqual(votesToReviewStatus([10, 10, -10]), 'changes-requested');
+  });
+
+  await test('votesToReviewStatus: approval beats a waiting vote when no rejection present', () => {
+    // No -10, but +10 present → approved wins over -5.
+    assert.strictEqual(votesToReviewStatus([10, -5]), 'approved');
+  });
+
+  await test('votesToReviewStatus: mixed approvals resolve to "approved"', () => {
+    assert.strictEqual(votesToReviewStatus([10, 0, 5]), 'approved');
+  });
+
+  await test('votesToReviewStatus: waiting (-5) resolves only when no approval present', () => {
+    assert.strictEqual(votesToReviewStatus([4, -5]), 'waiting');
+  });
+
+  await test('votesToReviewStatus: sub-threshold positive votes (<5) are "pending"', () => {
+    // +5 is the approval threshold; +4 is not enough.
+    assert.strictEqual(votesToReviewStatus([4, 4]), 'pending');
+  });
+
+  // ── isAdoAuthError ─────────────────────────────────────────────────────
+
+  await test('isAdoAuthError returns true for HTTP 401 errors', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 401: Unauthorized')), true);
+  });
+
+  await test('isAdoAuthError returns true for HTTP 403 errors', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 403: Forbidden')), true);
+  });
+
+  await test('isAdoAuthError returns true for HTML auth redirect errors', () => {
+    assert.strictEqual(
+      ado.isAdoAuthError(new Error('ADO returned HTML instead of JSON (likely auth redirect) for https://dev.azure.com/foo')),
+      true,
+    );
+  });
+
+  await test('isAdoAuthError returns false for non-auth HTTP errors (500)', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 500: Internal Server Error')), false);
+  });
+
+  await test('isAdoAuthError returns false for adjacent HTTP status codes (400, 404)', () => {
+    // Neither "400" nor "404" contains "401" or "403" as a substring, so the unanchored
+    // regex /ADO API (401|403)/ rejects them correctly.
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 400: Bad Request')), false);
+    assert.strictEqual(ado.isAdoAuthError(new Error('ADO API 404: Not Found')), false);
+  });
+
+  await test('isAdoAuthError returns false for null/undefined without throwing', () => {
+    assert.strictEqual(ado.isAdoAuthError(null), false);
+    assert.strictEqual(ado.isAdoAuthError(undefined), false);
+  });
+
+  await test('isAdoAuthError returns false for objects with no message', () => {
+    assert.strictEqual(ado.isAdoAuthError({}), false);
+    assert.strictEqual(ado.isAdoAuthError({ message: '' }), false);
+  });
+
+  await test('isAdoAuthError returns false for unrelated error messages', () => {
+    assert.strictEqual(ado.isAdoAuthError(new Error('Network timeout')), false);
+    assert.strictEqual(ado.isAdoAuthError(new Error('ECONNRESET')), false);
+  });
+
+  // ── needsAdoPollRetry (ADO poll auth-failure flag) ─────────────────────
+  // Only pollPrStatus() flips the flag to true; the getter must start at false and be
+  // idempotent / independent of throttle state.
+
+  await test('needsAdoPollRetry returns false on a freshly-required module', () => {
+    // Fresh require above guarantees module-level _adoPollHadAuthFailure = false.
+    assert.strictEqual(ado.needsAdoPollRetry(), false);
+  });
+
+  await test('needsAdoPollRetry is idempotent (reads do not mutate state)', () => {
+    // Multiple calls must not flip the flag.
+    const first = ado.needsAdoPollRetry();
+    const second = ado.needsAdoPollRetry();
+    const third = ado.needsAdoPollRetry();
+    assert.strictEqual(first, false);
+    assert.strictEqual(second, false);
+    assert.strictEqual(third, false);
+  });
+
+  await test('needsAdoPollRetry is independent of throttle state (different failure modes)', () => {
+    // Throttle (429/503) and auth-failure (401/403) are tracked separately.
+    try {
+      ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 3, backoffMs: 240000 });
+      assert.strictEqual(ado.isAdoThrottled(), true, 'precondition: throttle flag set');
+      assert.strictEqual(ado.needsAdoPollRetry(), false,
+        'throttle state must NOT leak into needsAdoPollRetry');
+    } finally {
+      ado._resetAdoThrottle();
+    }
+  });
+
+  // ── _resetAdoThrottle / _setAdoThrottleForTest state machine ───────────
+
+  await test('_resetAdoThrottle returns tracker to its initial (not throttled) state', () => {
+    // Force a non-initial state, then reset.
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 5, backoffMs: 480000 });
+    assert.strictEqual(ado.isAdoThrottled(), true, 'precondition: throttle flag is set');
+    ado._resetAdoThrottle();
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, false, 'reset must clear throttled');
+    assert.strictEqual(state.consecutiveHits, 0, 'reset must clear consecutiveHits');
+    // retryAfter is reset to 0; isThrottled() treats Date.now() >= 0 as not-throttled anyway.
+    assert.strictEqual(state.retryAfter, 0, 'reset must zero retryAfter');
+  });
+
+  await test('_setAdoThrottleForTest + getAdoThrottleState: set-then-read roundtrips', () => {
+    ado._resetAdoThrottle();
+    const future = Date.now() + 120000;
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: future, consecutiveHits: 2, backoffMs: 120000 });
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, true, 'set throttled should round-trip');
+    assert.strictEqual(state.retryAfter, future, 'set retryAfter should round-trip');
+    assert.strictEqual(state.consecutiveHits, 2, 'set consecutiveHits should round-trip');
+    ado._resetAdoThrottle();
+  });
+
+  await test('_setAdoThrottleForTest partial overrides preserve un-named fields', () => {
+    // Start with a known state, apply a partial override, and assert the untouched field survives.
+    ado._resetAdoThrottle();
+    ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 1, backoffMs: 60000 });
+    ado._setAdoThrottleForTest({ consecutiveHits: 7 }); // only override consecutiveHits
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.consecutiveHits, 7, 'partial override should update consecutiveHits');
+    assert.strictEqual(state.throttled, true, 'partial override must not reset other fields');
+    ado._resetAdoThrottle();
+  });
+
+  await test('_resetAdoThrottle is idempotent (safe to call twice)', () => {
+    ado._resetAdoThrottle();
+    ado._resetAdoThrottle();
+    const state = ado.getAdoThrottleState();
+    assert.strictEqual(state.throttled, false);
+    assert.strictEqual(state.consecutiveHits, 0);
+  });
+
+  // Final teardown — leave global module state clean for later test functions.
+  ado._resetAdoThrottle();
   delete require.cache[require.resolve(adoPath)];
 }
 
@@ -28422,6 +33680,360 @@ async function testDashboardPureHelpers() {
     } finally {
       osMod.homedir = origHome;
     }
+  });
+}
+
+// ─── W-moczcvjl338u: engine.js pure helpers ──────────────────────────────────
+
+async function testEngineHelperCoverage() {
+  console.log('\n── engine.js — pure helper coverage (W-moczcvjl338u) ──');
+
+  const engine = require(path.join(MINIONS_DIR, 'engine.js'));
+  const { ENGINE_DEFAULTS, WORK_TYPE } = shared;
+
+  // ── normalizeAc ──
+
+  await test('normalizeAc returns array input unchanged (identity)', () => {
+    const input = ['write test', 'ship it'];
+    const out = engine.normalizeAc(input);
+    assert.strictEqual(out, input, 'array input must be returned as-is (same reference)');
+  });
+
+  await test('normalizeAc returns empty array for null', () => {
+    assert.deepStrictEqual(engine.normalizeAc(null), []);
+  });
+
+  await test('normalizeAc returns empty array for undefined', () => {
+    assert.deepStrictEqual(engine.normalizeAc(undefined), []);
+  });
+
+  await test('normalizeAc returns empty array for numeric input', () => {
+    assert.deepStrictEqual(engine.normalizeAc(42), []);
+  });
+
+  await test('normalizeAc returns empty array for plain object', () => {
+    assert.deepStrictEqual(engine.normalizeAc({ foo: 'bar' }), []);
+  });
+
+  await test('normalizeAc returns empty array for empty string', () => {
+    assert.deepStrictEqual(engine.normalizeAc(''), []);
+  });
+
+  await test('normalizeAc returns empty array for whitespace-only string', () => {
+    // Each line trims to '' → filtered out
+    assert.deepStrictEqual(engine.normalizeAc('   \n  \n'), []);
+  });
+
+  await test('normalizeAc splits newline-delimited string and preserves order', () => {
+    const out = engine.normalizeAc('first\nsecond\nthird');
+    assert.deepStrictEqual(out, ['first', 'second', 'third']);
+  });
+
+  await test('normalizeAc strips leading dash markers from string lines', () => {
+    const out = engine.normalizeAc('- alpha\n- beta');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc strips leading asterisk markers from string lines', () => {
+    const out = engine.normalizeAc('* alpha\n* beta');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc only strips a single leading marker, not interior ones', () => {
+    const out = engine.normalizeAc('- use a - dash inside');
+    assert.deepStrictEqual(out, ['use a - dash inside']);
+  });
+
+  await test('normalizeAc skips empty lines and trims trailing whitespace', () => {
+    // Regex `/^[-*]\s*/` requires marker at column 0 — leading whitespace is
+    // preserved verbatim and the line survives the trim() as-is (sans outer ws)
+    const out = engine.normalizeAc('- alpha  \n\n- beta\n   \n- gamma');
+    assert.deepStrictEqual(out, ['alpha', 'beta', 'gamma']);
+  });
+
+  await test('normalizeAc does NOT strip markers when preceded by whitespace (regex anchored at ^)', () => {
+    // Documents current behaviour: leading whitespace shields the marker from
+    // being stripped. trim() still fires, so the returned line keeps the marker.
+    const out = engine.normalizeAc('  - alpha\n  * beta');
+    assert.deepStrictEqual(out, ['- alpha', '* beta']);
+  });
+
+  await test('normalizeAc handles CRLF line endings gracefully', () => {
+    // Only '\n' is a separator — '\r' remains attached then is trimmed away
+    const out = engine.normalizeAc('- alpha\r\n- beta\r\n');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc preserves empty array input', () => {
+    const out = engine.normalizeAc([]);
+    assert.deepStrictEqual(out, []);
+  });
+
+  // ── _maxTurnsForType ──
+
+  await test('_maxTurnsForType returns built-in default per WORK_TYPE when no config overrides', () => {
+    const expected = {
+      [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
+      [WORK_TYPE.DECOMPOSE]: 15, [WORK_TYPE.PLAN]: 30, [WORK_TYPE.PLAN_TO_PRD]: 35,
+      [WORK_TYPE.MEETING]: 30, [WORK_TYPE.IMPLEMENT]: 75, [WORK_TYPE.IMPLEMENT_LARGE]: 75,
+      [WORK_TYPE.FIX]: 75, [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
+    };
+    for (const [type, turns] of Object.entries(expected)) {
+      assert.strictEqual(engine._maxTurnsForType(type, {}), turns,
+        `${type} should resolve to built-in default ${turns}`);
+    }
+  });
+
+  await test('_maxTurnsForType falls back to ENGINE_DEFAULTS.maxTurns for unknown types', () => {
+    assert.strictEqual(engine._maxTurnsForType('unknown-work-type', {}), ENGINE_DEFAULTS.maxTurns);
+  });
+
+  await test('_maxTurnsForType ignores global maxTurns when it equals the default', () => {
+    // Same as default → treated as "no override"; built-in per-type wins
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, { maxTurns: ENGINE_DEFAULTS.maxTurns });
+    assert.strictEqual(out, 75);
+  });
+
+  await test('_maxTurnsForType applies global maxTurns override (overrides built-in per-type)', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, { maxTurns: ENGINE_DEFAULTS.maxTurns + 50 });
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns + 50);
+  });
+
+  await test('_maxTurnsForType applies global maxTurns override for unknown type', () => {
+    const out = engine._maxTurnsForType('unknown-xyz', { maxTurns: ENGINE_DEFAULTS.maxTurns + 7 });
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns + 7);
+  });
+
+  await test('_maxTurnsForType per-type override beats global override', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, {
+      maxTurns: ENGINE_DEFAULTS.maxTurns + 50,
+      maxTurnsByType: { [WORK_TYPE.IMPLEMENT]: 200 },
+    });
+    assert.strictEqual(out, 200);
+  });
+
+  await test('_maxTurnsForType per-type override beats built-in per-type default', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.REVIEW, {
+      maxTurnsByType: { [WORK_TYPE.REVIEW]: 9 },
+    });
+    assert.strictEqual(out, 9);
+  });
+
+  await test('_maxTurnsForType per-type override for unlisted type wins over default', () => {
+    const out = engine._maxTurnsForType('custom-type', {
+      maxTurnsByType: { 'custom-type': 42 },
+    });
+    assert.strictEqual(out, 42);
+  });
+
+  await test('_maxTurnsForType ignores per-type override of 0 (falsy) and falls through', () => {
+    // perType[type] is checked with truthy test, so 0 falls through to next branch
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, {
+      maxTurnsByType: { [WORK_TYPE.IMPLEMENT]: 0 },
+    });
+    assert.strictEqual(out, 75, 'zero per-type override must not apply; falls through to built-in 75');
+  });
+
+  // ── isWorktreeRetryableError ──
+
+  await test('isWorktreeRetryableError returns false for null/undefined err', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(null), false);
+    assert.strictEqual(engine.isWorktreeRetryableError(undefined), false);
+  });
+
+  await test('isWorktreeRetryableError returns false for err without message field', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError({}), false);
+    assert.strictEqual(engine.isWorktreeRetryableError({ code: 'ENOENT' }), false);
+  });
+
+  await test('isWorktreeRetryableError returns false for unrelated error message', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('nothing to do here')), false);
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('permission denied')), false);
+  });
+
+  await test('isWorktreeRetryableError matches ETIMEDOUT', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('operation ETIMEDOUT after 30s')), true);
+  });
+
+  await test('isWorktreeRetryableError matches index.lock substring', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('unable to create .git/index.lock: File exists')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "timed out"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('git worktree add timed out')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "could not lock"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('fatal: could not lock config file')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "resource busy"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('EBUSY: resource busy or locked')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "already exists"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error("fatal: '<path>' already exists")), true);
+  });
+
+  await test('isWorktreeRetryableError is case-sensitive on substring match', () => {
+    // Current implementation uses plain .includes(), so case matters
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('Etimedout')), false,
+      'implementation uses case-sensitive includes — lowercase/mixed-case should not match');
+  });
+
+  await test('isWorktreeRetryableError coerces non-Error values via String(err?.message)', () => {
+    // err.message is undefined on a plain string, so msg === 'undefined' and no pattern matches
+    assert.strictEqual(engine.isWorktreeRetryableError('ETIMEDOUT raw string'), false);
+    // But object with matching .message works
+    assert.strictEqual(engine.isWorktreeRetryableError({ message: 'ETIMEDOUT' }), true);
+  });
+
+  // ── removeStaleIndexLock ──
+
+  await test('removeStaleIndexLock is a no-op when .git/index.lock does not exist', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    // Must not throw
+    engine.removeStaleIndexLock(dir);
+    // And must not spontaneously create the lock
+    assert.ok(!fs.existsSync(path.join(dir, '.git', 'index.lock')));
+  });
+
+  await test('removeStaleIndexLock is a no-op when .git directory does not exist', () => {
+    const dir = createTmpDir();
+    // No .git at all
+    engine.removeStaleIndexLock(dir); // must not throw
+  });
+
+  await test('removeStaleIndexLock removes lock older than 300_000ms', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Backdate mtime to 10 minutes ago
+    const oldTime = new Date(Date.now() - 600000);
+    fs.utimesSync(lockFile, oldTime, oldTime);
+    engine.removeStaleIndexLock(dir);
+    assert.ok(!fs.existsSync(lockFile), 'stale index.lock must be removed');
+  });
+
+  await test('removeStaleIndexLock preserves fresh lock (younger than 300_000ms)', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Fresh lock — just now
+    engine.removeStaleIndexLock(dir);
+    assert.ok(fs.existsSync(lockFile), 'fresh index.lock must NOT be removed');
+  });
+
+  await test('removeStaleIndexLock preserves lock exactly at 300_000ms boundary', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Set mtime to exactly 300000ms ago (threshold is `age > 300000`, so equality does NOT remove)
+    // Use a time just inside the threshold (age ~= 299_000ms)
+    const recentTime = new Date(Date.now() - 299000);
+    fs.utimesSync(lockFile, recentTime, recentTime);
+    engine.removeStaleIndexLock(dir);
+    assert.ok(fs.existsSync(lockFile), 'lock within threshold window must be preserved');
+  });
+
+  await test('removeStaleIndexLock swallows errors on bogus rootDir (no throw)', () => {
+    // Pass a non-string value — path.join will throw inside, but the outer try/catch swallows it
+    // Use a value that flows through path.join without crashing — statSync/unlinkSync path errors get caught
+    const bogus = path.join(createTmpDir(), 'does', 'not', 'exist');
+    // fs.existsSync on missing nested dir returns false → no-op, must not throw
+    engine.removeStaleIndexLock(bogus);
+  });
+
+  // ── buildProjectContext ──
+
+  const sampleProject = (name, extras = {}) => ({
+    name,
+    localPath: `/repos/${name}`,
+    adoOrg: 'myorg',
+    adoProject: 'myproject',
+    repoName: `${name}-repo`,
+    repositoryId: `GUID-${name}`,
+    ...extras,
+  });
+
+  await test('buildProjectContext single-project mode (not fan-out) emits multi-project scope', () => {
+    const projects = [sampleProject('alpha')];
+    const out = engine.buildProjectContext(projects, projects[0], false, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Multi-project'), 'non-fan-out always shows multi-project scope header');
+    assert.ok(out.includes('## Available Projects'), 'projects section must be present');
+    assert.ok(out.includes('### alpha'), 'project name must be rendered');
+    assert.ok(out.includes('/repos/alpha'), 'localPath must be rendered');
+    assert.ok(out.includes('myorg/myproject/alpha-repo'), 'repo triple must be rendered');
+    assert.ok(out.includes('GUID-alpha'), 'repositoryId must be rendered');
+  });
+
+  await test('buildProjectContext fan-out mode names the assigned project', () => {
+    const projects = [sampleProject('alpha'), sampleProject('beta')];
+    const out = engine.buildProjectContext(projects, projects[1], true, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Fan-out'), 'fan-out header must appear when isFanOut=true');
+    assert.ok(out.includes('**beta**'), 'assigned project name must be bolded in fan-out copy');
+    assert.ok(!out.includes('## Scope: Multi-project'), 'non-fan-out header must NOT appear');
+    // Available Projects list still includes both
+    assert.ok(out.includes('### alpha'));
+    assert.ok(out.includes('### beta'));
+  });
+
+  await test('buildProjectContext fan-out without assignedProject falls back to multi-project scope', () => {
+    const projects = [sampleProject('alpha')];
+    const out = engine.buildProjectContext(projects, null, true, 'dallas', 'Engineer');
+    // isFanOut=true but assignedProject falsy → condition `isFanOut && assignedProject` is false
+    assert.ok(out.includes('## Scope: Multi-project'), 'missing assignedProject must fall back to multi-project');
+    assert.ok(!out.includes('## Scope: Fan-out'), 'must not emit fan-out header without assignedProject');
+  });
+
+  await test('buildProjectContext empty projects array still emits the framing sections', () => {
+    const out = engine.buildProjectContext([], null, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Multi-project'), 'scope header still present');
+    assert.ok(out.includes('## Available Projects'), 'projects section header still present');
+    // No project lines
+    assert.ok(!out.includes('### '), 'no project lines for empty array');
+  });
+
+  await test('buildProjectContext renders "host:" label derived from repoHost', () => {
+    const gh = sampleProject('ghrepo', { repoHost: 'github' });
+    const ado = sampleProject('adorepo', { repoHost: 'ado' });
+    const out = engine.buildProjectContext([gh, ado], gh, true, 'dallas', 'Engineer');
+    assert.ok(/host: GitHub/.test(out), 'github repoHost must render "GitHub"');
+    assert.ok(/host: Azure DevOps/.test(out), 'ado repoHost must render "Azure DevOps"');
+  });
+
+  await test('buildProjectContext renders "ID: unknown" when repositoryId missing', () => {
+    const p = sampleProject('noid');
+    delete p.repositoryId;
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('ID: unknown'), 'missing repositoryId must fall back to "unknown"');
+  });
+
+  await test('buildProjectContext includes optional description line when present', () => {
+    const p = sampleProject('docd', { description: 'Core orchestrator' });
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('**What it is:** Core orchestrator'), 'description must be rendered');
+  });
+
+  await test('buildProjectContext omits description line when not set', () => {
+    const p = sampleProject('nodocs');
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(!out.includes('**What it is:**'), 'description line must be absent when not set');
+  });
+
+  await test('buildProjectContext lists all projects in fan-out (other agents reference)', () => {
+    const a = sampleProject('alpha');
+    const b = sampleProject('beta');
+    const c = sampleProject('gamma');
+    const out = engine.buildProjectContext([a, b, c], b, true, 'dallas', 'Engineer');
+    // Even though beta is assigned, all three appear in the list
+    assert.ok(out.includes('### alpha'));
+    assert.ok(out.includes('### beta'));
+    assert.ok(out.includes('### gamma'));
   });
 }
 

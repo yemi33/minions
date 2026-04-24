@@ -23,55 +23,55 @@ function wiRetryBtn(item) {
     return '<span style="font-size:9px;padding:1px 6px;color:var(--green);border:1px solid rgba(63,185,80,0.35);background:rgba(63,185,80,0.1);border-radius:3px;margin-left:4px">Requeued</span>';
   }
   if (rs && rs.status === 'error') {
-    return '<span style="font-size:9px;padding:1px 6px;color:var(--red);border:1px solid rgba(248,81,73,0.35);background:rgba(248,81,73,0.1);border-radius:3px;margin-left:4px;cursor:pointer" title="' + escHtml(rs.message || 'Retry failed') + ' — click to try again" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry failed</span>';
+    return '<span style="font-size:9px;padding:1px 6px;color:var(--red);border:1px solid rgba(248,81,73,0.35);background:rgba(248,81,73,0.1);border-radius:3px;margin-left:4px;cursor:pointer" title="' + escapeHtml(rs.message || 'Retry failed') + ' — click to try again" onclick="event.stopPropagation();retryWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')">Retry failed</span>';
   }
-  return '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry</button>';
+  return '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')">Retry</button>';
 }
 
 function wiRow(item) {
   const statusBadge = (s) => {
     const cls = s === 'failed' ? 'rejected' : s === 'needs-human-review' ? 'needs-review' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : s === 'decomposed' ? 'approved' : 'draft';
-    return '<span class="pr-badge ' + cls + '">' + escHtml(s) + '</span>';
+    return '<span class="pr-badge ' + cls + '">' + escapeHtml(s) + '</span>';
   };
-  const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escHtml(t || 'implement') + '</span>';
-  const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escHtml(p || 'medium') + '</span>';
+  const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escapeHtml(t || 'implement') + '</span>';
+  const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escapeHtml(p || 'medium') + '</span>';
   const prLink = item._pr
-    ? '<a class="pr-title" href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="font-size:10px">' + escHtml(item._pr) + '</a>'
+    ? '<a class="pr-title" href="' + escapeHtml(item._prUrl || '#') + '" target="_blank" style="font-size:10px">' + escapeHtml(item._pr) + '</a>'
     : (item.branchStrategy === 'shared-branch' && item.status === 'done')
       ? '<span style="font-size:9px;color:var(--muted)" title="Part of shared branch — aggregate PR created at verify stage">shared branch</span>'
       : '<span style="color:var(--muted)">—</span>';
-  return '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
-    '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
-    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml((item.title || '').slice(0, 200)) + '">' + escHtml(item.title || '') + '</td>' +
-    '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
+  return '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail(\'' + escapeHtml(item.id) + '\')">' +
+    '<td><span class="pr-id">' + escapeHtml(item.id || '') + '</span></td>' +
+    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml((item.title || '').slice(0, 200)) + '">' + escapeHtml(item.title || '') + '</td>' +
+    '<td><span style="font-size:10px;color:var(--muted)">' + escapeHtml(item._source || '') + '</span>' +
       (item.scope === 'fan-out' ? ' <span class="pr-badge ' + (item.status === 'done' || item.status === 'failed' ? 'draft' : 'building') + '" style="font-size:8px">fan-out</span>' : '') + '</td>' +
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
       (item._reopened ? ' <span style="font-size:9px;color:var(--purple);margin-left:4px" title="This item was reopened from a previously completed state">reopened</span>' : '') +
-      (item._pendingReason && item.status === 'pending' && item._pendingReason !== 'already_dispatched' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason && item.status === 'pending' && item._pendingReason !== 'already_dispatched' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escapeHtml(item._pendingReason) + '">' + escapeHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
       (item._pendingReason === 'already_dispatched' && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--blue);margin-left:4px" title="In dispatch queue, waiting to be assigned">queued</span>' : '') +
-      (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escHtml(item._blockedBy) + ')' : '') + '">' + escHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
+      (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escapeHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escapeHtml(item._blockedBy) + ')' : '') + '">' + escapeHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escapeHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
       (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
     '<td>' +
       (item.completedAgents && item.completedAgents.length > 0
-        ? '<span class="pr-agent">' + escHtml(item.completedAgents.join(', ')) + '</span>'
-        : '<span class="pr-agent">' + escHtml(item.dispatched_to || item.agent || '—') + '</span>') +
-      (item.failReason ? '<span style="display:block;font-size:9px;color:var(--red)" title="' + escHtml(item.failReason) + '">' + escHtml(item.failReason.slice(0, 30)) + '</span>' : '') +
+        ? '<span class="pr-agent">' + escapeHtml(item.completedAgents.join(', ')) + '</span>'
+        : '<span class="pr-agent">' + escapeHtml(item.dispatched_to || item.agent || '—') + '</span>') +
+      (item.failReason ? '<span style="display:block;font-size:9px;color:var(--red)" title="' + escapeHtml(item.failReason) + '">' + escapeHtml(item.failReason.slice(0, 30)) + '</span>' : '') +
     '</td>' +
     '<td>' + prLink + '</td>' +
-    '<td><span class="pr-date">' + escHtml((item.created || '').slice(0, 16).replace('T', ' ')) + '</span></td>' +
+    '<td><span class="pr-date">' + escapeHtml((item.created || '').slice(0, 16).replace('T', ' ')) + '</span></td>' +
     '<td style="white-space:nowrap;font-size:9px;color:var(--muted)">' +
       (item.references && item.references.length ? '<span title="' + item.references.length + ' reference(s)" style="margin-right:4px">&#x1F517;' + item.references.length + '</span>' : '') +
       (item.acceptanceCriteria && item.acceptanceCriteria.length ? '<span title="' + item.acceptanceCriteria.length + ' acceptance criteria">&#x2611;' + item.acceptanceCriteria.length + '</span>' : '') +
     '</td>' +
     '<td style="white-space:nowrap">' +
-      ((item.status === 'pending' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
-      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
-      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
-      ((item.status === 'pending' || item.status === 'dispatched' || item.status === 'queued' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--orange);border-color:var(--orange);margin-right:4px" onclick="event.stopPropagation();cancelWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Cancel work item and kill agent">&#x1F6AB;</button>' : '') +
-      '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
+      ((item.status === 'pending' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
+      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
+      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
+      ((item.status === 'pending' || item.status === 'dispatched' || item.status === 'queued' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--orange);border-color:var(--orange);margin-right:4px" onclick="event.stopPropagation();cancelWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Cancel work item and kill agent">&#x1F6AB;</button>' : '') +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
     '</td>' +
   '</tr>';
 }
@@ -130,7 +130,7 @@ function editWorkItem(id, source) {
   if (!item) return;
   const types = ['implement', 'fix', 'review', 'plan', 'verify', 'decompose', 'meeting', 'investigate', 'refactor', 'test', 'explore', 'ask', 'docs'];
   const priorities = ['critical', 'high', 'medium', 'low'];
-  const agentOpts = (cmdAgents || []).map(a => '<option value="' + escHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>').join('');
+  const agentOpts = (cmdAgents || []).map(a => '<option value="' + escapeHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escapeHtml(a.name) + '</option>').join('');
   const typeOpts = types.map(t => '<option value="' + t + '"' + ((item.type || 'implement') === t ? ' selected' : '') + '>' + t + '</option>').join('');
   const priOpts = priorities.map(p => '<option value="' + p + '"' + ((item.priority || 'medium') === p ? ' selected' : '') + '>' + p + '</option>').join('');
 
@@ -139,10 +139,10 @@ function editWorkItem(id, source) {
   document.getElementById('modal-body').innerHTML =
     '<div style="display:flex;flex-direction:column;gap:12px;font-family:inherit">' +
       '<label style="color:var(--text);font-size:var(--text-md)">Title' +
-        '<input id="wi-edit-title" value="' + escHtml(item.title || '') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit">' +
+        '<input id="wi-edit-title" value="' + escapeHtml(item.title || '') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit">' +
       '</label>' +
       '<label style="color:var(--text);font-size:var(--text-md)">Description' +
-        '<textarea id="wi-edit-desc" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml(item.description || '') + '</textarea>' +
+        '<textarea id="wi-edit-desc" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escapeHtml(item.description || '') + '</textarea>' +
       '</label>' +
       '<div style="display:flex;gap:12px">' +
         '<label style="color:var(--text);font-size:var(--text-md);flex:1">Type' +
@@ -156,14 +156,14 @@ function editWorkItem(id, source) {
         '</label>' +
       '</div>' +
       '<label style="color:var(--text);font-size:var(--text-md)">References (one per line: url | title | type)' +
-        '<textarea id="wi-edit-refs" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml((item.references || []).map(function(r) { return r.url + ' | ' + (r.title || '') + ' | ' + (r.type || 'link'); }).join('\n')) + '</textarea>' +
+        '<textarea id="wi-edit-refs" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escapeHtml((item.references || []).map(function(r) { return r.url + ' | ' + (r.title || '') + ' | ' + (r.type || 'link'); }).join('\n')) + '</textarea>' +
       '</label>' +
       '<label style="color:var(--text);font-size:var(--text-md)">Acceptance Criteria (one per line)' +
-        '<textarea id="wi-edit-ac" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml((item.acceptanceCriteria || []).join('\n')) + '</textarea>' +
+        '<textarea id="wi-edit-ac" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escapeHtml((item.acceptanceCriteria || []).join('\n')) + '</textarea>' +
       '</label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn" style="padding:6px 16px;font-size:var(--text-md)">Cancel</button>' +
-        '<button onclick="submitWorkItemEdit(\'' + escHtml(id) + '\',\'' + escHtml(source || '') + '\',event)" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
+        '<button onclick="submitWorkItemEdit(\'' + escapeHtml(id) + '\',\'' + escapeHtml(source || '') + '\',event)" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
@@ -253,11 +253,11 @@ async function toggleWorkItemArchive() {
       '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Status</th><th>Agent</th><th>Archived</th></tr></thead><tbody>' +
       items.map(function(i) {
         return '<tr style="opacity:0.6">' +
-          '<td><span class="pr-id">' + escHtml(i.id || '') + '</span></td>' +
-          '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(i.title || '') + '</td>' +
-          '<td><span class="dispatch-type ' + (i.type || '') + '">' + escHtml(i.type || '') + '</span></td>' +
-          '<td style="color:' + (i.status === 'done' ? 'var(--green)' : 'var(--red)') + '">' + escHtml(i.status || '') + '</td>' +
-          '<td>' + escHtml(i.dispatched_to || '—') + '</td>' +
+          '<td><span class="pr-id">' + escapeHtml(i.id || '') + '</span></td>' +
+          '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(i.title || '') + '</td>' +
+          '<td><span class="dispatch-type ' + (i.type || '') + '">' + escapeHtml(i.type || '') + '</span></td>' +
+          '<td style="color:' + (i.status === 'done' ? 'var(--green)' : 'var(--red)') + '">' + escapeHtml(i.status || '') + '</td>' +
+          '<td>' + escapeHtml(i.dispatched_to || '—') + '</td>' +
           '<td class="pr-date">' + shortTime(i.archivedAt) + '</td>' +
         '</tr>';
       }).join('') + '</tbody></table></div>';
@@ -309,7 +309,7 @@ function feedbackWorkItem(id, source) {
       '<textarea id="feedback-comment" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:inherit;resize:vertical" placeholder="What was good or needs improvement?"></textarea>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button id="fb-send" onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\')" style="padding:6px 16px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:not-allowed" disabled>Select rating first</button>' +
+        '<button id="fb-send" onclick="submitFeedback(\'' + escapeHtml(id) + '\',\'' + escapeHtml(source) + '\')" style="padding:6px 16px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:not-allowed" disabled>Select rating first</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
@@ -352,10 +352,10 @@ function openCreateWorkItemModal() {
     '<option value="' + p + '"' + (p === 'medium' ? ' selected' : '') + '>' + p + '</option>'
   ).join('');
   const agentOpts = (typeof cmdAgents !== 'undefined' ? cmdAgents : []).map(a =>
-    '<option value="' + escHtml(a.id) + '">' + escHtml(a.name) + '</option>'
+    '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>'
   ).join('');
   const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
-    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
+    '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>'
   ).join('');
   const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
 
@@ -443,41 +443,41 @@ function openWorkItemDetail(id) {
   if (!item) return;
 
   const field = (label, value) => value ? '<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.5px">' + label + '</span><div style="margin-top:2px">' + value + '</div></div>' : '';
-  const badge = (cls, text) => '<span class="pr-badge ' + cls + '">' + escHtml(text) + '</span>';
+  const badge = (cls, text) => '<span class="pr-badge ' + cls + '">' + escapeHtml(text) + '</span>';
   const statusCls = item.status === 'failed' ? 'rejected' : item.status === 'dispatched' ? 'building' : item.status === 'done' ? 'approved' : 'active';
 
   let html = '<div style="display:flex;flex-direction:column;gap:4px;font-size:13px">';
   html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
     badge(statusCls, item.status || 'pending') +
     (item._reopened ? ' <span style="font-size:9px;color:var(--purple);margin-left:4px" title="This item was reopened from a previously completed state">reopened</span>' : '') + ' ' +
-    '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
-    '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
+    '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escapeHtml(item.type || 'implement') + '</span>' +
+    '<span class="prd-item-priority ' + (item.priority || '') + '">' + escapeHtml(item.priority || 'medium') + '</span>' +
     '</div>';
   html += field('Description', '<div style="font-size:12px;max-height:320px;overflow-y:auto;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm)">' + renderMd(item.description || item.title || '—') + '</div>');
-  html += field('Agent', escHtml(item.dispatched_to || item.agent || 'Auto'));
-  html += field('Source', escHtml(item._source || 'central'));
-  if (item.created) html += field('Created', escHtml(new Date(item.created).toLocaleString()));
-  if (item.dispatched_at) html += field('Dispatched', escHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escHtml(item.dispatched_to || '?'));
-  if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
-  if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
-  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', item._pendingReason === 'already_dispatched' ? 'Queued — waiting for available agent slot' : escHtml(item._pendingReason.replace(/_/g, ' ')));
-  if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escHtml(item._blockedBy) + '</strong>' : ''));
-  if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
-  if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
-  if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
-  if (item._humanFeedback) html += field('Human Feedback', (item._humanFeedback.rating === 'up' ? '👍' : '👎') + (item._humanFeedback.comment ? ' — ' + escHtml(item._humanFeedback.comment) : ''));
-  if (item._pr) html += field('Pull Request', '<a href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="color:var(--blue)">' + escHtml(item._pr) + '</a>');
+  html += field('Agent', escapeHtml(item.dispatched_to || item.agent || 'Auto'));
+  html += field('Source', escapeHtml(item._source || 'central'));
+  if (item.created) html += field('Created', escapeHtml(new Date(item.created).toLocaleString()));
+  if (item.dispatched_at) html += field('Dispatched', escapeHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escapeHtml(item.dispatched_to || '?'));
+  if (item.completedAt) html += field('Completed', escapeHtml(new Date(item.completedAt).toLocaleString()));
+  if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escapeHtml(item.failReason) + '</span>');
+  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', item._pendingReason === 'already_dispatched' ? 'Queued — waiting for available agent slot' : escapeHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escapeHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escapeHtml(item._blockedBy) + '</strong>' : ''));
+  if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escapeHtml(d) + '</code>').join(', '));
+  if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escapeHtml(c) + '</li>').join('') + '</ul>');
+  if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escapeHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escapeHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escapeHtml(r.type) + ')</span>' : '')).join('<br>'));
+  if (item._humanFeedback) html += field('Human Feedback', (item._humanFeedback.rating === 'up' ? '👍' : '👎') + (item._humanFeedback.comment ? ' — ' + escapeHtml(item._humanFeedback.comment) : ''));
+  if (item._pr) html += field('Pull Request', '<a href="' + escapeHtml(item._prUrl || '#') + '" target="_blank" style="color:var(--blue)">' + escapeHtml(item._pr) + '</a>');
 
   // Artifacts — output log, branch, skills, etc.
   var arts = item._artifacts || {};
   var artPills = '';
   var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
   // Output log pill removed — raw stream-json output is not human-readable
-  var artBackFn = "pushModalBack(function(){openWorkItemDetail('" + escHtml(item.id) + "')});";
-  if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
-  if (arts.plan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
-  if (arts.prd) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
-  if (arts.sourcePlan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
+  var artBackFn = "pushModalBack(function(){openWorkItemDetail('" + escapeHtml(item.id) + "')});";
+  if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escapeHtml(arts.branch) + '</span> ';
+  if (arts.plan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escapeHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
+  if (arts.prd) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escapeHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
+  if (arts.sourcePlan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escapeHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
   if (arts.notes && arts.notes.length > 0) {
     arts.notes.forEach(function(n) {
       var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
@@ -486,17 +486,17 @@ function openWorkItemDetail(id) {
         var kbCat = kbParts[0];
         var kbFile = kbParts.slice(1).join('/');
         var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
-        artPills += '<span onclick="' + artBackFn + 'kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
+        artPills += '<span onclick="' + artBackFn + 'kbOpenItem(\'' + escapeHtml(kbCat) + '\',\'' + escapeHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escapeHtml(kbLabel) + '</span> ';
       } else if (noteFile.startsWith('archive:')) {
         var archLabel = noteFile.slice(8).replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30);
-        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escapeHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escapeHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
       } else {
         var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
-        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escapeHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escapeHtml(noteLabel) + '</span> ';
       }
     });
   }
-  if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
+  if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escapeHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escapeHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 
   if (item._totalCostUsd != null) html += field('Cumulative Cost', '$' + Number(item._totalCostUsd).toFixed(4));

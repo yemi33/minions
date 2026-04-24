@@ -1292,7 +1292,20 @@ function readBody(req) {
       reject(new Error('Request body timeout after 30s'));
     }, 30000);
     req.on('data', chunk => { body += chunk; if (body.length > 1e6) { clearTimeout(timeout); reject(new Error('Too large')); } });
-    req.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    req.on('end', () => {
+      clearTimeout(timeout);
+      let parsed;
+      try { parsed = JSON.parse(body); } catch(e) { reject(e); return; }
+      // Belt-and-braces: reject payloads containing prototype-pollution attack keys
+      // before they reach any downstream Object.assign / spread / deep-merge.
+      if (shared.hasDangerousKey(parsed)) {
+        const err = new Error('Request body contains forbidden key (__proto__, constructor, or prototype)');
+        err.statusCode = 400; // honoured by handler catch blocks so response is 400 regardless of handler
+        reject(err);
+        return;
+      }
+      resolve(parsed);
+    });
     req.on('error', (e) => { clearTimeout(timeout); reject(e); });
   });
 }
@@ -1310,7 +1323,10 @@ function checkRateLimit(key, maxPerMinute) {
 
 function jsonReply(res, code, data, req) {
   res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Access-Control-Allow-Origin is set ONCE by the server dispatcher prelude:
+  // `*` for GET/HEAD (read-only), never for mutating responses (Origin gate
+  // already blocked cross-origin POSTs). Setting it here would reopen the
+  // cross-origin write path.
   res.statusCode = code;
   const json = JSON.stringify(data);
   const ae = req && req.headers && req.headers['accept-encoding'] || '';
@@ -1430,15 +1446,93 @@ function restartEngine() {
 
 // -- Server --
 
+// Mutating HTTP methods that require Origin and Content-Type gating.
+// GET/HEAD/OPTIONS are treated as read-only/preflight and bypass these checks.
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 const server = http.createServer(async (req, res) => {
-  // CORS preflight
+  // ── Security headers (applied to every response) ──────────────────────────
+  // Baseline CSP + clickjacking/mime/referrer protections. The dashboard HTML
+  // entry-point later overrides CSP for its inline <script>/<style> blocks;
+  // all API (JSON, text, SSE) responses inherit the strict CSP from here.
+  const _secHeaders = shared.buildSecurityHeaders();
+  for (const [k, v] of Object.entries(_secHeaders)) {
+    try { res.setHeader(k, v); } catch { /* headers may already be sent in rare error paths */ }
+  }
+
+  // ── Origin gate (mutating + OPTIONS preflight) ────────────────────────────
+  // Defense-in-depth against CSRF / DNS-rebinding: even though the dashboard
+  // binds to 127.0.0.1, a malicious page can coerce a user's browser to POST
+  // to localhost. We reject any mutating request whose Origin (or Referer, if
+  // Origin is absent) is not in the local allowlist. When both headers are
+  // absent (curl, CLI tooling, Node http.request without Origin) we allow the
+  // request to preserve existing local automation.
+  const _rawOrigin = req.headers['origin'];
+  const _rawReferer = req.headers['referer'];
+  const _isMutating = MUTATING_METHODS.has(req.method);
+
+  function _originGateReject(reason) {
+    console.warn(`[origin-gate] reject ${req.method} ${req.url} origin=${_rawOrigin || _rawReferer || '(none)'} reason=${reason}`);
+    res.statusCode = 403;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: 'Origin not allowed' }));
+  }
+
+  // CORS preflight — echo validated origin; reject disallowed origins outright.
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    if (_rawOrigin) {
+      if (!shared.isAllowedOrigin(_rawOrigin)) { _originGateReject('preflight-origin'); return; }
+      res.setHeader('Access-Control-Allow-Origin', _rawOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
+    // Note: when Origin is absent (non-browser preflight), no ACAO is echoed —
+    // that's fine, only browsers care about ACAO and they always send Origin.
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.statusCode = 204;
     res.end();
     return;
+  }
+
+  // Mutating requests: enforce Origin allowlist (Origin first, Referer fallback).
+  if (_isMutating) {
+    if (_rawOrigin) {
+      if (!shared.isAllowedOrigin(_rawOrigin)) { _originGateReject('origin'); return; }
+    } else if (_rawReferer) {
+      if (!shared.isAllowedOrigin(_rawReferer)) { _originGateReject('referer'); return; }
+    }
+    // Neither Origin nor Referer present → legacy tooling (curl, Node.js) is allowed.
+
+    // Content-Type enforcement: require application/json on mutating requests.
+    // readBody() always expects JSON. Rejecting anything other than
+    // application/json closes the entire CSRF "simple request" loophole
+    // (text/plain, application/x-www-form-urlencoded, multipart/form-data are
+    // all cross-origin-postable without a preflight). DELETE with an empty
+    // body (Content-Length: 0) is exempt — it carries no payload to parse.
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    const clen = parseInt(req.headers['content-length'] || '0', 10) || 0;
+    const hasBody = clen > 0 || req.headers['transfer-encoding'];
+    if (hasBody && !ct.startsWith('application/json')) {
+      res.statusCode = 415;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+      return;
+    }
+    // Empty-body mutating request (e.g. DELETE /api/cc-sessions/:id) with
+    // no Content-Type is allowed — no body, no CSRF-friendly payload.
+    if (!hasBody && ct && !ct.startsWith('application/json')) {
+      res.statusCode = 415;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Content-Type must be application/json' }));
+      return;
+    }
+  }
+
+  // GET: permit cross-origin reads for external monitoring tools (curl, uptime
+  // checks). Mutating responses deliberately do NOT set ACAO — cross-origin
+  // browsers cannot use them anyway (Origin check blocks that path).
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
 
   // ── Route Handler Functions ───────────────────────────────────────────────
@@ -1519,7 +1613,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return jsonReply(res, 200, { ok: true, message: 'Completion check ran but no verify task was needed' });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleWorkItemsRetry(req, res) {
@@ -1847,7 +1941,7 @@ const server = http.createServer(async (req, res) => {
         if (content) { try { allArchived.push(...JSON.parse(content).map(i => ({ ...i, _source: project.name }))); } catch {} }
       }
       return jsonReply(res, 200, allArchived);
-    } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleWorkItemsReopen(req, res) {
@@ -2276,6 +2370,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   async function handleAgentLiveStream(req, res, match) {
+    // SSE Origin gate — must run BEFORE res.writeHead(200, ...) so we can
+    // still return a 403 with a normal status line. Once we upgrade to SSE
+    // the client has no way to distinguish a rejection from a dropped stream.
+    // GETs normally skip the Origin check, but SSE streams are long-lived and
+    // warrant the same cross-origin guard as mutating endpoints.
+    const _origin = req.headers['origin'];
+    if (_origin && !shared.isAllowedOrigin(_origin)) {
+      console.warn(`[sse-origin-gate] reject GET ${req.url} origin=${_origin}`);
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
+
     const agentId = match[1];
     const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     const liveLogPath = path.join(agentDir, 'live-output.log');
@@ -3472,7 +3580,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
       } finally { _docAbort = null; docChatInFlight.delete(docKey); }
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleInboxPersist(req, res) {
@@ -3660,7 +3768,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
       if (!selectedPath) return jsonReply(res, 200, { cancelled: true });
       return jsonReply(res, 200, { path: selectedPath.replace(/\\/g, '/') });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   // ── Non-repo confirmation tokens (SEC-05) ───────────────────────────────
@@ -3857,7 +3965,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
 
       return jsonReply(res, 200, { repos: results });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleFileBug(req, res) {
@@ -3992,7 +4100,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       } finally {
         _releaseCCTab(tabId);
       }
-    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   /** Build a lightweight input object for SSE tool events — keeps only the fields formatToolSummary needs, with truncated string values. */
@@ -4008,6 +4116,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 
   async function handleCommandCenterStream(req, res) {
+    // SSE Origin gate (belt-and-suspenders: the top-level dispatcher has
+    // already rejected disallowed origins on POST, but validate again here
+    // before res.writeHead(200, text/event-stream) so any future refactor
+    // that moves the route can't accidentally bypass the check).
+    const _origin = req.headers['origin'];
+    if (_origin && !shared.isAllowedOrigin(_origin)) {
+      console.warn(`[sse-origin-gate] reject POST /api/command-center/stream origin=${_origin}`);
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
     let tabId;
     let _ccStreamAbort = null;
@@ -4205,8 +4325,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) {
       stopCcHeartbeat();
       _releaseCCTab(tabId);
-      writeCcEvent({ type: 'error', error: e.message });
-      _ccStreamEnded = true; try { res.end(); } catch {}
+      // If SSE headers haven't been sent yet (e.g. readBody guard fired), respond with the
+      // intended HTTP status (400 for prototype-pollution rejection) instead of an SSE event.
+      if (!res.headersSent) {
+        res.statusCode = e.statusCode || 500;
+        res.setHeader('Content-Type', 'application/json');
+        try { res.end(JSON.stringify({ error: e.message })); } catch {}
+      } else {
+        writeCcEvent({ type: 'error', error: e.message });
+        _ccStreamEnded = true; try { res.end(); } catch {}
+      }
     }
   }
 
@@ -4360,7 +4488,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const newPid = restartEngine();
       return jsonReply(res, 200, { ok: true, pid: newPid });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsRead(req, res) {
@@ -4384,7 +4512,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         })),
         routing,
       });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsUpdate(req, res) {
@@ -4526,7 +4654,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         ? 'Settings saved. Some values were adjusted: ' + _clamped.join('; ')
         : 'Settings saved. Engine picks up changes on next tick.';
       return jsonReply(res, 200, { ok: true, message: msg, clamped: _clamped });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsRouting(req, res) {
@@ -4535,7 +4663,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!body.content) return jsonReply(res, 400, { error: 'content required' });
       safeWrite(path.join(MINIONS_DIR, 'routing.md'), body.content);
       return jsonReply(res, 200, { ok: true });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleSettingsReset(req, res) {
@@ -4548,7 +4676,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
   async function handleHealth(req, res) {
@@ -5345,6 +5473,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('ETag', HTML_ETAG);
   res.setHeader('Cache-Control', 'no-cache'); // revalidate each time, but use 304 if unchanged
+  // The SPA ships as a single self-contained HTML: inline <script> block,
+  // inline <style> block, and many inline onclick= handlers on page
+  // fragments. Strict `script-src 'self'` would break every button. We
+  // relax the default CSP ONLY for the dashboard HTML entry-point — the
+  // strict CSP still applies to all /api/* responses (verified by tests).
+  // data: in img-src permits the inline SVG favicon (<link rel="icon" href="data:...">).
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; " +
+    "connect-src 'self'"
+  );
   if (req.headers['if-none-match'] === HTML_ETAG) {
     res.statusCode = 304;
     res.end();

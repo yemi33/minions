@@ -13,23 +13,29 @@ const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
 
-const BASE = 'http://localhost:7331';
+const BASE = process.env.MINIONS_TEST_BASE || 'http://localhost:7331';
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function httpReq(method, urlPath, body) {
+function httpReq(method, urlPath, body, opts = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlPath, BASE);
-    const opts = { method, hostname: url.hostname, port: url.port, path: url.pathname, headers: {} };
-    if (body) {
-      const data = JSON.stringify(body);
-      opts.headers['Content-Type'] = 'application/json';
-      opts.headers['Content-Length'] = Buffer.byteLength(data);
+    const extraHeaders = opts.headers || {};
+    // opts.rawBody (string) takes precedence for Content-Type stress tests.
+    // opts.contentType overrides Content-Type (e.g. 'text/plain' to test 415).
+    const rawBody = opts.rawBody != null ? String(opts.rawBody) : (body ? JSON.stringify(body) : null);
+    const contentType = opts.contentType !== undefined ? opts.contentType : (body ? 'application/json' : null);
+    const reqOpts = { method, hostname: url.hostname, port: url.port, path: url.pathname + (url.search || ''), headers: { ...extraHeaders } };
+    if (rawBody != null) {
+      if (contentType !== null && contentType !== undefined && contentType !== '') {
+        reqOpts.headers['Content-Type'] = contentType;
+      }
+      reqOpts.headers['Content-Length'] = Buffer.byteLength(rawBody);
     }
-    const req = http.request(opts, res => {
+    const req = http.request(reqOpts, res => {
       let d = '';
       res.on('data', c => d += c);
       res.on('end', () => {
@@ -39,12 +45,12 @@ function httpReq(method, urlPath, body) {
     });
     req.on('error', reject);
     req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-    if (body) req.write(JSON.stringify(body));
+    if (rawBody != null) req.write(rawBody);
     req.end();
   });
 }
-const GET = (p) => httpReq('GET', p);
-const POST = (p, b) => httpReq('POST', p, b);
+const GET = (p, opts) => httpReq('GET', p, null, opts);
+const POST = (p, b, opts) => httpReq('POST', p, b, opts);
 
 function readJson(fp) {
   try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
@@ -129,6 +135,33 @@ async function testApiEndpoints() {
   await test('Path traversal blocked on plans', async () => {
     const r = await GET('/api/plans/..%2Fconfig.json');
     assert.strictEqual(r.status, 400);
+  });
+
+  await test('Prototype pollution guard rejects __proto__ in request body', async () => {
+    // JSON.parse creates __proto__ as an own enumerable data property; JSON.stringify round-trips it.
+    const poisoned = JSON.parse('{"message":"hi","__proto__":{"polluted":true}}');
+    const r = await POST('/api/command-center', poisoned);
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status} (body: ${r.body})`);
+    assert.ok(r.json && /forbidden key/.test(r.json.error || ''),
+      `expected forbidden-key error, got: ${JSON.stringify(r.json)}`);
+    // Verify the native Object prototype was not mutated as a side effect
+    assert.strictEqual(({}).polluted, undefined, 'Object.prototype was polluted!');
+  });
+
+  await test('Prototype pollution guard rejects constructor in request body', async () => {
+    const r = await POST('/api/command-center', { message: 'hi', constructor: { bad: true } });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+    assert.ok(r.json && /forbidden key/.test(r.json.error || ''),
+      `expected forbidden-key error, got: ${JSON.stringify(r.json)}`);
+  });
+
+  await test('Prototype pollution guard allows clean request bodies', async () => {
+    // Use a fast endpoint that also goes through readBody — proves the guard doesn't over-trigger.
+    const r = await POST('/api/work-items', { title: 'Pollution guard — clean body', type: 'implement', priority: 'low' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status} (body: ${r.body})`);
+    assert.ok(r.json.id, 'expected an id on successful work-item create');
+    // Clean up so we don't leak test state
+    await POST('/api/work-items/delete', { id: r.json.id, source: 'central' });
   });
 }
 
@@ -472,6 +505,123 @@ async function testDataIntegrity() {
   });
 }
 
+async function testSecurityHeaders() {
+  console.log('\n── Security Headers & Origin Gate ──');
+
+  // 1. Security response headers on GET /api/status
+  await test('GET /api/status includes CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy', async () => {
+    const r = await GET('/api/status');
+    assert.strictEqual(r.status, 200);
+    const h = r.headers;
+    assert.ok(h['content-security-policy'], 'missing Content-Security-Policy');
+    assert.ok(h['content-security-policy'].includes("default-src 'self'"), 'CSP missing default-src');
+    assert.ok(h['content-security-policy'].includes("script-src 'self'"), 'CSP missing script-src');
+    // API responses must keep strict script-src (no 'unsafe-inline')
+    assert.ok(!/script-src[^;]*'unsafe-inline'/.test(h['content-security-policy']),
+      "API CSP must not allow 'unsafe-inline' scripts");
+    assert.strictEqual(h['x-frame-options'], 'DENY');
+    assert.strictEqual(h['x-content-type-options'], 'nosniff');
+    assert.strictEqual(h['referrer-policy'], 'same-origin');
+  });
+
+  // 2. POST with disallowed Origin → 403
+  await test('POST /api/command-center with Origin: https://evil.example returns 403', async () => {
+    const r = await POST('/api/command-center',
+      { message: 'hi', tabId: 'sec-test-bad-origin' },
+      { headers: { Origin: 'https://evil.example' } });
+    assert.strictEqual(r.status, 403, `expected 403, got ${r.status} body=${r.body}`);
+    assert.ok(r.json, 'response must be JSON');
+    assert.ok(/not allowed/i.test(r.json.error || ''), 'error must mention origin');
+  });
+
+  // 3. POST with valid localhost Origin → proceeds (not 403)
+  await test('POST /api/work-items with Origin: http://localhost:7331 succeeds (not blocked by origin gate)', async () => {
+    const r = await POST('/api/work-items',
+      { title: 'Security test work item (safe to delete)', type: 'implement', priority: 'low' },
+      { headers: { Origin: 'http://localhost:7331' } });
+    assert.notStrictEqual(r.status, 403, 'valid localhost Origin must not be blocked');
+    assert.ok(r.status === 200 || r.status === 201, `unexpected status ${r.status} body=${r.body}`);
+    // Clean up the test item
+    if (r.json && r.json.id) {
+      try { await POST('/api/work-items/delete', { id: r.json.id }); } catch {}
+    }
+  });
+
+  // 4. Content-Type enforcement — text/plain on POST → 415
+  await test('POST /api/command-center with Content-Type: text/plain returns 415', async () => {
+    const r = await POST('/api/command-center',
+      null,
+      { rawBody: JSON.stringify({ message: 'hi', tabId: 'sec-test-bad-ct' }),
+        contentType: 'text/plain',
+        headers: { Origin: 'http://localhost:7331' } });
+    assert.strictEqual(r.status, 415, `expected 415, got ${r.status} body=${r.body}`);
+    assert.ok(r.json && /application\/json/i.test(r.json.error || ''),
+      'error must mention application/json');
+  });
+
+  // 5. Missing Content-Type on POST → 415
+  await test('POST /api/command-center with no Content-Type returns 415', async () => {
+    const r = await POST('/api/command-center',
+      null,
+      { rawBody: JSON.stringify({ message: 'hi', tabId: 'sec-test-no-ct' }),
+        contentType: '',
+        headers: { Origin: 'http://localhost:7331' } });
+    assert.strictEqual(r.status, 415, `expected 415, got ${r.status} body=${r.body}`);
+  });
+
+  // 6. Content-Type: application/json → allowed (not 415, gate not triggered)
+  await test('POST /api/command-center with application/json Content-Type is not blocked by 415 gate', async () => {
+    const r = await POST('/api/command-center',
+      { message: 'hi', tabId: 'sec-test-good-ct' },
+      { headers: { Origin: 'http://localhost:7331' } });
+    // Might be 200, 400 (empty CC response), 429 (rate limit), 500 (LLM) — just NOT 415
+    assert.notStrictEqual(r.status, 415, 'application/json must not trigger 415');
+    assert.notStrictEqual(r.status, 403, 'valid origin must not trigger 403');
+  });
+
+  // 7. Second mutating endpoint: POST /api/work-items with evil Origin → 403
+  await test('POST /api/work-items with cross-origin header returns 403', async () => {
+    const r = await POST('/api/work-items',
+      { title: 'should never be created', type: 'implement' },
+      { headers: { Origin: 'https://attacker.example.com' } });
+    assert.strictEqual(r.status, 403, `expected 403, got ${r.status} body=${r.body}`);
+  });
+
+  // 8. SSE endpoint Origin rejection — must 403 before upgrade
+  await test('GET /api/agent/dallas/live-stream with cross-origin header returns 403 (not SSE upgrade)', async () => {
+    const r = await GET('/api/agent/dallas/live-stream',
+      { headers: { Origin: 'https://evil.example' } });
+    assert.strictEqual(r.status, 403, `SSE must reject before upgrade; got ${r.status}`);
+    assert.ok(r.headers['content-type'] && r.headers['content-type'].includes('application/json'),
+      'rejection must be JSON, not text/event-stream');
+  });
+
+  // 9. Same-origin GET without Origin header is allowed (legacy tooling, polling)
+  await test('GET /api/status without Origin header is allowed', async () => {
+    const r = await GET('/api/status');
+    assert.strictEqual(r.status, 200);
+  });
+
+  // 10. POST without Origin and without Referer is allowed (curl / legacy tooling)
+  await test('POST /api/work-items with no Origin and no Referer is allowed (legacy curl)', async () => {
+    const r = await POST('/api/work-items',
+      { title: 'Legacy curl test item (safe to delete)', type: 'implement', priority: 'low' });
+    assert.notStrictEqual(r.status, 403, 'no-origin requests must not be blocked');
+    assert.ok(r.status === 200 || r.status === 201, `unexpected status ${r.status}`);
+    if (r.json && r.json.id) {
+      try { await POST('/api/work-items/delete', { id: r.json.id }); } catch {}
+    }
+  });
+
+  // 11. POST with disallowed Referer (no Origin) → 403
+  await test('POST /api/work-items with disallowed Referer (no Origin) returns 403', async () => {
+    const r = await POST('/api/work-items',
+      { title: 'should never be created', type: 'implement' },
+      { headers: { Referer: 'https://evil.example/attack.html' } });
+    assert.strictEqual(r.status, 403, `expected 403 on disallowed Referer, got ${r.status}`);
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -491,6 +641,7 @@ async function main() {
   }
 
   await testApiEndpoints();
+  await testSecurityHeaders();
   await testWorkItemCrud();
   await testPlanFlow();
   await testPrdFlow();
