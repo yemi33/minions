@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1549 (2026-04-24)
+
+### Other
+- test(timeout): add unit tests for checkIdleThreshold, checkSteering, checkTimeouts (#1748)
+
 ## 0.1.1548 (2026-04-23)
 
 ### Other
