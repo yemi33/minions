@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1550 (2026-04-24)
+
+### Fixes
+-  escape </script> literal in utils.js (closes #1746) (#1751)
+
+### Other
+- test(engine): add unit tests for isWorktreeRetryableError, removeStaleIndexLock, _maxTurnsForType, buildProjectContext, normalizeAc (#1752)
+- test(timeout): add unit tests for checkIdleThreshold, checkSteering, checkTimeouts (#1748)
+
 ## 0.1.1548 (2026-04-23)
 
 ### Other
