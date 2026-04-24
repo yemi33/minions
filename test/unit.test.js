@@ -16437,6 +16437,9 @@ async function main() {
     // W-mo1jw240a0gn: engine/cli.js command handler behavioral coverage
     await testCliCommandHandlers();
 
+    // W-moczcvjl338u: engine.js pure helper coverage
+    await testEngineHelperCoverage();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -33250,6 +33253,360 @@ async function testStatusCacheTiers() {
     // Extract the slowStale logic — it should be a simple TTL check
     const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
     assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+// ─── W-moczcvjl338u: engine.js pure helpers ──────────────────────────────────
+
+async function testEngineHelperCoverage() {
+  console.log('\n── engine.js — pure helper coverage (W-moczcvjl338u) ──');
+
+  const engine = require(path.join(MINIONS_DIR, 'engine.js'));
+  const { ENGINE_DEFAULTS, WORK_TYPE } = shared;
+
+  // ── normalizeAc ──
+
+  await test('normalizeAc returns array input unchanged (identity)', () => {
+    const input = ['write test', 'ship it'];
+    const out = engine.normalizeAc(input);
+    assert.strictEqual(out, input, 'array input must be returned as-is (same reference)');
+  });
+
+  await test('normalizeAc returns empty array for null', () => {
+    assert.deepStrictEqual(engine.normalizeAc(null), []);
+  });
+
+  await test('normalizeAc returns empty array for undefined', () => {
+    assert.deepStrictEqual(engine.normalizeAc(undefined), []);
+  });
+
+  await test('normalizeAc returns empty array for numeric input', () => {
+    assert.deepStrictEqual(engine.normalizeAc(42), []);
+  });
+
+  await test('normalizeAc returns empty array for plain object', () => {
+    assert.deepStrictEqual(engine.normalizeAc({ foo: 'bar' }), []);
+  });
+
+  await test('normalizeAc returns empty array for empty string', () => {
+    assert.deepStrictEqual(engine.normalizeAc(''), []);
+  });
+
+  await test('normalizeAc returns empty array for whitespace-only string', () => {
+    // Each line trims to '' → filtered out
+    assert.deepStrictEqual(engine.normalizeAc('   \n  \n'), []);
+  });
+
+  await test('normalizeAc splits newline-delimited string and preserves order', () => {
+    const out = engine.normalizeAc('first\nsecond\nthird');
+    assert.deepStrictEqual(out, ['first', 'second', 'third']);
+  });
+
+  await test('normalizeAc strips leading dash markers from string lines', () => {
+    const out = engine.normalizeAc('- alpha\n- beta');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc strips leading asterisk markers from string lines', () => {
+    const out = engine.normalizeAc('* alpha\n* beta');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc only strips a single leading marker, not interior ones', () => {
+    const out = engine.normalizeAc('- use a - dash inside');
+    assert.deepStrictEqual(out, ['use a - dash inside']);
+  });
+
+  await test('normalizeAc skips empty lines and trims trailing whitespace', () => {
+    // Regex `/^[-*]\s*/` requires marker at column 0 — leading whitespace is
+    // preserved verbatim and the line survives the trim() as-is (sans outer ws)
+    const out = engine.normalizeAc('- alpha  \n\n- beta\n   \n- gamma');
+    assert.deepStrictEqual(out, ['alpha', 'beta', 'gamma']);
+  });
+
+  await test('normalizeAc does NOT strip markers when preceded by whitespace (regex anchored at ^)', () => {
+    // Documents current behaviour: leading whitespace shields the marker from
+    // being stripped. trim() still fires, so the returned line keeps the marker.
+    const out = engine.normalizeAc('  - alpha\n  * beta');
+    assert.deepStrictEqual(out, ['- alpha', '* beta']);
+  });
+
+  await test('normalizeAc handles CRLF line endings gracefully', () => {
+    // Only '\n' is a separator — '\r' remains attached then is trimmed away
+    const out = engine.normalizeAc('- alpha\r\n- beta\r\n');
+    assert.deepStrictEqual(out, ['alpha', 'beta']);
+  });
+
+  await test('normalizeAc preserves empty array input', () => {
+    const out = engine.normalizeAc([]);
+    assert.deepStrictEqual(out, []);
+  });
+
+  // ── _maxTurnsForType ──
+
+  await test('_maxTurnsForType returns built-in default per WORK_TYPE when no config overrides', () => {
+    const expected = {
+      [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
+      [WORK_TYPE.DECOMPOSE]: 15, [WORK_TYPE.PLAN]: 30, [WORK_TYPE.PLAN_TO_PRD]: 35,
+      [WORK_TYPE.MEETING]: 30, [WORK_TYPE.IMPLEMENT]: 75, [WORK_TYPE.IMPLEMENT_LARGE]: 75,
+      [WORK_TYPE.FIX]: 75, [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
+    };
+    for (const [type, turns] of Object.entries(expected)) {
+      assert.strictEqual(engine._maxTurnsForType(type, {}), turns,
+        `${type} should resolve to built-in default ${turns}`);
+    }
+  });
+
+  await test('_maxTurnsForType falls back to ENGINE_DEFAULTS.maxTurns for unknown types', () => {
+    assert.strictEqual(engine._maxTurnsForType('unknown-work-type', {}), ENGINE_DEFAULTS.maxTurns);
+  });
+
+  await test('_maxTurnsForType ignores global maxTurns when it equals the default', () => {
+    // Same as default → treated as "no override"; built-in per-type wins
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, { maxTurns: ENGINE_DEFAULTS.maxTurns });
+    assert.strictEqual(out, 75);
+  });
+
+  await test('_maxTurnsForType applies global maxTurns override (overrides built-in per-type)', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, { maxTurns: ENGINE_DEFAULTS.maxTurns + 50 });
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns + 50);
+  });
+
+  await test('_maxTurnsForType applies global maxTurns override for unknown type', () => {
+    const out = engine._maxTurnsForType('unknown-xyz', { maxTurns: ENGINE_DEFAULTS.maxTurns + 7 });
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns + 7);
+  });
+
+  await test('_maxTurnsForType per-type override beats global override', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, {
+      maxTurns: ENGINE_DEFAULTS.maxTurns + 50,
+      maxTurnsByType: { [WORK_TYPE.IMPLEMENT]: 200 },
+    });
+    assert.strictEqual(out, 200);
+  });
+
+  await test('_maxTurnsForType per-type override beats built-in per-type default', () => {
+    const out = engine._maxTurnsForType(WORK_TYPE.REVIEW, {
+      maxTurnsByType: { [WORK_TYPE.REVIEW]: 9 },
+    });
+    assert.strictEqual(out, 9);
+  });
+
+  await test('_maxTurnsForType per-type override for unlisted type wins over default', () => {
+    const out = engine._maxTurnsForType('custom-type', {
+      maxTurnsByType: { 'custom-type': 42 },
+    });
+    assert.strictEqual(out, 42);
+  });
+
+  await test('_maxTurnsForType ignores per-type override of 0 (falsy) and falls through', () => {
+    // perType[type] is checked with truthy test, so 0 falls through to next branch
+    const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, {
+      maxTurnsByType: { [WORK_TYPE.IMPLEMENT]: 0 },
+    });
+    assert.strictEqual(out, 75, 'zero per-type override must not apply; falls through to built-in 75');
+  });
+
+  // ── isWorktreeRetryableError ──
+
+  await test('isWorktreeRetryableError returns false for null/undefined err', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(null), false);
+    assert.strictEqual(engine.isWorktreeRetryableError(undefined), false);
+  });
+
+  await test('isWorktreeRetryableError returns false for err without message field', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError({}), false);
+    assert.strictEqual(engine.isWorktreeRetryableError({ code: 'ENOENT' }), false);
+  });
+
+  await test('isWorktreeRetryableError returns false for unrelated error message', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('nothing to do here')), false);
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('permission denied')), false);
+  });
+
+  await test('isWorktreeRetryableError matches ETIMEDOUT', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('operation ETIMEDOUT after 30s')), true);
+  });
+
+  await test('isWorktreeRetryableError matches index.lock substring', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('unable to create .git/index.lock: File exists')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "timed out"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('git worktree add timed out')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "could not lock"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('fatal: could not lock config file')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "resource busy"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('EBUSY: resource busy or locked')), true);
+  });
+
+  await test('isWorktreeRetryableError matches "already exists"', () => {
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error("fatal: '<path>' already exists")), true);
+  });
+
+  await test('isWorktreeRetryableError is case-sensitive on substring match', () => {
+    // Current implementation uses plain .includes(), so case matters
+    assert.strictEqual(engine.isWorktreeRetryableError(new Error('Etimedout')), false,
+      'implementation uses case-sensitive includes — lowercase/mixed-case should not match');
+  });
+
+  await test('isWorktreeRetryableError coerces non-Error values via String(err?.message)', () => {
+    // err.message is undefined on a plain string, so msg === 'undefined' and no pattern matches
+    assert.strictEqual(engine.isWorktreeRetryableError('ETIMEDOUT raw string'), false);
+    // But object with matching .message works
+    assert.strictEqual(engine.isWorktreeRetryableError({ message: 'ETIMEDOUT' }), true);
+  });
+
+  // ── removeStaleIndexLock ──
+
+  await test('removeStaleIndexLock is a no-op when .git/index.lock does not exist', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    // Must not throw
+    engine.removeStaleIndexLock(dir);
+    // And must not spontaneously create the lock
+    assert.ok(!fs.existsSync(path.join(dir, '.git', 'index.lock')));
+  });
+
+  await test('removeStaleIndexLock is a no-op when .git directory does not exist', () => {
+    const dir = createTmpDir();
+    // No .git at all
+    engine.removeStaleIndexLock(dir); // must not throw
+  });
+
+  await test('removeStaleIndexLock removes lock older than 300_000ms', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Backdate mtime to 10 minutes ago
+    const oldTime = new Date(Date.now() - 600000);
+    fs.utimesSync(lockFile, oldTime, oldTime);
+    engine.removeStaleIndexLock(dir);
+    assert.ok(!fs.existsSync(lockFile), 'stale index.lock must be removed');
+  });
+
+  await test('removeStaleIndexLock preserves fresh lock (younger than 300_000ms)', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Fresh lock — just now
+    engine.removeStaleIndexLock(dir);
+    assert.ok(fs.existsSync(lockFile), 'fresh index.lock must NOT be removed');
+  });
+
+  await test('removeStaleIndexLock preserves lock exactly at 300_000ms boundary', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    const lockFile = path.join(dir, '.git', 'index.lock');
+    fs.writeFileSync(lockFile, '');
+    // Set mtime to exactly 300000ms ago (threshold is `age > 300000`, so equality does NOT remove)
+    // Use a time just inside the threshold (age ~= 299_000ms)
+    const recentTime = new Date(Date.now() - 299000);
+    fs.utimesSync(lockFile, recentTime, recentTime);
+    engine.removeStaleIndexLock(dir);
+    assert.ok(fs.existsSync(lockFile), 'lock within threshold window must be preserved');
+  });
+
+  await test('removeStaleIndexLock swallows errors on bogus rootDir (no throw)', () => {
+    // Pass a non-string value — path.join will throw inside, but the outer try/catch swallows it
+    // Use a value that flows through path.join without crashing — statSync/unlinkSync path errors get caught
+    const bogus = path.join(createTmpDir(), 'does', 'not', 'exist');
+    // fs.existsSync on missing nested dir returns false → no-op, must not throw
+    engine.removeStaleIndexLock(bogus);
+  });
+
+  // ── buildProjectContext ──
+
+  const sampleProject = (name, extras = {}) => ({
+    name,
+    localPath: `/repos/${name}`,
+    adoOrg: 'myorg',
+    adoProject: 'myproject',
+    repoName: `${name}-repo`,
+    repositoryId: `GUID-${name}`,
+    ...extras,
+  });
+
+  await test('buildProjectContext single-project mode (not fan-out) emits multi-project scope', () => {
+    const projects = [sampleProject('alpha')];
+    const out = engine.buildProjectContext(projects, projects[0], false, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Multi-project'), 'non-fan-out always shows multi-project scope header');
+    assert.ok(out.includes('## Available Projects'), 'projects section must be present');
+    assert.ok(out.includes('### alpha'), 'project name must be rendered');
+    assert.ok(out.includes('/repos/alpha'), 'localPath must be rendered');
+    assert.ok(out.includes('myorg/myproject/alpha-repo'), 'repo triple must be rendered');
+    assert.ok(out.includes('GUID-alpha'), 'repositoryId must be rendered');
+  });
+
+  await test('buildProjectContext fan-out mode names the assigned project', () => {
+    const projects = [sampleProject('alpha'), sampleProject('beta')];
+    const out = engine.buildProjectContext(projects, projects[1], true, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Fan-out'), 'fan-out header must appear when isFanOut=true');
+    assert.ok(out.includes('**beta**'), 'assigned project name must be bolded in fan-out copy');
+    assert.ok(!out.includes('## Scope: Multi-project'), 'non-fan-out header must NOT appear');
+    // Available Projects list still includes both
+    assert.ok(out.includes('### alpha'));
+    assert.ok(out.includes('### beta'));
+  });
+
+  await test('buildProjectContext fan-out without assignedProject falls back to multi-project scope', () => {
+    const projects = [sampleProject('alpha')];
+    const out = engine.buildProjectContext(projects, null, true, 'dallas', 'Engineer');
+    // isFanOut=true but assignedProject falsy → condition `isFanOut && assignedProject` is false
+    assert.ok(out.includes('## Scope: Multi-project'), 'missing assignedProject must fall back to multi-project');
+    assert.ok(!out.includes('## Scope: Fan-out'), 'must not emit fan-out header without assignedProject');
+  });
+
+  await test('buildProjectContext empty projects array still emits the framing sections', () => {
+    const out = engine.buildProjectContext([], null, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('## Scope: Multi-project'), 'scope header still present');
+    assert.ok(out.includes('## Available Projects'), 'projects section header still present');
+    // No project lines
+    assert.ok(!out.includes('### '), 'no project lines for empty array');
+  });
+
+  await test('buildProjectContext renders "host:" label derived from repoHost', () => {
+    const gh = sampleProject('ghrepo', { repoHost: 'github' });
+    const ado = sampleProject('adorepo', { repoHost: 'ado' });
+    const out = engine.buildProjectContext([gh, ado], gh, true, 'dallas', 'Engineer');
+    assert.ok(/host: GitHub/.test(out), 'github repoHost must render "GitHub"');
+    assert.ok(/host: Azure DevOps/.test(out), 'ado repoHost must render "Azure DevOps"');
+  });
+
+  await test('buildProjectContext renders "ID: unknown" when repositoryId missing', () => {
+    const p = sampleProject('noid');
+    delete p.repositoryId;
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('ID: unknown'), 'missing repositoryId must fall back to "unknown"');
+  });
+
+  await test('buildProjectContext includes optional description line when present', () => {
+    const p = sampleProject('docd', { description: 'Core orchestrator' });
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(out.includes('**What it is:** Core orchestrator'), 'description must be rendered');
+  });
+
+  await test('buildProjectContext omits description line when not set', () => {
+    const p = sampleProject('nodocs');
+    const out = engine.buildProjectContext([p], p, false, 'dallas', 'Engineer');
+    assert.ok(!out.includes('**What it is:**'), 'description line must be absent when not set');
+  });
+
+  await test('buildProjectContext lists all projects in fan-out (other agents reference)', () => {
+    const a = sampleProject('alpha');
+    const b = sampleProject('beta');
+    const c = sampleProject('gamma');
+    const out = engine.buildProjectContext([a, b, c], b, true, 'dallas', 'Engineer');
+    // Even though beta is assigned, all three appear in the list
+    assert.ok(out.includes('### alpha'));
+    assert.ok(out.includes('### beta'));
+    assert.ok(out.includes('### gamma'));
   });
 }
 
