@@ -2982,6 +2982,11 @@ function discoverCentralWorkItems(config) {
         vars.plan_summary = (item.title || item.planFile).substring(0, 80);
         vars.plan_file = item.planFile || '';
         vars.project_name_lower = (firstProject?.name || 'project').toLowerCase();
+        // Default empty string so the {{existing_prd_json}} token always resolves —
+        // playbook treats empty as "no existing PRD, fresh run". Without this default
+        // the renderPlaybook pass logs an "unresolved template variables" warning
+        // every time a fresh plan-to-prd dispatches.
+        vars.existing_prd_json = '';
         // Check if a PRD already exists for this plan — reuse its filename to avoid duplicates (#884)
         let prdFilename = null;
         const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));

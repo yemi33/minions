@@ -3254,6 +3254,16 @@ async function testPlanLifecycle() {
       'Engine should log when reusing existing PRD filename');
   });
 
+  await test('plan-to-prd defaults existing_prd_json to empty so renderPlaybook does not warn on fresh runs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const prdBlock = src.slice(src.indexOf('WORK_TYPE.PLAN_TO_PRD'), src.indexOf('vars.branch_strategy_hint'));
+    // The default must come BEFORE the loop that conditionally overwrites it
+    const defaultIdx = prdBlock.indexOf("vars.existing_prd_json = ''");
+    const loopIdx = prdBlock.indexOf('for (const pf of prdFiles)');
+    assert.ok(defaultIdx >= 0, 'must default vars.existing_prd_json to empty string');
+    assert.ok(defaultIdx < loopIdx, 'default must precede the existing-PRD lookup loop');
+  });
+
   await test('cli.js recovery does not re-queue plan-to-prd chains', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
     assert.ok(!src.includes("chain === 'plan-to-prd'"),
