@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1577 (2026-04-27)
+
+### Fixes
+- gate review retries by _lastRetryAt + minRetryGapMs (#1770) (#1790)
+
 ## 0.1.1575 (2026-04-27)
 
 ### Other
