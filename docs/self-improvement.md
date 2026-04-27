@@ -158,7 +158,7 @@ Without this, review findings only exist in the inbox file under the reviewer's 
 
 ## 4. Human Feedback on PRs
 
-Humans can leave comments on ADO PRs containing `@minions` to trigger fix tasks. The engine polls PR threads every ~6 minutes and dispatches fixes to the PR's author agent.
+Humans can leave comments on ADO or GitHub PRs containing `@minions` to trigger fix tasks. The engine polls PR threads every ~12 minutes (see `prPollCommentsEvery` in `engine/shared.js`) and dispatches fixes to the PR's author agent.
 
 ### Flow
 

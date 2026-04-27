@@ -52,7 +52,7 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 
 ## 6. Re-review cycle
 
-- Poller (~3min): detects new commit (`head.sha` changed) → sets `lastPushedAt`
+- Poller (every `prPollStatusEvery` ticks, default ~12min): detects new commit (`head.sha` changed) → sets `lastPushedAt`
 - Platform review state drives next action:
   - Reviewer approves → `approved` → done
   - Reviewer re-requests changes → `changes-requested` → triggers another fix

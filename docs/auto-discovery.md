@@ -11,8 +11,8 @@ tick()
   1. checkTimeouts()            Kill stale/hung agents (>heartbeatTimeout)
   2. consolidateInbox()         Merge learnings into notes.md (Haiku-powered)
   2.5 runCleanup()              Periodic cleanup (every 10 ticks ≈ 10min)
-  2.6 pollPrStatus()            Poll ADO for build, review, merge status (every 6 ticks ≈ 6min)
-  2.7 pollPrHumanComments()     Poll PR threads for human @minions comments (every 12 ticks ≈ 12min)
+  2.6 pollPrStatus()            Poll ADO + GitHub for build, review, merge status (every prPollStatusEvery ticks, default 12 ≈ 12min)
+  2.7 pollPrHumanComments()     Poll PR threads for human @minions comments (every prPollCommentsEvery ticks, default 12 ≈ 12min)
   3. discoverWork()             Scan ALL linked projects for new tasks
   4. updateSnapshot()           Write identity/now.md
   5. dispatch                   Spawn agents for pending items (up to maxConcurrent)
@@ -118,11 +118,11 @@ priority: high
 
 Both write to `work-items.json` and are picked up by Source 3 on the same or next tick.
 
-## ADO PR Status Polling (`pollPrStatus`)
+## PR Status Polling (`pollPrStatus`)
 
-**Runs:** Every 6 ticks (≈ 6 minutes), independently of work discovery. Replaces the retired agent-based `pr-sync`.
+**Runs:** Every `prPollStatusEvery` ticks (default 12, ≈ 12 minutes), independently of work discovery. ADO polling lives in `engine/ado.js`; GitHub polling lives in `engine/github.js` — both run in parallel each cycle (`Promise.allSettled`) and write to the same per-project `pull-requests.json` schema. Replaces the retired agent-based `pr-sync`.
 
-The engine directly polls the Azure DevOps REST API for **all** PR metadata: build/CI status, human review votes, and completion state. Two API calls per PR — no agent dispatch needed.
+The engine directly polls the host REST API for **all** PR metadata: build/CI status, human review votes, and completion state. Two API calls per PR — no agent dispatch needed.
 
 **Per PR:**
 1. `GET pullrequests/{id}` → `status` (active/completed/abandoned), `mergeStatus`, `reviewers[].vote`
@@ -137,7 +137,7 @@ The engine directly polls the Azure DevOps REST API for **all** PR metadata: bui
 | `buildStatus` | PR statuses (codecoverage/deploy/build/ci contexts) | `passing` / `failing` / `running` / `none` |
 | `buildFailReason` | Failed status description | Set on failure, cleared otherwise |
 
-**Auth:** Bearer token via `azureauth ado token --output token --timeout 1` (cached 30 minutes). The `--timeout 1` flag is required — without it, azureauth can hang indefinitely in headless sessions.
+**Auth:** Bearer token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1` (cached 30 minutes). The `--timeout 1` flag is required — without it, azureauth can hang indefinitely in headless sessions. (GitHub polling uses the ambient `gh` CLI credentials, not azureauth.)
 
 This feeds `discoverFromPrs` — when `buildStatus` flips to `"failing"`, the next discovery tick dispatches a fix agent. When `status` becomes `"merged"`, the PR drops out of active polling.
 
@@ -244,9 +244,12 @@ Combines:
 
 ### 5. Spawn Claude CLI
 ```bash
-claude -p <prompt-file> --system-prompt <sysprompt-file> \
-  --output-format json --max-turns 100 --verbose \
-  --allowedTools Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch
+claude -p --system-prompt-file <sysprompt-file> \
+  --output-format stream-json --max-turns 100 --verbose \
+  --permission-mode bypassPermissions
+# Prompt text is piped via stdin (not passed as an arg).
+# Agent dispatches route through engine/spawn-agent.js; CC / doc-chat use a direct
+# spawn path in engine/llm.js that bypasses spawn-agent.js entirely.
 ```
 
 - Process runs in the worktree directory (or rootDir for reviews)
@@ -325,8 +328,8 @@ docs/**/*.md (specs)┤  (each tick)      ┌──────────┐
   plans/*.md ─────┘       ▼                 │
                      addToDispatch()────────┘
                                             │
-ADO REST API ─── pollPrBuildStatus() ──► pull-requests.json
-(every 6min)      (buildStatus field)       │
+ADO + GitHub REST ── pollPrStatus() ──► pull-requests.json
+(every ~12min)       (buildStatus field)      │
                                        spawnAgent()
                                             │
                                ┌────────────┼────────────┐

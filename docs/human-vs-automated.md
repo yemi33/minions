@@ -46,7 +46,7 @@ These run continuously without you:
 - **Work discovery** — engine scans all project queues every tick (~60s)
 - **Agent dispatch** — engine picks the right agent, builds the prompt, spawns Claude
 - **Worktree management** — create on dispatch, pull on shared-branch, clean after merge
-- **PR status polling** — checks ADO for build status, review votes, merge state every ~6 min
+- **PR status polling** — checks ADO + GitHub for build status, review votes, merge state every ~12 min
 - **Build failure detection** — auto-files fix tasks when CI fails
 - **Inbox consolidation** — LLM-powered dedup and categorization when inbox hits threshold
 - **Knowledge base classification** — auto-assigns category to consolidated notes

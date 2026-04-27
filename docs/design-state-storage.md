@@ -22,7 +22,7 @@ Minions persists all runtime state as flat JSON files guarded by file-lock-based
 | `engine/metrics.json` | 5 KB | Per-agent stats | R/W on PR approval/merge | Low | Low |
 | `engine/control.json` | 169 B | Single object | R/W on start/stop/heartbeat | Low | Low |
 | `projects/*/work-items.json` | 370 KB | 180 items | R/W every 1-2 ticks; dashboard reads on-demand | **High** — engine + lifecycle + dashboard | High |
-| `projects/*/pull-requests.json` | 241 KB | 128 PRs | R/W every 6 ticks (polling); lifecycle writes | Medium | Medium |
+| `projects/*/pull-requests.json` | 241 KB | 128 PRs | R/W every `prPollStatusEvery` ticks (default 12, polling); lifecycle writes | Medium | Medium |
 | `engine/pipeline-runs.json` | 36 KB | Pipeline state | R/W on pipeline execution | Low | Low |
 | `engine/schedule-runs.json` | 115 B | Last-run times | R every 10 ticks; W on schedule execution | Low | Low |
 
@@ -56,7 +56,7 @@ Key properties:
 | Engine tick cycle | ~15 | ~3 | Heavy read, selective write |
 | Dashboard (per page load) | ~8 | 0 | Read-only display |
 | Dashboard (user action) | ~2 | ~2 | Read-modify-write |
-| PR polling (every 6 ticks) | ~4 | ~2 | Batch read-modify-write |
+| PR polling (every `prPollStatusEvery` ticks, default 12) | ~4 | ~2 | Batch read-modify-write |
 | Consolidation (every 10 ticks) | ~3 | ~2 | Read inbox files, write notes.md |
 
 **Read:write ratio is approximately 8:1.** This strongly favors a system that can serve reads without locking (e.g., WAL mode).

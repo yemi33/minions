@@ -53,7 +53,7 @@ Your context window may be compacted or summarized mid-task by Claude's automati
 
 When asked to check build status, CI results, or review state for a PR:
 
-**Preferred — read cached state (always fresh within ~3 min when engine is running):**
+**Preferred — read cached state (refreshed every `prPollStatusEvery` ticks, default ~12 min when engine is running):**
 Find the PR in `projects/<project-name>/pull-requests.json` by `prNumber`. Key fields:
 - `buildStatus` — `passing` | `failing` | `running` | `none`
 - `buildErrorLog` — compiler/pipeline errors when `buildStatus` is `failing`

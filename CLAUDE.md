@@ -28,7 +28,8 @@ Zero dependencies beyond Node.js built-ins. No build step.
 
 ```
 checkTimeouts → consolidateInbox → cleanup (every 10 ticks) →
-pollPrStatus (every 6 ticks) → pollPrHumanComments (every 12 ticks) →
+pollPrStatus (every prPollStatusEvery ticks, default 12) →
+pollPrHumanComments (every prPollCommentsEvery ticks, default 12) →
 discoverWork → updateSnapshot → dispatch agents (up to maxConcurrent)
 ```
 
@@ -393,7 +394,7 @@ Context-only PRs: PRs with `_contextOnly: true` are polled (status, votes, build
 
 ## ADO Integration
 
-Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it, the command can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions, causing agent orphans. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking derived from `pull-requests.json` prdItems.
+Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it, the command can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions, causing agent orphans. PR status and human comments are polled every `prPollStatusEvery` / `prPollCommentsEvery` ticks (default 12 each, ~12 min). PR → PRD item linking derived from `pull-requests.json` prdItems.
 
 **evalLoop and polling interaction:** `evalLoop` gates the entire review→fix cycle. `adoPollEnabled` (or `ghPollEnabled` for GitHub projects) gates whether PR status is polled at all. Review auto-dispatch requires *both* to be true — `reviewEnabled = evalLoopEnabled && pollEnabled`. After a fix agent completes, the PR's `reviewStatus` is reset to `'waiting'` and `minionsReview.fixedAt` is set, which triggers a second-pass re-review on the next discovery tick (also gated by `evalLoop`). The `autoReview` flag was removed and consolidated into `evalLoop`.
 
@@ -420,7 +421,7 @@ User types message → ccCall() → buildPrompt() → llm.callLLM({ direct: true
 
 **State preamble:** `buildCCStatePreamble()` — lightweight snapshot of agents, dispatch, PR/WI counts, project list, schedule/pipeline counts. Cached with 10s TTL. Skipped on session resume (session already has context).
 
-**Sessions:** Single global CC session (`ccSession`), persisted to `engine/cc-session.json`. No time-based expiry and no turn limit (`CC_SESSION_MAX_TURNS = Infinity`). Resume via `--resume` flag. The session is invalidated (forcing a fresh start) only when the system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. Per-tab sessions (streaming path) don't mutate the global `ccSession`.
+**Sessions:** Single global CC session (`ccSession`), persisted to `engine/cc-session.json`. Bounded by `ENGINE_DEFAULTS.ccMaxTurns` (default 50 turns) and `ENGINE_DEFAULTS.ccSessionTtlMs` (default 2h — resumed sessions older than this are rotated to cap context growth). Resume via `--resume` flag. The session is also invalidated (forcing a fresh start) when the system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. Per-tab sessions (streaming path) don't mutate the global `ccSession`.
 
 **Model/effort:** Configurable via `config.engine.ccModel` (sonnet/haiku/opus) and `config.engine.ccEffort` (null/low/medium/high). Applied to all CC and doc-chat calls.
 
