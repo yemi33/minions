@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1561 (2026-04-27)
+
+### Other
+- chore: cleanup orphaned runtime artifacts; gitignore coverage state files
+
 ## 0.1.1560 (2026-04-27)
 
 ### Features
