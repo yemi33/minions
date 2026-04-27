@@ -22421,6 +22421,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(body.includes("return jsonReply(res, 200, { cancelled: true })"), 'interrupted browse should return cancelled, not an error');
   });
 
+  await test('projects browse launches osascript directly on macOS and treats user cancel as cancelled', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleProjectsBrowse');
+    const fnEnd = src.indexOf('const _projectConfirmTokens', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.ok(body.includes("execFileSync('osascript'"), 'macOS browse should exec osascript directly');
+    assert.ok(body.includes('User canceled'), 'macOS browse should detect AppleScript user-cancel text');
+    assert.ok(body.includes('(-128)'), 'macOS browse should detect AppleScript cancel code -128');
+    assert.ok(body.includes("return jsonReply(res, 200, { cancelled: true })"), 'macOS browse should return cancelled when the picker is dismissed');
+  });
+
   // ── PRD Retry Button + View Toggle + Dependency Auto-Trigger ───────────────
 
   await test('PRD list view shows retry button for failed items (canRequeue logic)', () => {

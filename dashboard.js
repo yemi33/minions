@@ -3707,11 +3707,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleProjectsBrowse(req, res) {
     try {
-      const { execSync } = require('child_process');
+      const { execSync, execFileSync } = require('child_process');
       let selectedPath = '';
       if (process.platform === 'win32') {
-        // PowerShell STA with topmost window as owner — forces folder dialog to foreground
-        // Write PS script to temp file to avoid shell quoting issues
+        // Launch PowerShell directly (not through cmd.exe) and hide its console so
+        // only the folder picker is visible. Closing the picker should cancel cleanly
+        // instead of surfacing a raw shell "Command failed" error.
         const psScript = [
           'Add-Type -AssemblyName System.Windows.Forms',
           '$f = New-Object System.Windows.Forms.FolderBrowserDialog',
@@ -3730,10 +3731,43 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         fs.mkdirSync(path.dirname(psPath), { recursive: true });
         fs.writeFileSync(psPath, psScript);
         try {
-          selectedPath = execSync(`powershell -STA -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, { encoding: 'utf8', timeout: 120000 }).trim();
+          selectedPath = execFileSync('powershell.exe', [
+            '-STA',
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', psPath,
+          ], {
+            encoding: 'utf8',
+            timeout: 120000,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }).trim();
+        } catch (e) {
+          const stdout = String(e.stdout || '').trim();
+          const stderr = String(e.stderr || '').trim();
+          const signal = String(e.signal || '').toUpperCase();
+          const status = Number.isInteger(e.status) ? e.status : null;
+          const interrupted = signal === 'SIGINT' || signal === 'SIGBREAK' || status === 0xC000013A;
+          if (interrupted && !stdout && !stderr) return jsonReply(res, 200, { cancelled: true });
+          throw e;
         } finally { try { fs.unlinkSync(psPath); } catch { /* cleanup */ } }
       } else if (process.platform === 'darwin') {
-        selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
+        try {
+          selectedPath = execFileSync('osascript', [
+            '-e',
+            'POSIX path of (choose folder with prompt "Select project folder")',
+          ], {
+            encoding: 'utf8',
+            timeout: 120000,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }).trim();
+        } catch (e) {
+          const stderr = String(e.stderr || '').trim();
+          const message = String(e.message || '').trim();
+          const cancelled = stderr.includes('User canceled') || message.includes('User canceled') || message.includes('(-128)') || stderr.includes('(-128)');
+          if (cancelled) return jsonReply(res, 200, { cancelled: true });
+          throw e;
+        }
       } else {
         selectedPath = execSync(`zenity --file-selection --directory --title="Select project folder" 2>/dev/null`, { encoding: 'utf8', timeout: 120000 }).trim();
       }
