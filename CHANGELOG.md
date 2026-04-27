@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1574 (2026-04-27)
+
+### Fixes
+- oneShot flag prevents one-off reviews from eval loop (#1776)
+
 ## 0.1.1573 (2026-04-27)
 
 ### Fixes
