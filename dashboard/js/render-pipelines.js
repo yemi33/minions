@@ -248,7 +248,8 @@ function _buildNodeChain(stages, run, options) {
 }
 
 function renderPipelines(pipelines) {
-  _pipelinesData = pipelines || [];
+  pipelines = (pipelines || []).filter(function(p) { return !isDeleted('pipeline:' + p.id); });
+  _pipelinesData = pipelines;
   const el = document.getElementById('pipelines-content');
   const countEl = document.getElementById('pipelines-count');
   if (!el) return;
@@ -515,14 +516,15 @@ async function _continuePipeline(id, stageId, btn) {
 
 async function _deletePipelineConfirm(id) {
   if (!confirm('Delete pipeline "' + id + '"?')) return;
+  showToast('cmd-toast', 'Pipeline deleted', true);
   markDeleted('pipeline:' + id);
   try { closeModal(); } catch {}
-  showToast('cmd-toast', 'Pipeline deleted', true);
+  renderPipelines(_pipelinesData);
   try {
     var res = await fetch('/api/pipelines/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    if (!res.ok) { showToast('cmd-toast', 'Delete failed', false); }
+    if (!res.ok) { clearDeleted('pipeline:' + id); showToast('cmd-toast', 'Delete failed', false); }
     refresh();
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+  } catch (e) { clearDeleted('pipeline:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 function openCreatePipelineModal() {

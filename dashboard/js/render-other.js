@@ -23,12 +23,11 @@ function renderProjects(projects) {
 
 async function projectChipRemove(name) {
   if (!confirm('Remove project "' + name + '"? Pending work cancels, active agents are killed, data dir is archived to projects/.archived/.')) return;
+  showToast('cmd-toast', 'Removing project "' + name + '"...', true);
   markDeleted('project:' + name);
-  // Re-render immediately from cached state so the chip disappears without waiting on the API
   if (window._lastStatus && Array.isArray(window._lastStatus.projects)) {
     renderProjects(window._lastStatus.projects);
   }
-  showToast('cmd-toast', 'Removing project "' + name + '"...', true);
   try {
     const res = await fetch('/api/projects/remove', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -37,6 +36,8 @@ async function projectChipRemove(name) {
     const d = await res.json().catch(() => ({}));
     if (!res.ok || !d.ok) {
       // Revert: refresh restores the chip from server state
+      clearDeleted('project:' + name);
+      if (window._lastStatus && Array.isArray(window._lastStatus.projects)) renderProjects(window._lastStatus.projects);
       showToast('cmd-toast', 'Remove failed: ' + (d.error || 'unknown'), false);
       if (typeof refresh === 'function') refresh();
       return;
@@ -50,6 +51,8 @@ async function projectChipRemove(name) {
     showToast('cmd-toast', parts.join(' — '), true);
     if (typeof refresh === 'function') refresh();
   } catch (e) {
+    clearDeleted('project:' + name);
+    if (window._lastStatus && Array.isArray(window._lastStatus.projects)) renderProjects(window._lastStatus.projects);
     showToast('cmd-toast', 'Error: ' + e.message, false);
     if (typeof refresh === 'function') refresh();
   }

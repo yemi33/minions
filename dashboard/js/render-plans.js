@@ -575,9 +575,11 @@ async function planApprove(file, btn) {
 async function planDelete(file) {
   _stopPlanPoll();
   if (!confirm('Delete plan "' + file + '"? This cannot be undone.')) return;
-  markDeleted('plan:' + file);
-  closeModal();
   showToast('cmd-toast', 'Plan deleted', true);
+  markDeleted('plan:' + file);
+  try { closeModal(); } catch { /* may not be open */ }
+  if (window._lastPlans) renderPlans(window._lastPlans);
+  if (typeof rerenderPrdFromCache === 'function') rerenderPrdFromCache();
   try {
     const res = await fetch('/api/plans/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -587,10 +589,11 @@ async function planDelete(file) {
       refresh();
     } else {
       const d = await res.json().catch(() => ({}));
-      alert('Delete failed: ' + (d.error || 'unknown'));
+      clearDeleted('plan:' + file);
+      showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false);
       refresh(); // revert optimistic
     }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+  } catch (e) { clearDeleted('plan:' + file); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function planArchive(file, btn) {
@@ -600,6 +603,7 @@ async function planArchive(file, btn) {
     : 'Archive this plan?';
   if (!confirm(confirmMsg)) return;
   _stopPlanPoll();
+  showToast('cmd-toast', isPrd ? 'Archiving PRD and linked source plan...' : 'Archiving plan...', true);
   markDeleted('plan:' + file);
   if (isPrd) {
     var prdRecord = (window._lastPlans || []).find(function(p) { return p.file === file && p.sourcePlan; });
@@ -608,7 +612,6 @@ async function planArchive(file, btn) {
   if (window._lastPlans) renderPlans(window._lastPlans);
   if (typeof rerenderPrdFromCache === 'function') rerenderPrdFromCache();
   try { closeModal(); } catch { /* may not be open */ }
-  showToast('cmd-toast', isPrd ? 'Archiving PRD and linked source plan...' : 'Archiving plan...', true);
   try {
     const res = await fetch('/api/plans/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -626,10 +629,12 @@ async function planArchive(file, btn) {
       }
       refresh();
     } else {
+      clearDeleted('plan:' + file);
+      if (prdRecord) clearDeleted('plan:' + prdRecord.sourcePlan);
       showToast('cmd-toast', 'Archive failed: ' + (d.error || 'unknown'), false);
       refresh();
     }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+  } catch (e) { clearDeleted('plan:' + file); if (prdRecord) clearDeleted('plan:' + prdRecord.sourcePlan); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function planPause(file, btn) {

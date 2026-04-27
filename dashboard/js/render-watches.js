@@ -193,17 +193,26 @@ function toggleWatchPause(id, pause) {
 
 function deleteWatch(id) {
   if (!confirm('Delete this watch?')) return;
-  markDeleted('watch:' + id);
   showToast('cmd-toast', 'Deleting watch...', true);
+  markDeleted('watch:' + id);
+  renderWatches(window._lastWatches || []);
   fetch('/api/watches/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: id })
-  }).then(function(res) { return res.json(); }).then(function(data) {
-    if (data.error) showToast('cmd-toast', 'Error: ' + data.error, false);
-    else renderWatches(window._lastWatches || []);
+  }).then(async function(res) {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      clearDeleted('watch:' + id);
+      showToast('cmd-toast', 'Delete failed: ' + (data.error || 'unknown'), false);
+      if (typeof refresh === 'function') refresh();
+      return;
+    }
+    renderWatches(window._lastWatches || []);
   }).catch(function(err) {
-    showToast('cmd-toast', 'Error: ' + err.message, false);
+    clearDeleted('watch:' + id);
+    showToast('cmd-toast', 'Delete error: ' + err.message, false);
+    if (typeof refresh === 'function') refresh();
   });
 }
 

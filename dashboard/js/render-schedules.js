@@ -540,16 +540,16 @@ async function toggleScheduleEnabled(id, enabled) {
 
 async function deleteSchedule(id) {
   if (!confirm('Delete scheduled task "' + id + '"?')) return;
+  showToast('cmd-toast', 'Schedule deleted', true);
   markDeleted('sched:' + id);
   document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
-  showToast('cmd-toast', 'Schedule deleted', true);
   try {
     const res = await fetch('/api/schedules/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); _showScheduleError('Delete failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { _showScheduleError('Delete error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); clearDeleted('sched:' + id); _showScheduleError('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { clearDeleted('sched:' + id); _showScheduleError('Delete error: ' + e.message); refresh(); }
 }
 
 // Expose _generateScheduleId globally for the inline oninput handler

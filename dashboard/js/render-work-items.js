@@ -197,46 +197,46 @@ async function submitWorkItemEdit(id, source, e) {
 
 async function deleteWorkItem(id, source) {
   if (!confirm('Delete work item ' + id + '? This will kill any running agent and remove all dispatch history.')) return;
+  showToast('cmd-toast', 'Work item deleted', true);
   markDeleted('wi:' + id);
   var wiTable = document.getElementById('work-items-content');
   (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
-  showToast('cmd-toast', 'Work item deleted', true);
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); clearDeleted('wi:' + id); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('wi:' + id); showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
 }
 
 async function cancelWorkItem(id, source) {
   if (!confirm('Cancel work item ' + id + '? This will kill any running agent and mark it cancelled.')) return;
+  showToast('cmd-toast', 'Work item cancelled', true);
   markDeleted('wi:' + id);
   var wiTable = document.getElementById('work-items-content');
   (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
-  showToast('cmd-toast', 'Work item cancelled', true);
   try {
     const res = await fetch('/api/work-items/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Cancel failed: ' + (d.error || 'unknown'), false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Cancel error: ' + e.message, false); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); clearDeleted('wi:' + id); showToast('cmd-toast', 'Cancel failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('wi:' + id); showToast('cmd-toast', 'Cancel error: ' + e.message, false); refresh(); }
 }
 
 async function archiveWorkItem(id, source) {
+  showToast('cmd-toast', 'Archived ' + id, true);
   markDeleted('wi:' + id);
   var wiTable = document.getElementById('work-items-content');
   (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
-  showToast('cmd-toast', 'Archived ' + id, true);
   try {
     const res = await fetch('/api/work-items/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Archive failed: ' + (d.error || 'unknown')); refresh(); return; }
-  } catch (e) { alert('Archive error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); clearDeleted('wi:' + id); showToast('cmd-toast', 'Archive failed: ' + (d.error || 'unknown'), false); refresh(); return; }
+  } catch (e) { clearDeleted('wi:' + id); showToast('cmd-toast', 'Archive error: ' + e.message, false); refresh(); }
 }
 
 let wiArchiveVisible = false;

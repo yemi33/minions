@@ -154,18 +154,17 @@ async function _submitLinkPr() {
 
 async function unlinkPr(id) {
   if (!confirm('Remove ' + id + ' from tracking?')) return;
-  // Optimistic: remove row immediately
+  showToast('cmd-toast', id + ' removed', true);
   markDeleted('pr:' + id);
   const row = document.querySelector('[data-pr-id="' + id + '"]')?.closest('tr');
   if (row) row.remove();
-  showToast('cmd-toast', id + ' removed', true);
   try {
     const res = await fetch('/api/pull-requests/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { _deletedIds.delete('pr:' + id); const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); return; }
-  } catch (e) { _deletedIds.delete('pr:' + id); alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { clearDeleted('pr:' + id); const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); return; }
+  } catch (e) { clearDeleted('pr:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal, unlinkPr };

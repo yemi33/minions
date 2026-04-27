@@ -22509,6 +22509,144 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(!unlinkBody.includes('alert(') && unlinkBody.includes('showToast('), 'unlinkPr should use toasts for failures');
   });
 
+  await test('inbox, pinned, and schedule destructive actions toast before optimistic hide', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const deleteInboxBody = inboxSrc.slice(inboxSrc.indexOf('async function deleteInboxItem'), inboxSrc.indexOf('async function openInboxInExplorer'));
+    assert.ok(deleteInboxBody.indexOf("showToast('cmd-toast', 'Inbox item deleted'") < deleteInboxBody.indexOf("markDeleted('inbox:' + name)"),
+      'deleteInboxItem should toast before markDeleted');
+    const promoteBody = inboxSrc.slice(inboxSrc.indexOf('async function doPromoteToKB'), inboxSrc.indexOf('window.MinionsInbox'));
+    assert.ok(promoteBody.indexOf("showToast('cmd-toast', 'Promoted to Knowledge Base'") < promoteBody.indexOf("markDeleted('inbox:' + name)"),
+      'doPromoteToKB should toast before markDeleted');
+
+    const pinnedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    const unpinBody = pinnedSrc.slice(pinnedSrc.indexOf('async function removePinnedNote'), pinnedSrc.indexOf('function openPinnedView'));
+    assert.ok(unpinBody.indexOf("showToast('cmd-toast', 'Note unpinned'") < unpinBody.indexOf("markDeleted('pin:' + title)"),
+      'removePinnedNote should toast before markDeleted');
+
+    const schedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const schedBody = schedSrc.slice(schedSrc.indexOf('async function deleteSchedule'), schedSrc.indexOf('window.MinionsSchedules'));
+    assert.ok(schedBody.indexOf("showToast('cmd-toast', 'Schedule deleted'") < schedBody.indexOf("markDeleted('sched:' + id)"),
+      'deleteSchedule should toast before markDeleted');
+  });
+
+  await test('meeting, work-item, settings, and plan archive destructive actions have toast-first optimistic flow', () => {
+    const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const archiveMeetingBody = meetingsSrc.slice(meetingsSrc.indexOf('async function _archiveMeeting'), meetingsSrc.indexOf('async function _unarchiveMeeting'));
+    assert.ok(archiveMeetingBody.indexOf("showToast('cmd-toast', 'Meeting archived'") < archiveMeetingBody.indexOf("markDeleted('mtg:' + id)"),
+      '_archiveMeeting should toast before markDeleted');
+    const deleteMeetingBody = meetingsSrc.slice(meetingsSrc.indexOf('async function _deleteMeeting'), meetingsSrc.indexOf('window.MinionsMeetings'));
+    assert.ok(deleteMeetingBody.indexOf("showToast('cmd-toast', 'Meeting deleted'") < deleteMeetingBody.indexOf("markDeleted('mtg:' + id)"),
+      '_deleteMeeting should toast before markDeleted');
+
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    const deleteWiBody = wiSrc.slice(wiSrc.indexOf('async function deleteWorkItem'), wiSrc.indexOf('async function cancelWorkItem'));
+    assert.ok(deleteWiBody.indexOf("showToast('cmd-toast', 'Work item deleted'") < deleteWiBody.indexOf("markDeleted('wi:' + id)"),
+      'deleteWorkItem should toast before markDeleted');
+    const cancelWiBody = wiSrc.slice(wiSrc.indexOf('async function cancelWorkItem'), wiSrc.indexOf('async function archiveWorkItem'));
+    assert.ok(cancelWiBody.indexOf("showToast('cmd-toast', 'Work item cancelled'") < cancelWiBody.indexOf("markDeleted('wi:' + id)"),
+      'cancelWorkItem should toast before markDeleted');
+    const archiveWiBody = wiSrc.slice(wiSrc.indexOf('async function archiveWorkItem'), wiSrc.indexOf('async function submitFeedback'));
+    assert.ok(archiveWiBody.indexOf("showToast('cmd-toast', 'Archived ' + id") < archiveWiBody.indexOf("markDeleted('wi:' + id)"),
+      'archiveWorkItem should toast before markDeleted');
+
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const settingsRemoveBody = settingsSrc.slice(settingsSrc.indexOf('async function removeProject'), settingsSrc.indexOf('window.MinionsSettings'));
+    assert.ok(settingsRemoveBody.indexOf(`showToast('cmd-toast', 'Removing project "`) < settingsRemoveBody.indexOf("markDeleted('project:' + name)"),
+      'settings removeProject should toast before markDeleted');
+
+    const plansSrc2 = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const archivePlanBody = plansSrc2.slice(plansSrc2.indexOf('async function planArchive'), plansSrc2.indexOf('async function planPause'));
+    assert.ok(archivePlanBody.indexOf("showToast('cmd-toast', isPrd ? 'Archiving PRD and linked source plan...' : 'Archiving plan...'") < archivePlanBody.indexOf("markDeleted('plan:' + file)"),
+      'planArchive should toast before markDeleted');
+  });
+
+  await test('remaining destructive handlers clear optimistic hide on failure and avoid alert dialogs', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const deleteInboxBody = inboxSrc.slice(inboxSrc.indexOf('async function deleteInboxItem'), inboxSrc.indexOf('async function openInboxInExplorer'));
+    assert.ok(deleteInboxBody.includes("clearDeleted('inbox:' + name)") && !deleteInboxBody.includes('alert('),
+      'deleteInboxItem should clearDeleted on failure and avoid alerts');
+
+    const pinnedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    const unpinBody = pinnedSrc.slice(pinnedSrc.indexOf('async function removePinnedNote'), pinnedSrc.indexOf('function openPinnedView'));
+    assert.ok(unpinBody.includes("clearDeleted('pin:' + title)") && !unpinBody.includes('alert('),
+      'removePinnedNote should clearDeleted on failure and avoid alerts');
+
+    const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const deleteMeetingBody = meetingsSrc.slice(meetingsSrc.indexOf('async function _deleteMeeting'), meetingsSrc.indexOf('window.MinionsMeetings'));
+    assert.ok(deleteMeetingBody.includes("clearDeleted('mtg:' + id)") && !deleteMeetingBody.includes('alert('),
+      '_deleteMeeting should clearDeleted on failure and avoid alerts');
+
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    const archiveWiBody = wiSrc.slice(wiSrc.indexOf('async function archiveWorkItem'), wiSrc.indexOf('async function submitFeedback'));
+    assert.ok(archiveWiBody.includes("clearDeleted('wi:' + id)") && !archiveWiBody.includes('alert('),
+      'archiveWorkItem should clearDeleted on failure and avoid alerts');
+  });
+
+  await test('remaining delete handlers use toast-first optimism and explicit revert/error paths', () => {
+    const prsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    const unlinkBody = prsSrc.slice(prsSrc.indexOf('async function unlinkPr'), prsSrc.indexOf('window.MinionsPrs'));
+    assert.ok(unlinkBody.indexOf("showToast('cmd-toast', id + ' removed'") < unlinkBody.indexOf("markDeleted('pr:' + id)"),
+      'unlinkPr should toast before markDeleted');
+    assert.ok(unlinkBody.includes("clearDeleted('pr:' + id)") && unlinkBody.includes('refresh()') && !unlinkBody.includes('alert('),
+      'unlinkPr should clearDeleted on failure, refresh, and avoid alerts');
+
+    const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    const watchBody = watchesSrc.slice(watchesSrc.indexOf('function deleteWatch'), watchesSrc.indexOf('function _watchFormHtml'));
+    assert.ok(watchBody.indexOf("showToast('cmd-toast', 'Deleting watch...'") < watchBody.indexOf("markDeleted('watch:' + id)"),
+      'deleteWatch should toast before markDeleted');
+    assert.ok(watchBody.includes('!res.ok || data.error') &&
+      watchBody.includes("clearDeleted('watch:' + id)") &&
+      watchBody.includes("showToast('cmd-toast', 'Delete failed: ' + (data.error || 'unknown'), false)") &&
+      watchBody.includes('refresh()') &&
+      !watchBody.includes('alert('),
+    'deleteWatch should treat non-ok responses as failures, clearDeleted, refresh, and avoid alerts');
+
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const promoteBody = inboxSrc.slice(inboxSrc.indexOf('async function doPromoteToKB'), inboxSrc.indexOf('window.MinionsInbox'));
+    assert.ok(promoteBody.includes("clearDeleted('inbox:' + name)") &&
+      promoteBody.includes("showToast('cmd-toast', 'Promote failed: ' + (data.error || 'unknown'), false)") &&
+      promoteBody.includes('refresh()') &&
+      !promoteBody.includes('alert('),
+    'doPromoteToKB should clearDeleted on failure, refresh, and avoid alerts');
+
+    const schedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const schedBody = schedSrc.slice(schedSrc.indexOf('async function deleteSchedule'), schedSrc.indexOf('window.MinionsSchedules'));
+    assert.ok(schedBody.includes("clearDeleted('sched:' + id)") &&
+      schedBody.includes("_showScheduleError('Delete failed: ' + (d.error || 'unknown'))") &&
+      schedBody.includes('refresh()') &&
+      !schedBody.includes('alert('),
+    'deleteSchedule should clearDeleted on failure, surface schedule errors, refresh, and avoid alerts');
+
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    const deleteWiBody = wiSrc.slice(wiSrc.indexOf('async function deleteWorkItem'), wiSrc.indexOf('async function cancelWorkItem'));
+    assert.ok(deleteWiBody.includes("clearDeleted('wi:' + id)") &&
+      deleteWiBody.includes("showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false)") &&
+      deleteWiBody.includes('refresh()') &&
+      !deleteWiBody.includes('alert('),
+    'deleteWorkItem should clearDeleted on failure, refresh, and avoid alerts');
+    const cancelWiBody = wiSrc.slice(wiSrc.indexOf('async function cancelWorkItem'), wiSrc.indexOf('async function archiveWorkItem'));
+    assert.ok(cancelWiBody.includes("clearDeleted('wi:' + id)") &&
+      cancelWiBody.includes("showToast('cmd-toast', 'Cancel failed: ' + (d.error || 'unknown'), false)") &&
+      cancelWiBody.includes('refresh()') &&
+      !cancelWiBody.includes('alert('),
+    'cancelWorkItem should clearDeleted on failure, refresh, and avoid alerts');
+
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const settingsBody = settingsSrc.slice(settingsSrc.indexOf('async function removeProject'), settingsSrc.indexOf('window.MinionsSettings'));
+    const settingsFailStart = settingsBody.indexOf('if (!res.ok || !d.ok) {');
+    const settingsFailEnd = settingsBody.indexOf('return;', settingsFailStart);
+    const settingsFailBody = settingsBody.slice(settingsFailStart, settingsFailEnd);
+    assert.ok(settingsFailBody.includes("clearDeleted('project:' + name)") &&
+      settingsFailBody.includes('renderProjects(window._lastStatus.projects)') &&
+      settingsFailBody.includes('openSettings()'),
+    'settings removeProject should restore project chips and reopen settings on API failure');
+    const settingsCatchBody = settingsBody.slice(settingsBody.indexOf('} catch (e) {'));
+    assert.ok(settingsCatchBody.includes("clearDeleted('project:' + name)") &&
+      settingsCatchBody.includes('renderProjects(window._lastStatus.projects)') &&
+      settingsCatchBody.includes('openSettings()'),
+    'settings removeProject should restore project chips and reopen settings on thrown errors');
+  });
+
   await test('projects browse launches hidden PowerShell directly on Windows (no cmd shell window)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fnStart = src.indexOf('async function handleProjectsBrowse');

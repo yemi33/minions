@@ -1,5 +1,9 @@
 // render-prd.js — PRD-related rendering functions extracted from dashboard.html
 
+function _prdItemDeleteKey(source, itemId) {
+  return 'prd-item:' + (source || '') + ':' + (itemId || '');
+}
+
 function renderPrd(prd, prog) {
   const section = document.getElementById('prd-content');
   const badge = document.getElementById('prd-badge');
@@ -19,7 +23,7 @@ function renderPrd(prd, prog) {
   // Show per-PRD status summary in header when multiple PRDs exist
   const existing = (prd.existing || []).filter(function(p) { return !isDeleted('plan:' + (p.file || '')); });
   const allWi = window._lastWorkItems || [];
-  const prdItems = (prog?.items || []).filter(i => !i._archived && !isDeleted('plan:' + (i.source || '')));
+  const prdItems = (prog?.items || []).filter(i => !i._archived && !isDeleted('plan:' + (i.source || '')) && !isDeleted(_prdItemDeleteKey(i.source, i.id)));
 
   if (existing.length === 0 && prdItems.length === 0) {
     section.innerHTML = '<p class="prd-pending" style="margin-bottom:0">No PRD found.</p>';
@@ -84,7 +88,7 @@ function renderPrdProgress(prog) {
   const el = document.getElementById('prd-progress-content');
   const countEl = document.getElementById('prd-progress-count');
   if (!prog) { el.innerHTML = ''; countEl.textContent = '—'; return; }
-  const visibleItems = (prog.items || []).filter(i => !isDeleted('plan:' + (i.source || '')));
+  const visibleItems = (prog.items || []).filter(i => !isDeleted('plan:' + (i.source || '')) && !isDeleted(_prdItemDeleteKey(i.source, i.id)));
 
   // Compute overall progress from active (non-archived) items
   const activeItems = visibleItems.filter(i => !i._archived);
@@ -748,16 +752,18 @@ async function prdItemSave(source, itemId) {
 
 async function prdItemRemove(source, itemId) {
   if (!confirm('Remove item ' + itemId + '? This also cancels any pending work item.')) return;
-  closeModal();
   showToast('cmd-toast', 'Item removed', true);
+  markDeleted(_prdItemDeleteKey(source, itemId));
+  closeModal();
+  if (typeof rerenderPrdFromCache === 'function') rerenderPrdFromCache();
   try {
     const res = await fetch('/api/prd-items/remove', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, itemId })
     });
     if (res.ok) { refresh(); }
-    else { const d = await res.json().catch(() => ({})); alert('Remove failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    else { const d = await res.json().catch(() => ({})); clearDeleted(_prdItemDeleteKey(source, itemId)); showToast('cmd-toast', 'Remove failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted(_prdItemDeleteKey(source, itemId)); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function prdItemRequeue(workItemId, source, prdFile) {

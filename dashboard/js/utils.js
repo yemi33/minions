@@ -3,9 +3,10 @@
 // Signal the engine to tick immediately (pick up new work without waiting 60s)
 function wakeEngine() { fetch('/api/engine/wakeup', { method: 'POST' }).catch(() => {}); }
 
-// Optimistic delete suppression — prevent auto-refresh from re-showing deleted items
-const _deletedIds = new Map(); // key → expiry timestamp
-function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppress for 10s
+// Optimistic delete suppression
+const _deletedIds = new Map();
+function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); }
+function clearDeleted(key) { _deletedIds.delete(key); }
 function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
 
 // Pin-to-top — persisted server-side so CC and agents can also pin items
@@ -507,4 +508,4 @@ async function submitBugReport() {
   }
 }
 
-window.MinionsUtils = { wakeEngine, escapeHtml, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
+window.MinionsUtils = { wakeEngine, markDeleted, clearDeleted, escapeHtml, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, shouldIgnoreSelectionClick, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };

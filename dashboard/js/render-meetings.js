@@ -337,17 +337,17 @@ async function _endMeeting(id, btn) {
 }
 
 async function _archiveMeeting(id) {
+  showToast('cmd-toast', 'Meeting archived', true);
   markDeleted('mtg:' + id);
   try { closeModal(); } catch { /* may not be open */ }
   document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
-  showToast('cmd-toast', 'Meeting archived', true);
   try {
     const res = await fetch('/api/meetings/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { _deletedIds.delete('mtg:' + id); const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
-  } catch (e) { _deletedIds.delete('mtg:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+    if (!res.ok) { clearDeleted('mtg:' + id); const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('mtg:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function _unarchiveMeeting(id) {
@@ -480,17 +480,17 @@ async function _createPlanFromMeeting(id, btn) {
 
 async function _deleteMeeting(id) {
   if (!confirm('Delete this meeting? This cannot be undone.')) return;
+  showToast('cmd-toast', 'Meeting deleted', true);
   markDeleted('mtg:' + id);
   try { closeModal(); } catch { /* may not be open */ }
   document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
-  showToast('cmd-toast', 'Meeting deleted', true);
   try {
     const res = await fetch('/api/meetings/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+    if (!res.ok) { clearDeleted('mtg:' + id); const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('mtg:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsMeetings = { renderMeetings, openMeetingDetail, openCreateMeetingModal };

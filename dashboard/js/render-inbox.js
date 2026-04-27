@@ -158,17 +158,17 @@ function modalCancelEdit() {
 
 async function deleteInboxItem(name) {
   if (!confirm('Delete "' + name + '" from inbox?')) return;
+  showToast('cmd-toast', 'Inbox item deleted', true);
   markDeleted('inbox:' + name);
   const card = document.querySelector('.inbox-item[data-file="notes/inbox/' + CSS.escape(name) + '"]');
   if (card) card.remove();
-  showToast('cmd-toast', 'Inbox item deleted', true);
   try {
     const res = await fetch('/api/inbox/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); clearDeleted('inbox:' + name); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('inbox:' + name); showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
 }
 
 async function openInboxInExplorer(name) {
@@ -223,11 +223,11 @@ async function submitQuickNote() {
 }
 
 async function doPromoteToKB(name, category) {
+  showToast('cmd-toast', 'Promoted to Knowledge Base', true);
   try { closeModal(); } catch { /* expected */ }
   markDeleted('inbox:' + name);
   const card = document.querySelector('.inbox-item[data-file="notes/inbox/' + CSS.escape(name) + '"]');
   if (card) card.remove();
-  showToast('cmd-toast', 'Promoted to Knowledge Base', true);
   try {
     const res = await fetch('/api/inbox/promote-kb', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -235,8 +235,8 @@ async function doPromoteToKB(name, category) {
     });
     const data = await res.json();
     if (res.ok) { refreshKnowledgeBase(); }
-    else { showToast('cmd-toast', 'Promote failed: ' + (data.error || 'unknown'), false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Promote error: ' + e.message, false); refresh(); }
+    else { clearDeleted('inbox:' + name); showToast('cmd-toast', 'Promote failed: ' + (data.error || 'unknown'), false); refresh(); }
+  } catch (e) { clearDeleted('inbox:' + name); showToast('cmd-toast', 'Promote error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsInbox = { renderInbox, promoteToKB, renderNotes, openNotesModal, modalToggleEdit, modalSaveEdit, modalCancelEdit, deleteInboxItem, openInboxInExplorer, openQuickNoteModal, submitQuickNote, doPromoteToKB };

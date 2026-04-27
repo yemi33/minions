@@ -77,13 +77,13 @@ async function submitPinnedNote(e) {
 
 async function removePinnedNote(title) {
   if (!confirm('Unpin "' + title + '"?')) return;
+  showToast('cmd-toast', 'Note unpinned', true);
   markDeleted('pin:' + title);
   const btn = (window.event)?.target; if (btn) { const card = btn.closest('.pinned-card') || btn.parentElement?.parentElement; if (card) card.remove(); }
-  showToast('cmd-toast', 'Note unpinned', true);
   try {
     const res = await fetch('/api/pinned/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
-    if (!res.ok) { showToast('cmd-toast', 'Unpin failed', false); refresh(); }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+    if (!res.ok) { clearDeleted('pin:' + title); showToast('cmd-toast', 'Unpin failed', false); refresh(); }
+  } catch (e) { clearDeleted('pin:' + title); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 function openPinnedView(idx) {

@@ -86,7 +86,7 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Projects</h3>' +
     '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">' +
     (data.projects || []).map(function(p) {
-      return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
+      return '<div data-settings-project="' + escHtml(p.name) + '" style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
           '<div style="font-size:12px;font-weight:600">' + escHtml(p.name) + '</div>' +
           '<button onclick="MinionsSettings.removeProject(\'' + escHtml(p.name) + '\')" style="font-size:9px;padding:2px 8px;background:transparent;color:var(--red);border:1px solid var(--red);border-radius:3px;cursor:pointer">Remove</button>' +
@@ -409,7 +409,17 @@ async function resetSettingsToDefaults() {
 
 async function removeProject(name) {
   if (!confirm('Remove project "' + name + '"? Pending work cancels, active agents are killed, data dir is archived to projects/.archived/.')) return;
+  const prevProjects = (_settingsData && Array.isArray(_settingsData.projects)) ? _settingsData.projects.slice() : null;
   showToast('cmd-toast', 'Removing project "' + name + '"...', true);
+  markDeleted('project:' + name);
+  if (_settingsData && Array.isArray(_settingsData.projects)) {
+    _settingsData.projects = _settingsData.projects.filter(function(p) { return p.name !== name; });
+  }
+  const card = document.querySelector('[data-settings-project="' + CSS.escape(name) + '"]');
+  if (card) card.remove();
+  if (window._lastStatus && Array.isArray(window._lastStatus.projects) && typeof renderProjects === 'function') {
+    renderProjects(window._lastStatus.projects);
+  }
   try {
     const res = await fetch('/api/projects/remove', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -417,7 +427,13 @@ async function removeProject(name) {
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || !d.ok) {
+      if (prevProjects) _settingsData.projects = prevProjects;
+      clearDeleted('project:' + name);
+      if (window._lastStatus && Array.isArray(window._lastStatus.projects) && typeof renderProjects === 'function') {
+        renderProjects(window._lastStatus.projects);
+      }
       showToast('cmd-toast', 'Remove failed: ' + (d.error || 'unknown'), false);
+      openSettings();
       return;
     }
     var parts = ['Removed "' + name + '"'];
@@ -430,7 +446,13 @@ async function removeProject(name) {
     showToast('cmd-toast', parts.join(' — '), true);
     setTimeout(() => openSettings(), 600);
   } catch (e) {
+    if (prevProjects) _settingsData.projects = prevProjects;
+    clearDeleted('project:' + name);
+    if (window._lastStatus && Array.isArray(window._lastStatus.projects) && typeof renderProjects === 'function') {
+      renderProjects(window._lastStatus.projects);
+    }
     showToast('cmd-toast', 'Error: ' + e.message, false);
+    openSettings();
   }
 }
 
