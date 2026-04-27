@@ -3341,46 +3341,69 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      shared.sanitizePath(body.file, body.file.endsWith('.json') ? PRD_DIR : PLANS_DIR);
+      const isPrd = body.file.endsWith('.json');
+      shared.sanitizePath(body.file, isPrd ? PRD_DIR : PLANS_DIR);
       const planPath = resolvePlanPath(body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
 
-      // Move to archive directory
-      const archiveDir = body.file.endsWith('.json') ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
+      const archiveDir = isPrd ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
       const archivePath = path.join(archiveDir, body.file);
       fs.renameSync(planPath, archivePath);
 
-      // Mark archived in JSON if PRD
       let archivedSource = null;
-      if (body.file.endsWith('.json')) {
+      let plan = {};
+      if (isPrd) {
         try {
-          const prd = safeJsonObj(archivePath);
-          prd.status = 'archived';
-          prd.archivedAt = new Date().toISOString();
-          safeWrite(archivePath, prd);
-          // Also archive linked source plan
-          if (prd.source_plan) {
-            const mdPath = path.join(PLANS_DIR, prd.source_plan);
+          plan = safeJsonObj(archivePath) || {};
+          plan.status = 'archived';
+          plan.archivedAt = new Date().toISOString();
+          safeWrite(archivePath, plan);
+          // Without removing the .backup sidecar, safeJson would auto-restore the
+          // pre-completion snapshot on engine restart, re-triggering plan completion
+          // and spawning duplicate verify tasks (regression of #f28162b0).
+          const backupPath = planPath + '.backup';
+          try { fs.unlinkSync(backupPath); } catch {
+            try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { /* best-effort */ }
+          }
+          if (plan.source_plan) {
+            const mdPath = path.join(PLANS_DIR, plan.source_plan);
             if (fs.existsSync(mdPath)) {
               const planArchive = path.join(PLANS_DIR, 'archive');
               if (!fs.existsSync(planArchive)) fs.mkdirSync(planArchive, { recursive: true });
-              fs.renameSync(mdPath, path.join(planArchive, prd.source_plan));
-              archivedSource = prd.source_plan;
+              fs.renameSync(mdPath, path.join(planArchive, plan.source_plan));
+              archivedSource = plan.source_plan;
             }
           }
         } catch { /* optional */ }
       }
 
-      // Clean up worktrees associated with this plan
+      // Cancel pending work items linked to this plan so the engine stops
+      // dispatching for an archived plan. Done items are preserved as history.
+      let cancelledItems = 0;
+      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json'), ...PROJECTS.map(p => shared.projectWorkItemsPath(p))];
+      for (const wiPath of wiPaths) {
+        try {
+          mutateWorkItems(wiPath, items => {
+            for (const w of items) {
+              if (w.sourcePlan !== body.file) continue;
+              if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.QUEUED) {
+                w.status = WI_STATUS.CANCELLED;
+                w._cancelledBy = 'plan-archived';
+                cancelledItems++;
+              }
+            }
+          });
+        } catch (e) { console.error('plan archive cancel:', e.message); }
+      }
+
       try {
-        const plan = body.file.endsWith('.json') ? (safeJsonObj(archivePath) || {}) : {};
         const { cleanupPlanWorktrees } = require('./engine/lifecycle');
         cleanupPlanWorktrees(body.file, plan, PROJECTS, getConfig());
       } catch (e) { console.error('plan worktree cleanup:', e.message); }
 
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource });
+      return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource, cancelledItems });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 

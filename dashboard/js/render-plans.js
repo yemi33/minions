@@ -601,13 +601,12 @@ async function planArchive(file, btn) {
   if (!confirm(confirmMsg)) return;
   _stopPlanPoll();
   markDeleted('plan:' + file);
-  // Also optimistically hide the linked source plan (server archives both)
   if (isPrd) {
     var linkedPlan = (window._lastPlans || []).find(function(p) { return p.file === file && p.sourcePlan; });
     if (linkedPlan) markDeleted('plan:' + linkedPlan.sourcePlan);
   }
   try { closeModal(); } catch { /* may not be open */ }
-  showToast('cmd-toast', 'Archiving...', true);
+  showToast('cmd-toast', 'Archived', true);
   try {
     const res = await fetch('/api/plans/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -617,16 +616,18 @@ async function planArchive(file, btn) {
     if (!ct.includes('json')) { refresh(); return; }
     const d = await res.json().catch(() => ({}));
     if (res.ok && d.ok) {
-      var msg = 'Archived';
-      if (d.archivedSource) msg += ' PRD + source plan (' + d.archivedSource + ')';
-      if (d.cancelledItems) msg += ', cancelled ' + d.cancelledItems + ' pending item(s)';
-      showToast('cmd-toast', msg, true);
+      if (d.archivedSource || d.cancelledItems) {
+        var msg = 'Archived';
+        if (d.archivedSource) msg += ' PRD + source plan';
+        if (d.cancelledItems) msg += ', cancelled ' + d.cancelledItems + ' pending item(s)';
+        showToast('cmd-toast', msg, true);
+      }
       refresh();
     } else {
-      resetBtn();
-      alert('Archive failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'Archive failed: ' + (d.error || 'unknown'), false);
+      refresh();
     }
-  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function planPause(file, btn) {
@@ -793,8 +794,12 @@ async function planUnarchive(file, btn) {
       body: JSON.stringify({ file })
     });
     if (res.ok) { refreshPlans(); refresh(); }
-    else { const d = await res.json().catch(() => ({})); alert('Unarchive failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    else {
+      const d = await res.json().catch(() => ({}));
+      showToast('cmd-toast', 'Unarchive failed: ' + (d.error || 'unknown'), false);
+      refresh();
+    }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planUnarchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
