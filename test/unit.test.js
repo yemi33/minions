@@ -18744,6 +18744,98 @@ async function testPrWriteRaceConditions() {
     }
   });
 
+  // ── Issue #1772: oneShot flag prevents one-off reviews from entering eval loop ──
+
+  await test('syncPrsFromOutput marks PR _contextOnly when meta.item.oneShot is true', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { lambert: { name: 'Lambert' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Realistic one-off: human asks "review PR 777" — agent fetches the PR via gh,
+      // tool_result contains the PR URL. syncPrsFromOutput picks it up from output.
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at https://github.com/org/repo/pull/777 — let me review it."}]}}';
+      // Simulate a human-initiated one-off review — work item has oneShot flag
+      const meta = { item: { id: 'W-777', title: 'Review PR 777', oneShot: true }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'lambert', meta, mockConfig);
+
+      const result = shared.safeJson(prFile) || [];
+      const pr = result.find(p => p.id === 'github:org/repo#777');
+      assert.ok(pr, 'one-off PR should still be tracked (so it can be polled for build/comment status)');
+      assert.strictEqual(pr._contextOnly, true,
+        'one-off PR must be flagged _contextOnly so discoverFromPrs skips it (no auto-review/fix loop)');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput does NOT mark PR _contextOnly for normal (non-oneShot) dispatches', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { dallas: { name: 'Dallas' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"Created PR https://github.com/org/repo/pull/888 — Regular feature"}]}}';
+      // Normal implement dispatch — no oneShot flag, eval loop should run as usual
+      const meta = { item: { id: 'W-888', title: 'Regular feature' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
+
+      const result = shared.safeJson(prFile) || [];
+      const pr = result.find(p => p.id === 'github:org/repo#888');
+      assert.ok(pr, 'regular PR should be tracked');
+      assert.ok(!pr._contextOnly,
+        'regular PR must NOT have _contextOnly so the eval loop can dispatch reviews');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('handleWorkItemsCreate persists oneShot flag from request body', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('body.oneShot') && dashSrc.includes('item.oneShot'),
+      'POST /api/work-items must copy oneShot from body to item (parallel to skipPr)');
+  });
+
+  await test('CC review action sets oneShot on dispatched work item', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find the executeCCActions dispatch case
+    const start = dashSrc.indexOf("case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test':");
+    assert.ok(start > 0, 'CC dispatch case must exist');
+    const end = dashSrc.indexOf("case 'note':", start);
+    assert.ok(end > start, 'CC note case must come after dispatch case');
+    const dispatchCase = dashSrc.slice(start, end);
+    // CC review/explore/ask actions are inherently human-initiated one-offs;
+    // dispatching them must mark the PR (if any new one is created) as context-only
+    assert.ok(/oneShot/.test(dispatchCase),
+      'CC dispatch action must set oneShot on the work item (so review/explore one-offs do not enter eval loop)');
+  });
+
   // ── Bug #15: Worktree deletion re-reads PR status before proceeding ──
 
   await test('cleanup.js re-reads PR status before worktree deletion (TOCTOU guard)', () => {
@@ -29778,7 +29870,7 @@ async function testWatchesModule() {
     // Find executeCCActions function — create-watch case may be far into the switch
     const fnStart = dashSrc.indexOf('async function executeCCActions');
     assert.ok(fnStart > -1, 'executeCCActions must exist in dashboard.js');
-    const fnSlice = dashSrc.slice(fnStart, fnStart + 5000);
+    const fnSlice = dashSrc.slice(fnStart, fnStart + 8000);
     assert.ok(fnSlice.includes("case 'create-watch'"),
       'executeCCActions must handle create-watch action type');
     assert.ok(fnSlice.includes('watchesMod.createWatch') || fnSlice.includes('createWatch('),

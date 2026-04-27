@@ -912,6 +912,10 @@ async function executeCCActions(actions) {
           const project = action.project || '';
           const targetProject = project ? PROJECTS.find(p => p.name?.toLowerCase() === project.toLowerCase()) : PROJECTS[0];
           const wiPath = targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json');
+          // Issue #1772: CC review/explore/test are human-initiated one-offs.
+          // Mark oneShot so any discovered PR is tagged _contextOnly (skips eval loop).
+          const ccOneShotTypes = new Set(['review', 'explore', 'test']);
+          const isOneShot = action.oneShot === true || (action.oneShot !== false && ccOneShotTypes.has(workType));
           shared.mutateJsonFileLocked(wiPath, items => {
             if (!Array.isArray(items)) items = [];
             items.push({
@@ -920,6 +924,7 @@ async function executeCCActions(actions) {
               status: WI_STATUS.PENDING, created: new Date().toISOString(),
               createdBy: 'command-center', project,
               ...(action.agents?.length ? { preferred_agent: action.agents[0] } : {}),
+              ...(isOneShot ? { oneShot: true } : {}),
             });
             return items;
           }, { defaultValue: [] });
@@ -1978,6 +1983,7 @@ const server = http.createServer(async (req, res) => {
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr) item.skipPr = true;
+      if (body.oneShot) item.oneShot = true;
       let dupId = null;
       mutateJsonFileLocked(wiPath, (items) => {
         if (!Array.isArray(items)) items = [];
