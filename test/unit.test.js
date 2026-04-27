@@ -22355,6 +22355,41 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
   });
 
+  await test('project chip has × remove button wired to projectChipRemove', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    assert.ok(/projectChipRemove\(/.test(src), 'chip should call projectChipRemove with the project name');
+    assert.ok(src.includes('event.stopPropagation()'), 'x click must not bubble to the parent chip');
+    assert.ok(src.includes('async function projectChipRemove'), 'must define projectChipRemove');
+  });
+
+  await test('projectChipRemove is optimistic: markDeleted + immediate re-render before fetch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    const fnStart = src.indexOf('async function projectChipRemove');
+    const fnEnd = src.indexOf('window.MinionsOther', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const markIdx = body.indexOf("markDeleted('project:'");
+    const renderIdx = body.indexOf('renderProjects(window._lastStatus.projects)');
+    const fetchIdx = body.indexOf("fetch('/api/projects/remove'");
+    assert.ok(markIdx > 0 && renderIdx > 0 && fetchIdx > 0, 'all three calls must be present');
+    assert.ok(markIdx < fetchIdx, 'markDeleted must run before fetch (optimistic)');
+    assert.ok(renderIdx < fetchIdx, 'renderProjects must run before fetch (optimistic UI)');
+  });
+
+  await test('renderProjects filters out projects in markDeleted set so optimistic removal sticks across refresh', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    // First non-comment occurrence is the visible filter
+    assert.ok(src.includes("isDeleted('project:'"), 'renderProjects must consult isDeleted to suppress optimistically-removed chips');
+  });
+
+  await test('projectChipRemove revert path: refresh() called on API failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    const fnStart = src.indexOf('async function projectChipRemove');
+    const fnEnd = src.indexOf('window.MinionsOther', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const failBranch = body.slice(body.indexOf('Remove failed'));
+    assert.ok(/refresh\(\)/.test(failBranch), 'failure branch must call refresh() to restore the chip from server state');
+  });
+
   // ── PRD Retry Button + View Toggle + Dependency Auto-Trigger ───────────────
 
   await test('PRD list view shows retry button for failed items (canRequeue logic)', () => {

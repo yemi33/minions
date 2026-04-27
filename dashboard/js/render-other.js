@@ -2,20 +2,55 @@
 
 function renderProjects(projects) {
   const list = document.getElementById('projects-list');
-  if (!projects.length) {
+  const visible = (projects || []).filter(p => typeof isDeleted === 'function' ? !isDeleted('project:' + p.name) : true);
+  if (!visible.length) {
     list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked.</span>' +
       '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--green);font-weight:500;cursor:pointer;border-style:dashed;margin-left:8px">+ Add Project</span>';
     return;
   }
-  list.innerHTML = projects.map(p =>
-    '<span title="' + escHtml(p.description || p.path || '') + '" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--blue);font-weight:500;cursor:help">' +
+  list.innerHTML = visible.map(p =>
+    '<span data-project="' + escHtml(p.name) + '" title="' + escHtml(p.description || p.path || '') + '" style="display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--blue);font-weight:500;cursor:help">' +
       escHtml(p.name) +
-      (p.description ? '<span style="color:var(--muted);font-weight:400;margin-left:6px;font-size:10px">' + escHtml(p.description.slice(0, 60)) + (p.description.length > 60 ? '...' : '') + '</span>' : '') +
+      (p.description ? '<span style="color:var(--muted);font-weight:400;font-size:10px">' + escHtml(p.description.slice(0, 60)) + (p.description.length > 60 ? '...' : '') + '</span>' : '') +
+      '<span onclick="event.stopPropagation();projectChipRemove(\'' + escHtml(p.name) + '\')" title="Remove project (cancels pending work, archives data dir)" style="color:var(--muted);font-weight:600;cursor:pointer;padding:0 2px;line-height:1" onmouseover="this.style.color=\'var(--red)\'" onmouseout="this.style.color=\'var(--muted)\'">&times;</span>' +
     '</span>'
   ).join('') +
   '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--muted);font-weight:500;cursor:pointer;border-style:dashed">+ Add</span>' +
   '<span onclick="openScanProjectsModal()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--blue);font-weight:500;cursor:pointer;border-style:dashed;font-size:10px">Scan</span>';
 
+}
+
+async function projectChipRemove(name) {
+  if (!confirm('Remove project "' + name + '"? Pending work cancels, active agents are killed, data dir is archived to projects/.archived/.')) return;
+  markDeleted('project:' + name);
+  // Re-render immediately from cached state so the chip disappears without waiting on the API
+  if (window._lastStatus && Array.isArray(window._lastStatus.projects)) {
+    renderProjects(window._lastStatus.projects);
+  }
+  showToast('cmd-toast', 'Removing project "' + name + '"...', true);
+  try {
+    const res = await fetch('/api/projects/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.ok) {
+      // Revert: refresh restores the chip from server state
+      showToast('cmd-toast', 'Remove failed: ' + (d.error || 'unknown'), false);
+      if (typeof refresh === 'function') refresh();
+      return;
+    }
+    var parts = ['Removed "' + name + '"'];
+    if (d.cancelledItems) parts.push(d.cancelledItems + ' WI cancelled');
+    if (d.drainedDispatches) parts.push(d.drainedDispatches + ' dispatch drained');
+    if (d.archivedTo) parts.push('archived');
+    if (d.pipelineRefs?.length) parts.push('! pipelines still reference: ' + d.pipelineRefs.join(', '));
+    showToast('cmd-toast', parts.join(' — '), true);
+    if (typeof refresh === 'function') refresh();
+  } catch (e) {
+    showToast('cmd-toast', 'Error: ' + e.message, false);
+    if (typeof refresh === 'function') refresh();
+  }
 }
 
 function renderMcpServers(servers) {
@@ -354,4 +389,4 @@ async function _addSelectedProjects() {
   }
 }
 
-window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, openScanProjectsModal };
+window.MinionsOther = { renderProjects, projectChipRemove, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, openScanProjectsModal };
