@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1568 (2026-04-27)
+
+### Fixes
+-  smooth project add and scan UX
+
 ## 0.1.1567 (2026-04-27)
 
 ### Other
