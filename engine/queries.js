@@ -1021,6 +1021,27 @@ function getPrdInfo(config) {
   const allPrs = getPullRequests(config);
   const prById = {};
   for (const pr of allPrs) prById[pr.id] = pr;
+  // Also scan project subdirectories that aren't in config (e.g. removed projects
+  // whose pull-requests.json still holds last-known status). getPrLinks already
+  // reads all subdirs, so without this PRs from those dirs would have status/title
+  // missing in the PRD view and fall back to literal 'active'/'' defaults.
+  try {
+    const projectsDir = path.join(MINIONS_DIR, 'projects');
+    const projectsByName = new Map(projects.map(p => [p.name, p]));
+    for (const d of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!d.isDirectory() || projectsByName.has(d.name)) continue;
+      const ghostPath = path.join(projectsDir, d.name, 'pull-requests.json');
+      const ghostPrs = safeJson(ghostPath);
+      if (!Array.isArray(ghostPrs)) continue;
+      shared.normalizePrRecords(ghostPrs, null);
+      for (const pr of ghostPrs) {
+        if (pr?.id && !prById[pr.id]) {
+          pr._project = d.name;
+          prById[pr.id] = pr;
+        }
+      }
+    }
+  } catch { /* projects dir missing */ }
 
   // Build URL for a PR when pr.url isn't set. Prefer the PR ID's own scope
   // (e.g. `github:owner/repo#123` → github.com URL) so a github PR never gets
