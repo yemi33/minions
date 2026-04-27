@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1555 (2026-04-27)
+
+### Features
+- comprehensive minions remove (CLI + dashboard)
+
 ## 0.1.1554 (2026-04-27)
 
 ### Fixes
