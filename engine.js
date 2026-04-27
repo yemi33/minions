@@ -2360,6 +2360,19 @@ function discoverFromWorkItems(config, project) {
         skipped.gated++; continue;
       }
     }
+    // Min retry gap (#1770): even when isRetry bypasses the completed-dedup, a
+    // tight retry loop on the same WI burns _retryCount inside one tick window.
+    // Honor a configurable minimum interval since the last retry so an idempotent
+    // agent (e.g. review bailing because a duplicate review already exists)
+    // cannot flip a successfully-posted review into status=failed.
+    if (isRetry && item._lastRetryAt) {
+      const minGap = ENGINE_DEFAULTS.minRetryGapMs;
+      const lastAt = Date.parse(item._lastRetryAt);
+      if (Number.isFinite(lastAt) && (Date.now() - lastAt) < minGap) {
+        if (item._pendingReason !== 'retry_cooldown') { item._pendingReason = 'retry_cooldown'; needsWrite = true; }
+        skipped.gated++; continue;
+      }
+    }
     if (isOnCooldown(key, cooldownMs)) {
       if (item._pendingReason !== 'cooldown') { item._pendingReason = 'cooldown'; needsWrite = true; }
       skipped.gated++; continue;
@@ -2803,6 +2816,14 @@ function discoverCentralWorkItems(config) {
         }
         continue;
       }
+    }
+    // Min retry gap (#1770): symmetric with discoverFromWorkItems — even when
+    // isRetry bypasses the completed-dedup, enforce a min interval since
+    // _lastRetryAt so a tight retry loop can't burn _retryCount in one tick.
+    if (isRetry && item._lastRetryAt) {
+      const minGap = ENGINE_DEFAULTS.minRetryGapMs;
+      const lastAt = Date.parse(item._lastRetryAt);
+      if (Number.isFinite(lastAt) && (Date.now() - lastAt) < minGap) continue;
     }
     if (isOnCooldown(key, 0)) continue;
 
