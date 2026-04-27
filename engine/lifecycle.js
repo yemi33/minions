@@ -800,23 +800,25 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     }
 
     if (!newPrsByPath.has(prPath)) newPrsByPath.set(prPath, { name: targetName, project: targetProject, entries: [] });
-    newPrsByPath.get(prPath).entries.push({
-      prId, fullId,
-      entry: {
-        id: fullId,
-        prNumber: parseInt(prId, 10) || prId,
-        title: (title || `PR created by ${agentName}`).slice(0, 120),
-        agent: agentName,
-        branch: meta?.branch || '',
-        reviewStatus: 'pending',
-        status: PR_STATUS.ACTIVE,
-        created: ts(),
-        url: prUrl,
-        prdItems: meta?.item?.id ? [meta.item.id] : [],
-        sourcePlan: meta?.item?.sourcePlan || '',
-        itemType: meta?.item?.itemType || ''
-      }
-    });
+    const entry = {
+      id: fullId,
+      prNumber: parseInt(prId, 10) || prId,
+      title: (title || `PR created by ${agentName}`).slice(0, 120),
+      agent: agentName,
+      branch: meta?.branch || '',
+      reviewStatus: 'pending',
+      status: PR_STATUS.ACTIVE,
+      created: ts(),
+      url: prUrl,
+      prdItems: meta?.item?.id ? [meta.item.id] : [],
+      sourcePlan: meta?.item?.sourcePlan || '',
+      itemType: meta?.item?.itemType || ''
+    };
+    // Issue #1772: one-off dispatches (e.g. human-initiated "review this PR" via CC)
+    // must not enroll the discovered PR into the auto eval loop. Tag _contextOnly so
+    // discoverFromPrs skips it for review/fix dispatch (still polled for status/comments).
+    if (meta?.item?.oneShot) entry._contextOnly = true;
+    newPrsByPath.get(prPath).entries.push({ prId, fullId, entry });
   }
 
   const entryBranch = meta?.branch || '';
