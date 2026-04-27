@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1573 (2026-04-27)
+
+### Fixes
+- default existing_prd_json to empty so plan-to-prd dispatch doesn't warn
+
 ## 0.1.1572 (2026-04-27)
 
 ### Fixes
