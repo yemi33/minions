@@ -574,8 +574,12 @@ async function planApprove(file, btn) {
 
 async function planDelete(file) {
   _stopPlanPoll();
-  if (!confirm('Delete plan "' + file + '"? This cannot be undone.')) return;
-  showToast('cmd-toast', 'Plan deleted', true);
+  var isPrd = file.endsWith('.json');
+  var confirmMsg = isPrd
+    ? 'Delete PRD "' + file + '"? This cannot be undone. The source plan will be kept.'
+    : 'Delete plan "' + file + '"? This cannot be undone.';
+  if (!confirm(confirmMsg)) return;
+  showToast('cmd-toast', isPrd ? 'PRD deleted' : 'Plan deleted', true);
   markDeleted('plan:' + file);
   try { closeModal(); } catch { /* may not be open */ }
   if (window._lastPlans) renderPlans(window._lastPlans);
@@ -593,7 +597,11 @@ async function planDelete(file) {
       showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false);
       refresh(); // revert optimistic
     }
-  } catch (e) { clearDeleted('plan:' + file); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
+  } catch (e) {
+    clearDeleted('plan:' + file);
+    showToast('cmd-toast', 'Error: ' + e.message, false);
+    refresh();
+  }
 }
 
 async function planArchive(file, btn) {
