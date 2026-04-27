@@ -231,8 +231,9 @@ function evaluateCondition(condition, ctx) {
       return pipelineRuns.length >= threshold;
     }
     case 'allBuildsGreen': {
-      // True when all PRs in monitoredResources (pipeline-level or stage-level) or run artifacts have buildStatus 'passing'
-      const allPrs = queries.getPullRequests(config);
+      // True when all PRs in monitoredResources (pipeline-level or stage-level) or run artifacts have buildStatus 'passing'.
+      // Exclude ghost PRs (records from project subdirs not in config) — their buildStatus is stale because no poller updates them.
+      const allPrs = queries.getPullRequests(config).filter(pr => !pr._ghost);
       const prRefs = collectPipelinePrRefs(pipeline, run);
       if (prRefs.length === 0) return false; // no PRs to check = can't confirm green
       for (const prRef of prRefs) {

@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects, mutateJsonFileLocked,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, ENGINE_DEFAULTS } = shared;
+  WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, PR_STATUS, ENGINE_DEFAULTS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -472,34 +472,57 @@ function getPrs(project) {
   return all;
 }
 
+// Cache: getPullRequests is called 3-5x per /api/status (getMetrics, getWorkItems,
+// getPrdInfo, dashboard.js status + count). 1s TTL eliminates redundant fs reads
+// within a single request without masking real updates from polling.
+let _prsCache = null;
+let _prsCacheAt = 0;
+
 function getPullRequests(config) {
+  const now = Date.now();
+  if (_prsCache && (now - _prsCacheAt) < 1000) return _prsCache;
   config = config || getConfig();
   const projects = getProjects(config);
+  const projectByName = new Map(projects.map(p => [p.name, p]));
   const allPrs = [];
-  for (const project of projects) {
-    const prs = safeJson(projectPrPath(project));
-    if (!prs) continue;
+  const seenIds = new Set();
+  // Single pass over projects/* — configured projects use their full config
+  // (prUrlBase fill-in, _project name); unconfigured subdirs are tagged _ghost
+  // so engine code can filter them out. Mirrors what shared.getPrLinks scans,
+  // so PRD links and PR records stay in sync after a project is removed.
+  let projectDirs = [];
+  try {
+    projectDirs = fs.readdirSync(path.join(MINIONS_DIR, 'projects'), { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch { /* projects dir missing */ }
+  for (const dirName of projectDirs) {
+    const project = projectByName.get(dirName) || null;
+    const prPath = project ? projectPrPath(project) : path.join(MINIONS_DIR, 'projects', dirName, 'pull-requests.json');
+    const prs = safeJson(prPath);
+    if (!Array.isArray(prs)) continue;
     shared.normalizePrRecords(prs, project);
-    const base = project.prUrlBase || '';
+    const base = project?.prUrlBase || '';
     for (const pr of prs) {
-      if (!pr.url && base) {
+      if (!pr?.id || seenIds.has(pr.id)) continue;
+      if (project && !pr.url && base) {
         const prNumber = shared.getPrNumber(pr);
         if (prNumber != null) pr.url = base + prNumber;
       }
-      pr._project = project.name || 'Project';
+      pr._project = project ? (project.name || 'Project') : dirName;
+      if (!project) pr._ghost = true;
       allPrs.push(pr);
+      seenIds.add(pr.id);
     }
   }
-  // Also read central pull-requests.json (for manually linked PRs without a project)
-  const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
-  const centralPrs = safeJson(centralPath);
+  // Central pull-requests.json — manually linked PRs without a project
+  const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json'));
   if (centralPrs) {
     shared.normalizePrRecords(centralPrs, null);
     for (const pr of centralPrs) {
-      if (!allPrs.some(p => p.id === pr.id)) {
-        pr._project = 'central';
-        allPrs.push(pr);
-      }
+      if (!pr?.id || seenIds.has(pr.id)) continue;
+      pr._project = 'central';
+      allPrs.push(pr);
+      seenIds.add(pr.id);
     }
   }
   allPrs.sort((a, b) => {
@@ -513,7 +536,33 @@ function getPullRequests(config) {
     const bNum = parseInt((b.id || '').replace(/\D/g, '')) || 0;
     return bNum - aNum;
   });
+  _prsCache = allPrs;
+  _prsCacheAt = now;
   return allPrs;
+}
+
+// Resolve a PR URL by preferring the canonical PR ID's own scope (e.g.
+// `github:owner/repo#N`) so a github PR never gets an ADO URL just because the
+// only configured project happens to be ADO. Falls back to a name-matched
+// project's prUrlBase only when the ID is legacy (`PR-N`) and a real project
+// owns it. Never blindly uses projects[0].
+function buildPrUrlFromId(prId, pr, projects) {
+  if (pr?.url) return pr.url;
+  const canonical = shared.parseCanonicalPrId(prId);
+  if (canonical) {
+    const [host, rest] = canonical.scope.split(':');
+    if (host === 'github') return `https://github.com/${rest}/pull/${canonical.prNumber}`;
+    if (host === 'ado') {
+      const [org, adoProject, repo] = rest.split('/');
+      if (org && adoProject && repo) {
+        return `https://dev.azure.com/${org}/${adoProject}/_git/${repo}/pullrequest/${canonical.prNumber}`;
+      }
+    }
+  }
+  const project = pr?._project ? projects.find(p => p.name === pr._project) : null;
+  const prNumber = shared.getPrNumber(pr || prId);
+  if (project?.prUrlBase && prNumber != null) return project.prUrlBase + prNumber;
+  return '';
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
@@ -1017,56 +1066,12 @@ function getPrdInfo(config) {
     for (const wi of centralWi) { if (!wi?.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
   } catch { /* optional */ }
 
-  // PR-to-PRD linking — derived from PR.prdItems (single source of truth)
+  // PR-to-PRD linking — derived from PR.prdItems (single source of truth).
+  // getPullRequests includes records from unconfigured project subdirs so PRD
+  // links can resolve to last-known status even after a project is removed.
   const allPrs = getPullRequests(config);
   const prById = {};
   for (const pr of allPrs) prById[pr.id] = pr;
-  // Also scan project subdirectories that aren't in config (e.g. removed projects
-  // whose pull-requests.json still holds last-known status). getPrLinks already
-  // reads all subdirs, so without this PRs from those dirs would have status/title
-  // missing in the PRD view and fall back to literal 'active'/'' defaults.
-  try {
-    const projectsDir = path.join(MINIONS_DIR, 'projects');
-    const projectsByName = new Map(projects.map(p => [p.name, p]));
-    for (const d of fs.readdirSync(projectsDir, { withFileTypes: true })) {
-      if (!d.isDirectory() || projectsByName.has(d.name)) continue;
-      const ghostPath = path.join(projectsDir, d.name, 'pull-requests.json');
-      const ghostPrs = safeJson(ghostPath);
-      if (!Array.isArray(ghostPrs)) continue;
-      shared.normalizePrRecords(ghostPrs, null);
-      for (const pr of ghostPrs) {
-        if (pr?.id && !prById[pr.id]) {
-          pr._project = d.name;
-          prById[pr.id] = pr;
-        }
-      }
-    }
-  } catch { /* projects dir missing */ }
-
-  // Build URL for a PR when pr.url isn't set. Prefer the PR ID's own scope
-  // (e.g. `github:owner/repo#123` → github.com URL) so a github PR never gets
-  // an ADO URL just because the only configured project happens to be ADO.
-  // Only use a project's prUrlBase when its host actually matches the PR.
-  const _buildPrUrlFromId = (prId, pr) => {
-    if (pr?.url) return pr.url;
-    const canonical = shared.parseCanonicalPrId(prId);
-    if (canonical) {
-      const [host, rest] = canonical.scope.split(':');
-      if (host === 'github') return `https://github.com/${rest}/pull/${canonical.prNumber}`;
-      if (host === 'ado') {
-        const [org, adoProject, repo] = rest.split('/');
-        if (org && adoProject && repo) {
-          return `https://dev.azure.com/${org}/${adoProject}/_git/${repo}/pullrequest/${canonical.prNumber}`;
-        }
-      }
-    }
-    // Legacy `PR-N` ID with no host scope: only use project's prUrlBase if a
-    // matching project (by name) exists. Never blindly fall back to projects[0].
-    const project = pr?._project ? projects.find(p => p.name === pr._project) : null;
-    const prNumber = shared.getPrNumber(pr || prId);
-    if (project?.prUrlBase && prNumber != null) return project.prUrlBase + prNumber;
-    return '';
-  };
 
   const prdToPr = {};
   const prLinks = shared.getPrLinks(); // { "PR-xxxx": ["P-xxxx", "P-yyyy"] }
@@ -1076,10 +1081,10 @@ function getPrdInfo(config) {
     // (or are typed as verify) and would bleed through as duplicate entries on every
     // constituent item. They are surfaced via renderE2eSection instead. (#1220)
     if ((itemIds || []).length > 1 || pr?.itemType === 'verify' || pr?.title?.startsWith('[E2E]')) continue;
-    const url = _buildPrUrlFromId(prId, pr);
+    const url = buildPrUrlFromId(prId, pr, projects);
     for (const itemId of (itemIds || [])) {
       if (!prdToPr[itemId]) prdToPr[itemId] = [];
-      prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
+      prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || PR_STATUS.ACTIVE, _project: pr?._project || '' });
     }
   }
   // Fallback: work item _pr field for anything still missing
@@ -1090,21 +1095,20 @@ function getPrdInfo(config) {
     const exactPr = prById[canonicalPrId] || null;
     const displayMatches = exactPr ? [] : Object.values(prById).filter(candidate => shared.getPrDisplayId(candidate) === shared.getPrDisplayId(wi._pr));
     const pr = exactPr || (displayMatches.length === 1 ? displayMatches[0] : null);
-    const url = _buildPrUrlFromId(canonicalPrId || wi._pr, pr);
-    prdToPr[wi.id] = [{ id: pr?.id || canonicalPrId || wi._pr, url, title: pr?.title || '', status: pr?.status || 'active', _project: project?.name || '' }];
+    const url = buildPrUrlFromId(canonicalPrId || wi._pr, pr, projects);
+    prdToPr[wi.id] = [{ id: pr?.id || canonicalPrId || wi._pr, url, title: pr?.title || '', status: pr?.status || PR_STATUS.ACTIVE, _project: project?.name || '' }];
   }
   // Aggregate sub-task PRs to decomposed parent (sub-tasks aren't PRD items but their PRs should show)
   for (const pr of allPrs) {
     for (const itemId of (pr.prdItems || [])) {
-      // Find if this is a sub-task with a parent
       const allItems = Object.values(wiById);
       const wi = allItems.find(w => w.id === itemId && w.parent_id);
       if (!wi) continue;
       const parentId = wi.parent_id;
       if (!prdToPr[parentId]) prdToPr[parentId] = [];
       if (!prdToPr[parentId].some(p => p.id === pr.id)) {
-        const url = _buildPrUrlFromId(pr.id, pr);
-        prdToPr[parentId].push({ id: pr.id, url, title: pr.title || '', status: pr.status || 'active', _project: pr._project || '' });
+        const url = buildPrUrlFromId(pr.id, pr, projects);
+        prdToPr[parentId].push({ id: pr.id, url, title: pr.title || '', status: pr.status || PR_STATUS.ACTIVE, _project: pr._project || '' });
       }
     }
   }
