@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1572 (2026-04-27)
+
+### Fixes
+- add skipWriteIfUnchanged to all watched-file mutators
+
 ## 0.1.1571 (2026-04-27)
 
 ### Fixes
