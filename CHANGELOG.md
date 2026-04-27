@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1558 (2026-04-27)
+
+### Fixes
+- show Scan button in empty state for fresh installs
+
 ## 0.1.1557 (2026-04-27)
 
 ### Features
