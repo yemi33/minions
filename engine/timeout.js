@@ -273,6 +273,26 @@ function checkTimeouts(config) {
                 isBlocking = true;
                 blockingTool = 'Bash';
               }
+              // PowerShell tool call — Windows-native shell with same explicit-timeout
+              // semantics as Bash (input.timeout, max 600s). Required for projects that
+              // build via PowerShell on Windows (gradlew.bat, MSBuild, dotnet test) where
+              // the cold-start phase produces no stdout for several minutes (#1786).
+              if (name === 'PowerShell') {
+                const psTimeout = input.timeout || 120000;
+                blockingTimeout = Math.max(itemHeartbeat, psTimeout + 60000);
+                isBlocking = true;
+                blockingTool = 'PowerShell';
+              }
+              // Monitor tool call — blocks waiting for stdout-line notifications from a
+              // background process started via Bash with run_in_background. Between
+              // notifications the call produces no output, so the heartbeat monitor
+              // must extend timeout. No fixed timeout on Monitor — match Agent (30min)
+              // since both are inherently long-running waits (#1786).
+              if (name === 'Monitor') {
+                blockingTimeout = Math.max(itemHeartbeat, 1800000); // 30min for background process waits
+                isBlocking = true;
+                blockingTool = 'Monitor';
+              }
               // Agent (subagent) tool call — parent waits silently for child to complete
               if (name === 'Agent') {
                 blockingTimeout = Math.max(itemHeartbeat, 1800000); // 30min for subagents

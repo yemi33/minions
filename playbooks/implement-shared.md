@@ -65,6 +65,8 @@ After implementation, verify everything works:
 5. If the build fails 3 times, report the errors in your findings and stop
 6. Do NOT push code with a broken build or failing tests that you introduced
 
+> ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
+
 ## Push
 
 Only after build and tests pass:

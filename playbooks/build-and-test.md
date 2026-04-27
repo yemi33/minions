@@ -43,6 +43,8 @@ cargo build
 
 If the build **fails**, report the errors clearly and stop. Do NOT attempt to fix the code.
 
+> ⚠️ **Cold builds are silent for minutes** (Gradle daemon spin-up, dotnet restore, fresh `npm install`). Run them via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` on the Bash call (max 600000 ms). Without one of these, the heartbeat monitor will kill the agent at ~5 min of silence. See **Long-Running Build / Test Commands** below.
+
 ### 4. Run tests
 
 ```bash

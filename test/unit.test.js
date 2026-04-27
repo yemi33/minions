@@ -8782,6 +8782,81 @@ async function testCheckTimeouts() {
       'Bash blocking block should use 120000ms, not 600000ms');
   });
 
+  // ── #1786: Playbook guidance for long-running silent commands ──
+  // shared-rules.md is auto-injected into every playbook by playbook.js. The
+  // Long-Running Build / Test Commands section must teach agents the two opt-in
+  // patterns (run_in_background + Monitor; or explicit timeout). Without it,
+  // agents default to bare Bash calls and get killed at heartbeatTimeout.
+  await test('playbooks/shared-rules.md teaches run_in_background + Monitor pattern (#1786)', () => {
+    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(sharedRules.includes('Long-Running Build') || sharedRules.includes('long-running'),
+      'shared-rules.md should have a section on long-running commands');
+    assert.ok(sharedRules.includes('run_in_background') && sharedRules.includes('Monitor'),
+      'shared-rules.md should teach the run_in_background + Monitor pattern');
+    assert.ok(sharedRules.includes('timeout') && sharedRules.includes('600000'),
+      'shared-rules.md should mention explicit timeout opt-in (max 600000ms)');
+    assert.ok(sharedRules.includes('heartbeatTimeout') || sharedRules.includes('heartbeat'),
+      'shared-rules.md should explain heartbeat semantics so agents understand the constraint');
+  });
+
+  // ── #1786: PowerShell tool blocking detection (Windows shell parity with Bash) ──
+  // The PowerShell tool is the Windows-native equivalent of Bash. It has the same
+  // explicit-timeout semantics (input.timeout, max 600000ms). The blocking-tool
+  // detector must recognize it so cold builds (gradlew.bat, MSBuild, dotnet test)
+  // don't get killed at heartbeatTimeout while a long-running explicit-timeout
+  // PowerShell call is still legitimately running.
+  await test('blocking detection: PowerShell tool with explicit timeout extends heartbeat (#1786)', () => {
+    assert.ok(src.includes("name === 'PowerShell'"),
+      'timeout.js should detect PowerShell tool_use to extend heartbeat');
+    // PowerShell block must read input.timeout (same shape as Bash) — agent opts in
+    // to extension by setting an explicit timeout on the tool call.
+    const psIdx = src.indexOf("name === 'PowerShell'");
+    const psBlock = src.slice(psIdx, psIdx + 400);
+    assert.ok(psBlock.includes('input.timeout'),
+      'PowerShell block should read explicit timeout from input.timeout');
+    assert.ok(psBlock.includes('blockingTimeout') && psBlock.includes('Math.max'),
+      'PowerShell block should compute blockingTimeout via Math.max(itemHeartbeat, ...)');
+    assert.ok(psBlock.includes("blockingTool = 'PowerShell'"),
+      'PowerShell block should annotate blockingTool for dashboard surfacing');
+  });
+
+  // ── #1786: Monitor tool blocking detection ──
+  // Monitor blocks waiting for stdout-line notifications from a background process.
+  // Between notifications it produces no output, so without explicit detection the
+  // heartbeat monitor would kill the agent. Monitor calls do not have a fixed
+  // timeout — extend to 30 min (parity with Agent subagent calls).
+  await test('blocking detection: Monitor tool extends heartbeat (#1786)', () => {
+    assert.ok(src.includes("name === 'Monitor'"),
+      'timeout.js should detect Monitor tool_use as a blocking call');
+    const monIdx = src.indexOf("name === 'Monitor'");
+    const monBlock = src.slice(monIdx, monIdx + 400);
+    assert.ok(monBlock.includes("blockingTool = 'Monitor'"),
+      'Monitor block should annotate blockingTool for dashboard surfacing');
+    assert.ok(monBlock.includes('blockingTimeout'),
+      'Monitor block should set blockingTimeout');
+  });
+
+  // ── #1786: explicit timeout above heartbeat actually extends ──
+  // The contract per the issue: "if an agent invokes a shell tool with an explicit
+  // timeout > heartbeatTimeout, temporarily raise the heartbeat threshold for that
+  // turn." Verify the formula does the right thing: blockingTimeout must equal
+  // input.timeout + 60s grace whenever that exceeds the heartbeat baseline.
+  await test('blocking detection: explicit timeout > heartbeatTimeout raises threshold (#1786)', () => {
+    // The formula `Math.max(itemHeartbeat, bashTimeout + 60000)` ensures any
+    // explicit timeout higher than heartbeat - 60s wins. The "+ 60000" grace
+    // covers tool teardown/cleanup time after the underlying command completes.
+    assert.ok(src.includes('+ 60000'),
+      'Blocking timeout should add 60s grace on top of explicit tool timeout');
+    // Same formula must appear in both Bash and PowerShell blocks.
+    const bashIdx = src.indexOf("if (name === 'Bash')");
+    const psIdx = src.indexOf("if (name === 'PowerShell')");
+    assert.ok(bashIdx > 0 && psIdx > 0, 'Both Bash and PowerShell branches must exist');
+    const bashBlock = src.slice(bashIdx, bashIdx + 400);
+    const psBlock = src.slice(psIdx, psIdx + 400);
+    assert.ok(bashBlock.includes('+ 60000') && psBlock.includes('+ 60000'),
+      'Both Bash and PowerShell branches should add the 60s grace');
+  });
+
   // ── Per-type heartbeat timeout tests ──
 
   await test('ENGINE_DEFAULTS.heartbeatTimeouts has explore, ask, review entries', () => {
@@ -12905,6 +12980,145 @@ async function testTimeoutBehavioral() {
       assert.ok(completed, 'Errored item should still be moved to completed');
       assert.strictEqual(completed.result, 'error',
         'Non-success subtype in result event → ERROR');
+    } finally { env.restore(); }
+  });
+
+  // ── #1786: Per-tool blocking detection — Bash explicit timeout > heartbeatTimeout ──
+  // Reproduces the issue: agent calls Bash with explicit `timeout: 900000` (15 min)
+  // for a cold Gradle build. silentMs grows past heartbeatTimeout (300s) but the
+  // agent must NOT be killed because the explicit timeout is much higher. The
+  // detector reads the live-output.log, finds the Bash tool_use, and extends
+  // effectiveTimeout to bashTimeout + 60s grace.
+  await test('checkTimeouts: Bash with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'bash-long';
+      const startedAt = new Date(Date.now() - 600000).toISOString(); // 10 min ago
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      // realActivityMap must reflect the silence — last real output 10min ago.
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      // Agent is mid-Bash call with explicit 15 min timeout — the cold gradle
+      // scenario from the issue. No result event yet (still running).
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      const toolUseLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
+      });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        toolUseLine + '\n[heartbeat] running — no output for 30s\n[heartbeat] running — no output for 60s\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Bash with explicit 15min timeout must not be killed at heartbeatTimeout — extension should win');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Item must remain active while explicit-timeout extension is in effect');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: PowerShell with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'ps-long';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      const toolUseLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'PowerShell', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
+      });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'PowerShell with explicit 15min timeout must not be killed at heartbeatTimeout');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Item must remain active');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: Monitor tool extends heartbeat (waiting for background events) (#1786)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'mon-blocking';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // Monitor blocks waiting for stdout-line notifications from a background process.
+      const toolUseLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
+      });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Monitor tool must extend heartbeat — agent is legitimately waiting on a background process');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Item must remain active during Monitor wait');
+    } finally { env.restore(); }
+  });
+
+  // Negative case: Bash without explicit timeout (default 120s) should NOT extend
+  // — the agent had its chance to opt in and didn't. Verifies the contract that
+  // extension is opt-in, not automatic. Without this guard, agents that hang
+  // forever (e.g. interactive prompt) would never get killed.
+  await test('checkTimeouts: Bash with no explicit timeout uses default 120s — no extension beyond heartbeat (#1786)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'bash-default';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // No explicit timeout in input — Bash defaults to 120s, blockingTimeout = max(300s, 180s) = 300s.
+      const toolUseLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew test' } }] },
+      });
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Bash without explicit timeout must NOT extend past heartbeatTimeout — kept opt-in semantics');
     } finally { env.restore(); }
   });
 }

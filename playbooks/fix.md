@@ -47,6 +47,8 @@ Before pushing, verify the fix doesn't break anything:
 4. If the build fails 3 times, report the errors in your PR comment and stop.
 5. Do NOT push code that breaks existing tests or the build.
 
+> ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
+
 ## Push & Comment on PR
 
 Only after build and tests pass:
