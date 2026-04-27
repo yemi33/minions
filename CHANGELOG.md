@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1560 (2026-04-27)
+
+### Features
+- removeProject also archives plans + PRDs targeting the project
+
+### Fixes
+-  handle project browse cancel
+
 ## 0.1.1558 (2026-04-27)
 
 ### Fixes
