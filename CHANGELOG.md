@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1554 (2026-04-27)
+
+### Fixes
+- archive bugs — undefined resetBtn, .backup re-trigger, dispatch leak
+
 ## 0.1.1553 (2026-04-27)
 
 ### Other
