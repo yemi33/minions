@@ -713,7 +713,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   console.log('  Uninstalling npm package...');
   try { execSync('npm uninstall -g @yemi33/minions', { stdio: 'inherit', timeout: 60000 }); } catch {}
 
-  console.log('\n  Minions uninstalled. Your project repos were not touched.\n');
+  console.log('\n  Minions uninstalled. Your project repos were not touched.');
+  console.log('\n  To re-install later, run:');
+  console.log('    npm install -g @yemi33/minions && minions init\n');
 } else if (cmd === 'doctor') {
   ensureInstalled();
   const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));

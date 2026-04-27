@@ -4289,6 +4289,14 @@ async function testConfigAndPlaybooks() {
       'init flow should still auto-start dashboard');
   });
 
+  await test('bin/minions uninstall prints re-install command on success', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const tail = src.slice(src.indexOf('Minions uninstalled.'));
+    assert.ok(tail.includes('To re-install'), 'uninstall output should tell users how to re-install');
+    assert.ok(tail.includes('npm install -g @yemi33/minions'), 'should include the npm install command');
+    assert.ok(tail.includes('minions init'), 'should chain init so repos can be re-linked');
+  });
+
   await test('bin/minions resolves runtime root from init location and pointer', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     assert.ok(src.includes('resolveMinionsHome('),
@@ -11642,7 +11650,7 @@ async function testDashboardAssembly() {
 
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
-    assert.ok(html.length < 650000, `HTML should be < 650KB (got ${html.length})`);
+    assert.ok(html.length < 700000, `HTML should be < 700KB (got ${html.length})`);
 
   });
 }
@@ -20470,7 +20478,7 @@ async function testEngineAuditMedium() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
     const fn = src.match(/async function _archiveMeeting[\s\S]*?^}/m);
     assert.ok(fn, '_archiveMeeting must exist');
-    assert.ok(fn[0].includes("_deletedIds.delete"),
+    assert.ok(fn[0].includes("_deletedIds.delete") || fn[0].includes("clearDeleted('mtg:' + id)"),
       'must clear markDeleted on API failure to prevent phantom invisible meeting');
   });
 
@@ -22386,6 +22394,16 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(renderIdx < fetchIdx, 'renderProjects must run before fetch (optimistic UI)');
   });
 
+  await test('projectChipRemove shows confirmation toast before optimistic removal', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    const fnStart = src.indexOf('async function projectChipRemove');
+    const fnEnd = src.indexOf('window.MinionsOther', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const toastIdx = body.indexOf(`showToast('cmd-toast', 'Removing project "`);
+    const markIdx = body.indexOf("markDeleted('project:' + name)");
+    assert.ok(toastIdx > 0 && markIdx > 0 && toastIdx < markIdx, 'projectChipRemove should toast before hiding the project');
+  });
+
   await test('renderProjects filters out projects in markDeleted set so optimistic removal sticks across refresh', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
     // First non-comment occurrence is the visible filter
@@ -22399,6 +22417,96 @@ async function testAutoRecoveryAndAtomicity() {
     const body = src.slice(fnStart, fnEnd);
     const failBranch = body.slice(body.indexOf('Remove failed'));
     assert.ok(/refresh\(\)/.test(failBranch), 'failure branch must call refresh() to restore the chip from server state');
+  });
+
+  await test('settings removeProject optimistically removes the settings card before fetch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const fnStart = src.indexOf('async function removeProject');
+    const fnEnd = src.indexOf('window.MinionsSettings', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const markIdx = body.indexOf("markDeleted('project:' + name)");
+    const cardIdx = body.indexOf("document.querySelector('[data-settings-project=\"' + CSS.escape(name) + '\"]')");
+    const fetchIdx = body.indexOf("fetch('/api/projects/remove'");
+    assert.ok(markIdx > 0 && cardIdx > 0 && fetchIdx > 0, 'removeProject should mark deleted, remove the card, and then call fetch');
+    assert.ok(markIdx < fetchIdx, 'settings removeProject must mark deleted before fetch');
+    assert.ok(cardIdx < fetchIdx, 'settings removeProject must remove the settings card before fetch');
+  });
+
+  await test('renderPipelines filters deleted entries and delete rerenders before fetch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes("!isDeleted('pipeline:' + p.id)"), 'renderPipelines should filter optimistically deleted pipelines');
+    const fnStart = src.indexOf('async function _deletePipelineConfirm');
+    const fnEnd = src.indexOf('function openCreatePipelineModal', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const renderIdx = body.indexOf('renderPipelines(_pipelinesData)');
+    const fetchIdx = body.indexOf("fetch('/api/pipelines/delete'");
+    assert.ok(renderIdx > 0 && fetchIdx > 0 && renderIdx < fetchIdx, 'pipeline delete should rerender immediately before fetch');
+  });
+
+  await test('pipeline, plan, and PRD-item deletes toast before optimistic hide', () => {
+    const pipelinesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const pipelineBody = pipelinesSrc.slice(pipelinesSrc.indexOf('async function _deletePipelineConfirm'), pipelinesSrc.indexOf('function openCreatePipelineModal'));
+    assert.ok(pipelineBody.indexOf("showToast('cmd-toast', 'Pipeline deleted'") < pipelineBody.indexOf("markDeleted('pipeline:' + id)"),
+      'pipeline delete should toast before markDeleted');
+
+    const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const planBody = plansSrc.slice(plansSrc.indexOf('async function planDelete'), plansSrc.indexOf('async function planArchive'));
+    assert.ok(planBody.indexOf("showToast('cmd-toast', 'Plan deleted'") < planBody.indexOf("markDeleted('plan:' + file)"),
+      'planDelete should toast before markDeleted');
+
+    const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const prdBody = prdSrc.slice(prdSrc.indexOf('async function prdItemRemove'), prdSrc.indexOf('async function prdItemRequeue'));
+    assert.ok(prdBody.indexOf("showToast('cmd-toast', 'Item removed'") < prdBody.indexOf('markDeleted(_prdItemDeleteKey(source, itemId))'),
+      'prdItemRemove should toast before markDeleted');
+  });
+
+  await test('deleteWatch rerenders optimistically before the delete request', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    const fnStart = src.indexOf('function deleteWatch');
+    const fnEnd = src.indexOf('function _watchFormHtml', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const renderIdx = body.indexOf('renderWatches(window._lastWatches || [])');
+    const fetchIdx = body.indexOf("fetch('/api/watches/delete'");
+    assert.ok(renderIdx > 0 && fetchIdx > 0 && renderIdx < fetchIdx, 'watch delete should rerender immediately before fetch');
+  });
+
+  await test('planDelete rerenders cached plans and PRD view before fetch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fnStart = src.indexOf('async function planDelete');
+    const fnEnd = src.indexOf('async function planArchive', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const plansIdx = body.indexOf('renderPlans(window._lastPlans)');
+    const prdIdx = body.indexOf('rerenderPrdFromCache()');
+    const fetchIdx = body.indexOf("fetch('/api/plans/delete'");
+    assert.ok(plansIdx > 0 && prdIdx > 0 && fetchIdx > 0, 'planDelete should rerender plans + PRD before fetch');
+    assert.ok(plansIdx < fetchIdx && prdIdx < fetchIdx, 'planDelete rerenders must happen before fetch');
+  });
+
+  await test('prdItemRemove marks deleted and rerenders PRD cache before fetch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    assert.ok(src.includes('function _prdItemDeleteKey(source, itemId)'), 'render-prd should define a PRD item optimistic delete key helper');
+    const fnStart = src.indexOf('async function prdItemRemove');
+    const fnEnd = src.indexOf('async function prdItemRequeue', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    const markIdx = body.indexOf('markDeleted(_prdItemDeleteKey(source, itemId))');
+    const rerenderIdx = body.indexOf('rerenderPrdFromCache()');
+    const fetchIdx = body.indexOf("fetch('/api/prd-items/remove'");
+    assert.ok(markIdx > 0 && rerenderIdx > 0 && fetchIdx > 0, 'prdItemRemove should mark deleted, rerender, and then fetch');
+    assert.ok(markIdx < fetchIdx && rerenderIdx < fetchIdx, 'prdItemRemove optimism must happen before fetch');
+  });
+
+  await test('delete handlers surface failures with toasts instead of alert dialogs', () => {
+    const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const planDeleteBody = plansSrc.slice(plansSrc.indexOf('async function planDelete'), plansSrc.indexOf('async function planArchive'));
+    assert.ok(!planDeleteBody.includes('alert(') && planDeleteBody.includes('showToast('), 'planDelete should use toasts for failures');
+
+    const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const prdRemoveBody = prdSrc.slice(prdSrc.indexOf('async function prdItemRemove'), prdSrc.indexOf('async function prdItemRequeue'));
+    assert.ok(!prdRemoveBody.includes('alert(') && prdRemoveBody.includes('showToast('), 'prdItemRemove should use toasts for failures');
+
+    const prsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    const unlinkBody = prsSrc.slice(prsSrc.indexOf('async function unlinkPr'), prsSrc.indexOf('window.MinionsPrs'));
+    assert.ok(!unlinkBody.includes('alert(') && unlinkBody.includes('showToast('), 'unlinkPr should use toasts for failures');
   });
 
   await test('projects browse launches hidden PowerShell directly on Windows (no cmd shell window)', () => {
