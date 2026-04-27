@@ -330,6 +330,85 @@ function cancelPendingDispatchesForPr(prId) {
   return cancelled;
 }
 
+/**
+ * Remove dispatch entries matching a predicate from pending/active/completed.
+ * For matched active entries, kills the agent process and deletes its
+ * pid file + prompt sidecars in engine/tmp/. Lock callback only mutates state;
+ * kills and unlinks happen after release.
+ *
+ * @param {(entry) => boolean} matchFn
+ * @returns {number} count of removed entries
+ */
+function cleanDispatchEntries(matchFn) {
+  const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+  const engineDir = path.join(MINIONS_DIR, 'engine');
+  let removed = 0;
+  const pidsToKill = [];
+  const filesToDelete = [];
+  try {
+    mutateJsonFileLocked(dispatchPath, (dispatch) => {
+      for (const queue of ['pending', 'active', 'completed']) {
+        dispatch[queue] = Array.isArray(dispatch[queue]) ? dispatch[queue] : [];
+        const before = dispatch[queue].length;
+        if (queue === 'active') {
+          for (const d of dispatch[queue]) {
+            if (!matchFn(d)) continue;
+            const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
+            try {
+              const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
+              if (pid) pidsToKill.push(pid);
+            } catch { /* PID file may not exist */ }
+            filesToDelete.push(pidFile);
+            filesToDelete.push(path.join(engineDir, 'tmp', `prompt-${d.id}.md`));
+            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`));
+            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`));
+          }
+        }
+        dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
+        removed += before - dispatch[queue].length;
+      }
+      return dispatch;
+    }, { defaultValue: { pending: [], active: [], completed: [] } });
+  } catch { return 0; }
+  // Kill processes outside the lock — taskkill on Windows can take hundreds of ms
+  for (const pid of pidsToKill) {
+    try {
+      const safePid = shared.validatePid(pid);
+      if (process.platform === 'win32') {
+        const { execFileSync } = require('child_process');
+        execFileSync('taskkill', ['/PID', String(safePid), '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+      } else {
+        process.kill(safePid, 'SIGTERM');
+      }
+    } catch { /* may already be dead */ }
+  }
+  for (const fp of filesToDelete) {
+    try { fs.unlinkSync(fp); } catch { /* may not exist */ }
+  }
+  return removed;
+}
+
+/**
+ * Cancel pending/queued work items matching a predicate. Done items pass through.
+ * Sets status=CANCELLED + _cancelledBy=reason. Returns count cancelled.
+ */
+function cancelPendingWorkItems(wiPath, matchFn, reason) {
+  if (!fs.existsSync(wiPath)) return 0;
+  let cancelled = 0;
+  try {
+    mutateWorkItems(wiPath, items => {
+      for (const w of items) {
+        if (!matchFn(w)) continue;
+        if (w.status !== WI_STATUS.PENDING && w.status !== WI_STATUS.QUEUED) continue;
+        w.status = WI_STATUS.CANCELLED;
+        if (reason) w._cancelledBy = reason;
+        cancelled++;
+      }
+    });
+  } catch { /* file unwritable */ }
+  return cancelled;
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -340,4 +419,6 @@ module.exports = {
   writeInboxAlert,
   updateAgentStatus,
   cancelPendingDispatchesForPr,
+  cleanDispatchEntries,
+  cancelPendingWorkItems,
 };

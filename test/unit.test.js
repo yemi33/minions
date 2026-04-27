@@ -33608,6 +33608,210 @@ async function testEngineHelperCoverage() {
     assert.ok(out.includes('### beta'));
     assert.ok(out.includes('### gamma'));
   });
+
+  // ── engine/projects.js: removeProject ──────────────────────────────────────
+
+  function _setupProjectForRemoval({ projectName = 'demo', extraConfig = {} } = {}) {
+    const restore = createTestMinionsDir();
+    const dir = process.env.MINIONS_TEST_DIR;
+    const projectDir = path.join(dir, 'projects', projectName);
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'work-items.json'), JSON.stringify([
+      { id: 'P-pending', status: 'pending', project: projectName },
+      { id: 'P-queued', status: 'queued', project: projectName },
+      { id: 'P-done', status: 'done', project: projectName },
+    ]));
+    fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([{ id: 'PR-1' }]));
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+      projects: [{ name: projectName, localPath: projectDir, repoHost: 'github' }],
+      agents: {}, engine: {},
+      ...extraConfig,
+    }));
+    delete require.cache[require.resolve('../engine/projects')];
+    return { dir, projectDir, restore };
+  }
+
+  await test('removeProject returns ok=false when project not found', () => {
+    const { restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('nonexistent');
+      assert.strictEqual(r.ok, false);
+      assert.ok(/No project linked/.test(r.error));
+    } finally { restore(); }
+  });
+
+  await test('removeProject unlinks from config.json', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.project.name, 'demo');
+      const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+      assert.strictEqual(cfg.projects.length, 0);
+    } finally { restore(); }
+  });
+
+  await test('removeProject finds project by localPath as well as by name', () => {
+    const { projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject(projectDir);
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.project.name, 'demo');
+    } finally { restore(); }
+  });
+
+  await test('removeProject cancels pending and queued work items but preserves done items', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.cancelledItems, 2);
+      // Data dir was archived — read from there
+      const archiveDir = path.join(dir, 'projects', '.archived');
+      const archived = fs.readdirSync(archiveDir).find(f => f.startsWith('demo-'));
+      const wis = JSON.parse(fs.readFileSync(path.join(archiveDir, archived, 'work-items.json'), 'utf8'));
+      const byId = Object.fromEntries(wis.map(w => [w.id, w]));
+      assert.strictEqual(byId['P-pending'].status, 'cancelled');
+      assert.strictEqual(byId['P-pending']._cancelledBy, 'project-removed');
+      assert.strictEqual(byId['P-queued'].status, 'cancelled');
+      assert.strictEqual(byId['P-done'].status, 'done');
+    } finally { restore(); }
+  });
+
+  await test('removeProject drains pending dispatch entries for the project', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      const dispatchPath = path.join(dir, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [
+          { id: 'd1', meta: { item: { project: 'demo' } } },
+          { id: 'd2', meta: { item: { project: 'other' } } },
+        ],
+        active: [],
+        completed: [],
+      }));
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.drainedDispatches, 1);
+      const dispatch = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      assert.strictEqual(dispatch.pending.length, 1);
+      assert.strictEqual(dispatch.pending[0].id, 'd2');
+    } finally { restore(); }
+  });
+
+  await test('removeProject disables schedules targeting this project but leaves "any" alone', () => {
+    const { dir, restore } = _setupProjectForRemoval({
+      extraConfig: {
+        schedules: [
+          { id: 's1', project: 'demo', enabled: true },
+          { id: 's2', project: 'other', enabled: true },
+          { id: 's3', enabled: true },
+        ],
+      },
+    });
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.disabledSchedules, 1);
+      const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+      const byId = Object.fromEntries(cfg.schedules.map(s => [s.id, s]));
+      assert.strictEqual(byId.s1.enabled, false);
+      assert.strictEqual(byId.s2.enabled, true);
+      assert.strictEqual(byId.s3.enabled, true);
+    } finally { restore(); }
+  });
+
+  await test('removeProject archives projects/<name>/ to projects/.archived/<name>-YYYYMMDD/', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.ok(r.archivedTo, 'archivedTo must be set');
+      assert.ok(r.archivedTo.startsWith('projects/.archived/demo-'), 'expected projects/.archived/demo-*: ' + r.archivedTo);
+      assert.ok(!fs.existsSync(projectDir), 'original data dir should be moved');
+      assert.ok(fs.existsSync(path.join(dir, r.archivedTo, 'work-items.json')));
+    } finally { restore(); }
+  });
+
+  await test('removeProject with keepData leaves data dir in place', () => {
+    const { projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo', { keepData: true });
+      assert.strictEqual(r.archivedTo, null);
+      assert.strictEqual(r.purgedDataDir, false);
+      assert.ok(fs.existsSync(projectDir), 'data dir should remain when keepData is set');
+    } finally { restore(); }
+  });
+
+  await test('removeProject with purge deletes data dir entirely', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo', { purge: true });
+      assert.strictEqual(r.purgedDataDir, true);
+      assert.strictEqual(r.archivedTo, null);
+      assert.ok(!fs.existsSync(projectDir));
+      assert.ok(!fs.existsSync(path.join(dir, 'projects', '.archived')), 'no archive should be created on purge');
+    } finally { restore(); }
+  });
+
+  await test('removeProject disambiguates same-day archive directories', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      // Pre-seed an existing archive entry to force the suffix branch
+      const archiveRoot = path.join(dir, 'projects', '.archived');
+      fs.mkdirSync(archiveRoot, { recursive: true });
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      fs.mkdirSync(path.join(archiveRoot, 'demo-' + stamp), { recursive: true });
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.ok(/-2$/.test(r.archivedTo), 'expected -2 suffix on collision: ' + r.archivedTo);
+    } finally { restore(); }
+  });
+
+  await test('removeProject drains active dispatch entries (agent kill path)', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      const dispatchPath = path.join(dir, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [],
+        // No real PID file → cleanDispatchEntries skips kill but still drains the entry
+        active: [{ id: 'd-active', agent: 'dallas', meta: { item: { project: 'demo' } } }],
+        completed: [],
+      }));
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.drainedDispatches, 1);
+      const dispatch = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      assert.strictEqual(dispatch.active.length, 0);
+    } finally { restore(); }
+  });
+
+  await test('removeProject surfaces pipelineRefs for pipelines monitoring this project', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      // Stub out pipeline.getPipelines via require.cache injection
+      const stubPath = require.resolve('../engine/pipeline');
+      require.cache[stubPath] = { exports: {
+        getPipelines: () => [
+          { id: 'pl-watching', monitoredResources: [{ project: 'demo' }] },
+          { id: 'pl-other', monitoredResources: [{ project: 'other' }] },
+          { id: 'pl-stage-watching', stages: [{ monitoredResources: [{ _project: 'demo' }] }] },
+        ],
+      } };
+      delete require.cache[require.resolve('../engine/projects')];
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.deepStrictEqual(r.pipelineRefs.sort(), ['pl-stage-watching', 'pl-watching']);
+    } finally {
+      delete require.cache[require.resolve('../engine/pipeline')];
+      restore();
+    }
+  });
 }
 
 main()

@@ -1346,59 +1346,7 @@ function jsonReply(res, code, data, req) {
  * @param {(entry) => boolean} matchFn - return true for entries to remove
  * @returns {number} count of removed entries
  */
-function cleanDispatchEntries(matchFn) {
-  const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-  const engineDir = path.join(MINIONS_DIR, 'engine');
-  try {
-    let removed = 0;
-    // Collect PIDs and file paths inside the lock, execute kills outside
-    const pidsToKill = [];
-    const filesToDelete = [];
-    mutateJsonFileLocked(dispatchPath, (dispatch) => {
-      dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
-      dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
-      dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
-      for (const queue of ['pending', 'active', 'completed']) {
-        const before = dispatch[queue].length;
-        if (queue === 'active') {
-          for (const d of dispatch[queue]) {
-            if (!matchFn(d)) continue;
-            // Collect PID and cleanup paths — actual I/O happens after lock release
-            const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
-            try {
-              const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-              if (pid) pidsToKill.push(pid);
-            } catch { /* PID file may not exist */ }
-            filesToDelete.push(pidFile);
-            filesToDelete.push(path.join(engineDir, 'tmp', `prompt-${d.id}.md`));
-            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`));
-            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`));
-          }
-        }
-        dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
-        removed += before - dispatch[queue].length;
-      }
-      return dispatch;
-    }, { defaultValue: { pending: [], active: [], completed: [] } });
-    // Kill processes outside the lock — these can take hundreds of ms on Windows
-    for (const pid of pidsToKill) {
-      try {
-        const safePid = shared.validatePid(pid);
-        if (process.platform === 'win32') {
-          const { execFileSync } = require('child_process');
-          execFileSync('taskkill', ['/PID', String(safePid), '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-        } else {
-          process.kill(safePid, 'SIGTERM');
-        }
-      } catch { /* process may already be dead */ }
-    }
-    // Clean up files outside the lock
-    for (const fp of filesToDelete) {
-      try { fs.unlinkSync(fp); } catch { /* file may not exist */ }
-    }
-    return removed;
-  } catch { return 0; }
-}
+const { cleanDispatchEntries } = require('./engine/dispatch');
 
 // ── Engine Restart Helpers (used by watchdog + API) ─────────────────────────
 
@@ -3938,6 +3886,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handleProjectsRemove(req, res) {
+    try {
+      const body = await readBody(req);
+      const target = body.name || body.path;
+      if (!target) return jsonReply(res, 400, { error: 'name or path required' });
+      const { removeProject } = require('./engine/projects');
+      const result = removeProject(target, { keepData: body.keepData === true, purge: body.purge === true });
+      if (!result.ok) return jsonReply(res, result.error?.includes('No project') ? 404 : 400, result);
+      reloadConfig();
+      invalidateStatusCache();
+      return jsonReply(res, 200, result);
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   async function handleProjectsScan(req, res) {
     try {
       const body = await readBody(req);
@@ -5227,6 +5189,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/projects/scan', desc: 'Scan a directory for git repos', params: 'path?, depth?', handler: handleProjectsScan },
     { method: 'POST', path: '/api/projects/confirm-token', desc: 'Mint a single-use UUID token required to add a non-repo path (SEC-05)', handler: handleProjectsConfirmToken },
     { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config (name validated SEC-04; path validated SEC-05)', params: 'path, name?, allowNonRepo?, confirmToken?', handler: handleProjectsAdd },
+    { method: 'POST', path: '/api/projects/remove', desc: 'Unlink a project: cancels WIs, drains dispatch, kills agents, cleans worktrees, archives data dir', params: 'name or path, keepData?, purge?', handler: handleProjectsRemove },
 
     // Bug Filing
     { method: 'POST', path: '/api/issues/create', desc: 'File a bug on the Minions repo (yemi33/minions)', params: 'title, description?, labels?', handler: handleFileBug },

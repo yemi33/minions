@@ -206,20 +206,27 @@ async function addProject(targetDir) {
   console.log(`    node ${MINIONS_HOME}/engine.js status   # Status\n`);
 }
 
-function removeProject(targetDir) {
-  const target = path.resolve(targetDir);
-  const config = loadConfig();
-  const before = (config.projects || []).length;
-  config.projects = (config.projects || []).filter(p => path.resolve(p.localPath) !== target);
-  const after = config.projects.length;
-
-  if (before === after) {
-    console.log(`  No project linked at ${target}`);
-  } else {
-    saveConfig(config);
-    console.log(`  Removed project at ${target}`);
-    console.log(`  Remaining projects: ${config.projects.length}`);
+function removeProject(target, options = {}) {
+  const { removeProject: doRemove } = require('./engine/projects');
+  // CLI accepts a path; project lookup also matches by name as a convenience
+  const result = doRemove(path.resolve(target), options);
+  if (!result.ok) {
+    console.log('  ' + (result.error || 'Removal failed'));
+    rl.close();
+    process.exitCode = 1;
+    return;
   }
+
+  const lines = [`  Removed project: ${result.project.name} (${result.project.localPath})`];
+  if (result.cancelledItems) lines.push(`    cancelled ${result.cancelledItems} pending work item(s)`);
+  if (result.drainedDispatches) lines.push(`    drained ${result.drainedDispatches} dispatch entr${result.drainedDispatches === 1 ? 'y' : 'ies'} (active agents killed)`);
+  if (result.cleanedWorktrees) lines.push(`    cleaned ${result.cleanedWorktrees} worktree(s)`);
+  if (result.disabledSchedules) lines.push(`    disabled ${result.disabledSchedules} schedule(s)`);
+  if (result.archivedTo) lines.push(`    archived data → ${result.archivedTo}`);
+  if (result.purgedDataDir) lines.push(`    purged data directory`);
+  if (result.pipelineRefs.length) lines.push(`    ! pipeline(s) still reference this project: ${result.pipelineRefs.join(', ')}`);
+  for (const w of result.warnings) lines.push(`    warn: ${w}`);
+  console.log(lines.join('\n'));
   rl.close();
 }
 
@@ -498,9 +505,18 @@ const commands = {
     addProject(dir).catch(e => { console.error(e); process.exit(1); });
   },
   remove: () => {
-    const dir = rest[0];
-    if (!dir) { console.log('Usage: node minions remove <project-dir>'); process.exit(1); }
-    removeProject(dir);
+    const positional = rest.filter(a => !a.startsWith('--'));
+    const dir = positional[0];
+    if (!dir) {
+      console.log('Usage: node minions remove <project-dir-or-name> [--keep-data | --purge]');
+      process.exit(1);
+    }
+    const options = { keepData: rest.includes('--keep-data'), purge: rest.includes('--purge') };
+    if (options.purge && !rest.includes('--force')) {
+      console.log(`  --purge will permanently delete projects/<name>/. Re-run with --force to confirm.`);
+      process.exit(1);
+    }
+    removeProject(dir, options);
   },
   list: () => listProjects(),
   scan: () => scanAndAdd({ root: rest[0], depth: rest[1] })
@@ -516,7 +532,9 @@ if (cmd && commands[cmd]) {
   console.log('    init                    Initialize minions and scan for repos');
   console.log('    scan [dir] [depth]      Scan for git repos and multi-select to add');
   console.log('    add <project-dir>       Link a single project');
-  console.log('    remove <project-dir>    Unlink a project');
+  console.log('    remove <project-dir-or-name> [--keep-data | --purge --force]');
+  console.log('                            Unlink: cancels WIs, drains dispatch, kills agents,');
+  console.log('                            cleans worktrees, archives data dir to projects/.archived/');
   console.log('    list                    List linked projects\n');
 }
 

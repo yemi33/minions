@@ -87,7 +87,10 @@ async function openSettings() {
     '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">' +
     (data.projects || []).map(function(p) {
       return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
-        '<div style="font-size:12px;font-weight:600;margin-bottom:8px">' + escHtml(p.name) + '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
+          '<div style="font-size:12px;font-weight:600">' + escHtml(p.name) + '</div>' +
+          '<button onclick="MinionsSettings.removeProject(\'' + escHtml(p.name) + '\')" style="font-size:9px;padding:2px 8px;background:transparent;color:var(--red);border:1px solid var(--red);border-radius:3px;cursor:pointer">Remove</button>' +
+        '</div>' +
         '<div style="display:flex;flex-direction:column;gap:6px">' +
         settingsToggle('Discover from PRs', 'set-ws-prs-' + p.name, p.workSources.pullRequests.enabled, 'Discovery gate: scan repo for open PRs and surface them as review tasks. Independent of ADO/GitHub polling — does not affect already-tracked PRs.') +
         settingsToggle('Discover from Work Items', 'set-ws-wi-' + p.name, p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
@@ -404,4 +407,30 @@ async function resetSettingsToDefaults() {
   }
 }
 
-window.MinionsSettings = { openSettings, saveSettings, addProject, resetSettingsToDefaults };
+async function removeProject(name) {
+  if (!confirm('Remove project "' + name + '"? Pending work cancels, active agents are killed, data dir is archived to projects/.archived/.')) return;
+  showToast('cmd-toast', 'Removing project "' + name + '"...', true);
+  try {
+    const res = await fetch('/api/projects/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.ok) {
+      showToast('cmd-toast', 'Remove failed: ' + (d.error || 'unknown'), false);
+      return;
+    }
+    var parts = ['Removed "' + name + '"'];
+    if (d.cancelledItems) parts.push(d.cancelledItems + ' WI cancelled');
+    if (d.drainedDispatches) parts.push(d.drainedDispatches + ' dispatch drained');
+    if (d.cleanedWorktrees) parts.push(d.cleanedWorktrees + ' worktree(s) cleaned');
+    if (d.archivedTo) parts.push('archived to ' + d.archivedTo);
+    if (d.pipelineRefs?.length) parts.push('! pipelines still reference: ' + d.pipelineRefs.join(', '));
+    showToast('cmd-toast', parts.join(' — '), true);
+    setTimeout(() => openSettings(), 600);
+  } catch (e) {
+    showToast('cmd-toast', 'Error: ' + e.message, false);
+  }
+}
+
+window.MinionsSettings = { openSettings, saveSettings, addProject, removeProject, resetSettingsToDefaults };
