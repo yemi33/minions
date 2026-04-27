@@ -430,6 +430,12 @@ async function pollPrStatus(config) {
       if (newReviewStatus === 'approved') {
         delete pr._reviewFixCycles;
         delete pr._evalEscalated;
+        // Teams notification for PR approval — non-blocking, edge-triggered (only on transition)
+        try {
+          const teams = require('./teams');
+          const prFilePath = shared.projectPrPath(project);
+          teams.teamsNotifyPrEvent(pr, 'pr-approved', project, prFilePath).catch(() => {});
+        } catch {}
       }
     }
 

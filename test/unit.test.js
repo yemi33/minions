@@ -21721,6 +21721,34 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("'build-failed'"), 'github.js should notify on build-failed');
   });
 
+  await test('ado.js pollPrStatus notifies Teams on PR approval transition', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes("'pr-approved'"), 'ado.js should notify on pr-approved');
+    // Hook must live inside the reviewStatus transition block so it only fires on the
+    // pending → approved edge — not every poll iteration once status is already approved.
+    const transitionBlock = src.slice(
+      src.indexOf('if (pr.reviewStatus !== newReviewStatus)'),
+      src.indexOf('if (newStatus !== PR_STATUS.ACTIVE) return updated;')
+    );
+    assert.ok(transitionBlock.includes("'pr-approved'"),
+      'pr-approved hook must be inside the reviewStatus transition block (edge-triggered)');
+    assert.ok(transitionBlock.includes('teamsNotifyPrEvent'),
+      'transition block should call teamsNotifyPrEvent');
+  });
+
+  await test('github.js pollPrStatus notifies Teams on PR approval transition', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes("'pr-approved'"), 'github.js should notify on pr-approved');
+    const transitionBlock = src.slice(
+      src.indexOf('if (pr.reviewStatus !== newReviewStatus)'),
+      src.indexOf('// Merge conflict detection')
+    );
+    assert.ok(transitionBlock.includes("'pr-approved'"),
+      'pr-approved hook must be inside the reviewStatus transition block (edge-triggered)');
+    assert.ok(transitionBlock.includes('teamsNotifyPrEvent'),
+      'transition block should call teamsNotifyPrEvent');
+  });
+
   await test('teamsNotifyPlanEvent is exported from engine/teams.js', () => {
     const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
     assert.strictEqual(typeof teams.teamsNotifyPlanEvent, 'function', 'teamsNotifyPlanEvent should be a function');
