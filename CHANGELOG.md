@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1556 (2026-04-27)
+
+### Other
+- docs: document comprehensive minions remove
+
 ## 0.1.1555 (2026-04-27)
 
 ### Features
