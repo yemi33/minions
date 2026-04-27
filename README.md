@@ -129,7 +129,7 @@ minions work "Explore the codebase and document the architecture"
 | `minions version` | Show installed vs package version |
 | `minions scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
 | `minions add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
-| `minions remove <dir>` | Unlink a project |
+| `minions remove <dir-or-name> [--keep-data \| --purge --force]` | Unlink a project: cancels pending work items, drains dispatch + kills active agents, cleans worktrees, disables linked schedules, archives `projects/<name>/` to `projects/.archived/<name>-YYYYMMDD/`. Use `--keep-data` to leave the data dir in place, or `--purge --force` to delete it. |
 | `minions list` | List all linked projects with descriptions |
 | `minions start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
 | `minions stop` | Stop the engine |

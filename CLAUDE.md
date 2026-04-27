@@ -79,6 +79,7 @@ Primary modules (the ones you'll touch most often):
 | `engine/routing.js` | `routing.md` parsing, agent resolution, temp agent spawning |
 | `engine/playbook.js` | Playbook loading, template variable substitution, project-local overrides |
 | `engine/recovery.js` | Re-attach to surviving agents after engine restart (grace period, PID scan) |
+| `engine/projects.js` | Project lifecycle (`removeProject`): cancel WIs, drain dispatch, kill agents, clean worktrees, archive data dir. Shared by `minions remove` CLI and `POST /api/projects/remove` |
 
 Support scripts (rarely edited directly):
 
@@ -275,6 +276,25 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
 1. Resolves each dependency ID → work item → linked PR → branch
 2. Fetches and merges dependency branches into the agent's worktree
 3. Skips items whose dependencies haven't reached `done`
+
+## Project Lifecycle: Remove
+
+`removeProject(target, options)` in `engine/projects.js` is the canonical
+project teardown — used by both `minions remove <dir-or-name>` (CLI) and
+`POST /api/projects/remove` (Settings UI button). One implementation, identical
+semantics regardless of entry point.
+
+When a project is removed, in order:
+
+1. Cancel pending/queued work items in `projects/<name>/work-items.json` and central `work-items.json` (sets `status: cancelled`, `_cancelledBy: 'project-removed'`). Done items pass through as history.
+2. Drain dispatch (`pending` + `active` queues) for this project. Active agent processes are killed; pid files and prompt sidecars in `engine/tmp/` are unlinked. Reuses `cleanDispatchEntries` from `engine/dispatch.js` (same code path as plan delete).
+3. Clean up worktrees under `<projectRoot>/<config.engine.worktreeRoot ?? '../worktrees'>/` via `shared.removeWorktree`.
+4. Disable schedules whose `project` field matches this project. Schedules with `project: 'any'` or unset are left alone.
+5. Surface pipelines that monitor this project (`monitoredResources` references) in the result's `pipelineRefs` — warn-only, not auto-modified, since user intent is unclear.
+6. Remove the project entry from `config.json` and persist any schedule changes.
+7. Move `projects/<name>/` to `projects/.archived/<name>-YYYYMMDD/` (auto-disambiguated with `-N` suffix on same-day collisions). Override with `dataMode: 'keep'` (leave in place) or `dataMode: 'purge'` (rm -rf).
+
+`target` matches by project name OR resolved `localPath` — either works. The result summary surfaces counts for each cleanup step plus a `warnings[]` array for non-fatal issues. **Never use a vanilla `config.json` edit to remove a project** — the orphaned `projects/<name>/` data dir surfaces as ghost PRs and stale work items in the dashboard. Always go through `removeProject`.
 
 ## Config Structure (config.json)
 
