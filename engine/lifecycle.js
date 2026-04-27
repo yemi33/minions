@@ -615,7 +615,7 @@ function updateWorkItemStatus(meta, status, reason) {
       }
     }
     return items;
-  }, { defaultValue: [] });
+  }, { defaultValue: [], skipWriteIfUnchanged: true });
 
   log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
   syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
@@ -1325,7 +1325,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
             description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${skillDirName}/SKILL.md\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           return data;
-        });
+        }, { skipWriteIfUnchanged: true });
         if (skillId) {
           log('info', `Queued work item ${skillId} to PR project skill "${name}" into ${project}`);
         }
@@ -1609,7 +1609,7 @@ function handleDecompositionResult(stdout, meta, config) {
         data.push(childItem);
       }
       return data;
-    });
+    }, { skipWriteIfUnchanged: true });
     if (!found) continue;
     log('info', `Decomposition: ${parentId} → ${subItems.length} sub-items: ${subItems.map(s => s.id).join(', ')}`);
     return subItems.length;
@@ -1710,7 +1710,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
               log('warn', `Review ${meta.item.id} failed — no verdict after ${ENGINE_DEFAULTS.maxRetries} retries`);
             }
             return data;
-          });
+          }, { skipWriteIfUnchanged: true });
         } catch (err) { log('warn', `review verdict check: ${err.message}`); }
       }
     }
@@ -1758,7 +1758,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
               log('warn', `plan-to-prd ${meta.item.id} failed — no PRD file after ${ENGINE_DEFAULTS.maxRetries} retries`);
             }
             return data;
-          });
+          }, { skipWriteIfUnchanged: true });
         } catch (err) { log('warn', `plan-to-prd PRD check: ${err.message}`); }
       }
     }
@@ -1779,7 +1779,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
           const wi = data.find(i => i.id === meta.item.id);
           if (wi) delete wi._decomposing;
           return data;
-        });
+        }, { skipWriteIfUnchanged: true });
       } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
     }
   }
@@ -1972,7 +1972,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
             action = { type: 'needs-review' };
           }
           return data;
-        });
+        }, { skipWriteIfUnchanged: true });
         if (action?.type === 'retry') {
           log('info', `Auto-retry ${action.retries}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
         } else if (action?.type === 'done') {
@@ -2059,11 +2059,14 @@ function syncPrdFromPrs(config) {
         (wi.status === WI_STATUS.PENDING && !wi._pr) || wi.status === WI_STATUS.FAILED);
       if (!hasReconcilable) continue;
       let reconciled = 0;
+      // skipWriteIfUnchanged: per-poll reconcile runs every prPollStatusEvery
+      // ticks. Without the flag it'd unconditionally rewrite project work-items.json,
+      // tripping the cli.js watcher into a tick storm even with zero reconciliation.
       const reconciledItems = mutateJsonFileLocked(wiPath, data => {
         if (!Array.isArray(data)) return data;
         reconciled = reconcileItemsWithPrs(data, allPrs);
         return data;
-      });
+      }, { skipWriteIfUnchanged: true });
       if (reconciled > 0) {
         // Sync done status to PRD JSON for each newly reconciled item
         for (const wi of (reconciledItems || [])) {

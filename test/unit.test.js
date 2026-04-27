@@ -8684,6 +8684,19 @@ async function testCheckTimeouts() {
       'reconcile sweep must pass skipWriteIfUnchanged: true to mutateJsonFileLocked — without it, the file mtime updates on every tick and trips the cli.js watcher into a 5-6s "File change detected" loop');
   });
 
+  await test('lifecycle.syncPrdFromPrs reconcile uses skipWriteIfUnchanged (per-poll, watched file)', () => {
+    // Same hazard as checkTimeouts: per-poll function that mutates a watched
+    // file on every call. Without the flag, every PR poll cycle would trigger
+    // a phantom watcher event and re-tick.
+    const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = lifecycleSrc.slice(lifecycleSrc.indexOf('function syncPrdFromPrs'));
+    const fnEnd = fn.indexOf('\nfunction ', 1);
+    const body = fnEnd > 0 ? fn.slice(0, fnEnd) : fn;
+    const callBlock = body.slice(body.indexOf('mutateJsonFileLocked(wiPath'));
+    assert.ok(/skipWriteIfUnchanged:\s*true/.test(callBlock),
+      'syncPrdFromPrs reconcile must use skipWriteIfUnchanged (mirrors timeout.js fix)');
+  });
+
   await test('checkTimeouts detects completion via output scan', () => {
     assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
       'Should scan live output for completion markers');
