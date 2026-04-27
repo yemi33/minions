@@ -384,6 +384,19 @@ async function addProject() {
     });
     const addData = await addRes.json();
     if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
+    const addedProject = {
+      name: addData.name,
+      description: (addData.detected && addData.detected.description) || '',
+      path: addData.path,
+      localPath: addData.path,
+    };
+    if (_settingsData && Array.isArray(_settingsData.projects)) {
+      const exists = _settingsData.projects.some(function(p) {
+        return p.name === addedProject.name || String(p.localPath || p.path || '').replace(/\\/g, '/') === String(addedProject.localPath || '').replace(/\\/g, '/');
+      });
+      if (!exists) _settingsData.projects = _settingsData.projects.concat([addedProject]);
+    }
+    if (typeof optimisticallyAddProject === 'function') optimisticallyAddProject(addedProject);
     try { showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true); } catch { /* expected */ }
     refresh();
   } catch (e) { alert('Error: ' + e.message); }

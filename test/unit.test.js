@@ -19316,6 +19316,29 @@ async function testStatusMutationGuards() {
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
     assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
   });
+
+  await test('dashboard.js: project git metadata uses hidden direct git calls and add invalidates status cache', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const helperStart = src.indexOf('function _execGitInRepo');
+    const helperEnd = src.indexOf('async function handleProjectsAdd', helperStart);
+    const helperBody = src.slice(helperStart, helperEnd);
+    assert.ok(helperBody.includes("execFileSync('git'"), 'project git helper should execute git directly');
+    assert.ok(helperBody.includes('windowsHide: true'), 'project git helper should hide Windows git console windows');
+
+    const addStart = src.indexOf('async function handleProjectsAdd');
+    const addEnd = src.indexOf('async function handleProjectsRemove', addStart);
+    const addBody = src.slice(addStart, addEnd);
+    assert.ok(addBody.includes("_execGitInRepo(target, ['symbolic-ref', 'refs/remotes/origin/HEAD']"), 'handleProjectsAdd should resolve origin HEAD with the hidden git helper');
+    assert.ok(addBody.includes("if (!head) throw new Error('empty git ref');"), 'handleProjectsAdd should fall back to main when git returns an empty branch ref');
+    assert.ok(addBody.includes("_execGitInRepo(target, ['remote', 'get-url', 'origin']"), 'handleProjectsAdd should resolve remotes with the hidden git helper');
+    assert.ok(addBody.includes('invalidateStatusCache();'), 'handleProjectsAdd should invalidate cached status so refresh sees the new project immediately');
+
+    const scanStart = src.indexOf('async function handleProjectsScan');
+    const scanEnd = src.indexOf('async function handleFileBug', scanStart);
+    const scanBody = src.slice(scanStart, scanEnd);
+    assert.ok(scanBody.includes("_execGitInRepo(repoPath, ['remote', 'get-url', 'origin'], 3000)"), 'handleProjectsScan should reuse the hidden git helper for repo metadata');
+    assert.ok(!scanBody.includes("execSync('git remote get-url origin'"), 'handleProjectsScan should not shell out through execSync for repo metadata');
+  });
 }
 
 // ─── Dashboard Audit: Critical Functional Bugs ─────────────────────────────
@@ -22458,6 +22481,32 @@ async function testAutoRecoveryAndAtomicity() {
     const body = src.slice(fnStart, fnEnd);
     const failBranch = body.slice(body.indexOf('Remove failed'));
     assert.ok(/refresh\(\)/.test(failBranch), 'failure branch must call refresh() to restore the chip from server state');
+  });
+
+  await test('project add updates project chips immediately before waiting on status refresh', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const addStart = settingsSrc.indexOf('async function addProject');
+    const addEnd = settingsSrc.indexOf('async function resetSettingsToDefaults', addStart);
+    const addBody = settingsSrc.slice(addStart, addEnd);
+    const optimisticIdx = addBody.indexOf('optimisticallyAddProject(addedProject)');
+    const toastIdx = addBody.indexOf(`showToast('cmd-toast', 'Project "`);
+    const refreshIdx = addBody.indexOf('refresh()');
+    assert.ok(optimisticIdx > 0, 'addProject should update project chips immediately from the add response');
+    assert.ok(toastIdx > optimisticIdx, 'addProject should update project chips before showing the success toast');
+    assert.ok(refreshIdx > optimisticIdx, 'addProject should update project chips before asking refresh for status');
+
+    const otherSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    const helperStart = otherSrc.indexOf('function optimisticallyAddProject(project)');
+    const helperEnd = otherSrc.indexOf('async function projectChipRemove', helperStart);
+    const helperBody = otherSrc.slice(helperStart, helperEnd);
+    assert.ok(helperBody.includes('cmdUpdateProjectList(current)') && helperBody.includes('renderProjects(current)'),
+      'optimisticallyAddProject should sync both the project chips and command parser cache');
+
+    const scanAddStart = otherSrc.indexOf('async function _addSelectedProjects()');
+    const scanAddEnd = otherSrc.indexOf('window.MinionsOther', scanAddStart);
+    const scanAddBody = otherSrc.slice(scanAddStart, scanAddEnd);
+    assert.ok(scanAddBody.includes('optimisticallyAddProject({'),
+      '_addSelectedProjects should update project chips immediately for each successfully added repo');
   });
 
   await test('settings removeProject optimistically removes the settings card before fetch', () => {

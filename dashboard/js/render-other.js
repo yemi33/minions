@@ -21,6 +21,28 @@ function renderProjects(projects) {
 
 }
 
+function _projectCachePath(project) {
+  return String((project && (project.localPath || project.path)) || '').replace(/\\/g, '/');
+}
+
+function optimisticallyAddProject(project) {
+  if (!project || !project.name) return;
+  const next = {
+    name: project.name,
+    description: project.description || '',
+    localPath: _projectCachePath(project),
+    path: _projectCachePath(project),
+  };
+  if (!window._lastStatus) window._lastStatus = {};
+  const current = Array.isArray(window._lastStatus.projects) ? window._lastStatus.projects.slice() : [];
+  const nextPath = _projectCachePath(next);
+  if (current.some(function(p) { return p.name === next.name || (nextPath && _projectCachePath(p) === nextPath); })) return;
+  current.push(next);
+  window._lastStatus.projects = current;
+  if (typeof cmdUpdateProjectList === 'function') cmdUpdateProjectList(current);
+  renderProjects(current);
+}
+
 async function projectChipRemove(name) {
   if (!confirm('Remove project "' + name + '"? Pending work cancels, active agents are killed, data dir is archived to projects/.archived/.')) return;
   showToast('cmd-toast', 'Removing project "' + name + '"...', true);
@@ -385,7 +407,18 @@ async function _addSelectedProjects() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: repo.path })
       });
-      if (res.ok) { added++; cb.disabled = true; cb.closest('label').style.opacity = '0.5'; }
+      var data = await res.json().catch(function() { return {}; });
+      if (res.ok) {
+        added++;
+        optimisticallyAddProject({
+          name: data.name || repo.name,
+          description: (data.detected && data.detected.description) || repo.description || '',
+          path: data.path || repo.path,
+          localPath: data.path || repo.path,
+        });
+        cb.disabled = true;
+        cb.closest('label').style.opacity = '0.5';
+      }
     } catch { /* continue with next */ }
   }
   if (added > 0) {
@@ -394,4 +427,4 @@ async function _addSelectedProjects() {
   }
 }
 
-window.MinionsOther = { renderProjects, projectChipRemove, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, openScanProjectsModal };
+window.MinionsOther = { renderProjects, optimisticallyAddProject, projectChipRemove, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, openScanProjectsModal };

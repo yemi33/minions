@@ -3807,6 +3807,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { confirmToken: token, ttlMs: PROJECT_CONFIRM_TOKEN_TTL_MS });
   }
 
+  function _execGitInRepo(repoPath, args, timeoutMs) {
+    const { execFileSync } = require('child_process');
+    return execFileSync('git', args, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      timeout: timeoutMs || 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    }).trim();
+  }
+
   async function handleProjectsAdd(req, res) {
     try {
       const body = await readBody(req);
@@ -3840,14 +3851,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       // Auto-discover from git repo
-      const { execSync: ex } = require('child_process');
       const detected = { name: path.basename(target), _found: [] };
       try {
-        const head = ex('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        let head = '';
+        try { head = _execGitInRepo(target, ['symbolic-ref', 'refs/remotes/origin/HEAD'], 5000); }
+        catch { head = _execGitInRepo(target, ['symbolic-ref', 'HEAD'], 5000); }
+        if (!head) throw new Error('empty git ref');
         detected.mainBranch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
       } catch { detected.mainBranch = 'main'; }
       try {
-        const remoteUrl = ex('git remote get-url origin', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        const remoteUrl = _execGitInRepo(target, ['remote', 'get-url', 'origin'], 5000);
         if (remoteUrl.includes('github.com')) {
           detected.repoHost = 'github';
           const m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
@@ -3906,6 +3919,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       config.projects.push(project);
       safeWrite(configPath, config);
       reloadConfig(); // Update in-memory project list immediately
+      invalidateStatusCache();
 
       // Create project-local state files
       const minionsDir = path.join(target, '.minions');
@@ -3969,7 +3983,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const results = repos.map(repoPath => {
         const result = { path: repoPath.replace(/\\/g, '/'), name: path.basename(repoPath), host: 'git', linked: existingPaths.has(path.resolve(repoPath)) };
         try {
-          const remoteUrl = require('child_process').execSync('git remote get-url origin', { cwd: repoPath, encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+          const remoteUrl = _execGitInRepo(repoPath, ['remote', 'get-url', 'origin'], 3000);
           const gh = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
           const ado = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/) || remoteUrl.match(/([^.]+)\.visualstudio\.com.*?\/([^/]+)\/_git\/([^/\s]+)/);
           if (gh) { result.host = 'GitHub'; result.org = gh[1]; result.name = gh[2]; }
