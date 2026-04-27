@@ -1022,6 +1022,31 @@ function getPrdInfo(config) {
   const prById = {};
   for (const pr of allPrs) prById[pr.id] = pr;
 
+  // Build URL for a PR when pr.url isn't set. Prefer the PR ID's own scope
+  // (e.g. `github:owner/repo#123` → github.com URL) so a github PR never gets
+  // an ADO URL just because the only configured project happens to be ADO.
+  // Only use a project's prUrlBase when its host actually matches the PR.
+  const _buildPrUrlFromId = (prId, pr) => {
+    if (pr?.url) return pr.url;
+    const canonical = shared.parseCanonicalPrId(prId);
+    if (canonical) {
+      const [host, rest] = canonical.scope.split(':');
+      if (host === 'github') return `https://github.com/${rest}/pull/${canonical.prNumber}`;
+      if (host === 'ado') {
+        const [org, adoProject, repo] = rest.split('/');
+        if (org && adoProject && repo) {
+          return `https://dev.azure.com/${org}/${adoProject}/_git/${repo}/pullrequest/${canonical.prNumber}`;
+        }
+      }
+    }
+    // Legacy `PR-N` ID with no host scope: only use project's prUrlBase if a
+    // matching project (by name) exists. Never blindly fall back to projects[0].
+    const project = pr?._project ? projects.find(p => p.name === pr._project) : null;
+    const prNumber = shared.getPrNumber(pr || prId);
+    if (project?.prUrlBase && prNumber != null) return project.prUrlBase + prNumber;
+    return '';
+  };
+
   const prdToPr = {};
   const prLinks = shared.getPrLinks(); // { "PR-xxxx": ["P-xxxx", "P-yyyy"] }
   for (const [prId, itemIds] of Object.entries(prLinks)) {
@@ -1030,9 +1055,7 @@ function getPrdInfo(config) {
     // (or are typed as verify) and would bleed through as duplicate entries on every
     // constituent item. They are surfaced via renderE2eSection instead. (#1220)
     if ((itemIds || []).length > 1 || pr?.itemType === 'verify' || pr?.title?.startsWith('[E2E]')) continue;
-    const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
-    const prNumber = shared.getPrNumber(pr || prId);
-    const url = pr?.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
+    const url = _buildPrUrlFromId(prId, pr);
     for (const itemId of (itemIds || [])) {
       if (!prdToPr[itemId]) prdToPr[itemId] = [];
       prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
@@ -1046,8 +1069,7 @@ function getPrdInfo(config) {
     const exactPr = prById[canonicalPrId] || null;
     const displayMatches = exactPr ? [] : Object.values(prById).filter(candidate => shared.getPrDisplayId(candidate) === shared.getPrDisplayId(wi._pr));
     const pr = exactPr || (displayMatches.length === 1 ? displayMatches[0] : null);
-    const prNumber = shared.getPrNumber(pr || wi._pr);
-    const url = pr?.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
+    const url = _buildPrUrlFromId(canonicalPrId || wi._pr, pr);
     prdToPr[wi.id] = [{ id: pr?.id || canonicalPrId || wi._pr, url, title: pr?.title || '', status: pr?.status || 'active', _project: project?.name || '' }];
   }
   // Aggregate sub-task PRs to decomposed parent (sub-tasks aren't PRD items but their PRs should show)
@@ -1060,9 +1082,7 @@ function getPrdInfo(config) {
       const parentId = wi.parent_id;
       if (!prdToPr[parentId]) prdToPr[parentId] = [];
       if (!prdToPr[parentId].some(p => p.id === pr.id)) {
-        const project = projects.find(p => p.name === pr._project) || projects[0] || null;
-        const prNumber = shared.getPrNumber(pr);
-        const url = pr.url || (project?.prUrlBase && prNumber != null ? project.prUrlBase + prNumber : '');
+        const url = _buildPrUrlFromId(pr.id, pr);
         prdToPr[parentId].push({ id: pr.id, url, title: pr.title || '', status: pr.status || 'active', _project: pr._project || '' });
       }
     }
