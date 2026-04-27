@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1564 (2026-04-27)
+
+### Other
+- Harden skill creation guidance
+
 ## 0.1.1563 (2026-04-27)
 
 ### Fixes
