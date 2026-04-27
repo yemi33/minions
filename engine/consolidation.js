@@ -21,6 +21,49 @@ let _consolidationStartedAt = 0;
 let _forceResetTimeout = null; // force-reset handle; cancelled by _clearProcessingState
 const _processingFiles = new Set(); // files currently being consolidated (race guard)
 
+// ─── Author Extraction ──────────────────────────────────────────────────────
+// Inbox filenames follow the convention `<agent>-<rest>.md` (e.g. `dallas-foo.md`).
+// Returns the matched agent name or null when no prefix is present.
+function _extractAgentFromFilename(name) {
+  const m = (name || '').match(/^(\w+)-/);
+  return m ? m[1] : null;
+}
+
+// Builds the `<!-- _author: ... -->` and `<!-- _authors: [...] -->` markers
+// that get prepended to consolidated sections so downstream readers can parse
+// provenance without re-running the regex on every item.
+function _buildAuthorMarkers(items) {
+  const agents = [...new Set(items.map(i => _extractAgentFromFilename(i.name) || 'unknown'))];
+  return [
+    '<!-- _author: engine:consolidator -->',
+    `<!-- _authors: [${agents.join(', ')}] -->`,
+  ].join('\n');
+}
+
+// Splices the author markers into an LLM-produced digest. The digest header is
+// the first `### ...` line, optionally followed by a `**By:** ...` line. We
+// insert the marker block directly under whichever of those is present so the
+// markers always sit at the top of the section, just below human-visible
+// metadata. The body content (categories, bullets) is never modified.
+function _injectAuthorMarkers(digest, items) {
+  const markers = _buildAuthorMarkers(items);
+  const lines = digest.split('\n');
+  // Scan only the first few lines — the header block is small.
+  const scanLimit = Math.min(lines.length, 5);
+  let insertIdx = -1;
+  for (let i = 0; i < scanLimit; i++) {
+    if (lines[i].startsWith('**By:**')) { insertIdx = i + 1; break; }
+  }
+  if (insertIdx === -1) {
+    for (let i = 0; i < scanLimit; i++) {
+      if (lines[i].startsWith('### ')) { insertIdx = i + 1; break; }
+    }
+  }
+  if (insertIdx === -1) insertIdx = 1; // last resort — keep first line intact
+  lines.splice(insertIdx, 0, markers);
+  return lines.join('\n');
+}
+
 function consolidateInbox(config) {
 
   const { ENGINE_DEFAULTS } = shared;
@@ -227,6 +270,12 @@ function consolidateWithLLM(items, existingNotes, files, config) {
         }
       }
 
+      // Inject author markers right after the **By:** line (or after the ###
+      // heading if **By:** is missing) so downstream readers can parse provenance
+      // without re-running the agent regex on every inbox source. The LLM digest
+      // body is unchanged — only metadata is added.
+      digest = _injectAuthorMarkers(digest, items);
+
       const entry = '\n\n---\n\n' + digest;
       // Wrap read-modify-write in file lock to prevent race with concurrent consolidation or manual edits
       shared.withFileLock(NOTES_PATH + '.lock', () => {
@@ -362,7 +411,11 @@ function consolidateWithRegex(items, files) {
   for (const item of deduped) { if (!grouped[item.category]) grouped[item.category] = []; grouped[item.category].push(item); }
 
   let entry = `\n\n---\n\n### ${dateStamp()}: ${title}\n`;
-  entry += '**By:** Engine (regex fallback)\n\n';
+  entry += '**By:** Engine (regex fallback)\n';
+  // Mirror the LLM path: emit `_author` + `_authors` markers at the top of the
+  // section so readers can parse provenance the same way regardless of which
+  // consolidation path produced the digest.
+  entry += _buildAuthorMarkers(items) + '\n\n';
   for (const [cat, catItems] of Object.entries(grouped)) {
     entry += `#### ${catLabels[cat] || cat} (${catItems.length})\n`;
     for (const item of catItems) {
@@ -419,8 +472,13 @@ function classifyToKnowledgeBase(items) {
       log('warn', `Unknown KB category '${rawCategory}' for ${item.name} — falling back to 'general'`);
     }
 
-    const agentMatch = item.name.match(/^(\w+)-/);
-    const agent = agentMatch ? agentMatch[1] : 'unknown';
+    const matchedAgent = _extractAgentFromFilename(item.name);
+    const agent = matchedAgent || 'unknown';
+    // `_author` is the structured provenance marker. When the filename has a
+    // recognizable `<agent>-` prefix we tag it as `agent:<name>`; otherwise we
+    // fall back to a literal `unknown` so downstream tooling can distinguish
+    // missing provenance from explicitly-attributed entries.
+    const author = matchedAgent ? `agent:${matchedAgent}` : 'unknown';
     const titleMatch = content.match(/^#\s+(.+)/m);
     const titleSlug = titleMatch
       ? shared.slugify(titleMatch[1])
@@ -428,7 +486,7 @@ function classifyToKnowledgeBase(items) {
     const kbFilename = `${dateStamp()}-${agent}-${titleSlug}.md`;
     const kbPath = shared.uniquePath(path.join(categoryDirs[category], kbFilename));
 
-    const frontmatter = `---\nsource: ${item.name}\nagent: ${agent}\ncategory: ${category}\ndate: ${dateStamp()}\n---\n\n`;
+    const frontmatter = `---\nsource: ${item.name}\nagent: ${agent}\n_author: ${author}\ncategory: ${category}\ndate: ${dateStamp()}\n---\n\n`;
     try {
       safeWrite(kbPath, frontmatter + content);
       classified++;
@@ -485,4 +543,8 @@ module.exports = {
   consolidateInbox,
   classifyToKnowledgeBase,
   checkDuplicateHash,
+  // Exported for testing — the LLM path falls back to this when the digest is
+  // malformed or the spawn fails. Tests cover it directly to avoid having to
+  // mock the Haiku spawn pipeline.
+  consolidateWithRegex,
 };

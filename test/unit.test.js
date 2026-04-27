@@ -2711,6 +2711,99 @@ async function testClassifyToKnowledgeBase() {
       assert.strictEqual(new Set(entries).size, 2, 'filenames must be unique after uniquePath()');
     } finally { restore(); }
   });
+
+  await test('classifyToKnowledgeBase emits _author: agent:<name> when filename has agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        { name: 'dallas-foo-2026-04-27.md', content: '# Foo\nbody text' },
+      ]);
+      // Routing: 'foo' has no review/build/architecture/convention keyword → project-notes/
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1, 'one KB file should be written');
+      const written = fs.readFileSync(path.join(testDir, 'knowledge', 'project-notes', entries[0]), 'utf8');
+      assert.ok(written.includes('_author: agent:dallas'),
+        'frontmatter must carry _author: agent:dallas (got: ' + written.slice(0, 200) + ')');
+      // Backward-compat: the legacy `agent:` field must still be present.
+      assert.ok(written.includes('\nagent: dallas\n'),
+        'frontmatter must preserve legacy `agent: dallas` field for backward compat');
+    } finally { restore(); }
+  });
+
+  await test('classifyToKnowledgeBase emits _author: unknown when filename has no agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.classifyToKnowledgeBase([
+        // No `<word>-` prefix — agent extraction returns null, _author falls back to literal `unknown`.
+        { name: '.hidden.md', content: '# Orphan\nsome content' },
+      ]);
+      const entries = fs.readdirSync(path.join(testDir, 'knowledge', 'project-notes'));
+      assert.strictEqual(entries.length, 1);
+      const written = fs.readFileSync(path.join(testDir, 'knowledge', 'project-notes', entries[0]), 'utf8');
+      assert.ok(written.includes('_author: unknown'),
+        'frontmatter must carry literal `_author: unknown` when agent prefix is absent (got: ' + written.slice(0, 200) + ')');
+      // It must NOT collapse into the `agent:unknown` form — the literal `unknown` is the contract.
+      assert.ok(!written.includes('_author: agent:unknown'),
+        '_author must be the literal `unknown`, not `agent:unknown`, when prefix is missing');
+    } finally { restore(); }
+  });
+}
+
+// ─── consolidateWithRegex — Author Markers ─────────────────────────────────
+
+async function testConsolidateWithRegexAuthorMarkers() {
+  console.log('\n── consolidation.js — consolidateWithRegex author markers ──');
+
+  await test('consolidateWithRegex emits <!-- _authors: [...] --> listing each agent', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const items = [
+        { name: 'dallas-foo.md', content: '# Foo\n- **Bar**: baz qux' },
+        { name: 'ripley-bar.md', content: '# Bar\n- **Quux**: never always rule:' },
+        { name: 'lambert-baz.md', content: '# Baz\n- **Pattern**: always validate inputs' },
+      ];
+      // Pass empty `files` so archiveInboxFiles is a no-op (the source files
+      // don't exist in the inbox dir for this synthetic test).
+      consolidation.consolidateWithRegex(items, []);
+
+      const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.ok(notes.includes('<!-- _author: engine:consolidator -->'),
+        'notes.md must carry the block-level _author: engine:consolidator marker');
+      // Order is whatever the dedup-via-Set produces; assert each agent is present individually.
+      const authorsLine = notes.split('\n').find(l => l.includes('<!-- _authors: ['));
+      assert.ok(authorsLine, '_authors marker line must be emitted');
+      for (const expected of ['dallas', 'ripley', 'lambert']) {
+        assert.ok(authorsLine.includes(expected),
+          `_authors marker must list source agent '${expected}' (got: ${authorsLine})`);
+      }
+      // The marker must sit at the top of the section, before any `####` category header.
+      const markerIdx = notes.indexOf('<!-- _authors:');
+      const firstCatIdx = notes.indexOf('\n#### ');
+      assert.ok(markerIdx > 0 && (firstCatIdx === -1 || markerIdx < firstCatIdx),
+        '_authors marker must appear above the first category header');
+    } finally { restore(); }
+  });
+
+  await test('consolidateWithRegex falls back to "unknown" for items with no agent prefix', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = require('../engine/consolidation');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      consolidation.consolidateWithRegex([
+        { name: '.hidden.md', content: '# Orphan\n- **Note**: rule: always do X' },
+      ], []);
+      const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      const authorsLine = notes.split('\n').find(l => l.includes('<!-- _authors: ['));
+      assert.ok(authorsLine && authorsLine.includes('unknown'),
+        '_authors must list "unknown" when filename lacks agent prefix (got: ' + authorsLine + ')');
+    } finally { restore(); }
+  });
 }
 
 // ─── consolidateInbox — Behavior ────────────────────────────────────────────
@@ -16173,6 +16266,7 @@ async function main() {
     await testConsolidationHelpers();
     await testContentHashCircuitBreaker();
     await testClassifyToKnowledgeBase();
+    await testConsolidateWithRegexAuthorMarkers();
     await testConsolidateInboxBehavior();
     await testConsolidationForceResetRace();
 
