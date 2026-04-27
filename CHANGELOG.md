@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1557 (2026-04-27)
+
+### Features
+- × button on top-level project chips with optimistic removal
+
+### Fixes
+-  make PRD archive optimistic
+
 ## 0.1.1556 (2026-04-27)
 
 ### Other
