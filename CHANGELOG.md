@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1553 (2026-04-27)
+
+### Other
+- refactor(queries): cache PR list, fold ghost-project scan into single readdir pass
+
 ## 0.1.1552 (2026-04-27)
 
 ### Fixes
