@@ -602,11 +602,13 @@ async function planArchive(file, btn) {
   _stopPlanPoll();
   markDeleted('plan:' + file);
   if (isPrd) {
-    var linkedPlan = (window._lastPlans || []).find(function(p) { return p.file === file && p.sourcePlan; });
-    if (linkedPlan) markDeleted('plan:' + linkedPlan.sourcePlan);
+    var prdRecord = (window._lastPlans || []).find(function(p) { return p.file === file && p.sourcePlan; });
+    if (prdRecord) markDeleted('plan:' + prdRecord.sourcePlan);
   }
+  if (window._lastPlans) renderPlans(window._lastPlans);
+  if (typeof rerenderPrdFromCache === 'function') rerenderPrdFromCache();
   try { closeModal(); } catch { /* may not be open */ }
-  showToast('cmd-toast', 'Archived', true);
+  showToast('cmd-toast', isPrd ? 'Archiving PRD and linked source plan...' : 'Archiving plan...', true);
   try {
     const res = await fetch('/api/plans/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -17,9 +17,15 @@ function renderPrd(prd, prog) {
   const statusLabels = { 'completed': 'Completed', 'dispatched': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'paused': 'Paused', 'approved': 'Approved' };
 
   // Show per-PRD status summary in header when multiple PRDs exist
-  const existing = prd.existing || [];
+  const existing = (prd.existing || []).filter(function(p) { return !isDeleted('plan:' + (p.file || '')); });
   const allWi = window._lastWorkItems || [];
-  const prdItems = (prog?.items || []).filter(i => !i._archived);
+  const prdItems = (prog?.items || []).filter(i => !i._archived && !isDeleted('plan:' + (i.source || '')));
+
+  if (existing.length === 0 && prdItems.length === 0) {
+    section.innerHTML = '<p class="prd-pending" style="margin-bottom:0">No PRD found.</p>';
+    badge.innerHTML = '';
+    return;
+  }
 
   if (existing.length <= 1) {
     // Single PRD — show status + actions in header
@@ -78,9 +84,10 @@ function renderPrdProgress(prog) {
   const el = document.getElementById('prd-progress-content');
   const countEl = document.getElementById('prd-progress-count');
   if (!prog) { el.innerHTML = ''; countEl.textContent = '—'; return; }
+  const visibleItems = (prog.items || []).filter(i => !isDeleted('plan:' + (i.source || '')));
 
   // Compute overall progress from active (non-archived) items
-  const activeItems = (prog.items || []).filter(i => !i._archived);
+  const activeItems = visibleItems.filter(i => !i._archived);
   if (activeItems.length > 0) {
     const activeDone = activeItems.filter(i => i.status === 'done').length;
     countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
@@ -150,7 +157,7 @@ function renderPrdProgress(prog) {
 
   // Group items by source plan
   const grouped = {};
-  for (const i of (prog.items || [])) {
+  for (const i of visibleItems) {
     const key = i.source || '_ungrouped';
     if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', branchStrategy: i.branchStrategy || 'parallel', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
