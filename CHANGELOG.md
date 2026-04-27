@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1566 (2026-04-27)
+
+### Features
+- hook Teams pr-approved event in poll loops (#1759)
+
+### Other
+- test(dashboard): add unit tests for getMcpServers, _filterCcTabSessions, _getVersionCheckInterval, _parseWatchInterval, parsePinnedEntries (#1753)
+- docs(sched-weekly-docs-cleanup-1776960000531): sync stale references with current source (#1750)
+
 ## 0.1.1564 (2026-04-27)
 
 ### Other
