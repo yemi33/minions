@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1562 (2026-04-27)
+
+### Other
+- chore: minions uninstall prints re-install command
+
 ## 0.1.1561 (2026-04-27)
 
 ### Other
