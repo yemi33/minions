@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1576 (2026-04-27)
+
+### Fixes
+- extend heartbeat for PowerShell/Monitor + teach run_in_background pattern (#1786) (#1787)
+
+### Other
+- docs(SEC-07): RFC for completion.json agent control-plane protocol (#1785)
+
 ## 0.1.1574 (2026-04-27)
 
 ### Fixes
