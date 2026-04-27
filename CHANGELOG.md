@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1552 (2026-04-27)
+
+### Fixes
+- scan all project subdirs for PR data in PRD view
+
 ## 0.1.1551 (2026-04-27)
 
 ### Fixes
