@@ -33,7 +33,7 @@ Your context window may be compacted or summarized mid-task by Claude's automati
   5. Previous agent output in `agents/*/live-output.log` for related tasks
   6. Work item descriptions and `resultSummary` for prior completed work on the same topic
   Only after exhausting team memory should you look outside (web search, codebase exploration, external docs). This avoids duplicating research another agent already completed and ensures team decisions are respected.
-- If you discover a repeatable workflow, output it as a fenced skill block. The engine auto-extracts it to `~/.claude/skills/<name>/SKILL.md`. Required format:
+- Only output a fenced skill block when **all** of these are true: (1) you discovered a durable multi-step workflow that was not already documented in team memory, repo docs, existing playbooks, or existing skills, (2) another agent is likely to need it on future tasks, and (3) the workflow is specific enough to be actionable but general enough to stand alone. **Zero skills is the default.** Prefer writing one-off findings, repo facts, or task-specific notes to the inbox findings instead of creating a skill. Emit **at most one skill block per task** unless the task clearly uncovered two unrelated reusable workflows. The engine auto-extracts valid skill blocks to `~/.claude/skills/<name>/SKILL.md`, so `scope: minions` skills become user-level Claude skills available in normal Claude windows too. Required format:
   ````
   ```skill
   ---
@@ -45,7 +45,8 @@ Your context window may be compacted or summarized mid-task by Claude's automati
   Instructions for the skill go here.
   ```
   ````
-  The `name` and `description` fields are required. `scope` defaults to `minions` (global). Use `scope: project` + `project: ProjectName` for project-specific skills.
+  The `name` and `description` fields are required. `scope` defaults to `minions` (global). Use `scope: minions` for user-level reusable skills; use `scope: project` + `project: ProjectName` only for repo-specific skills that should land in that project via PR.
+  Do **not** create a skill for one-off bug fixes, isolated command outputs, obvious repo facts, or anything already covered by existing docs/playbooks/skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
 
 ## Checking PR and Build Status

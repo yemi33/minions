@@ -60,7 +60,7 @@ Use subagents only for genuinely parallel, independent tasks. For reading files,
 - Use the appropriate MCP tools for PR creation — check available tools before starting.
 - Do NOT checkout branches in the main working tree — use worktrees.
 - Read `notes.md` for all team rules before starting.
-- If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it to ~/.claude/skills/)
+- Only emit a ```skill block if you uncovered a durable reusable workflow that is not already documented and is likely to help future tasks; zero skills is the default, and one-off findings belong in the inbox notes instead.
 
 ## When to Stop
 

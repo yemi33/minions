@@ -362,14 +362,15 @@ function renderPlaybook(type, vars) {
   content += `- Conventions to follow\n`;
   content += `- **SOURCE REFERENCES for every finding** — file paths with line numbers, PR URLs, API endpoints, config keys. Format: \`(source: path/to/file.ts:42)\` or \`(source: PR-12345)\`. Without references, findings cannot be verified.\n\n`;
   content += `### Skill Extraction (IMPORTANT)\n\n`;
-  content += `If during this task you discovered a **repeatable workflow** — a multi-step procedure, workaround, build process, or pattern that other agents should follow in similar situations — output it as a fenced skill block. The engine will automatically extract it.\n\n`;
+  content += `If during this task you discovered a **repeatable workflow** — a multi-step procedure, workaround, build process, or pattern that other agents should follow in similar situations — only output it as a fenced skill block when **all** of these are true: (1) you had to discover it during this task, (2) it is not already captured in team memory, repo docs, existing playbooks, or existing skills, and (3) another agent is likely to reuse it on future tasks. **Zero skills is the default.** Prefer the inbox findings for one-off notes, repo facts, and task-specific observations.\n\n`;
   content += `Format your skill as a fenced code block with the \`skill\` language tag:\n\n`;
   content += '````\n```skill\n';
   content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
-  content += `- Set \`scope: minions\` for cross-project skills (engine writes to ~/.claude/skills/ automatically)\n`;
-  content += `- Set \`scope: project\` + \`project: <name>\` for repo-specific skills (engine queues a PR to <project>/.claude/skills/)\n`;
-  content += `- Only output a skill block if you genuinely discovered something reusable — don't force it\n`;
+  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to ~/.claude/skills/ so they are available in normal Claude windows too\n`;
+  content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to <project>/.claude/skills/\n`;
+  content += `- Emit at most one skill block per task unless you uncovered two clearly distinct reusable workflows\n`;
+  content += `- Do NOT create a skill for one-off bug fixes, isolated command output, obvious repo facts, or anything already covered by existing docs/playbooks/skills\n`;
 
   // Inject project-level variables from config
   const config = getConfig();
@@ -471,7 +472,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
   prompt += `4. Write learnings to the path specified in the task prompt (format: \`notes/inbox/{agent}-{work-item-id}-{date}-{time}.md\`)\n`;
   prompt += `5. Agent status is managed by the engine via dispatch.json — agents do not need to track their own status\n`;
-  prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — the engine auto-extracts it to ~/.claude/skills/\n\n`;
+  prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — minions-scoped skills are auto-extracted to ~/.claude/skills/ so they are available in normal Claude windows too\n\n`;
 
   return prompt;
 }
@@ -504,7 +505,7 @@ function buildAgentContext(agentId, config, project) {
 
   // KB and skills: NOT injected — agents can Glob/Read when needed
   // This saves ~27KB per dispatch. Reference note so agents know they exist:
-  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Skills are in \`skills/*.md\` and \`.claude/skills/\`. Use Glob/Read to browse when relevant.\n\n`;
+  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. User-level Minions skills live in \`~/.claude/skills/\`, and project-specific skills live in \`<project>/.claude/skills/\`. Use Glob/Read when relevant.\n\n`;
 
   // Minions awareness: what's in flight, who's doing what
   const dispatch = getDispatch();

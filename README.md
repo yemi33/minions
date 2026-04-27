@@ -457,7 +457,7 @@ All playbooks use `{{template_variables}}` filled from project config. Condition
 
 Every playbook has an explicit "When to Stop" section telling agents exactly what constitutes completion. Code-pushing playbooks enforce **build → test → repo checks → push** ordering. Per-type max-turns prevent runaway tool loops (explore=30, ask=20, implement=75, verify=100).
 
-Playbooks are fully customizable — edit them to match your workflow. System prompts for CC and plan advisor live in `prompts/` with `{{variable}}` substitution.
+Playbooks are fully customizable — edit the shared templates in `playbooks/` to change the repo-wide defaults. You can also create machine-local overrides in `projects/<name>/playbooks/<type>.md`; Minions will prefer those for that project, but they are treated as user data and remain gitignored. System prompts for CC and plan advisor live in `prompts/` with `{{variable}}` substitution.
 
 ## Health Monitoring
 
@@ -503,7 +503,7 @@ When a reviewer flags issues, the engine creates `feedback-<author>-from-<review
 `engine/metrics.json` tracks per agent: tasks completed, errors, PRs created/approved/rejected, reviews done. Visible in CLI (`status`) and dashboard with color-coded approval rates.
 
 ### 5. Skills
-Agents save repeatable workflows to `skills/<name>.md` with Claude Code-compatible frontmatter. Engine builds an index injected into all prompts. Skills can also be stored per-project at `<project>/.claude/skills/<name>/SKILL.md` (requires a PR). Visible in the dashboard Skills section.
+Agents save Minions-wide repeatable workflows as user-level Claude skills in `~/.claude/skills/<name>/SKILL.md`, so they are usable both inside Minions and in normal Claude windows. Repo-specific skills can also be stored per-project at `<project>/.claude/skills/<name>/SKILL.md` (requires a PR). Visible in the dashboard Skills section.
 
 See `docs/self-improvement.md` for the full breakdown.
 
@@ -730,5 +730,3 @@ Per-project engine state remains centralized:
     work-items.json      <- Per-project work queue
     pull-requests.json   <- PR tracker
 ```
-
-

@@ -257,14 +257,14 @@ Metrics are currently informational — displayed in status and dashboard. Plann
 
 When an agent discovers a repeatable multi-step procedure, it can save it as a **skill** — a structured, reusable workflow compatible with Claude Code's skill system. Skills are stored in two locations:
 
-- **Minions-wide:** `~/.minions/skills/<name>.md` — shared across all agents, no PR required
+- **Minions-wide:** `~/.claude/skills/<name>/SKILL.md` — user-level Claude skill, shared across Minions and normal Claude windows, no PR required
 - **Project-specific:** `<project>/.claude/skills/<name>/SKILL.md` — scoped to one repo, requires a PR
 
 ### Flow
 
 ```
 Agent discovers repeatable pattern during task
-  → writes skills/<name>.md with frontmatter (name, description, trigger, allowed-tools)
+  → writes ~/.claude/skills/<name>/SKILL.md with frontmatter (name, description, trigger, allowed-tools)
   → engine detects new skill files on next tick
   → builds skill index (name + trigger + file path)
   → index injected into every agent's system prompt
@@ -314,10 +314,11 @@ When a git merge or rebase produces conflicts in yarn.lock.
 
 ### When agents should create skills
 
-- Multi-step procedures they had to figure out (build setup, deployment, migration)
-- Error recovery patterns (how to fix a specific class of failure)
-- Project-specific workflows that aren't documented elsewhere
-- Cross-repo coordination steps
+- Only when the workflow is durable, multi-step, and likely to be reused on future tasks
+- Only when the workflow is not already documented in repo docs, notes, playbooks, or existing skills
+- Good candidates: build setup, deployment, migrations, recurring error-recovery patterns, cross-repo coordination steps
+- Prefer zero skills over a weak skill; one-off findings and task-specific notes belong in inbox notes or `notes.md`
+- Do not create skills for isolated fixes, obvious repository facts, or instructions already covered elsewhere
 
 ## Configuration
 

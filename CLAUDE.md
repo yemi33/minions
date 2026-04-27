@@ -371,11 +371,11 @@ projects/
       review.md       ← used instead of playbooks/review.md for minions tasks
 ```
 
-Project-local playbooks are tracked in git (`.gitignore` negates `projects/*/playbooks/*.md`). All other files under `projects/` remain gitignored (runtime state).
+Project-local playbooks are user data and stay gitignored with the rest of `projects/`. The bundled shared templates in the top-level `playbooks/` directory are the tracked defaults that ship with the repo.
 
 ## Skills
 
-Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. Agents can auto-extract skills from their output using ` ```skill ` fenced blocks — the engine picks these up and writes them to the skills directory.
+Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. `scope: minions` skills are written to the user's `~/.claude/skills/` directory so they are available to Minions and normal Claude windows; `scope: project` skills are PR'd into `<project>/.claude/skills/`. Agents can auto-extract skills from their output using ` ```skill ` fenced blocks.
 
 ## PR Review Protection
 

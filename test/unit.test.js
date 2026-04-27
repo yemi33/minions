@@ -7958,6 +7958,16 @@ async function testRenderPlaybook() {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
   });
+
+  await test('renderPlaybook hardens skill extraction guidance', () => {
+    assert.ok(src.includes('Zero skills is the default') && src.includes('Emit at most one skill block per task'),
+      'Should discourage unnecessary skill creation in injected guidance');
+  });
+
+  await test('renderPlaybook clarifies minions skills are user-level Claude skills', () => {
+    assert.ok(src.includes('available in normal Claude windows too') && src.includes('scope: minions'),
+      'Should explain that minions-scoped skills become user-level Claude skills');
+  });
 }
 
 // ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
