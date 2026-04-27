@@ -20,6 +20,8 @@ engine/pending-rebases.json
 engine/pr-links.json
 engine/kb-swept.json
 engine/watches.json
+engine/coverage-health-status.json
+engine/coverage-rotation.json
 # All transient temp files (prompts, pids, logs) go in engine/tmp/
 engine/tmp/
 # Large-prompt sidecar files referenced by dispatch.json entries (#1167)
@@ -60,9 +62,6 @@ notes.md
 projects/*
 !projects/*/
 projects/*/*
-!projects/*/playbooks/
-projects/*/playbooks/*
-!projects/*/playbooks/*.md
 work-items.json
 work-items-archive.json
 work-items.json.backup
