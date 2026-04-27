@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1551 (2026-04-27)
+
+### Fixes
+- derive PR URL from canonical PR ID scope, not projects[0]
+
 ## 0.1.1549 (2026-04-24)
 
 ### Other
