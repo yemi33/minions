@@ -58,6 +58,8 @@ For each project worktree:
 
 If a build or test fails, **do NOT fix it** — report the exact error and continue with other projects.
 
+> ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
+
 ## Step 4: Start the Application (if applicable)
 
 Determine if the project has a **runnable application** (web server, API, desktop app, mobile emulator, etc.) by reading its documentation and build config. For mobile apps, check if an emulator/simulator can be launched or if building an APK/IPA is the appropriate verification step.

@@ -49,6 +49,37 @@ Your context window may be compacted or summarized mid-task by Claude's automati
   Do **not** create a skill for one-off bug fixes, isolated command outputs, obvious repo facts, or anything already covered by existing docs/playbooks/skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
 
+## Long-Running Build / Test Commands (Heartbeat Safety)
+
+The engine kills agents that produce no stdout for `heartbeatTimeout` (default **300s / 5 min**). A blocking shell call with zero stdout for that long is treated as hung. Cold builds (Gradle daemon spin-up, MSBuild restore, fresh `npm install`, `cargo build`) routinely exceed this with no intermediate output.
+
+**Two approved patterns — pick one when a command may exceed 4 minutes of silence:**
+
+### Pattern A — Stream output via background process + Monitor (preferred)
+
+```
+1. Bash({ command: "./gradlew test", run_in_background: true })       # returns a bash_id immediately
+2. Monitor({ bash_id: "<id>" })                                       # streams each stdout line as a notification
+```
+
+Why: each line that the build emits arrives as a notification, which resets the heartbeat. You see live progress in the dashboard. The Monitor call itself is recognised by the engine as a blocking tool (heartbeat extended ~30 min).
+
+### Pattern B — Single Bash call with explicit `timeout`
+
+```
+Bash({ command: "./gradlew test", timeout: 600000 })                  # max 600000 = 10 min
+```
+
+The engine reads `input.timeout` from the tool call and extends the heartbeat to `timeout + 60s` for that turn. **The extension is opt-in** — without an explicit `timeout`, the agent is killed at `heartbeatTimeout`. PowerShell tool follows the same rule.
+
+### What NOT to do
+
+- Do NOT run `./gradlew`, `mvn`, `dotnet test`, or any cold-cache build as a default `Bash` call (no `timeout`, no `run_in_background`). It will hit the 120s Bash default, then the 300s heartbeat, and the engine will kill you.
+- Do NOT loop `sleep` to "wait it out" — sleep produces no stdout and looks identical to a hang.
+- Do NOT pipe through `tee` thinking that helps — heartbeat reads agent stdout, not the underlying file.
+
+If you don't know how long a command takes, default to **Pattern A** — there is no downside to streaming.
+
 ## Checking PR and Build Status
 
 When asked to check build status, CI results, or review state for a PR:
