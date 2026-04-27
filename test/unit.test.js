@@ -16455,6 +16455,9 @@ async function main() {
     // W-mo1jw240a0gn: engine/cli.js command handler behavioral coverage
     await testCliCommandHandlers();
 
+    // W-moczd52c1icm: dashboard.js pure helpers
+    await testDashboardPureHelpers();
+
     // W-moczcvjl338u: engine.js pure helper coverage
     await testEngineHelperCoverage();
 
@@ -33586,6 +33589,430 @@ async function testStatusCacheTiers() {
     // Extract the slowStale logic — it should be a simple TTL check
     const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
     assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+// ─── W-moczd52c1icm: dashboard.js pure helpers ──────────────────────────────
+//
+// Exercises five pure helpers exported from dashboard.js:
+//   getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
+//   _parseWatchInterval, parsePinnedEntries.
+// Dashboard.js is required once lazily so module-load side effects (HTML
+// assembly, fs.watch, npm version check) only fire when these tests run.
+
+async function testDashboardPureHelpers() {
+  console.log('\n── dashboard.js — pure helpers ──');
+
+  // Lazy require — dashboard.js guards server.listen/watchdog/signal handlers
+  // behind `require.main === module`, so loading it here is safe.
+  const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+  const { getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
+          _parseWatchInterval, parsePinnedEntries } = dashboard;
+  const queriesMod = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+  const osMod = require('os');
+
+  // ── _parseWatchInterval ──────────────────────────────────────────────────
+  // Pure function — no patching, just input → output.
+
+  await test('_parseWatchInterval returns default 300000 for null', () => {
+    assert.strictEqual(_parseWatchInterval(null), 300000);
+  });
+
+  await test('_parseWatchInterval returns default 300000 for undefined', () => {
+    assert.strictEqual(_parseWatchInterval(undefined), 300000);
+  });
+
+  await test('_parseWatchInterval returns default for empty string', () => {
+    assert.strictEqual(_parseWatchInterval(''), 300000);
+  });
+
+  await test('_parseWatchInterval returns default for falsy 0', () => {
+    // 0 is falsy, hits the `if (!val)` branch — documents actual behavior.
+    assert.strictEqual(_parseWatchInterval(0), 300000);
+  });
+
+  await test('_parseWatchInterval passes through ms number >= 60000', () => {
+    assert.strictEqual(_parseWatchInterval(300000), 300000);
+    assert.strictEqual(_parseWatchInterval(3600000), 3600000);
+  });
+
+  await test('_parseWatchInterval clamps numeric input below 60000 floor', () => {
+    assert.strictEqual(_parseWatchInterval(1000), 60000);
+    assert.strictEqual(_parseWatchInterval(59999), 60000);
+  });
+
+  await test('_parseWatchInterval parses "5m" as 5 minutes', () => {
+    assert.strictEqual(_parseWatchInterval('5m'), 300000);
+  });
+
+  await test('_parseWatchInterval parses "1h" as 1 hour', () => {
+    assert.strictEqual(_parseWatchInterval('1h'), 3600000);
+  });
+
+  await test('_parseWatchInterval parses "30s" and clamps to 60000 floor', () => {
+    assert.strictEqual(_parseWatchInterval('30s'), 60000);
+  });
+
+  await test('_parseWatchInterval parses "120s" as 120 seconds', () => {
+    assert.strictEqual(_parseWatchInterval('120s'), 120000);
+  });
+
+  await test('_parseWatchInterval parses fractional "1.5m"', () => {
+    assert.strictEqual(_parseWatchInterval('1.5m'), 90000);
+  });
+
+  await test('_parseWatchInterval accepts "min" / "hr" / "hours" / "sec" suffixes', () => {
+    assert.strictEqual(_parseWatchInterval('5min'), 300000);
+    assert.strictEqual(_parseWatchInterval('2hr'), 7200000);
+    assert.strictEqual(_parseWatchInterval('2hours'), 7200000);
+    assert.strictEqual(_parseWatchInterval('120sec'), 120000);
+  });
+
+  await test('_parseWatchInterval parses numeric string >= 1000 as milliseconds', () => {
+    assert.strictEqual(_parseWatchInterval('300000'), 300000);
+    assert.strictEqual(_parseWatchInterval('120000'), 120000);
+  });
+
+  await test('_parseWatchInterval parses numeric string < 1000 as seconds with clamp', () => {
+    // "500" → 500 * 1000 ms = 500000ms, above floor → 500000
+    assert.strictEqual(_parseWatchInterval('500'), 500000);
+    // "30" → 30 * 1000 = 30000ms, below floor → clamped to 60000
+    assert.strictEqual(_parseWatchInterval('30'), 60000);
+  });
+
+  await test('_parseWatchInterval returns default for unrecognized input', () => {
+    assert.strictEqual(_parseWatchInterval('xyz'), 300000);
+    assert.strictEqual(_parseWatchInterval('5days'), 300000);
+    assert.strictEqual(_parseWatchInterval('5 years'), 300000);
+  });
+
+  await test('_parseWatchInterval tolerates whitespace around unit', () => {
+    assert.strictEqual(_parseWatchInterval('5 m'), 300000);
+    assert.strictEqual(_parseWatchInterval('  10m  '), 600000);
+  });
+
+  // ── parsePinnedEntries ──────────────────────────────────────────────────
+
+  await test('parsePinnedEntries returns [] for empty string', () => {
+    assert.deepStrictEqual(parsePinnedEntries(''), []);
+  });
+
+  await test('parsePinnedEntries returns [] for null / undefined', () => {
+    assert.deepStrictEqual(parsePinnedEntries(null), []);
+    assert.deepStrictEqual(parsePinnedEntries(undefined), []);
+  });
+
+  await test('parsePinnedEntries parses single entry without emoji as info', () => {
+    const content = '### Plain Title\n\nBody line one';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].level, 'info');
+    assert.strictEqual(result[0].title, 'Plain Title');
+    assert.strictEqual(result[0].content, 'Body line one');
+  });
+
+  await test('parsePinnedEntries marks 🔴 entries as critical', () => {
+    const content = '### 🔴 Critical Rule\n\nDo this always';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].level, 'critical');
+    assert.strictEqual(result[0].title, 'Critical Rule');
+  });
+
+  await test('parsePinnedEntries marks 🟡 entries as warning', () => {
+    const content = '### 🟡 Heads Up\n\nPotential gotcha';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].level, 'warning');
+    assert.strictEqual(result[0].title, 'Heads Up');
+  });
+
+  await test('parsePinnedEntries terminates content at *Pinned signature', () => {
+    const content = '### Tip\n\nActual tip body\n\n*Pinned by alice on 2026-01-01*';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].content, 'Actual tip body');
+    // signature line must NOT leak into content
+    assert.ok(!result[0].content.includes('*Pinned'),
+      'signature line must not appear in parsed content');
+  });
+
+  await test('parsePinnedEntries handles multiple entries separated by ###', () => {
+    const content = '### 🔴 Rule One\n\nFirst body\n\n### 🟡 Rule Two\n\nSecond body';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result[0].level, 'critical');
+    assert.strictEqual(result[0].title, 'Rule One');
+    assert.strictEqual(result[0].content, 'First body');
+    assert.strictEqual(result[1].level, 'warning');
+    assert.strictEqual(result[1].title, 'Rule Two');
+    assert.strictEqual(result[1].content, 'Second body');
+  });
+
+  await test('parsePinnedEntries skips malformed entry missing blank line after title', () => {
+    // No blank line between title and body → regex does not match
+    const content = '### Not Structured\nBody on next line only';
+    assert.deepStrictEqual(parsePinnedEntries(content), []);
+  });
+
+  await test('parsePinnedEntries preserves multi-line content inside one entry', () => {
+    const content = '### Title\n\nLine one\nLine two\nLine three';
+    const result = parsePinnedEntries(content);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].content, 'Line one\nLine two\nLine three');
+  });
+
+  // ── _filterCcTabSessions ────────────────────────────────────────────────
+
+  const freshSession = () => ({
+    id: 'tab-1',
+    sessionId: 'sess-abc',
+    turnCount: 0,
+    lastActiveAt: new Date().toISOString(),
+  });
+
+  await test('_filterCcTabSessions returns [] for non-array input', () => {
+    assert.deepStrictEqual(_filterCcTabSessions(null), []);
+    assert.deepStrictEqual(_filterCcTabSessions(undefined), []);
+    assert.deepStrictEqual(_filterCcTabSessions('not an array'), []);
+    assert.deepStrictEqual(_filterCcTabSessions({}), []);
+  });
+
+  await test('_filterCcTabSessions keeps a fresh session with no _promptHash', () => {
+    const kept = _filterCcTabSessions([freshSession()]);
+    assert.strictEqual(kept.length, 1);
+    assert.strictEqual(kept[0].id, 'tab-1');
+  });
+
+  await test('_filterCcTabSessions drops sessions missing id or sessionId', () => {
+    const s1 = { ...freshSession(), id: null };
+    const s2 = { ...freshSession(), sessionId: null };
+    const s3 = null; // falsy session entries also rejected
+    assert.deepStrictEqual(_filterCcTabSessions([s1, s2, s3]), []);
+  });
+
+  await test('_filterCcTabSessions drops sessions with turnCount >= CC_SESSION_MAX_TURNS', () => {
+    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
+    const overTurns = { ...freshSession(), turnCount: max };
+    const wayOver = { ...freshSession(), turnCount: max + 10 };
+    assert.deepStrictEqual(_filterCcTabSessions([overTurns, wayOver]), []);
+  });
+
+  await test('_filterCcTabSessions keeps sessions with turnCount < CC_SESSION_MAX_TURNS', () => {
+    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
+    const underTurns = { ...freshSession(), turnCount: max - 1 };
+    const kept = _filterCcTabSessions([underTurns]);
+    assert.strictEqual(kept.length, 1);
+    assert.strictEqual(kept[0].turnCount, max - 1);
+  });
+
+  await test('_filterCcTabSessions drops sessions whose lastActiveAt is past TTL', () => {
+    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+    const expired = {
+      ...freshSession(),
+      lastActiveAt: new Date(Date.now() - ttl - 60000).toISOString(),
+    };
+    assert.deepStrictEqual(_filterCcTabSessions([expired]), []);
+  });
+
+  await test('_filterCcTabSessions falls back to createdAt when lastActiveAt missing', () => {
+    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+    const expiredByCreatedAt = {
+      id: 'tab-2',
+      sessionId: 'sess-2',
+      turnCount: 0,
+      createdAt: new Date(Date.now() - ttl - 60000).toISOString(),
+    };
+    assert.deepStrictEqual(_filterCcTabSessions([expiredByCreatedAt]), []);
+
+    const freshByCreatedAt = {
+      id: 'tab-3',
+      sessionId: 'sess-3',
+      turnCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+    assert.strictEqual(_filterCcTabSessions([freshByCreatedAt]).length, 1);
+  });
+
+  await test('_filterCcTabSessions drops sessions whose _promptHash does not match current hash', () => {
+    // A _promptHash that is definitely not the current 8-char md5 slice.
+    const mismatched = { ...freshSession(), _promptHash: 'deadbeef-impossible-hash' };
+    assert.deepStrictEqual(_filterCcTabSessions([mismatched]), []);
+  });
+
+  await test('_filterCcTabSessions filters a mixed list, keeping only valid sessions', () => {
+    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
+    const sessions = [
+      freshSession(),                                                            // keep
+      { ...freshSession(), id: null },                                           // drop (no id)
+      { ...freshSession(), turnCount: max },                                     // drop (turns)
+      { ...freshSession(), lastActiveAt: new Date(Date.now() - ttl - 1).toISOString() }, // drop (expired)
+      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                    // drop (hash mismatch)
+      freshSession(),                                                            // keep
+    ];
+    const kept = _filterCcTabSessions(sessions);
+    assert.strictEqual(kept.length, 2);
+    for (const s of kept) {
+      assert.ok(s.id && s.sessionId, 'kept sessions must have id and sessionId');
+      assert.ok(s.turnCount < max, 'kept sessions must be under the turn cap');
+    }
+  });
+
+  // ── _getVersionCheckInterval (patches queries.getConfig) ───────────────
+
+  await test('_getVersionCheckInterval returns default when config omits override', () => {
+    const orig = queriesMod.getConfig;
+    queriesMod.getConfig = () => ({ engine: {} });
+    try {
+      assert.strictEqual(_getVersionCheckInterval(),
+        shared.ENGINE_DEFAULTS.versionCheckInterval);
+    } finally {
+      queriesMod.getConfig = orig;
+    }
+  });
+
+  await test('_getVersionCheckInterval returns default when config has no engine section', () => {
+    const orig = queriesMod.getConfig;
+    queriesMod.getConfig = () => ({});
+    try {
+      assert.strictEqual(_getVersionCheckInterval(),
+        shared.ENGINE_DEFAULTS.versionCheckInterval);
+    } finally {
+      queriesMod.getConfig = orig;
+    }
+  });
+
+  await test('_getVersionCheckInterval returns config override when present', () => {
+    const orig = queriesMod.getConfig;
+    queriesMod.getConfig = () => ({ engine: { versionCheckInterval: 1234567 } });
+    try {
+      assert.strictEqual(_getVersionCheckInterval(), 1234567);
+    } finally {
+      queriesMod.getConfig = orig;
+    }
+  });
+
+  await test('_getVersionCheckInterval falls back to default when getConfig throws', () => {
+    const orig = queriesMod.getConfig;
+    queriesMod.getConfig = () => { throw new Error('boom'); };
+    try {
+      assert.strictEqual(_getVersionCheckInterval(),
+        shared.ENGINE_DEFAULTS.versionCheckInterval);
+    } finally {
+      queriesMod.getConfig = orig;
+    }
+  });
+
+  await test('_getVersionCheckInterval treats versionCheckInterval=0 as missing (falsy)', () => {
+    // `?.versionCheckInterval || default` — 0 is falsy, so the default wins.
+    // Documents actual behavior; 0 would otherwise mean "check immediately always".
+    const orig = queriesMod.getConfig;
+    queriesMod.getConfig = () => ({ engine: { versionCheckInterval: 0 } });
+    try {
+      assert.strictEqual(_getVersionCheckInterval(),
+        shared.ENGINE_DEFAULTS.versionCheckInterval);
+    } finally {
+      queriesMod.getConfig = orig;
+    }
+  });
+
+  // ── getMcpServers (patches os.homedir) ────────────────────────────────
+
+  await test('getMcpServers returns [] when ~/.claude.json is missing', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir(); // empty dir, no .claude.json
+    osMod.homedir = () => tmp;
+    try {
+      assert.deepStrictEqual(getMcpServers(), []);
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers returns [] when ~/.claude.json is malformed', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), '{ this is not json');
+    osMod.homedir = () => tmp;
+    try {
+      assert.deepStrictEqual(getMcpServers(), []);
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers returns [] when config lacks mcpServers key', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({ other: 1 }));
+    osMod.homedir = () => tmp;
+    try {
+      assert.deepStrictEqual(getMcpServers(), []);
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers maps mcpServers entries to {name, command, args}', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({
+      mcpServers: {
+        playwright: { command: 'npx', args: ['-y', '@playwright/mcp@latest'] },
+        azure: { command: 'azmcp', args: ['server', 'start'] },
+      },
+    }));
+    osMod.homedir = () => tmp;
+    try {
+      const servers = getMcpServers();
+      assert.strictEqual(servers.length, 2);
+      const byName = Object.fromEntries(servers.map(s => [s.name, s]));
+      assert.strictEqual(byName.playwright.command, 'npx');
+      // slice(-1)[0] returns the LAST arg (documents current behavior)
+      assert.strictEqual(byName.playwright.args, '@playwright/mcp@latest');
+      assert.strictEqual(byName.azure.command, 'azmcp');
+      assert.strictEqual(byName.azure.args, 'start');
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers defaults missing command/args fields to empty string', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({
+      mcpServers: {
+        minimal: {},                      // no command, no args
+        commandOnly: { command: 'node' }, // no args
+        emptyArgs: { command: 'foo', args: [] }, // args present but empty
+      },
+    }));
+    osMod.homedir = () => tmp;
+    try {
+      const servers = getMcpServers();
+      const byName = Object.fromEntries(servers.map(s => [s.name, s]));
+      assert.strictEqual(byName.minimal.command, '');
+      assert.strictEqual(byName.minimal.args, '');
+      assert.strictEqual(byName.commandOnly.command, 'node');
+      assert.strictEqual(byName.commandOnly.args, '');
+      assert.strictEqual(byName.emptyArgs.command, 'foo');
+      assert.strictEqual(byName.emptyArgs.args, '');
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers returns [] when mcpServers is an empty object', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+    osMod.homedir = () => tmp;
+    try {
+      assert.deepStrictEqual(getMcpServers(), []);
+    } finally {
+      osMod.homedir = origHome;
+    }
   });
 }
 
