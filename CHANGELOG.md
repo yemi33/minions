@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1567 (2026-04-27)
+
+### Other
+- Clarify PRD delete toast
+
 ## 0.1.1565 (2026-04-27)
 
 ### Other
