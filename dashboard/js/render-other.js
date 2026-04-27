@@ -44,6 +44,7 @@ async function projectChipRemove(name) {
     var parts = ['Removed "' + name + '"'];
     if (d.cancelledItems) parts.push(d.cancelledItems + ' WI cancelled');
     if (d.drainedDispatches) parts.push(d.drainedDispatches + ' dispatch drained');
+    if (d.archivedPlans?.length) parts.push(d.archivedPlans.length + ' plan/PRD archived');
     if (d.archivedTo) parts.push('archived');
     if (d.pipelineRefs?.length) parts.push('! pipelines still reference: ' + d.pipelineRefs.join(', '));
     showToast('cmd-toast', parts.join(' — '), true);

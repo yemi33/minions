@@ -221,6 +221,7 @@ function removeProject(target, options = {}) {
   if (result.cancelledItems) lines.push(`    cancelled ${result.cancelledItems} pending work item(s)`);
   if (result.drainedDispatches) lines.push(`    drained ${result.drainedDispatches} dispatch entr${result.drainedDispatches === 1 ? 'y' : 'ies'} (active agents killed)`);
   if (result.cleanedWorktrees) lines.push(`    cleaned ${result.cleanedWorktrees} worktree(s)`);
+  if (result.archivedPlans?.length) lines.push(`    archived ${result.archivedPlans.length} plan/PRD file(s)`);
   if (result.disabledSchedules) lines.push(`    disabled ${result.disabledSchedules} schedule(s)`);
   if (result.archivedTo) lines.push(`    archived data → ${result.archivedTo}`);
   if (result.purgedDataDir) lines.push(`    purged data directory`);

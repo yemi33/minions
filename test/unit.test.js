@@ -22401,6 +22401,26 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(/refresh\(\)/.test(failBranch), 'failure branch must call refresh() to restore the chip from server state');
   });
 
+  await test('projects browse launches hidden PowerShell directly on Windows (no cmd shell window)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleProjectsBrowse');
+    const fnEnd = src.indexOf('const _projectConfirmTokens', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.ok(body.includes("execFileSync('powershell.exe'"), 'Windows browse should exec powershell directly');
+    assert.ok(body.includes('windowsHide: true'), 'Windows browse should hide the helper console window');
+    assert.ok(!body.includes('execSync(`powershell -STA'), 'Windows browse should not go through execSync shell command');
+  });
+
+  await test('projects browse maps interrupted Windows helper to cancelled response', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleProjectsBrowse');
+    const fnEnd = src.indexOf('const _projectConfirmTokens', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.ok(body.includes("signal === 'SIGINT'") || body.includes("signal === 'SIGBREAK'"), 'browse handler should detect interrupted PowerShell helper');
+    assert.ok(body.includes('status === 0xC000013A'), 'browse handler should treat CTRL+C termination as cancellation on Windows');
+    assert.ok(body.includes("return jsonReply(res, 200, { cancelled: true })"), 'interrupted browse should return cancelled, not an error');
+  });
+
   // ── PRD Retry Button + View Toggle + Dependency Auto-Trigger ───────────────
 
   await test('PRD list view shows retry button for failed items (canRequeue logic)', () => {
@@ -33834,6 +33854,52 @@ async function testEngineHelperCoverage() {
       assert.strictEqual(r.drainedDispatches, 1);
       const dispatch = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
       assert.strictEqual(dispatch.active.length, 0);
+    } finally { restore(); }
+  });
+
+  await test('removeProject archives PRD JSONs whose project field matches', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      // Drop a PRD that targets demo
+      const prdPath = path.join(dir, 'prd', 'demo-2026-04-27.json');
+      fs.writeFileSync(prdPath, JSON.stringify({ project: 'demo', source_plan: 'demo-plan.md', missing_features: [] }));
+      // And a PRD that targets a different project — should NOT be archived
+      fs.writeFileSync(path.join(dir, 'prd', 'other-2026-04-27.json'), JSON.stringify({ project: 'other', missing_features: [] }));
+      // Drop a source .md that the demo PRD references
+      fs.writeFileSync(path.join(dir, 'plans', 'demo-plan.md'), '# Demo plan');
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.ok(r.archivedPlans.includes('prd/demo-2026-04-27.json'), 'PRD should be archived: ' + JSON.stringify(r.archivedPlans));
+      assert.ok(!fs.existsSync(prdPath), 'PRD should be moved out of prd/');
+      assert.ok(fs.existsSync(path.join(dir, 'prd', 'archive', 'demo-2026-04-27.json')), 'PRD should land in prd/archive/');
+      assert.ok(fs.existsSync(path.join(dir, 'plans', 'archive', 'demo-plan.md')), 'linked source plan should also be archived');
+      assert.ok(fs.existsSync(path.join(dir, 'prd', 'other-2026-04-27.json')), 'unrelated PRD should remain');
+    } finally { restore(); }
+  });
+
+  await test('removeProject archives plan .md whose content has Project: <name>', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      fs.writeFileSync(path.join(dir, 'plans', 'unrelated.md'), '# A plan with no project field');
+      fs.writeFileSync(path.join(dir, 'plans', 'tagged.md'), '# Tagged\n\n**Project:** demo\n\n## Stuff');
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.ok(r.archivedPlans.includes('plans/tagged.md'), 'plan with Project: line should be archived: ' + JSON.stringify(r.archivedPlans));
+      assert.ok(!r.archivedPlans.includes('plans/unrelated.md'), 'plan without project hint should NOT be archived');
+      assert.ok(fs.existsSync(path.join(dir, 'plans', 'archive', 'tagged.md')));
+      assert.ok(fs.existsSync(path.join(dir, 'plans', 'unrelated.md')));
+    } finally { restore(); }
+  });
+
+  await test('removeProject archives plan .md by filename match (catches plans missing Project: line)', () => {
+    const { dir, restore } = _setupProjectForRemoval();
+    try {
+      // The exact case that bit us in production: a plan tied to a project but
+      // with no `Project:` line in the body. Filename should still catch it.
+      fs.writeFileSync(path.join(dir, 'plans', 'demo-roadmap.md'), '# A plan with no project field, but filename mentions demo');
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.ok(r.archivedPlans.includes('plans/demo-roadmap.md'), 'filename match should archive: ' + JSON.stringify(r.archivedPlans));
     } finally { restore(); }
   });
 

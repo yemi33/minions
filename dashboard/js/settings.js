@@ -424,6 +424,7 @@ async function removeProject(name) {
     if (d.cancelledItems) parts.push(d.cancelledItems + ' WI cancelled');
     if (d.drainedDispatches) parts.push(d.drainedDispatches + ' dispatch drained');
     if (d.cleanedWorktrees) parts.push(d.cleanedWorktrees + ' worktree(s) cleaned');
+    if (d.archivedPlans?.length) parts.push(d.archivedPlans.length + ' plan/PRD archived');
     if (d.archivedTo) parts.push('archived to ' + d.archivedTo);
     if (d.pipelineRefs?.length) parts.push('! pipelines still reference: ' + d.pipelineRefs.join(', '));
     showToast('cmd-toast', parts.join(' — '), true);
