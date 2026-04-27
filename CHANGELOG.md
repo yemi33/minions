@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1563 (2026-04-27)
+
+### Fixes
+-  tighten destructive dashboard UX
+
+### Other
+- chore: minions uninstall prints re-install command
+
 ## 0.1.1561 (2026-04-27)
 
 ### Other
