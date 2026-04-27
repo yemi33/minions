@@ -5,7 +5,8 @@ function renderProjects(projects) {
   const visible = (projects || []).filter(p => typeof isDeleted === 'function' ? !isDeleted('project:' + p.name) : true);
   if (!visible.length) {
     list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked.</span>' +
-      '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--green);font-weight:500;cursor:pointer;border-style:dashed;margin-left:8px">+ Add Project</span>';
+      '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--green);font-weight:500;cursor:pointer;border-style:dashed;margin-left:8px">+ Add Project</span>' +
+      '<span onclick="openScanProjectsModal()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--blue);font-weight:500;cursor:pointer;border-style:dashed;font-size:10px">Scan</span>';
     return;
   }
   list.innerHTML = visible.map(p =>

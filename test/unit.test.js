@@ -22355,6 +22355,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
   });
 
+  await test('renderProjects empty state offers both Add Project and Scan (fresh-install discovery)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    // Empty branch is the if (!visible.length) block — must contain both addProject() and openScanProjectsModal()
+    const fnStart = src.indexOf('function renderProjects');
+    const emptyBranchStart = src.indexOf('if (!visible.length)', fnStart);
+    const emptyBranchEnd = src.indexOf('return;', emptyBranchStart);
+    const emptyBranch = src.slice(emptyBranchStart, emptyBranchEnd);
+    assert.ok(emptyBranch.includes('addProject()'), 'empty state must offer + Add Project');
+    assert.ok(emptyBranch.includes('openScanProjectsModal()'), 'empty state must offer Scan so users with no projects can discover repos');
+  });
+
   await test('project chip has × remove button wired to projectChipRemove', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
     assert.ok(/projectChipRemove\(/.test(src), 'chip should call projectChipRemove with the project name');
