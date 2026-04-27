@@ -398,6 +398,10 @@ function checkTimeouts(config) {
     allWiPaths.push(projectWorkItemsPath(project));
   }
   for (const wiPath of allWiPaths) {
+    // skipWriteIfUnchanged is critical — checkTimeouts runs every tick, and
+    // without this gate the file's mtime updates on every call (no real
+    // change), tripping the cli.js work-items.json watcher → triggering tick
+    // → calling checkTimeouts → ... a 5-6s loop of "File change detected".
     mutateJsonFileLocked(wiPath, (items) => {
       if (!items || !Array.isArray(items)) return items;
       let changed = false;
@@ -438,7 +442,7 @@ function checkTimeouts(config) {
         }
       }
       return items;
-    }, { defaultValue: [] });
+    }, { defaultValue: [], skipWriteIfUnchanged: true });
   }
 }
 

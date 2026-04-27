@@ -8678,6 +8678,12 @@ async function testCheckTimeouts() {
       'Should detect blocking tool patterns to extend timeout');
   });
 
+  await test('checkTimeouts WI-reconcile uses skipWriteIfUnchanged to avoid file-watch tick storm', () => {
+    const reconcileBlock = src.slice(src.lastIndexOf('mutateJsonFileLocked(wiPath'));
+    assert.ok(/skipWriteIfUnchanged:\s*true/.test(reconcileBlock),
+      'reconcile sweep must pass skipWriteIfUnchanged: true to mutateJsonFileLocked — without it, the file mtime updates on every tick and trips the cli.js watcher into a 5-6s "File change detected" loop');
+  });
+
   await test('checkTimeouts detects completion via output scan', () => {
     assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
       'Should scan live output for completion markers');
