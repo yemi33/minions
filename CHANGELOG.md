@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1571 (2026-04-27)
+
+### Fixes
+- break work-items.json watcher tick storm
+
 ## 0.1.1570 (2026-04-27)
 
 ### Fixes
