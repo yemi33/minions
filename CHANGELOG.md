@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1565 (2026-04-27)
+
+### Other
+- docs(sched-weekly-docs-cleanup-1776960000531): sync stale references with current source (#1750)
+
 ## 0.1.1564 (2026-04-27)
 
 ### Other
