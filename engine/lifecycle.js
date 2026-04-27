@@ -892,6 +892,23 @@ function parseReviewVerdict(text) {
   return null;
 }
 
+/**
+ * Detect "idempotent bailout" output from a review agent — the agent saw a
+ * prior review on the PR (or the same dispatchKey re-fired) and chose to bail
+ * rather than spam a duplicate comment.
+ *
+ * Such output is intentionally short and contains no VERDICT keyword. Treating
+ * it as a retryable failure burns _retryCount and eventually flips the WI to
+ * status=failed even though the original review was successfully posted (#1770).
+ *
+ * @param {string} text - Agent output / resultSummary
+ * @returns {boolean}
+ */
+function isReviewBailout(text) {
+  if (!text || typeof text !== 'string') return false;
+  return /bail(ing)?\s+out/i.test(text) || /already\s+posted/i.test(text);
+}
+
 async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
 
   if (!pr?.id) return;
@@ -1657,9 +1674,18 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // same pattern as plan-to-prd (#893): updateWorkItemStatus deletes _retryCount, so the check
   // must read/increment it before that happens. Also sets skipDoneStatus so completedAt isn't
   // written and then left dangling when status is reset to pending for retry.
+  //
+  // (#1770) Idempotent bailout: if the agent explicitly bailed because a review was
+  // already posted (e.g. the WI got re-dispatched before lifecycle marked the first
+  // run done), treat the run as success — fall through to mark DONE without retry.
+  // Without this, the second run produces no VERDICT, _retryCount increments,
+  // and after 3 such bailouts the WI flips to status=failed even though the
+  // original review was posted on the first run.
   if (effectiveSuccess && type === WORK_TYPE.REVIEW && meta?.item?.id) {
     const verdict = parseReviewVerdict(resultSummary);
-    if (!verdict) {
+    if (!verdict && isReviewBailout(resultSummary)) {
+      log('info', `Review ${meta.item.id} bailed out (review already posted) — treating as DONE without retry`);
+    } else if (!verdict) {
       skipDoneStatus = true;
       const wiPath = resolveWorkItemPath(meta);
       if (wiPath) {
@@ -1672,6 +1698,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
             if (retries < ENGINE_DEFAULTS.maxRetries) {
               w.status = WI_STATUS.PENDING;
               w._retryCount = retries + 1;
+              w._lastRetryAt = ts();
+              w._lastRetryReason = 'no review verdict';
               delete w.dispatched_at;
               delete w.completedAt;
               log('warn', `Review ${meta.item.id} completed without verdict — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
@@ -2162,6 +2190,7 @@ module.exports = {
   updateMetrics,
   parseAgentOutput,
   parseReviewVerdict,
+  isReviewBailout,
   parseStructuredCompletion,
   runPostCompletionHooks,
   syncPrdFromPrs,

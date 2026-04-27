@@ -22541,7 +22541,7 @@ async function testAutoRecoveryAndAtomicity() {
 
     const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     const planBody = plansSrc.slice(plansSrc.indexOf('async function planDelete'), plansSrc.indexOf('async function planArchive'));
-    assert.ok(planBody.indexOf("showToast('cmd-toast', 'Plan deleted'") < planBody.indexOf("markDeleted('plan:' + file)"),
+    assert.ok(planBody.indexOf("showToast('cmd-toast', isPrd ? 'PRD deleted' : 'Plan deleted'") < planBody.indexOf("markDeleted('plan:' + file)"),
       'planDelete should toast before markDeleted');
 
     const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
@@ -22570,6 +22570,17 @@ async function testAutoRecoveryAndAtomicity() {
     const fetchIdx = body.indexOf("fetch('/api/plans/delete'");
     assert.ok(plansIdx > 0 && prdIdx > 0 && fetchIdx > 0, 'planDelete should rerender plans + PRD before fetch');
     assert.ok(plansIdx < fetchIdx && prdIdx < fetchIdx, 'planDelete rerenders must happen before fetch');
+  });
+
+  await test('planDelete keeps the source plan when deleting a PRD', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fnStart = src.indexOf('async function planDelete');
+    const fnEnd = src.indexOf('async function planArchive', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.ok(body.includes('The source plan will be kept.'),
+      'planDelete confirm should clarify that PRD delete keeps the source plan');
+    assert.ok(!body.includes("markDeleted('plan:' + linkedSource)"),
+      'planDelete should not optimistically hide the linked source plan');
   });
 
   await test('prdItemRemove marks deleted and rerenders PRD cache before fetch', () => {
@@ -25936,6 +25947,17 @@ async function testDashboardButtonConsistency() {
     assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
   });
 
+  await test('plans delete backend keeps source plan when deleting a PRD', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handlePlansDelete');
+    const fnEnd = src.indexOf('async function handlePlansArchive', fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.ok(body.includes("w.status = WI_STATUS.CANCELLED") && body.includes("_cancelledBy = 'prd-deleted'"),
+      'handlePlansDelete should reset plan-to-prd work when a PRD is deleted');
+    assert.ok(!body.includes("safeUnlink(path.join(PLANS_DIR, prdSourcePlan))"),
+      'handlePlansDelete should not delete the linked source plan file');
+  });
+
   await test('client-side transcript has null guards', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
     const lines = src.split('\n').filter(l => l.includes("t.agent") && l.includes("t.type") && l.includes("t.round"));
@@ -26408,6 +26430,115 @@ async function testPrReviewFixFlows() {
       'Should instruct using --comment for GitHub repos');
     assert.ok(playbookSrc.includes('VERDICT: APPROVE'),
       'Should instruct agents to include VERDICT: APPROVE in comment');
+  });
+
+  // ── Review bailout detection (W-mohpnidp5uuv / issue #1770) ──
+  //
+  // When a review agent finds the review was already posted (because the engine
+  // re-dispatched the same WI before lifecycle marked the first run done) it
+  // bails out silently rather than spamming a duplicate comment. That bailout
+  // output contains no VERDICT keyword, so naively treating "no verdict" as a
+  // retryable failure burns _retryCount on a dispatch that already succeeded
+  // and eventually flips the WI to status=failed even though the review was
+  // posted on the first run.
+  console.log('\n── Review Bailout Detection (#1770) ──');
+
+  await test('isReviewBailout is exported from lifecycle.js', () => {
+    assert.ok(lifecycleSrc.includes('function isReviewBailout('),
+      'isReviewBailout helper must exist');
+    assert.ok(lifecycleSrc.includes('isReviewBailout,'),
+      'isReviewBailout must be exported from module.exports');
+  });
+
+  await test('isReviewBailout matches "Bailing out silently"', () => {
+    const { isReviewBailout } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(isReviewBailout('Bailing out silently — review already exists'), true);
+    assert.strictEqual(isReviewBailout('bailing out: review was already posted'), true);
+    assert.strictEqual(isReviewBailout('I will bail out and not post a duplicate review'), true);
+  });
+
+  await test('isReviewBailout matches "already posted" phrasing', () => {
+    const { isReviewBailout } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(isReviewBailout('A minions review is already posted on this PR'), true);
+    assert.strictEqual(isReviewBailout('Already posted — skipping duplicate comment.'), true);
+  });
+
+  await test('isReviewBailout returns false for normal output without verdict', () => {
+    const { isReviewBailout } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(isReviewBailout(null), false);
+    assert.strictEqual(isReviewBailout(''), false);
+    assert.strictEqual(isReviewBailout('Reviewed the diff and posted feedback.'), false);
+    assert.strictEqual(isReviewBailout('Posted comment with findings'), false);
+  });
+
+  await test('runPostCompletionHooks treats review bailouts as DONE without retry', () => {
+    // The verdict check block should consult isReviewBailout BEFORE bumping
+    // _retryCount — otherwise a successful first run + idempotent second run
+    // chains into 3 "no verdict" retries and a final status=failed.
+    const verdictBlock = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Verify review work items include a verdict'),
+      lifecycleSrc.indexOf('Verify plan-to-prd actually created the PRD file before marking done')
+    );
+    assert.ok(verdictBlock.includes('isReviewBailout('),
+      'Review verdict check must call isReviewBailout to skip retry on idempotent bailouts');
+    assert.ok(/isReviewBailout\([^)]*\)\s*\)\s*\{[\s\S]{0,200}return data;/.test(verdictBlock)
+      || /if\s*\([^)]*isReviewBailout/.test(verdictBlock),
+      'isReviewBailout match should short-circuit the retry path');
+  });
+
+  await test('review verdict retry path stamps _lastRetryAt for dispatch-gap gating', () => {
+    const verdictBlock = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Verify review work items include a verdict'),
+      lifecycleSrc.indexOf('Verify plan-to-prd actually created the PRD file before marking done')
+    );
+    assert.ok(verdictBlock.includes('_lastRetryAt'),
+      'Lifecycle review-verdict retry must set _lastRetryAt so the dispatch gate can enforce a min retry gap');
+  });
+
+  // ── Dispatch gate: minimum retry gap (W-mohpnidp5uuv / issue #1770) ──
+  //
+  // Even when `_retryCount` is set, the engine must NOT immediately re-dispatch
+  // a work item on the very next tick. Without a gap, a no-verdict review
+  // dispatched at T0 → completed at T0+30s with skipDoneStatus → re-dispatched
+  // at T0+60s before the agent even noticed its own review on the PR. The
+  // second run bails ("already posted") with no verdict, ad infinitum.
+  console.log('\n── Dispatch Gate: Min Retry Gap (#1770) ──');
+
+  await test('ENGINE_DEFAULTS exposes minRetryGapMs', () => {
+    const { ENGINE_DEFAULTS } = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+    assert.ok(typeof ENGINE_DEFAULTS.minRetryGapMs === 'number' && ENGINE_DEFAULTS.minRetryGapMs > 0,
+      'ENGINE_DEFAULTS.minRetryGapMs must be a positive number (default min gap before re-dispatching a retry)');
+    assert.ok(ENGINE_DEFAULTS.minRetryGapMs >= 60000,
+      'minRetryGapMs should be at least 1 minute to avoid burning retries within a single tick window');
+  });
+
+  await test('discoverFromWorkItems gates retry items by _lastRetryAt + minRetryGapMs', () => {
+    // Both the project-scoped `discoverFromWorkItems` and the central-work
+    // counterpart must short-circuit retries that fired within the last
+    // minRetryGapMs window — otherwise a no-verdict review re-fires on the
+    // next 60s tick and the agent bails as a duplicate forever.
+    assert.ok(engineSrc.includes('minRetryGapMs'),
+      'engine.js must reference ENGINE_DEFAULTS.minRetryGapMs for retry gating');
+    assert.ok(engineSrc.includes('_lastRetryAt'),
+      'engine.js must read _lastRetryAt to enforce a minimum gap between retries');
+    // The retry branch must check the gap and skip with a clear pendingReason
+    const wiBlock = engineSrc.slice(
+      engineSrc.indexOf('function discoverFromWorkItems('),
+      engineSrc.indexOf('function normalizeAc(')
+    );
+    assert.ok(wiBlock.includes('_lastRetryAt') && wiBlock.includes('minRetryGapMs'),
+      'discoverFromWorkItems retry branch must consult _lastRetryAt against minRetryGapMs');
+    assert.ok(wiBlock.includes("'retry_cooldown'"),
+      'A retry blocked by minRetryGapMs must surface retry_cooldown as the _pendingReason');
+  });
+
+  await test('central work-item dispatch gate also respects minRetryGapMs', () => {
+    const centralStart = engineSrc.indexOf('function discoverCentralWorkItems(');
+    assert.ok(centralStart > 0, 'discoverCentralWorkItems must exist in engine.js');
+    const centralEnd = engineSrc.indexOf('async function discoverWork(', centralStart);
+    const centralBlock = engineSrc.slice(centralStart, centralEnd > 0 ? centralEnd : engineSrc.length);
+    assert.ok(centralBlock.includes('minRetryGapMs') && centralBlock.includes('_lastRetryAt'),
+      'discoverCentralWorkItems retry branch must also gate on _lastRetryAt + minRetryGapMs');
   });
 
   // ── Build fix ──

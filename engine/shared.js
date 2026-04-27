@@ -758,6 +758,7 @@ const ENGINE_DEFAULTS = {
   evalMaxIterations: 3, // max review→fix cycles before escalating to human
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
   maxRetries: 3, // max dispatch retries before marking work item as failed
+  minRetryGapMs: 120000, // 2min — minimum gap between retry dispatches for the same work item; prevents tight retry loops when an idempotent agent (e.g. review bailing out on a duplicate) cannot produce the expected output (#1770)
   pipelineApiRetries: 2, // max attempts for pipeline API calls
   pipelineApiRetryDelay: 2000, // ms delay between pipeline API retries
   versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
