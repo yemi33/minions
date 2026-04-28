@@ -45,9 +45,11 @@ Keep branch names lowercase, use hyphens, max 60 chars.
 
 Do NOT remove the worktree — the engine handles cleanup automatically.
 
-## After Completion
+## After Successful Completion
 
-Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
+Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md` only after the work item succeeds: build/tests pass, the branch is pushed, and the PR is created.
+
+If you stop because the task failed, is blocked, or is only partially complete, do **not** write an inbox note. Put the failure details in your final response and in any required PR/work-item comment instead.
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts during push or PR creation:

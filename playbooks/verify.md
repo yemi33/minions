@@ -77,9 +77,13 @@ If the project has no runnable application, skip this step and note that in the 
 
 ## Step 5: Write the Verification Report and Testing Guide
 
-Create the guide in TWO locations:
-1. **Permanent location** (linked from dashboard): `{{team_root}}/prd/guides/verify-{{plan_slug}}.md`
-2. **Inbox copy** (for team consolidation): `{{team_root}}/notes/inbox/verify-{{plan_slug}}.md`
+Always create the permanent guide linked from the dashboard:
+1. **Permanent location**: `{{team_root}}/prd/guides/verify-{{plan_slug}}.md`
+
+Create the inbox copy only after a successful verification run:
+2. **Inbox copy**: `{{team_root}}/notes/inbox/verify-{{plan_slug}}.md`
+
+A successful verification run means every required project build/test passed or was legitimately not applicable, each runnable app was started and smoke-checked when required, and the required E2E PRs were created or updated. If verification is failed, blocked, or partial, do **not** create the inbox copy; record the details in the permanent guide and final response instead.
 
 **Be transparent.** The guide must clearly state what was built, what was tested, what passed, what failed, and what still needs human verification.
 
@@ -162,7 +166,7 @@ Use subagents only for genuinely parallel, independent build/test tasks on separ
 
 ## When to Stop
 
-Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s).
+Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to the permanent guide, (4) written the inbox copy only if verification succeeded, and (5) created the E2E PR(s).
 
 **IMPORTANT: Your final message MUST include the E2E PR URL(s) so the engine can track them.** Example final message:
 

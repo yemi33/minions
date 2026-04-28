@@ -53,12 +53,14 @@ Example: `cd C:/Users/you/my-project && yarn dev`
 
 The agent process terminates after completion, so any dev server you start will die with it. The user needs this command to run it themselves.
 
-## After Completion
+## After Successful Completion
 
-Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
+Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md` **only after a successful run**: all requested build/test/run steps completed, required checks passed, and any required PR was created.
+
+If any requested build, test, run, or file-change step fails or is blocked, do **not** write an inbox note. Report the failure clearly in your final response, including the command, error summary, and any next action needed.
 
 Include:
-- Build status (pass/fail)
+- Build status
 - Test results if applicable
 - Any errors or warnings
 - The run command (absolute paths, copy-pasteable from any terminal)
@@ -67,6 +69,6 @@ Include:
 
 ## When to Stop
 
-Your task is complete once you have run the tests, written findings to the inbox file, and (if the task involved file changes) created and submitted a PR. Stop after writing findings.
+Your task is complete once you have run the tests, written the success findings to the inbox file, and (if the task involved file changes) created and submitted a PR. If the run failed or was blocked, stop after reporting the failure in your final response; do not write an inbox file.
 
 Do NOT remove worktrees — the engine handles cleanup automatically.

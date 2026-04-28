@@ -31,7 +31,7 @@ Explore the codebase area specified in the task description. Your primary goal i
 - What conventions are followed?
 
 ### 4. Document Findings
-Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-explore-{{task_id}}-{{date}}.md` with these sections:
+After the requested exploration succeeds, write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-explore-{{task_id}}-{{date}}.md` with these sections:
 - **Area Explored**: what you looked at
 - **Architecture**: how it works
 - **Patterns**: conventions and patterns found
@@ -39,6 +39,8 @@ Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-explore-{{task_id
 - **Gaps**: anything missing, broken, or unclear
 - **Recommendations**: suggestions for the team
 - **Source References**: for EVERY finding, include the source — file paths, line numbers, PR URLs, API endpoints, config keys. Format: `(source: path/to/file.ts:42)` or `(source: PR-12345)`. This is critical — other agents and humans need to verify your findings.
+
+If exploration is blocked or fails before you can produce sourced findings, do **not** write an inbox note. Report the blocker in your final response instead.
 
 ### 5. Create Deliverable (if the task asks for one)
 If the task asks you to write a design doc, architecture doc, or any durable artifact:
@@ -64,7 +66,7 @@ Use subagents only for genuinely parallel, independent tasks. For reading files,
 
 ## When to Stop
 
-Your task is complete once you have written your findings to the inbox file. Do NOT continue reading additional files, exploring tangential areas, or producing extra analysis beyond what was asked. Write your findings and stop.
+Your task is complete once you have written the successful findings to the inbox file. Do NOT continue reading additional files, exploring tangential areas, or producing extra analysis beyond what was asked. Write your findings and stop.
 
 ## Team Decisions
 {{notes_content}}

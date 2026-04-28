@@ -24,6 +24,7 @@ Your context window may be compacted or summarized mid-task by Claude's automati
 - Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 - Do NOT remove worktrees — the engine handles cleanup automatically.
 - Do NOT checkout branches in the main working tree — use worktrees or `git diff`/`git show`.
+- Treat `notes/inbox/` writes as success artifacts only. If the task fails, is blocked, is cancelled, or ends partial, do **not** create an inbox note; report the failure in your final response, completion block, PR/work-item comment, or other task-specific failure channel instead.
 - Read `notes.md` for team rules and decisions before starting.
 - **Check team memory first, then look outside.** Before researching from scratch, check what the team already knows — in this order:
   1. `pinned.md` — critical context flagged by the human teammate (READ FIRST)

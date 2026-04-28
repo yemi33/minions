@@ -73,7 +73,9 @@ If it is NOT a webapp (library, CLI tool, backend service without UI), skip this
 
 ## Output Format
 
-Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md`
+Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md` **only after a successful verification run**: the build passed, required tests passed, and any applicable local server is running or not applicable.
+
+If the build fails, tests fail, dependency setup fails, or a required local server cannot start, do **not** write an inbox note. Follow the failure handling below and report the failure in your final response instead.
 
 Structure your report exactly like this:
 
@@ -85,16 +87,16 @@ Structure your report exactly like this:
 **Project:** {{project_name}}
 
 ### Build
-- Status: PASS / FAIL
+- Status: PASS
 - Notes: (any warnings or issues)
 
 ### Tests
-- Status: PASS / FAIL / SKIPPED
-- Results: X passed, Y failed, Z skipped
-- Failed tests: (list if any)
+- Status: PASS / SKIPPED
+- Results: X passed, 0 failed, Z skipped
+- Failed tests: none
 
 ### Local Server
-- Status: RUNNING / NOT_APPLICABLE / FAILED
+- Status: RUNNING / NOT_APPLICABLE
 - URL: http://localhost:XXXX (if running)
 - Run Command: `cd <absolute-path> && <command>`
 
@@ -152,4 +154,4 @@ Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` 
 
 ## When to Stop
 
-Your task is complete once you have: (1) built the project, (2) run tests, (3) started the app if applicable, and (4) written your findings to the inbox file. Stop after writing findings.
+Your task is complete once you have: (1) built the project, (2) run tests, (3) started the app if applicable, and (4) written the success findings to the inbox file. If verification failed, stop after filing the failure work item when applicable and reporting the failure in your final response; do not write an inbox file.

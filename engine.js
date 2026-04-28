@@ -1030,13 +1030,6 @@ async function spawnAgent(dispatchItem, config) {
         _trustCheckDone = true;
         updateAgentStatus(id, AGENT_STATUS.TRUST_BLOCKED, 'Agent appears to be waiting for trust approval');
         log('warn', `Trust gate detected for ${agentId} (${id}) — agent may be blocked on a permission prompt`);
-        writeInboxAlert(`trust-blocked-${id}`,
-          `# Trust Gate Blocked — \`${id}\`\n\n` +
-          `**Agent:** ${agentId}\n` +
-          `**Task:** ${dispatchItem.task || type}\n\n` +
-          `The agent appears to be blocked on a trust/permission prompt within 30s of spawn.\n` +
-          `Check the agent's live output and approve the trust gate manually.\n`
-        );
       }
     } else if (!_trustCheckDone) {
       _trustCheckDone = true; // past 30s window
@@ -1867,12 +1860,6 @@ function materializePlansAsWorkItems(config) {
       if (cycles.length > 0) {
         log('error', `Dependency cycle detected in plan ${file}: ${cycles.join(', ')} — skipping cyclic items`);
         cycles.forEach(c => cycleSet.add(c));
-        writeInboxAlert(`cycle-${path.basename(file, '.json')}`,
-          `# Dependency Cycle Detected — ${path.basename(file)}\n\n` +
-          `The following PRD items form a cycle and were **skipped** (will never be dispatched):\n\n` +
-          cycles.map(id => `- \`${id}\``).join('\n') + '\n\n' +
-          `Fix by removing or reordering the \`depends_on\` relationships in \`prd/${path.basename(file)}\`.\n`
-        );
       }
     }
 
@@ -2087,10 +2074,6 @@ async function discoverFromPrs(config, project) {
     const evalCycles = pr._reviewFixCycles || 0;
     const evalEscalated = evalCycles >= evalMax;
     if (evalEscalated && !pr._evalEscalated) {
-      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
-        `# Review Loop Escalation\n\n**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
-        `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
-        `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
       try {
         mutatePullRequests(projectPrPath(project), prs => {
           const target = shared.findPrRecord(prs, pr, project);
@@ -2258,12 +2241,6 @@ async function discoverFromPrs(config, project) {
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
         if (!pr.buildFixEscalated) {
-          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${prDisplayId}`,
-            `# Build Fix Escalation\n\n` +
-            `**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
-            `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
-            `Auto-fix dispatch has been suspended. Please investigate manually.\n`
-          );
           try {
             const prPath = projectPrPath(project);
             mutatePullRequests(prPath, prs => {
@@ -2305,19 +2282,8 @@ async function discoverFromPrs(config, project) {
         } catch (e) { log('warn', 'increment build fix attempts: ' + e.message); }
       }
 
-      // Notify the author agent about the build failure
       if (pr.agent && !pr._buildFailNotified) {
-        let alertBody = `# Build Failure Notification\n\n` +
-          `**Your PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
-          `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n`;
-        if (pr.buildErrorLog) {
-          // Include first 30 lines of error log in notification (full log in fix agent prompt)
-          const logPreview = pr.buildErrorLog.split('\n').slice(0, 30).join('\n');
-          alertBody += `**Error preview:**\n\`\`\`\n${logPreview}\n\`\`\`\n\n`;
-        }
-        alertBody += `A fix agent has been dispatched to address this. Review the fix when complete.\n`;
-        writeInboxAlert(`build-fail-${pr.agent}-${prDisplayId}`, alertBody);
-        // Mark notified to prevent duplicate alerts
+        // Mark noted to prevent repeated processing; the fix dispatch and PR state carry the failure details.
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {

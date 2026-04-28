@@ -69,19 +69,11 @@ function checkPlanCompletion(meta, config) {
   const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
   const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED || w.status === WI_STATUS.CANCELLED);
 
-  // Escalate failed/cancelled items to human — write inbox alert (deduped by slug)
   if (failedItems.length > 0) {
-    const alertSlug = `plan-failure-escalation-${planFile.replace('.json', '')}`;
     const failDetails = failedItems.map(w =>
       `- \`${w.id}\`: ${w.title || 'Unknown'} — ${w.failReason || w.status}`
     ).join('\n');
-    shared.writeToInbox('engine', alertSlug,
-      `# Plan Items Failed: ${plan.plan_summary || planFile}\n\n` +
-      `**${failedItems.length}** of ${planFeatureIds.size} item(s) failed or were cancelled:\n\n${failDetails}\n\n` +
-      `The plan is completing with partial results (${doneItems.length} done, ${failedItems.length} failed).\n` +
-      `Review failed items and re-dispatch manually if needed.\n`
-    );
-    log('warn', `Plan ${planFile}: ${failedItems.length} item(s) failed/cancelled — escalating to human: ${failedItems.map(w => w.id).join(', ')}`);
+    log('warn', `Plan ${planFile}: ${failedItems.length} item(s) failed/cancelled; completing with partial results (${doneItems.length} done, ${failedItems.length} failed):\n${failDetails}`);
   }
 
   // 1. Mark plan as completed
@@ -1127,8 +1119,7 @@ async function processPendingRebases(config) {
       if (entry.attempts < 3) {
         remaining.push(entry);
       } else {
-        shared.writeToInbox('engine', `rebase-fail-${pr.id}`,
-          `# Rebase Failed: ${pr.id}\n\nBranch \`${pr.branch}\` could not be rebased onto main after dependency ${entry.mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+        log('warn', `Rebase failed after retries for ${pr.id} on ${pr.branch}: ${result.error}`);
       }
     }
   }
@@ -1238,8 +1229,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
           }
           const result = await rebaseBranchOntoMain(depPr, depProject, config);
           if (!result.success) {
-            shared.writeToInbox('engine', `rebase-fail-${depPr.id}`,
-              `# Rebase Failed: ${depPr.id}\n\nBranch \`${depPr.branch}\` could not be rebased onto main after dependency ${mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+            log('warn', `Rebase failed for ${depPr.id} on ${depPr.branch} after dependency ${mergedItemId} merged: ${result.error}`);
           }
         }
       }
@@ -1820,19 +1810,23 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         };
         return runs;
       }, { defaultValue: {} });
-      // Write a completion note to inbox with back-references
-      const noteSlug = `sched-completion-${scheduleId}`;
       const status = effectiveSuccess ? 'succeeded' : 'failed';
-      const noteContent = `# Scheduled Task ${status}: ${meta.item.title || scheduleId}\n\n` +
-        `**Schedule:** \`${scheduleId}\`\n` +
-        `**Work Item:** \`${itemId}\`\n` +
-        `**Result:** ${status}\n` +
-        (resultSummary ? `\n## Summary\n${resultSummary}\n` : '');
-      shared.writeToInbox('engine', noteSlug, noteContent, null, {
-        sourceItem: itemId,
-        scheduleId,
-      });
-      log('info', `Scheduled task ${scheduleId} (${itemId}) → ${status}, back-reference written`);
+      if (effectiveSuccess) {
+        // Write a completion note to inbox with back-references only for successful scheduled runs.
+        const noteSlug = `sched-completion-${scheduleId}`;
+        const noteContent = `# Scheduled Task ${status}: ${meta.item.title || scheduleId}\n\n` +
+          `**Schedule:** \`${scheduleId}\`\n` +
+          `**Work Item:** \`${itemId}\`\n` +
+          `**Result:** ${status}\n` +
+          (resultSummary ? `\n## Summary\n${resultSummary}\n` : '');
+        shared.writeToInbox('engine', noteSlug, noteContent, null, {
+          sourceItem: itemId,
+          scheduleId,
+        });
+        log('info', `Scheduled task ${scheduleId} (${itemId}) → ${status}, back-reference written`);
+      } else {
+        log('warn', `Scheduled task ${scheduleId} (${itemId}) → ${status}; inbox note suppressed`);
+      }
     } catch (err) { log('warn', `Scheduled task back-reference: ${err.message}`); }
   }
 

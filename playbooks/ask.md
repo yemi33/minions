@@ -28,7 +28,7 @@ The user has asked a question. Answer it thoroughly and clearly, writing your re
 - If the question is about "this" (ambiguous reference), check recent git history and agent activity for context
 
 ### 3. Write Your Answer
-Write your answer to `{{team_root}}/notes/inbox/{{agent_id}}-answer-{{task_id}}-{{date}}.md` with:
+After you have successfully answered the question, write your answer to `{{team_root}}/notes/inbox/{{agent_id}}-answer-{{task_id}}-{{date}}.md` with:
 
 - **Question**: (restate briefly)
 - **Answer**: (clear, direct answer)
@@ -36,11 +36,13 @@ Write your answer to `{{team_root}}/notes/inbox/{{agent_id}}-answer-{{task_id}}-
 
 Keep it concise but complete. Write for a senior engineer who wants the real answer, not fluff.
 
+If you cannot answer because the task is blocked, required context is missing, or research fails, do **not** write an inbox note. Report the blocker in your final response instead.
+
 ### 4. Status
 
 ## When to Stop
 
-Your task is complete once you have written your answer to the inbox file. Do NOT modify code, create PRs, or continue exploring beyond the question. Stop after writing.
+Your task is complete once you have written the successful answer to the inbox file. Do NOT modify code, create PRs, or continue exploring beyond the question. Stop after writing.
 
 ## Rules
 - Do NOT modify any code unless the question explicitly asks you to.

@@ -10940,9 +10940,11 @@ async function testCompleteDispatch() {
       'Should mark work item as failed with non-retryable message');
   });
 
-  await test('completeDispatch writes cascade failure alerts', () => {
-    assert.ok(src.includes('writeInboxAlert') && src.includes('failed-'),
-      'Should write inbox alerts for cascade failures affecting dependents');
+  await test('completeDispatch suppresses cascade failure inbox alerts', () => {
+    assert.ok(!src.includes('writeInboxAlert(`failed-'),
+      'Should not write inbox alerts for failed work items');
+    assert.ok(src.includes('Surface blocked dependents in logs'),
+      'Should keep blocked dependent details in logs instead');
   });
 
   await test('completeDispatch increments _retryCount on work item', () => {
@@ -11105,9 +11107,9 @@ async function testBuildFixRetryCap() {
       'Should set buildFixEscalated flag when fix attempt cap is reached');
   });
 
-  await test('engine.js writes escalation alert when cap reached', () => {
-    assert.ok(engineSrc.includes('build-fix-escalated') && engineSrc.includes('writeInboxAlert'),
-      'Should write inbox alert with build-fix-escalated slug when cap is reached');
+  await test('engine.js suppresses escalation inbox alert when cap reached', () => {
+    assert.ok(engineSrc.includes('buildFixEscalated') && !engineSrc.includes('build-fix-escalated'),
+      'Should set buildFixEscalated without writing a build-fix-escalated inbox alert');
   });
 
   await test('engine.js skips dispatch when buildFixEscalated', () => {
@@ -12062,8 +12064,8 @@ async function testRunPostCompletionHooks() {
       'Should use PLAN_TERMINAL_STATUSES constant for terminal state check');
     assert.ok(lifecycleSrc.includes('notTerminal'),
       'Should use notTerminal variable name (not notDone) for terminal state filter');
-    assert.ok(lifecycleSrc.includes('plan-failure-escalation'),
-      'Should write failure escalation alert to inbox for failed items');
+    assert.ok(!lifecycleSrc.includes('plan-failure-escalation'),
+      'Should not write failure escalation alerts to inbox for failed items');
   });
 
   await test('checkPlanCompletion does not use uniquePath for inbox summary', () => {
@@ -13422,9 +13424,9 @@ async function testVerifyWorkflow() {
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
     assert.strictEqual(verifyItems.length, 1, 'Verify WI created when done items exist — even with some failures');
 
-    // Escalation alert should be in inbox
+    // Failure inbox notes are intentionally suppressed.
     const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
-    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written to inbox for failed items');
+    assert.strictEqual(inboxFiles.length, 0, 'No escalation alert written to inbox for failed items');
 
     // Plan should be marked completed
     const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
@@ -13452,9 +13454,9 @@ async function testVerifyWorkflow() {
     const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
     assert.strictEqual(completedPlan.status, 'completed', 'Plan completes even when all items failed');
 
-    // Escalation alert should exist
+    // Failure inbox notes are intentionally suppressed.
     const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
-    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written for all-failed plan');
+    assert.strictEqual(inboxFiles.length, 0, 'No escalation alert written for all-failed plan');
   }, cleanup);
 
   // ── 4. Duplicate verify WI prevented ──
@@ -23903,7 +23905,8 @@ async function testEngineAuditCritical() {
       lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
     );
     assert.ok(fn.includes('attempts < 3'), 'processPendingRebases must cap retries at 3');
-    assert.ok(fn.includes('writeToInbox'), 'processPendingRebases must write inbox alert on give-up');
+    assert.ok(!fn.includes('writeToInbox'), 'processPendingRebases must not write inbox alerts on give-up');
+    assert.ok(fn.includes('log(\'warn\''), 'processPendingRebases should log give-up failures');
   });
 
   await test('queuePendingRebase uses mutateJsonFileLocked for atomic writes', () => {
@@ -27604,9 +27607,9 @@ async function testBuildFixEscalation() {
       'engine.js should check buildFixAttempts against maxBuildFixAttempts limit');
   });
 
-  await test('engine.js escalates when max build fix attempts reached', () => {
-    assert.ok(engineSrc.includes('buildFixEscalated') && engineSrc.includes('build-fix-escalated'),
-      'engine.js should set buildFixEscalated flag and write escalation alert');
+  await test('engine.js escalates when max build fix attempts reached without inbox alert', () => {
+    assert.ok(engineSrc.includes('buildFixEscalated') && !engineSrc.includes('build-fix-escalated'),
+      'engine.js should set buildFixEscalated flag without writing an inbox alert');
   });
 
   await test('engine.js increments buildFixAttempts on dispatch', () => {
@@ -27673,9 +27676,9 @@ async function testBuildFixEscalation() {
       'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
   });
 
-  await test('escalation writes inbox alert for human visibility', () => {
-    assert.ok(engineSrc.includes('writeInboxAlert') && engineSrc.includes('Build Fix Escalation'),
-      'engine.js should write an inbox alert when escalating build fix failures');
+  await test('escalation suppresses inbox alert for build fix failures', () => {
+    assert.ok(!engineSrc.includes('Build Fix Escalation') && !engineSrc.includes('build-fix-escalated'),
+      'engine.js should not write an inbox alert when escalating build fix failures');
   });
 
   // ── Behavioral tests (exercise actual code paths, not just string matching) ──
@@ -28088,10 +28091,10 @@ async function testBuildErrorLogFeature() {
       'Should include build error log section in review_note');
   });
 
-  await test('engine.js includes build error preview in inbox notification', () => {
+  await test('engine.js suppresses build error inbox notification preview', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('logPreview') && src.includes('Error preview'),
-      'Should include a truncated preview of build errors in inbox alert');
+    assert.ok(!src.includes('logPreview') && !src.includes('Error preview'),
+      'Should not include build error inbox alert preview');
   });
 
   await test('ado.js clears buildErrorLog on PR close/merge', () => {
@@ -28566,7 +28569,7 @@ async function testAgentStatusEnum() {
     assert.ok(src.includes('AGENT_STATUS.TRUST_BLOCKED'), 'engine.js should emit TRUST_BLOCKED');
     assert.ok(src.includes('_trustCheckDone'), 'Should track whether trust check is complete');
     assert.ok(src.includes('30000'), 'Should use 30s window for trust gate detection');
-    assert.ok(src.includes('trust-blocked'), 'Should write inbox alert for trust gate');
+    assert.ok(!src.includes('trust-blocked'), 'Should not write inbox alert for trust gate');
   });
 
   await test('engine.js uses updateAgentStatus (not raw dispatch mutation) for status transitions', () => {
@@ -30093,8 +30096,8 @@ async function testPrReviewFixFlows() {
     assert.ok(escalBlock.includes('evalEscalated'), 'Should set evalEscalated flag');
   });
 
-  await test('eval escalation writes inbox alert', () => {
-    assert.ok(engineSrc.includes('Review Loop Escalation'), 'Should write escalation alert to inbox');
+  await test('eval escalation suppresses inbox alert', () => {
+    assert.ok(!engineSrc.includes('Review Loop Escalation'), 'Should not write escalation alert to inbox');
   });
 
   await test('eval escalation uses evalMaxIterations from config', () => {
@@ -34892,14 +34895,14 @@ async function testScheduledTaskNoteBackReference() {
     assert.ok(fn.includes('mutateJsonFileLocked'), 'schedule-runs update must use mutateJsonFileLocked');
   });
 
-  await test('runPostCompletionHooks writes completion note for scheduled tasks with back-reference', () => {
+  await test('runPostCompletionHooks writes success note for scheduled tasks with back-reference', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.slice(
       src.indexOf('function runPostCompletionHooks('),
       src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(fn.includes('writeToInbox') && fn.includes('_scheduleId'),
-      'runPostCompletionHooks must write inbox note with schedule reference');
+    assert.ok(fn.includes('if (effectiveSuccess)') && fn.includes('writeToInbox') && fn.includes('_scheduleId'),
+      'runPostCompletionHooks must write inbox note with schedule reference only on success');
     assert.ok(fn.includes('sourceItem') || fn.includes('scheduleId'),
       'scheduled task inbox note must include sourceItem or scheduleId metadata');
   });

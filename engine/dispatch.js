@@ -220,7 +220,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           ? `Non-retryable failure: ${effectiveReason}${classSuffix}`
           : (reason || `Failed after ${maxRetries} retries${classSuffix}`);
         lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.FAILED, finalReason);
-        // Alert: find items blocked by this failure and write inbox note
+        // Surface blocked dependents in logs without creating failure inbox noise.
         try {
           const config = getConfig();
           const failedId = item.meta.item.id;
@@ -229,16 +229,9 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           allItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
             .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
 
-          writeInboxAlert(`failed-${failedId}`,
-            `# Work Item Failed — \`${failedId}\`\n\n` +
-            `**Item:** ${item.meta.item.title || failedId}\n` +
-            `**Reason:** ${finalReason}\n\n` +
-            (blockedItems.length > 0
-              ? `**Blocked dependents (${blockedItems.length}):**\n${blockedItems.join('\n')}\n\n` +
-                `These items cannot dispatch until \`${failedId}\` is fixed and reset to \`pending\`.\n`
-              : `No downstream items are blocked.\n`)
-          );
-        } catch (e) { log('warn', 'write failure alert: ' + e.message); }
+          log('warn', `Work item ${failedId} failed: ${finalReason}` +
+            (blockedItems.length > 0 ? `; blocked dependents: ${blockedItems.map(line => line.replace(/^- `([^`]+)`.*/, '$1')).join(', ')}` : '; no downstream items blocked'));
+        } catch (e) { log('warn', 'summarize failure dependents: ' + e.message); }
       }
     }
 
