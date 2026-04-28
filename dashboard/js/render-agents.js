@@ -14,14 +14,16 @@ const RUNTIME_TAGS = {
     color: '#cc785c',
     svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><rect x="4" y="3" width="16" height="15"/><rect x="2" y="8" width="2" height="4"/><rect x="20" y="8" width="2" height="4"/><rect x="4" y="18" width="2.5" height="3"/><rect x="8" y="18" width="2.5" height="3"/><rect x="13.5" y="18" width="2.5" height="3"/><rect x="17.5" y="18" width="2.5" height="3"/></g><g fill="#000"><rect x="7" y="7.5" width="2.5" height="3"/><rect x="14.5" y="7.5" width="2.5" height="3"/></g></svg>',
   },
-  // GitHub Copilot — bespectacled "pilot" mascot, color-inverted so the
-  // silhouette is white-ish and the goggle/mouth cutouts pick up the
-  // currentColor accent. Reads better as a small inline tag against the
-  // dark dashboard theme than the conventional dark-on-light rendering.
+  // GitHub Copilot mascot — a helmeted face with two BIG rounded goggles
+  // dominating the upper half (almost touching the top), a tiny bridge
+  // between them, and a white "bib" / chin-guard in the lower half with
+  // two VERTICAL pill eyes inside it (not horizontal grill bars — that
+  // was the prior misread). Color-inverted so the helmet is white-ish and
+  // the cutouts pick up the runtime accent for visibility on dark theme.
   copilot: {
     label: 'Copilot',
     color: '#8957e5',
-    svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="#fff"><ellipse cx="12" cy="11" rx="10" ry="8.5"/><circle cx="2.5" cy="13" r="2.4"/><circle cx="21.5" cy="13" r="2.4"/></g><g fill="currentColor"><circle cx="8" cy="10" r="3"/><circle cx="16" cy="10" r="3"/><rect x="11.2" y="9.5" width="1.6" height="1.6" rx="0.3"/><rect x="8.4" y="14" width="7.2" height="3.8" rx="0.5"/></g><g fill="#fff"><rect x="10.4" y="14.5" width="0.9" height="2.8" rx="0.2"/><rect x="12.7" y="14.5" width="0.9" height="2.8" rx="0.2"/></g></svg>',
+    svg: '<svg viewBox="0 0 24 18" width="17" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="#fff"><path d="M12 1 C18 1 21 4 21 8 V10 C22.5 10.5 23.5 12 23.5 14 C23.5 15.5 22.5 16.5 21 16.7 V17 C21 17.6 20.5 18 19.5 18 H4.5 C3.5 18 3 17.6 3 17 V16.7 C1.5 16.5 0.5 15.5 0.5 14 C0.5 12 1.5 10.5 3 10 V8 C3 4 6 1 12 1 Z"/></g><g fill="currentColor"><rect x="3.6" y="3.4" width="7.4" height="6.2" rx="2.7"/><rect x="13" y="3.4" width="7.4" height="6.2" rx="2.7"/><rect x="11" y="5.6" width="2" height="1.6" rx="0.4"/><path d="M7.4 9.6 H16.6 V15.4 C16.6 16.4 15.8 17 14.7 17 H9.3 C8.2 17 7.4 16.4 7.4 15.4 Z"/></g><g fill="#fff"><rect x="9.4" y="10.7" width="1.7" height="4.7" rx="0.85"/><rect x="12.9" y="10.7" width="1.7" height="4.7" rx="0.85"/></g></svg>',
   },
 };
 function _runtimeTagHtml(runtime) {
