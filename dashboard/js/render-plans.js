@@ -559,6 +559,32 @@ async function planView(file) {
 async function planApprove(file, btn) {
   if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Approving...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
+
+  // Optimistic UI: mutate cached state and re-render so both the plan card and
+  // PRD view reflect 'approved' immediately. The .md card's display status
+  // follows the linked PRD's status via lookup in renderPlanCard, so updating
+  // the PRD entry covers both. Refresh after fetch reconciles with truth.
+  const isPrd = typeof file === 'string' && file.endsWith('.json');
+  if (Array.isArray(window._lastPlans)) {
+    for (const p of window._lastPlans) {
+      if (p.file === file) {
+        p.status = 'approved';
+        p.planStale = false;
+        delete p.pausedAt;
+      }
+    }
+    try { renderPlans(window._lastPlans); } catch { /* render is best-effort */ }
+  }
+  if (isPrd && window._lastStatus?.prdProgress?.items) {
+    for (const item of window._lastStatus.prdProgress.items) {
+      if (item.source === file) {
+        item.planStatus = 'approved';
+        item.planStale = false;
+      }
+    }
+    if (typeof rerenderPrdFromCache === 'function') rerenderPrdFromCache();
+  }
+
   try {
     const res = await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     if (res.ok) {
@@ -568,8 +594,14 @@ async function planApprove(file, btn) {
       if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
       showToast('cmd-toast', 'Approve failed: ' + (d.error || 'unknown'), false);
+      // Refresh to revert optimistic state from server truth
+      refresh();
     }
-  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
+  } catch (e) {
+    if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+    showToast('cmd-toast', 'Error: ' + e.message, false);
+    refresh();
+  }
 }
 
 async function planDelete(file) {
