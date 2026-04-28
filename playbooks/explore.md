@@ -10,7 +10,7 @@ Team root: {{team_root}}
 
 ## Mission
 
-Explore the codebase area specified in the task description. Your primary goal is to understand the architecture, patterns, and current state of the code. If the task asks you to produce a deliverable (design doc, architecture doc, analysis report), create it and commit it to the repo via PR.
+Explore the codebase area specified in the task description. Your primary goal is to understand the architecture, patterns, and current state of the code. Explore work is research/reporting only: do not modify product code and do not create a PR.
 
 ## Steps
 
@@ -42,14 +42,11 @@ After the requested exploration succeeds, write your findings to `{{team_root}}/
 
 If exploration is blocked or fails before you can produce sourced findings, do **not** write an inbox note. Report the blocker in your final response instead.
 
-### 5. Create Deliverable (if the task asks for one)
-If the task asks you to write a design doc, architecture doc, or any durable artifact:
-1. Write the document in the current working directory (e.g., `docs/design-<topic>.md`)
-2. Commit, push, and create a PR:
-   {{pr_create_instructions}}
+### 5. Deliverables
+
+If the task asks for a design doc, architecture doc, or analysis report, include it in the inbox findings file above or in your final response. Do NOT create a PR from an explore task. If a committed repository artifact is needed, call that out as a recommendation for a separate `implement` or `docs` work item.
 
 Do NOT create additional worktrees — the engine handles worktree management.
-If the task is purely exploratory (no deliverable requested), skip this step.
 
 ### 6. Status
 
@@ -59,6 +56,7 @@ Use subagents only for genuinely parallel, independent tasks. For reading files,
 
 ## Rules
 - Do NOT modify existing code unless the task explicitly asks for it.
+- Do NOT create a PR from explore work; exploration produces findings, not branches.
 - Use the appropriate MCP tools for PR creation — check available tools before starting.
 - Do NOT checkout branches in the main working tree — use worktrees.
 - Read `notes.md` for all team rules before starting.
