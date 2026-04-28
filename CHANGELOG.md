@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1591 (2026-04-28)
+
+### Features
+- show runtime tag (Claude/Copilot/...) next to agent name
+
 ## 0.1.1590 (2026-04-28)
 
 ### Features
