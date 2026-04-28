@@ -11944,6 +11944,14 @@ async function testHumanContributions() {
       'closeModal should be wrapped in try-catch so QA session errors do not prevent note save');
   });
 
+  await test('handleNotesCreate invalidates status cache so quick notes appear immediately', () => {
+    const notesFnStart = dashSrc.indexOf('async function handleNotesCreate');
+    const notesFnEnd = dashSrc.indexOf('async function handlePlanCreate', notesFnStart);
+    const notesFn = dashSrc.slice(notesFnStart, notesFnEnd);
+    assert.ok(notesFn.includes('invalidateStatusCache();'),
+      'handleNotesCreate should invalidate cached status so refresh sees new inbox notes immediately');
+  });
+
   await test('submitQuickNote validates form elements exist', () => {
     const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
     const submitFn = inboxSrc.slice(inboxSrc.indexOf('function submitQuickNote'));

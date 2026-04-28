@@ -2272,6 +2272,7 @@ const server = http.createServer(async (req, res) => {
       const filename = `${author}-${slug}-${today}-${shared.uid().slice(-4)}.md`;
       const content = `# ${body.title}\n\n**By:** ${author}\n**Date:** ${today}\n\n${body.what}\n${body.why ? '\n**Why:** ' + body.why + '\n' : ''}`;
       safeWrite(shared.uniquePath(path.join(inboxDir, filename)), content);
+      invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
