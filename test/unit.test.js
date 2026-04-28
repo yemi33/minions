@@ -5399,46 +5399,25 @@ async function testLlmModule() {
     llm.trackEngineUsage('test-category', {}); // should not throw
   });
 
-  // ── isResumeSessionStillValid — session preservation after timeouts ──
+  // ── isResumeSessionStillValid REMOVED in P-5e1b7a3c ────────────────────────
+  //
+  // The runtime adapter contract guarantees `parseOutput()` will populate
+  // `sessionId` whenever a session was established — there's no need for the
+  // dual-path fallback (parsed sessionId OR raw scan). Callers (dashboard.js
+  // ccCall / ccDocCall + ccDocCallStreaming) now check `result.sessionId !== null`
+  // directly. See `dashboard.js:~1244` for the inline replacement.
 
-  await test('isResumeSessionStillValid returns true when result has sessionId', () => {
-    const result = { sessionId: 'sess-abc123', code: 1, text: '', raw: '', stderr: 'signal timed out' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  await test('llm module no longer exports isResumeSessionStillValid (removed in P-5e1b7a3c)', () => {
+    assert.strictEqual(typeof llm.isResumeSessionStillValid, 'undefined',
+      'isResumeSessionStillValid must be removed; callers should check result.sessionId !== null directly');
   });
 
-  await test('isResumeSessionStillValid returns true when raw output contains session_id', () => {
-    const result = {
-      sessionId: null, code: 1, text: '', stderr: '',
-      raw: '{"type":"assistant","message":"partial"}\n{"type":"result","result":"","session_id":"sess-xyz"}'
-    };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
-
-  await test('isResumeSessionStillValid returns false when session is truly dead', () => {
-    const result = { sessionId: null, code: 1, text: '', raw: '', stderr: 'session not found' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
-  });
-
-  await test('isResumeSessionStillValid returns false for null result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid(null), false);
-  });
-
-  await test('isResumeSessionStillValid returns false for empty result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: '' }), false);
-  });
-
-  await test('isResumeSessionStillValid returns false when raw is undefined', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null }), false);
-  });
-
-  await test('isResumeSessionStillValid returns true even with non-zero exit code if sessionId present', () => {
-    // Simulates signal timeout: process killed (code=1) but session was established
-    const result = { sessionId: 'sess-timeout', code: 137, text: '', raw: '{}', stderr: 'error:signal timed out' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
-
-  await test('llm module exports isResumeSessionStillValid', () => {
-    assert.ok(typeof llm.isResumeSessionStillValid === 'function');
+  await test('dashboard.js inlines result.sessionId !== null check (no isResumeSessionStillValid call)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(!src.includes('isResumeSessionStillValid'),
+      'dashboard.js must not reference the removed helper');
+    assert.ok(src.includes('result.sessionId !== null'),
+      'dashboard.js must use the inline session-validity check');
   });
 
   await test('llm.js uses bounded stream tails and structured tool metadata', () => {
@@ -5456,11 +5435,19 @@ async function testLlmModule() {
   });
 
   await test('llm module exports exactly the documented surface', () => {
+    // P-5e1b7a3c: isResumeSessionStillValid removed; new test-only exports
+    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache) added so callers
+    // can verify capability gating + per-runtime caching without touching
+    // private state directly.
     const exported = Object.keys(llm).sort();
     assert.deepStrictEqual(exported, [
+      '_buildSpawnAgentFlags',
+      '_resetBinCache',
+      '_resolveBin',
+      '_resolveModelFor',
+      '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
-      'isResumeSessionStillValid',
       'trackEngineUsage',
     ]);
   });
@@ -5694,39 +5681,7 @@ async function testLlmModule() {
     } finally { restore(); }
   });
 
-  // ── isResumeSessionStillValid — additional edge cases ────────────────────
-  await test('isResumeSessionStillValid returns false for undefined result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid(undefined), false);
-  });
-
-  await test('isResumeSessionStillValid treats empty-string sessionId as invalid and falls through to raw', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '' }), false);
-    // But a falsy sessionId with a live session_id marker in raw is still alive
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '"session_id":"s1"' }), true);
-  });
-
-  await test('isResumeSessionStillValid returns false when raw lacks any session_id marker', () => {
-    const result = {
-      sessionId: null, code: 1, text: '',
-      raw: '{"type":"assistant","message":"partial"}\n{"type":"error","code":"ETIMEDOUT"}',
-      stderr: 'tool timeout',
-    };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
-  });
-
-  await test('isResumeSessionStillValid handles non-string raw values gracefully', () => {
-    // Non-string raw (shape drift / truncation) must not throw — guard uses truthy + .includes
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: false }), false);
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: 0 }), false);
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: null }), false);
-  });
-
-  await test('isResumeSessionStillValid prefers parsed sessionId over raw scan', () => {
-    // If sessionId is truthy, we return true without scanning raw.
-    // Raw lacking the marker should NOT flip the answer.
-    const result = { sessionId: 'sess-live', code: 0, text: 'ok', raw: 'no marker here', stderr: '' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
+  // (isResumeSessionStillValid edge-case suite removed alongside the helper in P-5e1b7a3c.)
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
@@ -23834,9 +23789,14 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('callLLM and callLLMStreaming accept effort parameter', () => {
+    // P-5e1b7a3c: effort is no longer formatted by llm.js directly — it flows
+    // through runtime.buildArgs() (direct path) or _buildSpawnAgentFlags()
+    // (indirect path). Both routes capability-gate on caps.effortLevels and
+    // emit --effort when set.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes("effort = null"), 'Should accept effort param with null default');
-    assert.ok(src.includes("args.push('--effort', effort)"), 'Should pass --effort to CLI');
+    assert.ok(src.includes("flags.push('--effort'"),
+      'Indirect path (_buildSpawnAgentFlags) should emit --effort when capability-gated');
     const streamingFn = src.slice(src.indexOf('function callLLMStreaming('));
     assert.ok(streamingFn.includes("effort = null"), 'callLLMStreaming should accept effort param');
   });
@@ -25651,10 +25611,13 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('callLLM supports direct spawn mode', () => {
+    // P-5e1b7a3c: _resolveClaudeBin renamed to _resolveBin(runtime); the per-
+    // runtime cache file is exposed via runtime.capsFile rather than hardcoded.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes('direct = false'), 'callLLM should accept direct param with false default');
-    assert.ok(src.includes('_resolveClaudeBin'), 'Should have _resolveClaudeBin for direct spawn');
-    assert.ok(src.includes('claude-caps.json'), 'Should read cached binary from claude-caps.json');
+    assert.ok(src.includes('_resolveBin(runtime)'), 'Should have _resolveBin(runtime) for direct spawn (renamed in P-5e1b7a3c)');
+    assert.ok(src.includes('runtime.resolveBinary'),
+      'Direct path must defer binary resolution to the runtime adapter');
   });
 
   await test('callLLMStreaming supports direct spawn mode', () => {
@@ -25676,6 +25639,213 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(indirectBlock.includes('pidPath'), 'Should derive pidPath from promptPath');
     assert.ok(indirectBlock.includes("replace(/prompt-/, 'pid-')"), 'Should use same PID derivation as spawn-agent.js');
     assert.ok(indirectBlock.includes('cleanupFiles.push(promptPath, sysPath, pidPath)'), 'Should include pidPath in cleanupFiles');
+  });
+
+  // ── P-5e1b7a3c: runtime-adapter wiring ────────────────────────────────────
+  //
+  // These tests cover the same surface that engine.js's _buildAgentSpawnFlags
+  // does (P-2a6d9c4f) — capability gating, copilot opt forwarding, leadingArgs
+  // prepending — but for the CC / doc-chat direct-spawn path. The Claude
+  // regression test ensures the existing CC behavior survives the refactor.
+  // (`testAutoRecoveryAndAtomicity` doesn't have `llm` in scope — re-require here.)
+  const llm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+
+  await test('_buildSpawnAgentFlags(claude, {...}) Claude regression — emits expected flag set', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const flags = llm._buildSpawnAgentFlags(claude, {
+      model: 'sonnet', maxTurns: 10, allowedTools: 'Bash,Read', effort: 'low',
+      sessionId: 'sess-1', maxBudget: 5, bare: true, fallbackModel: 'haiku',
+    });
+    assert.deepStrictEqual(flags, [
+      '--runtime', 'claude',
+      '--max-turns', '10',
+      '--model', 'sonnet',
+      '--allowedTools', 'Bash,Read',
+      '--effort', 'low',
+      '--resume', 'sess-1',
+      '--max-budget-usd', '5',
+      '--bare',
+      '--fallback-model', 'haiku',
+    ]);
+  });
+
+  await test('_buildSpawnAgentFlags drops effort/resume/budget/bare/fallback when capability is false', () => {
+    // Synthetic adapter with all capability flags off — every gated opt should
+    // be silently dropped without crashing.
+    const fakeRuntime = {
+      name: 'fake',
+      capabilities: {
+        effortLevels: false, sessionResume: false, budgetCap: false,
+        bareMode: false, fallbackModel: false,
+      },
+    };
+    const flags = llm._buildSpawnAgentFlags(fakeRuntime, {
+      model: 'm', effort: 'low', sessionId: 'x', maxBudget: 5, bare: true, fallbackModel: 'fm',
+    });
+    assert.deepStrictEqual(flags, ['--runtime', 'fake', '--model', 'm']);
+  });
+
+  await test('_buildSpawnAgentFlags(copilot, {...}) emits Copilot-specific opts unconditionally', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const flags = llm._buildSpawnAgentFlags(copilot, {
+      model: 'gpt-5.4', maxTurns: 12,
+      stream: 'on', disableBuiltinMcps: true, suppressAgentsMd: true, reasoningSummaries: true,
+      // Copilot has no budgetCap/bareMode/fallbackModel — these must be dropped:
+      maxBudget: 99, bare: true, fallbackModel: 'fm',
+    });
+    assert.ok(flags.includes('--runtime'));
+    assert.strictEqual(flags[1], 'copilot');
+    assert.ok(flags.includes('--max-autopilot-continues') || flags.includes('--max-turns'),
+      'maxTurns flag should reach the indirect path');
+    assert.ok(flags.includes('--stream') && flags[flags.indexOf('--stream') + 1] === 'on');
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--enable-reasoning-summaries'));
+    // Capabilities Copilot doesn't have are dropped:
+    assert.ok(!flags.includes('--max-budget-usd'),
+      'Copilot has no --max-budget-usd capability; flag must be dropped');
+    assert.ok(!flags.includes('--bare'),
+      'Copilot has no --bare capability; flag must be dropped');
+    assert.ok(!flags.includes('--fallback-model'),
+      'Copilot has no --fallback-model capability; flag must be dropped');
+  });
+
+  await test('_buildSpawnAgentFlags: Copilot opts only emit on strict-true (no truthy-string opt-in)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    // truthy strings / numbers must NOT trigger Copilot toggle flags
+    const flags = llm._buildSpawnAgentFlags(copilot, {
+      disableBuiltinMcps: 'yes', suppressAgentsMd: 1, reasoningSummaries: 'truthy',
+    });
+    assert.ok(!flags.includes('--disable-builtin-mcps'));
+    assert.ok(!flags.includes('--no-custom-instructions'));
+    assert.ok(!flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildSpawnAgentFlags: maxBudget=0 round-trips correctly through Claude (?? gate)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const flags = llm._buildSpawnAgentFlags(claude, { maxBudget: 0 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '0',
+      `maxBudget:0 must survive (== treats 0 as falsy); got: ${flags.join(' ')}`);
+  });
+
+  await test('_resolveRuntimeFor: explicit cli wins over engineConfig', () => {
+    const r = llm._resolveRuntimeFor({ cli: 'copilot', engineConfig: { defaultCli: 'claude' } });
+    assert.strictEqual(r.name, 'copilot');
+  });
+
+  await test('_resolveRuntimeFor: engineConfig.defaultCli used when cli unset', () => {
+    const r = llm._resolveRuntimeFor({ engineConfig: { defaultCli: 'copilot' } });
+    assert.strictEqual(r.name, 'copilot');
+  });
+
+  await test('_resolveRuntimeFor: engineConfig.ccCli takes priority over defaultCli (CC path)', () => {
+    const r = llm._resolveRuntimeFor({ engineConfig: { ccCli: 'copilot', defaultCli: 'claude' } });
+    assert.strictEqual(r.name, 'copilot', 'CC-specific override must win for the CC path');
+  });
+
+  await test('_resolveRuntimeFor: defaults to claude when nothing set', () => {
+    assert.strictEqual(llm._resolveRuntimeFor({}).name, 'claude');
+    assert.strictEqual(llm._resolveRuntimeFor({ engineConfig: {} }).name, 'claude');
+  });
+
+  await test('_resolveModelFor: explicit model wins (legacy callers like kb-sweep keep working)', () => {
+    const m = llm._resolveModelFor({ model: 'haiku', engineConfig: { defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('_resolveModelFor: CC inherits engineConfig.defaultModel when model + ccModel unset', () => {
+    const m = llm._resolveModelFor({ engineConfig: { defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'sonnet');
+  });
+
+  await test('_resolveModelFor: ccModel overrides defaultModel (CC-specific override)', () => {
+    const m = llm._resolveModelFor({ engineConfig: { ccModel: 'haiku', defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('_resolveModelFor: returns undefined when nothing set (adapter default)', () => {
+    assert.strictEqual(llm._resolveModelFor({}), undefined);
+    assert.strictEqual(llm._resolveModelFor({ engineConfig: {} }), undefined);
+  });
+
+  await test('_resolveBin returns leadingArgs from runtime.resolveBinary', () => {
+    // Synthetic adapter that returns leadingArgs: ['copilot'] (gh-extension shape).
+    // _resolveBin must propagate them so the spawn invocation prepends them
+    // between the binary and the rest of the args.
+    llm._resetBinCache();
+    const fakeBin = path.join(createTmpDir(), isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '');
+    const fakeRuntime = {
+      name: 'fake-leading-' + Date.now(),
+      resolveBinary: () => ({ bin: fakeBin, native: true, leadingArgs: ['copilot'] }),
+    };
+    const r = llm._resolveBin(fakeRuntime);
+    assert.deepStrictEqual(r.leadingArgs, ['copilot']);
+    assert.strictEqual(r.bin, fakeBin);
+    assert.strictEqual(r.native, true);
+  });
+
+  await test('_resolveBin caches per-runtime and respects TTL', () => {
+    // Same runtime called twice should hit the cache (no second resolveBinary call).
+    llm._resetBinCache();
+    const fakeBin = path.join(createTmpDir(), isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '');
+    let resolveCalls = 0;
+    const fakeRuntime = {
+      name: 'fake-cache-' + Date.now(),
+      resolveBinary: () => { resolveCalls++; return { bin: fakeBin, native: true, leadingArgs: [] }; },
+    };
+    const r1 = llm._resolveBin(fakeRuntime);
+    const r2 = llm._resolveBin(fakeRuntime);
+    assert.strictEqual(resolveCalls, 1, 'second _resolveBin call should hit the cache');
+    assert.strictEqual(r1.bin, r2.bin);
+  });
+
+  await test('_resolveBin returns null when runtime.resolveBinary returns null', () => {
+    llm._resetBinCache();
+    const fakeRuntime = {
+      name: 'fake-null-' + Date.now(),
+      resolveBinary: () => null,
+    };
+    assert.strictEqual(llm._resolveBin(fakeRuntime), null);
+  });
+
+  await test('_resolveBin returns null when runtime.resolveBinary throws', () => {
+    llm._resetBinCache();
+    const fakeRuntime = {
+      name: 'fake-throw-' + Date.now(),
+      resolveBinary: () => { throw new Error('binary probe failed'); },
+    };
+    assert.strictEqual(llm._resolveBin(fakeRuntime), null,
+      '_resolveBin must catch adapter errors so a misconfigured runtime never crashes the LLM call');
+  });
+
+  await test('_resolveBin returns null for null runtime input', () => {
+    assert.strictEqual(llm._resolveBin(null), null);
+    assert.strictEqual(llm._resolveBin(undefined), null);
+  });
+
+  await test('llm.js: zero `runtime.name === ` comparisons (capability gating only)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    // Strip comments before checking — we mention the rule in comments.
+    const codeOnly = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.ok(!/runtime\.name\s*===/.test(codeOnly),
+      'engine/llm.js code must not branch on runtime.name === ... — use capabilities instead');
+    assert.ok(!/runtime\.name\s*==[^=]/.test(codeOnly),
+      'engine/llm.js code must not branch on runtime.name == ... — use capabilities instead');
+  });
+
+  await test('llm.js: streaming accumulator routes line parsing through runtime.parseStreamChunk', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.parseStreamChunk(line)'),
+      'Per-line parsing must go through runtime.parseStreamChunk so unknown event types stay safe');
+  });
+
+  await test('llm.js: error normalization routes through runtime.parseError on non-zero exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.parseError('),
+      'Failure paths should call runtime.parseError so each adapter normalizes its own error patterns');
   });
 
   await test('handleKnowledgeSweep uses generation token for race-safe finally', () => {

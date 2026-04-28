@@ -1229,6 +1229,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      engineConfig: CONFIG.engine,
     });
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
@@ -1240,9 +1241,10 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     }
 
     // No text — distinguish "session exists but call failed" (e.g. tool timeout)
-    // from "session is truly dead" (no sessionId returned, or stderr indicates invalid session).
-    const sessionStillValid = llm.isResumeSessionStillValid(result);
-    if (sessionStillValid) {
+    // from "session is truly dead" (no sessionId in the parsed output).
+    // Per P-5e1b7a3c: trust the runtime adapter's parseOutput — if it found a
+    // sessionId the session is alive; if not, treat it as dead and retry fresh.
+    if (result.sessionId !== null) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
@@ -1264,6 +1266,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
@@ -1280,6 +1283,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   await new Promise(r => setTimeout(r, 2000));
   const p3 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
@@ -1310,6 +1314,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      engineConfig: CONFIG.engine,
       onChunk,
       onToolUse,
     });
@@ -1322,8 +1327,10 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
       return result;
     }
 
-    const sessionStillValid = llm.isResumeSessionStillValid(result);
-    if (sessionStillValid) {
+    // Per P-5e1b7a3c: parsedOutput.sessionId !== null means the runtime adapter
+    // successfully captured a session — preserve it for retry. null means the
+    // session is truly dead (or never started); rotate it.
+    if (result.sessionId !== null) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
@@ -1343,6 +1350,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
   });
@@ -1360,6 +1368,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   await new Promise(r => setTimeout(r, 2000));
   const p3 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
   });
@@ -4521,6 +4530,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
+          engineConfig: CONFIG.engine,
           onChunk: (text) => {
             const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
@@ -4550,6 +4560,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
               allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
               effort: streamEffort, direct: true,
+              engineConfig: CONFIG.engine,
               onChunk: (text) => {
                 const actIdx = findCCActionsDelimiter(text);
                 const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
