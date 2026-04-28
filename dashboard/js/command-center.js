@@ -94,6 +94,13 @@ function _ccFindPinTarget(query) {
 function ccAbort() {
   var tab = _ccActiveTab();
   if (tab && tab._abortController) {
+    try {
+      fetch('/api/command-center/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tabId: tab.id })
+      }).catch(function() {});
+    } catch {}
     tab._abortController.abort();
     tab._abortController = null;
   }
@@ -211,6 +218,13 @@ function ccCloseTab(id) {
   var closingTab = _ccTabs.find(function(t) { return t.id === id; });
   if (closingTab && closingTab._sending) {
     if (!confirm('This tab has an active request. Close anyway?')) return;
+    try {
+      fetch('/api/command-center/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tabId: id })
+      }).catch(function() {});
+    } catch {}
     if (closingTab._abortController) { closingTab._abortController.abort(); closingTab._abortController = null; }
     closingTab._sending = false;
     closingTab._queue = [];
@@ -445,6 +459,8 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
   if (existingQueueEl) existingQueueEl.remove();
 
   var ccStartTime = Date.now();
+  var reconnectAttempts = 0;
+  var streamStatusNote = '';
   var phases = [
     [0, 'Thinking...'],
     [3000, 'Reading minions context...'],
@@ -511,6 +527,9 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       if (streamedText) {
         html += renderMd(streamedText);
       }
+      if (streamStatusNote) {
+        html += '<div style="margin-top:6px;font-size:10px;color:var(--muted)">' + escHtml(streamStatusNote) + '</div>';
+      }
       html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '">' + _getThinkingHtml() + '</div>';
       streamDiv.innerHTML = html;
       // Re-append queue indicators so they stay below the streaming content
@@ -531,34 +550,69 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     var phaseTimer = setInterval(updateStreamDiv, 1000);
     updateStreamDiv(); // render proper layout immediately (not raw "Thinking..." text)
 
-  try {
-    // Stream response via SSE — shows text as it arrives
+  async function _ccConsumeStream(requestBody, isReconnect) {
     var res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }),
+      body: JSON.stringify(requestBody),
       signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(960000)
     });
 
     if (!res.ok) {
-      // 429 = server still releasing previous request (abort race) — retry silently up to 3 times
-      if (res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
+      if (!isReconnect && res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
         activeTab._429retries = (activeTab._429retries || 0) + 1;
-        _cleanupStreamDiv(); // remove current thinking div — prevents stacking on each retry
         await new Promise(function(r) { setTimeout(r, 1500); });
-        return await _ccDoSend(message, true, forceTabId || activeTabId); // retry — pass tabId so timer closures don't fight
+        return await _ccConsumeStream({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }, false);
       }
       activeTab._429retries = 0;
-      _cleanupStreamDiv();
       var errText = await res.text();
-      addMsg('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
-        (errText.includes('busy') ? ' <button onclick="ccNewTab()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
-      return;
+      if (isReconnect && res.status === 409) return { interrupted: true, reconnectable: false, reason: errText || 'No live stream' };
+      throw new Error(errText || 'CC error');
     }
+
+    activeTab._429retries = 0;
+    streamStatusNote = '';
+    updateStreamDiv();
 
     var reader = res.body.getReader();
     var decoder = new TextDecoder();
     var buf = '';
     var terminalEventSeen = false;
+
+    async function _handleEvent(evt) {
+      if (evt.type === 'chunk') {
+        streamedText = evt.text;
+        if (activeTab) activeTab._streamedText = streamedText;
+        updateStreamDiv();
+      } else if (evt.type === 'heartbeat') {
+        return;
+      } else if (evt.type === 'tool') {
+        toolsUsed.push({ name: evt.name, input: evt.input || {} });
+        if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
+        updateStreamDiv();
+        if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+      } else if (evt.type === 'done') {
+        terminalEventSeen = true;
+        _cleanupStreamDiv();
+        if (evt.sessionReset) {
+          addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
+        }
+        var rendered = renderMd(evt.text || streamedText || '');
+        addMsg('assistant', rendered + _ccElapsedFooter('{seconds}s'));
+        if (evt.sessionId !== undefined) {
+          var originTab = _ccTabs.find(function(t) { return t.id === activeTabId; });
+          if (originTab) { originTab.sessionId = evt.sessionId || null; }
+          ccSaveState(); ccUpdateSessionIndicator();
+        }
+        if (evt.actions && evt.actions.length > 0) {
+          _tagServerExecuted(evt.actions, evt.actionResults);
+          for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
+        }
+      } else if (evt.type === 'error') {
+        terminalEventSeen = true;
+        _cleanupStreamDiv();
+        addMsg('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
+      }
+    }
 
     while (true) {
       var readResult = await reader.read();
@@ -569,93 +623,55 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       for (var li = 0; li < lines.length; li++) {
         var line = lines[li];
         if (!line.startsWith('data: ')) continue;
-        try {
-          var evt = JSON.parse(line.slice(6));
-          if (evt.type === 'chunk') {
-            streamedText = evt.text;
-            if (activeTab) activeTab._streamedText = streamedText;
-            updateStreamDiv();
-          } else if (evt.type === 'heartbeat') {
-            continue;
-          } else if (evt.type === 'tool') {
-            toolsUsed.push({ name: evt.name, input: evt.input || {} });
-            if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
-            updateStreamDiv();
-            if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
-          } else if (evt.type === 'done') {
-            terminalEventSeen = true;
-            _cleanupStreamDiv();
-            // If system prompt changed, show a notice before the response
-            if (evt.sessionReset) {
-              addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
-            }
-            // placeholder was added with skipSave=true — nothing to pop
-            var rendered = renderMd(evt.text || streamedText || '');
-            addMsg('assistant', rendered + _ccElapsedFooter('{seconds}s'));
-            if (evt.sessionId !== undefined) {
-              // Save session to the originating tab, not whichever tab is active now
-              var originTab = _ccTabs.find(function(t) { return t.id === activeTabId; });
-              if (originTab) { originTab.sessionId = evt.sessionId || null; }
-              ccSaveState(); ccUpdateSessionIndicator();
-            }
-            if (evt.actions && evt.actions.length > 0) {
-              _tagServerExecuted(evt.actions, evt.actionResults);
-              for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
-            }
-          } else if (evt.type === 'error') {
-            terminalEventSeen = true;
-            _cleanupStreamDiv();
-            // placeholder was skipSave — no pop needed
-            addMsg('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
-          }
-        } catch { /* incomplete JSON */ }
+        try { await _handleEvent(JSON.parse(line.slice(6))); } catch {}
       }
     }
-    // Process any remaining buffered data after stream ends
     if (buf.trim()) {
       var remainingLines = buf.split('\n');
       for (var ri = 0; ri < remainingLines.length; ri++) {
         var rline = remainingLines[ri];
         if (!rline.startsWith('data: ')) continue;
-        try {
-          var revt = JSON.parse(rline.slice(6));
-          if (revt.type === 'done') {
-            terminalEventSeen = true;
-            _cleanupStreamDiv();
-            // placeholder was skipSave — no pop needed
-            var rendered2 = renderMd(revt.text || streamedText || '');
-            addMsg('assistant', rendered2 + _ccElapsedFooter('{seconds}s'));
-            if (revt.sessionId !== undefined) {
-              var originTab2 = _ccTabs.find(function(t) { return t.id === activeTabId; });
-              if (originTab2) { originTab2.sessionId = revt.sessionId || null; }
-              ccSaveState(); ccUpdateSessionIndicator();
-            }
-            if (revt.actions && revt.actions.length > 0) {
-              _tagServerExecuted(revt.actions, revt.actionResults);
-              for (var ai2 = 0; ai2 < revt.actions.length; ai2++) { await ccExecuteAction(revt.actions[ai2], activeTabId); }
-            }
-          } else if (revt.type === 'heartbeat') {
-            continue;
-          } else if (revt.type === 'error') {
-            terminalEventSeen = true;
-            _cleanupStreamDiv();
-            addMsg('assistant', '<span style="color:var(--red)">' + escHtml(revt.error) + '</span>');
-          } else if (revt.type === 'chunk') {
-            streamedText = revt.text;
-            updateStreamDiv();
-          }
-        } catch {}
+        try { await _handleEvent(JSON.parse(rline.slice(6))); } catch {}
       }
     }
-    // If stream ended without a 'done' event, finalize with whatever we have
-    if (!terminalEventSeen && (streamDiv.parentNode || document.getElementById('cc-restore-thinking') || document.querySelector('[data-stream-tab="' + activeTabId + '"]'))) {
-      _cleanupStreamDiv();
-      var streamEndedHint = '<div style="font-size:10px;color:var(--muted);margin-top:4px">The response stream ended before completion. Retry to continue from the last user message.</div>';
-      if (streamedText) {
-        addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') + _ccRetryControls(streamEndedHint, false));
-      } else {
-        addMsg('assistant', '<span style="color:var(--red)">The response stream ended before completion.</span>' + _ccRetryControls(streamEndedHint, false));
+    return { interrupted: !terminalEventSeen, reconnectable: true };
+  }
+
+  try {
+    while (true) {
+      var consume = await _ccConsumeStream(
+        reconnectAttempts === 0
+          ? { message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }
+          : { tabId: activeTabId, sessionId: activeTab.sessionId || null, reconnect: true },
+        reconnectAttempts > 0
+      );
+      if (!consume.interrupted) break;
+      if (!consume.reconnectable || reconnectAttempts >= 2) {
+        _cleanupStreamDiv();
+        var streamEndedHint = '<div style="font-size:10px;color:var(--muted);margin-top:4px">The response stream ended before completion. Retry to continue from the last user message.</div>';
+        if (streamedText) {
+          addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') + _ccRetryControls(streamEndedHint, false));
+        } else {
+          addMsg('assistant', '<span style="color:var(--red)">The response stream ended before completion.</span>' + _ccRetryControls(streamEndedHint, false));
+        }
+        break;
       }
+      var reconnectHealth = await _ccDashboardHealth();
+      if (!reconnectHealth.reachable || reconnectHealth.restarted) {
+        _cleanupStreamDiv();
+        var reconnectHint = reconnectHealth.restarted
+          ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard restarted while this response was streaming. Reload the page to reconnect to the new instance.</div>'
+          : '<div style="font-size:10px;color:var(--muted);margin-top:4px">The request stream was interrupted, but the dashboard is still reachable. Retry or start a new session.</div>';
+        addMsg('assistant', (streamedText ? renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') : '') +
+          _ccRetryControls(reconnectHint, reconnectHealth.restarted));
+        break;
+      }
+      reconnectAttempts++;
+      toolsUsed = [];
+      if (activeTab) activeTab._toolsUsed = [];
+      streamStatusNote = 'Connection interrupted — reattaching to the live response...';
+      updateStreamDiv();
+      await new Promise(function(r) { setTimeout(r, 1000 * reconnectAttempts); });
     }
   } catch (e) {
     _cleanupStreamDiv();

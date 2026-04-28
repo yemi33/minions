@@ -14104,12 +14104,28 @@ async function testMeetings() {
       'CC should surface a clear recovery message when a stream ends without a done event');
   });
 
+  await test('CC interrupted streams attempt live reattach before surfacing retry UI', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes("reconnect: true"),
+      'CC client should issue reconnect stream requests for in-flight responses');
+    assert.ok(ccSrc.includes('Connection interrupted — reattaching to the live response...'),
+      'CC should show a reconnecting status instead of failing immediately on stream interruption');
+  });
+
   await test('CC streaming endpoint sends heartbeat events to keep long responses alive', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(dashSrc.includes('CC_STREAM_HEARTBEAT_MS'),
       'Streaming CC should define a heartbeat interval for long-lived responses');
     assert.ok(dashSrc.includes("writeCcEvent({ type: 'heartbeat' })") && dashSrc.includes('setInterval(() =>'),
       'Streaming CC should emit heartbeat events while a response is in flight');
+  });
+
+  await test('CC streaming endpoint buffers live state for reconnect after disconnect', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('ccLiveStreams') && dashSrc.includes('CC_STREAM_REATTACH_GRACE_MS'),
+      'Streaming CC should keep buffered live state for reconnect grace windows');
+    assert.ok(dashSrc.includes('body.reconnect') && dashSrc.includes('No live command-center response to reconnect'),
+      'Streaming CC should support reconnect requests for an in-flight tab');
   });
 }
 
@@ -23906,6 +23922,15 @@ async function testDashboardResilience() {
       'Should use per-tab in-flight tracking for parallel CC requests');
   });
 
+  await test('CC abort endpoint preserves explicit Stop semantics while reconnect keeps jobs alive', () => {
+    assert.ok(dashSrc.includes('handleCommandCenterAbort'),
+      'Dashboard should expose an explicit CC abort handler');
+    assert.ok(dashSrc.includes("/api/command-center/abort"),
+      'Dashboard routes should include a CC abort endpoint');
+    assert.ok(ccSrc.includes("fetch('/api/command-center/abort'"),
+      'CC frontend should call the abort endpoint before aborting the local stream');
+  });
+
   // ── Live stream steering resilience ──
 
   await test('steering pauses polling with _steerInFlight flag', () => {
@@ -23959,6 +23984,8 @@ async function testDashboardResilience() {
       'modal-qa.js should define a live progress renderer for streaming doc chat');
     assert.ok(modalQaSrc.includes('renderMd(streamedText)') && modalQaSrc.includes('formatToolSummary(name, input)'),
       'doc-chat live progress should render partial markdown and tool summaries while the agent is working');
+    assert.ok(modalQaSrc.includes('flex-direction:column'),
+      'doc-chat live progress should stack CoT and progress status vertically');
   });
 
   await test('doc-chat clears processing badge when processing completes', () => {

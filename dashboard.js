@@ -544,10 +544,86 @@ const CC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
+const ccLiveStreams = new Map(); // tabId → buffered live stream state for reconnect-after-disconnect
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
+const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
+const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
+function _getCcLiveStream(tabId) {
+  return ccLiveStreams.get(tabId) || null;
+}
+function _clearCcLiveTimers(tabId) {
+  const state = _getCcLiveStream(tabId);
+  if (!state) return;
+  if (state.abortTimer) {
+    clearTimeout(state.abortTimer);
+    state.abortTimer = null;
+  }
+  if (state.cleanupTimer) {
+    clearTimeout(state.cleanupTimer);
+    state.cleanupTimer = null;
+  }
+}
+function _clearCcLiveStream(tabId) {
+  const state = _getCcLiveStream(tabId);
+  if (!state) return;
+  _clearCcLiveTimers(tabId);
+  ccLiveStreams.delete(tabId);
+}
+function _ensureCcLiveStream(tabId) {
+  let state = _getCcLiveStream(tabId);
+  if (state) return state;
+  state = {
+    tabId,
+    text: '',
+    tools: [],
+    donePayload: null,
+    writer: null,
+    endResponse: null,
+    abortFn: null,
+    abortTimer: null,
+    cleanupTimer: null,
+  };
+  ccLiveStreams.set(tabId, state);
+  return state;
+}
+function _attachCcLiveStream(tabId, writer, endResponse) {
+  const state = _ensureCcLiveStream(tabId);
+  _clearCcLiveTimers(tabId);
+  state.writer = writer;
+  state.endResponse = endResponse;
+  return state;
+}
+function _detachCcLiveStream(tabId, writer) {
+  const state = _getCcLiveStream(tabId);
+  if (!state) return;
+  if (!writer || state.writer === writer) {
+    state.writer = null;
+    state.endResponse = null;
+  }
+}
+function _scheduleCcLiveAbort(tabId) {
+  const state = _getCcLiveStream(tabId);
+  if (!state || state.donePayload) return;
+  _clearCcLiveTimers(tabId);
+  state.abortTimer = setTimeout(() => {
+    const live = _getCcLiveStream(tabId);
+    if (!live || live.donePayload || live.writer) return;
+    try { if (live.abortFn) live.abortFn(); } catch {}
+  }, CC_STREAM_REATTACH_GRACE_MS);
+}
+function _scheduleCcLiveCleanup(tabId, delayMs = CC_STREAM_DONE_RETENTION_MS) {
+  const state = _getCcLiveStream(tabId);
+  if (!state) return;
+  if (state.cleanupTimer) clearTimeout(state.cleanupTimer);
+  state.cleanupTimer = setTimeout(() => {
+    const live = _getCcLiveStream(tabId);
+    if (!live || live.writer) return;
+    _clearCcLiveStream(tabId);
+  }, delayMs);
+}
 function _ccTabIsInFlight(tabId) {
   if (!ccInFlightTabs.has(tabId)) return false;
   // Auto-release stale locks — if a request has been in-flight longer than CC_INFLIGHT_TIMEOUT_MS,
@@ -3900,8 +3976,29 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     ccInFlightTabs.clear(); // Reset all in-flight guards
+    for (const [tabId, live] of ccLiveStreams.entries()) {
+      try { if (live.abortFn) live.abortFn(); } catch {}
+      _clearCcLiveStream(tabId);
+    }
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     return jsonReply(res, 200, { ok: true });
+  }
+
+  async function handleCommandCenterAbort(req, res) {
+    try {
+      const body = await readBody(req);
+      const tabId = body.tabId || 'default';
+      const live = _getCcLiveStream(tabId);
+      if (live?.abortFn) {
+        try { live.abortFn(); } catch {}
+      } else {
+        const abort = ccInFlightAborts.get(tabId);
+        if (abort) { try { abort(); } catch {} }
+      }
+      _clearCcLiveStream(tabId);
+      _releaseCCTab(tabId);
+      return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
   async function handleCCSessionsList(req, res) {
@@ -4037,8 +4134,51 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     };
     try {
       const body = await readBody(req);
-      if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
+      if (!body.message && !body.reconnect) { res.statusCode = 400; res.end('message required'); return; }
       tabId = body.tabId || 'default';
+      if (body.reconnect) {
+        const live = _getCcLiveStream(tabId);
+        if (!live) { res.statusCode = 409; res.end('No live command-center response to reconnect'); return; }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+        writeCcEvent({ type: 'heartbeat' });
+        _ccHeartbeatTimer = setInterval(() => {
+          if (_ccStreamEnded) {
+            stopCcHeartbeat();
+            return;
+          }
+          if (!writeCcEvent({ type: 'heartbeat' })) stopCcHeartbeat();
+        }, CC_STREAM_HEARTBEAT_MS);
+        let reconnectDone;
+        const reconnectDonePromise = new Promise(resolve => { reconnectDone = resolve; });
+        _attachCcLiveStream(tabId, writeCcEvent, () => {
+          if (_ccStreamEnded) return;
+          _ccStreamEnded = true;
+          stopCcHeartbeat();
+          try { res.end(); } catch {}
+          reconnectDone();
+        });
+        req.on('close', () => {
+          if (_ccStreamEnded) return;
+          stopCcHeartbeat();
+          _detachCcLiveStream(tabId, writeCcEvent);
+          _scheduleCcLiveAbort(tabId);
+          reconnectDone();
+        });
+        for (const tool of live.tools || []) {
+          writeCcEvent({ type: 'tool', name: tool.name, input: _lightToolInput(tool.input) });
+        }
+        if (live.text) writeCcEvent({ type: 'chunk', text: live.text });
+        if (live.donePayload) {
+          writeCcEvent(live.donePayload);
+          _ccStreamEnded = true;
+          stopCcHeartbeat();
+          try { res.end(); } catch {}
+          _scheduleCcLiveCleanup(tabId);
+          return;
+        }
+        await reconnectDonePromise;
+        return;
+      }
       if (_ccTabIsInFlight(tabId)) {
         // Previous request still in-flight — abort its LLM (handles keep-alive abort where close event didn't fire)
         const prevAbort = ccInFlightAborts.get(tabId);
@@ -4049,6 +4189,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       ccInFlightTabs.set(tabId, Date.now());
+      _clearCcLiveStream(tabId);
+      const liveState = _attachCcLiveStream(tabId, writeCcEvent, () => {
+        if (_ccStreamEnded) return;
+        _ccStreamEnded = true;
+        stopCcHeartbeat();
+        try { res.end(); } catch {}
+      });
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       writeCcEvent({ type: 'heartbeat' }); // flush headers quickly and keep intermediaries from idling out
@@ -4059,17 +4206,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         if (!writeCcEvent({ type: 'heartbeat' })) stopCcHeartbeat();
       }, CC_STREAM_HEARTBEAT_MS);
-      // Kill LLM process immediately if client disconnects mid-stream.
-      // Guard with !_ccStreamEnded: when the stream ends normally, finally already released the lock;
-      // without the guard, this close event (which fires after res.end) could wipe a new request's lock.
+      // Keep the LLM alive briefly after disconnect so the UI can reattach to the same in-flight turn.
       req.on('close', () => {
         if (!_ccStreamEnded) {
           stopCcHeartbeat();
-          _releaseCCTab(tabId);
-          if (_ccStreamAbort) {
-            console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
-            _ccStreamAbort();
-          }
+          _detachCcLiveStream(tabId, writeCcEvent);
+          _scheduleCcLiveAbort(tabId);
         }
       });
 
@@ -4106,14 +4248,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onChunk: (text) => {
             const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-            writeCcEvent({ type: 'chunk', text: display });
+            liveState.text = display;
+            if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
           },
           onToolUse: (name, input) => {
             toolUses.push({ name, input: input || {} });
-            writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
+            liveState.tools.push({ name, input: input || {} });
+            if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
           }
         });
         _ccStreamAbort = llmPromise.abort;
+        liveState.abortFn = _ccStreamAbort;
         ccInFlightAborts.set(tabId, _ccStreamAbort);
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
@@ -4127,21 +4272,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           toolUses = []; // discard stale metadata from the failed resume attempt
           const retryPromise = callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
             timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
-            allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-            effort: streamEffort, direct: true,
-            onChunk: (text) => {
-              const actIdx = findCCActionsDelimiter(text);
-              const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-              writeCcEvent({ type: 'chunk', text: display });
-            },
-            onToolUse: (name, input) => {
-              toolUses.push({ name, input: input || {} });
-              writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
-            }
-          });
-          _ccStreamAbort = retryPromise.abort;
-          ccInFlightAborts.set(tabId, _ccStreamAbort);
-          const retryResult = await retryPromise;
+              allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+              effort: streamEffort, direct: true,
+              onChunk: (text) => {
+                const actIdx = findCCActionsDelimiter(text);
+                const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
+                liveState.text = display;
+                if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
+              },
+              onToolUse: (name, input) => {
+                toolUses.push({ name, input: input || {} });
+                liveState.tools.push({ name, input: input || {} });
+                if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
+              }
+            });
+            _ccStreamAbort = retryPromise.abort;
+            liveState.abortFn = _ccStreamAbort;
+            ccInFlightAborts.set(tabId, _ccStreamAbort);
+            const retryResult = await retryPromise;
           trackUsage('command-center', retryResult.usage);
           if (retryResult.text) {
             // Fresh session succeeded — use retryResult from here
@@ -4154,8 +4302,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
           const retryHint = 'Send your message again to retry.';
-          writeCcEvent({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null });
-          _ccStreamEnded = true; res.end();
+          liveState.donePayload = { type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null };
+          if (liveState.writer) liveState.writer(liveState.donePayload);
+          if (liveState.endResponse) liveState.endResponse();
+          _scheduleCcLiveCleanup(tabId);
           return;
         }
 
@@ -4197,7 +4347,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const donePayload = { type: 'done', text: displayText, actions, actionResults, sessionId: responseSessionId, newSession: !wasResume };
         if (sessionReset) donePayload.sessionReset = true;
-        writeCcEvent(donePayload);
+        liveState.donePayload = donePayload;
+        if (liveState.writer) liveState.writer(donePayload);
 
         // Mirror CC response to Teams (non-blocking, skip Teams-originated)
         const _streamTabId = body.tabId || 'default';
@@ -4205,7 +4356,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
         }
 
-        _ccStreamEnded = true; res.end();
+        if (liveState.endResponse) liveState.endResponse();
+        _scheduleCcLiveCleanup(tabId);
       } finally {
         stopCcHeartbeat();
         _releaseCCTab(tabId);
@@ -5099,6 +5251,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
+    { method: 'POST', path: '/api/command-center/abort', desc: 'Abort an in-flight CC request for a tab', params: 'tabId?', handler: handleCommandCenterAbort },
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
     { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?', handler: handleCommandCenterStream },
     { method: 'GET', path: '/api/cc-sessions', desc: 'List CC session metadata for all tabs', handler: handleCCSessionsList },
