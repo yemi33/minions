@@ -3337,6 +3337,10 @@ async function tick() {
   }
 }
 
+function isHardPinnedAssignment(item) {
+  return !!item?.meta?.item?.agent;
+}
+
 async function tickInner() {
   const control = getControl();
   if (control.state !== 'running' && control.state !== 'stopping') {
@@ -3738,8 +3742,9 @@ async function tickInner() {
     // Branch mutex: skip items targeting a branch already locked by an active or newly-dispatched task
     const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
     if (itemBranch && lockedBranches.has(itemBranch)) continue;
-    // Items explicitly assigned to an agent bypass concurrency cap — dispatch if agent is free
-    const isExplicitAssignment = !!(item.meta?.item?.agent || collectAgentHints(item.meta?.item).length);
+    // Only true work-item hard pins bypass the general concurrency cap. Hints
+    // affect routing, but still consume maxConcurrent slots like normal work.
+    const isExplicitAssignment = isHardPinnedAssignment(item);
     if (!isExplicitAssignment && generalSlots <= 0) continue;
     seenPendingIds.add(item.id);
     toDispatch.push(item);
@@ -3869,6 +3874,7 @@ module.exports = {
 
   // Agent lifecycle
   spawnAgent, resolveAgent,
+  isHardPinnedAssignment, // exported for testing
 
   // Discovery
   discoverWork, discoverFromPrs, discoverFromWorkItems,

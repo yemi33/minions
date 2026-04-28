@@ -10488,6 +10488,32 @@ async function testResolveAgent() {
       'Busy-agent reassignment should treat hinted work as explicit assignment');
   });
 
+  await test('pending hinted work does not bypass maxConcurrent when slots are exhausted — behavioral', () => {
+    const restore = createTestMinionsDir();
+    try {
+      try { delete require.cache[require.resolve('../engine')]; } catch {}
+      const engine = require('../engine');
+      const canPassConcurrencyGate = (item, generalSlots) => {
+        const isExplicitAssignment = engine.isHardPinnedAssignment(item);
+        return isExplicitAssignment || generalSlots > 0;
+      };
+
+      assert.strictEqual(
+        canPassConcurrencyGate({ meta: { item: { preferred_agent: 'lambert', agents: ['ralph'] } } }, 0),
+        false,
+        'preferred_agent/agents are routing hints and must still consume maxConcurrent slots'
+      );
+      assert.strictEqual(
+        canPassConcurrencyGate({ meta: { item: { agent: 'lambert', preferred_agent: 'dallas' } } }, 0),
+        true,
+        'only a true item.agent hard pin may bypass the general concurrency cap'
+      );
+    } finally {
+      restore();
+      try { delete require.cache[require.resolve('../engine')]; } catch {}
+    }
+  });
+
   await test('Command Center dispatch agent normalization hard-pins one explicit agent — behavioral', () => {
     const normalizeAgentAssignmentInput = loadNormalizeAgentAssignmentInput();
     assert.deepStrictEqual(
