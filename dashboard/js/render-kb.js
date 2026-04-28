@@ -1,5 +1,11 @@
 // render-kb.js — Knowledge base rendering functions extracted from dashboard.html
 
+function _formatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
 const KB_CAT_LABELS = {
   architecture: 'Architecture', conventions: 'Conventions',
   'project-notes': 'Project Notes', 'build-reports': 'Build Reports',
@@ -175,7 +181,18 @@ async function kbSweep() {
           if (result && result.ok) {
             btn.textContent = 'done';
             btn.style.color = 'var(--green)';
-            showToast('cmd-toast', 'KB sweep complete: ' + (result.summary || 'done'), true);
+            // Rich summary toast — show the key counts inline; full breakdown via console.log for now
+            var bytesSaved = (result.bytesBefore || 0) - (result.bytesAfter || 0);
+            var pieces = [];
+            if (result.entriesBefore != null) pieces.push((result.entriesBefore - (result.entriesAfter || 0)) + ' entries removed');
+            if (result.hashDuplicatesArchived) pieces.push(result.hashDuplicatesArchived + ' hash-dup');
+            if (result.llmDuplicatesArchived) pieces.push(result.llmDuplicatesArchived + ' llm-dup');
+            if (result.staleRemoved) pieces.push(result.staleRemoved + ' stale');
+            if (result.reclassified) pieces.push(result.reclassified + ' reclassified');
+            if (result.rewritten) pieces.push(result.rewritten + ' rewritten');
+            if (bytesSaved > 0) pieces.push(_formatBytes(bytesSaved) + ' saved');
+            var msg = pieces.length ? 'KB sweep: ' + pieces.join(' · ') : 'KB sweep: ' + (result.summary || 'done');
+            showToast('cmd-toast', msg, true);
             refreshKnowledgeBase();
           } else {
             btn.style.color = 'var(--red)';

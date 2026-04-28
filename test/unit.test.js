@@ -3626,12 +3626,15 @@ async function testArchivePathResolution() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Doc-chat should always save in-place; forking is reserved for /api/plans/revise
     const docChatSection = src.slice(src.indexOf("async function handleDocChat"), src.indexOf("async function handleInboxPersist"));
+    const finalizeSection = src.slice(src.indexOf('function _finalizeDocChatResponse'), src.indexOf('// -- POST helpers --'));
     assert.ok(!docChatSection.includes('isNewVersion'),
       'doc-chat handler should not produce isNewVersion (no forking)');
     assert.ok(!docChatSection.includes('versionedFile'),
       'doc-chat handler should not produce versionedFile (no forking)');
-    assert.ok(docChatSection.includes('safeWrite(fullPath, content)'),
-      'doc-chat should save directly to the original file');
+    assert.ok(docChatSection.includes('_finalizeDocChatResponse'),
+      'doc-chat handler should finalize edits through the shared response helper');
+    assert.ok(finalizeSection.includes('safeWrite(fullPath, content)'),
+      'doc-chat should save directly to the original file in the finalize helper');
   });
 
   await test('doc-chat does not trigger version actions or forking UI', () => {
@@ -11790,8 +11793,11 @@ async function testHumanContributions() {
   });
 
   await test('Knowledge mutations invalidate KB cache', () => {
-    const invalidateCalls = (dashSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
-    assert.ok(invalidateCalls >= 4,
+    const dashCalls = (dashSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
+    // KB sweep moved its invalidation call to engine/kb-sweep.js
+    const sweepSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'kb-sweep.js'), 'utf8');
+    const sweepCalls = (sweepSrc.match(/queries\.invalidateKnowledgeBaseCache\(\)/g) || []).length;
+    assert.ok(dashCalls + sweepCalls >= 4,
       'Should invalidate KB cache after KB create, promotion, sweep, and command-center knowledge writes');
   });
 
@@ -18001,40 +18007,89 @@ async function testApiRoutesInCcPreamble() {
 }
 
 async function testKbSweepBatching() {
+  // Sweep was extracted from dashboard.js → engine/kb-sweep.js
   await test('KB sweep uses batched processing', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('BATCH_SIZE'), 'sweep should use BATCH_SIZE');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(src.includes('LLM_BATCH_SIZE'), 'sweep should define a batch size constant');
     assert.ok(src.includes('batches.length'), 'sweep should iterate batches');
     assert.ok(src.includes('batch ${b + 1}'), 'sweep should log batch progress');
   });
 
   await test('KB sweep skips pinned entries using server and request pin sets', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
-    assert.ok(bgFn.includes('shared.getPinnedItems().filter(k => k.startsWith(\'knowledge/\'))'),
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(src.includes("shared.getPinnedItems().filter(k => k.startsWith('knowledge/'))"),
       'KB sweep should read server-side pinned knowledge keys');
-    assert.ok(bgFn.includes('body.pinnedKeys'),
-      'KB sweep should still honor explicitly provided pinned keys from the caller');
-    assert.ok(bgFn.includes("if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;"),
+    assert.ok(src.includes('opts.pinnedKeys'),
+      'KB sweep should honor explicitly provided pinned keys from the caller');
+    assert.ok(src.includes("pinned.has(`knowledge/${e.cat}/${e.file}`)"),
       'Pinned knowledge entries should be excluded from the sweep manifest');
   });
 
   await test('KB sweep exits early when fewer than 2 unpinned entries remain', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
-    assert.ok(bgFn.includes("nothing to sweep (< 2 unpinned entries)"),
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(src.includes("nothing to sweep (< 2 unpinned entries)"),
       'KB sweep should report no-op when pinned exclusions leave fewer than 2 entries');
-    assert.ok(bgFn.includes('if (manifest.length < 2)'),
+    assert.ok(src.includes('if (manifest.length < 2)'),
       'KB sweep should stop before LLM batching when too few unpinned entries remain');
   });
 
   await test('KB sweep reclassification preserves original mtime for newest-first ordering', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
-    assert.ok(bgFn.includes('const srcStats = fs.statSync(srcPath);'),
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(src.includes('const stats = fs.statSync(srcPath);'),
       'KB reclassification should capture source file timestamps');
-    assert.ok(bgFn.includes('fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);'),
+    assert.ok(src.includes('fs.utimesSync(destPath, stats.atime, stats.mtime);'),
       'KB reclassification should preserve original timestamps after moving categories');
+  });
+
+  await test('hash-based dedup keeps newest entry per identical-content group', () => {
+    const { _hashDedup } = require(path.join(__dirname, '..', 'engine', 'kb-sweep.js'));
+    const manifest = [
+      { category: 'reviews', file: 'a.md', date: '2026-04-01', content: 'Same finding about X', mtimeMs: 100 },
+      { category: 'reviews', file: 'b.md', date: '2026-04-25', content: 'Same finding about X', mtimeMs: 200 }, // newer
+      { category: 'reviews', file: 'c.md', date: '2026-04-10', content: 'Different finding', mtimeMs: 150 },
+    ];
+    const { survivors, archived } = _hashDedup(manifest, { dryRun: true });
+    assert.strictEqual(archived, 1, 'one duplicate should be flagged for archive');
+    const survivorFiles = survivors.map(s => s.file).sort();
+    assert.deepStrictEqual(survivorFiles, ['b.md', 'c.md'], 'newest of duplicate pair survives, unique entry survives');
+  });
+
+  await test('frontmatter parser round-trips arbitrary keys', () => {
+    const { _parseFrontmatter, _serializeFrontmatter } = require(path.join(__dirname, '..', 'engine', 'kb-sweep.js'));
+    const original = '---\nsource: foo.md\nagent: ripley\n_swept: 2026-04-27T12:00:00.000Z\n---\n\nBody text here';
+    const { fm, body } = _parseFrontmatter(original);
+    assert.strictEqual(fm.source, 'foo.md');
+    assert.strictEqual(fm.agent, 'ripley');
+    assert.strictEqual(fm._swept, '2026-04-27T12:00:00.000Z');
+    assert.strictEqual(body, 'Body text here');
+    const round = _serializeFrontmatter(fm, body);
+    assert.ok(round.includes('source: foo.md'));
+    assert.ok(round.includes('_swept: 2026-04-27T12:00:00.000Z'));
+    assert.ok(round.endsWith('Body text here'));
+  });
+
+  await test('staleGuardMs scales with KB size — never below 30 minutes', () => {
+    const { staleGuardMs } = require(path.join(__dirname, '..', 'engine', 'kb-sweep.js'));
+    assert.ok(staleGuardMs(0) >= 30 * 60 * 1000, '0 entries → at least 30 min');
+    assert.ok(staleGuardMs(100) >= 30 * 60 * 1000, '100 entries → still at least 30 min');
+    assert.ok(staleGuardMs(5000) >= 5000 * 1000, '5000 entries → at least 5000s');
+    assert.ok(staleGuardMs(5000) > staleGuardMs(100), 'larger KB → longer guard');
+  });
+
+  await test('runKbSweep returns rich summary fields (entriesBefore/After, bytes, per-pass counts)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    for (const field of ['entriesBefore', 'entriesAfter', 'bytesBefore', 'bytesAfter',
+      'hashDuplicatesArchived', 'llmDuplicatesArchived', 'staleRemoved',
+      'reclassified', 'rewritten', 'durationMs']) {
+      assert.ok(src.includes(field), `summary should track ${field}`);
+    }
+  });
+
+  await test('_swept frontmatter flag prevents redundant rewrite of already-processed entries', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(src.includes('SWEPT_FLAG_KEY'), 'rewrite pass should reference the swept-flag key');
+    assert.ok(/if \(fm\[SWEPT_FLAG_KEY\]\)/.test(src), 'rewrite pass should skip entries that have the flag');
+    assert.ok(/mtime <= sweptAt/.test(src), 'should re-process if file modified after the flag');
   });
 }
 
@@ -22465,6 +22520,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('skipStatePreamble: true'), 'Doc-chat should skip state preamble');
   });
 
+  await test('streaming doc-chat reuses the same doc-chat session/tool limits', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('function _prepareDocChatRequest'));
+    assert.ok(docStreamFn.includes("'Read,Glob,Grep'"), 'Streaming read-only doc-chat should only allow Read,Glob,Grep');
+    assert.ok(docStreamFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Streaming editable doc-chat should allow Read,Write,Edit,Glob,Grep');
+    assert.ok(docStreamFn.includes('maxTurns: canEdit ? 25 : 10'), 'Streaming doc-chat should keep the lower doc maxTurns limits');
+    assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
+    assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); }'),
+      'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
+  });
+
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
@@ -22635,6 +22701,14 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fetchBlock.includes('contentHash'), 'Frontend should send contentHash in doc-chat request');
   });
 
+  await test('doc-chat frontend uses streaming endpoint and handles chunk/tool events', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes("fetch('/api/doc-chat/stream'"), 'Doc chat should use the streaming endpoint');
+    const processFn = src.slice(src.indexOf('async function _processQaMessage'), src.indexOf('\nfunction qaAbort'));
+    assert.ok(processFn.includes("evt.type === 'chunk'") && processFn.includes("evt.type === 'tool'"),
+      'Doc chat should react to chunk and tool stream events while processing');
+  });
+
   await test('frontend contentHash uses same fingerprint scheme as server', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
     assert.ok(src.includes('charCodeAt'), 'Frontend should use charCodeAt for fingerprint');
@@ -22645,6 +22719,23 @@ async function testAutoRecoveryAndAtomicity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const routeLine = src.match(/doc-chat.*params:.*contentHash/);
     assert.ok(routeLine, 'Route table should list contentHash as a param');
+  });
+
+  await test('route table exposes streaming doc-chat endpoint', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path: '/api/doc-chat/stream'"), 'Route table should expose /api/doc-chat/stream');
+    assert.ok(src.includes('Streaming doc chat'), 'Streaming doc-chat route should be documented');
+  });
+
+  await test('handleDocChatStream forwards chunk/tool SSE events from the LLM stream', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleDocChatStream');
+    const fnEnd = src.indexOf('async function handleInboxPersist', fnStart);
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('ccDocCallStreaming({'), 'Streaming doc-chat route should use the streaming doc helper');
+    assert.ok(fnBody.includes("writeDocEvent({ type: 'chunk', text })"), 'Streaming doc-chat route should emit chunk events');
+    assert.ok(fnBody.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"), 'Streaming doc-chat route should emit tool events');
+    assert.ok(fnBody.includes("writeDocEvent({ type: 'done'"), 'Streaming doc-chat route should emit a final done event');
   });
 
   await test('CC system prompt discourages excessive tool use', () => {
@@ -23536,13 +23627,16 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('_runKbSweepBackground stores result for status polling', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    const bgStart = src.indexOf('async function _runKbSweepBackground');
+    const bgEnd = src.indexOf('function handleKnowledgeSweepStatus', bgStart);
+    const bgFn = src.slice(bgStart, bgEnd);
     assert.ok(bgFn.includes('global._kbSweepLastResult'), 'Should store last result globally');
     assert.ok(bgFn.includes('global._kbSweepLastCompletedAt'), 'Should store completion timestamp');
-    // Stores result on success
-    assert.ok(bgFn.includes("_kbSweepLastResult = { ok: true, summary"), 'Should store ok result on success');
-    // Stores result on error too
-    assert.ok(bgFn.includes("_kbSweepLastResult = { ok: false, error"), 'Should store error result on failure');
+    // Success path delegates to engine/kb-sweep.js runKbSweep and stores its result object
+    assert.ok(/global\._kbSweepLastResult\s*=\s*result/.test(bgFn),
+      'Success path should store the rich result from runKbSweep');
+    // Error path still stores { ok: false, error }
+    assert.ok(bgFn.includes("global._kbSweepLastResult = { ok: false, error: e.message }"), 'Should store error result on failure');
   });
 
   await test('handleKnowledgeSweepStatus endpoint exists and returns expected fields', () => {
@@ -23858,6 +23952,13 @@ async function testDashboardResilience() {
     );
     assert.ok(processBody.includes("showNotifBadge(sourceCard, 'processing')"),
       '_processQaMessage must show processing badge on source card at start');
+  });
+
+  await test('doc-chat loading UI renders streamed markdown and tool progress like command center', () => {
+    assert.ok(modalQaSrc.includes('function _qaBuildLiveProgressHtml('),
+      'modal-qa.js should define a live progress renderer for streaming doc chat');
+    assert.ok(modalQaSrc.includes('renderMd(streamedText)') && modalQaSrc.includes('formatToolSummary(name, input)'),
+      'doc-chat live progress should render partial markdown and tool summaries while the agent is working');
   });
 
   await test('doc-chat clears processing badge when processing completes', () => {

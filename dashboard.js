@@ -2577,183 +2577,31 @@ const server = http.createServer(async (req, res) => {
   }
 
   async function handleKnowledgeSweep(req, res) {
-    // Auto-release stale guard after 5 min (LLM may have hung)
-    if (global._kbSweepInFlight && global._kbSweepStartedAt && Date.now() - global._kbSweepStartedAt > 300000) {
-      console.log('[kb-sweep] Auto-releasing stale guard (>5min)');
+    // Auto-release stale guard — dynamic floor based on KB size (30 min min, +1s per entry)
+    const { staleGuardMs } = require('./engine/kb-sweep');
+    const entryCount = (queries.getKnowledgeBaseEntries() || []).length;
+    const guardMs = staleGuardMs(entryCount);
+    if (global._kbSweepInFlight && global._kbSweepStartedAt && Date.now() - global._kbSweepStartedAt > guardMs) {
+      console.log(`[kb-sweep] Auto-releasing stale guard (>${Math.round(guardMs / 60000)}min for ${entryCount} entries)`);
       global._kbSweepInFlight = false;
     }
     if (global._kbSweepInFlight) {
       return jsonReply(res, 200, { ok: true, alreadyRunning: true, startedAt: global._kbSweepStartedAt });
     }
-    // Generation token prevents stale finally blocks from clearing the flag for a new sweep
     const sweepToken = Date.now() + Math.random();
     global._kbSweepToken = sweepToken;
     global._kbSweepInFlight = true;
     global._kbSweepStartedAt = Date.now();
     const body = await readBody(req).catch(() => ({}));
-    // Run sweep in background — return immediately so agents/UI don't time out
     _runKbSweepBackground(body, sweepToken);
     return jsonReply(res, 202, { ok: true, started: true });
   }
 
   async function _runKbSweepBackground(body, sweepToken) {
     try {
-      const entries = getKnowledgeBaseEntries();
-      if (entries.length < 2) {
-        global._kbSweepLastResult = { ok: true, summary: 'nothing to sweep (< 2 entries)' };
-        global._kbSweepLastCompletedAt = Date.now();
-        return;
-      }
-
-      // Build a manifest of all KB entries with their content (skip pinned — user wants to keep them)
-      const requestPinnedKeys = Array.isArray(body.pinnedKeys)
-        ? body.pinnedKeys.filter(k => typeof k === 'string' && k.startsWith('knowledge/'))
-        : [];
-      const serverPinnedKeys = shared.getPinnedItems().filter(k => k.startsWith('knowledge/'));
-      const pinnedKeys = new Set([...serverPinnedKeys, ...requestPinnedKeys]);
-      const manifest = [];
-      for (const e of entries) {
-        if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;
-        const content = safeRead(path.join(MINIONS_DIR, 'knowledge', e.cat, e.file));
-        if (!content) continue;
-        manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });
-      }
-      if (manifest.length < 2) {
-        global._kbSweepLastResult = { ok: true, summary: 'nothing to sweep (< 2 unpinned entries)' };
-        global._kbSweepLastCompletedAt = Date.now();
-        return;
-      }
-
-      const { callLLM, trackEngineUsage } = require('./engine/llm');
-      const BATCH_SIZE = 30; // ~30 entries per batch to stay within Haiku context
-      const batches = [];
-      for (let i = 0; i < manifest.length; i += BATCH_SIZE) {
-        batches.push(manifest.slice(i, i + BATCH_SIZE));
-      }
-
-      const plan = { duplicates: [], reclassify: [], remove: [] };
-      for (let b = 0; b < batches.length; b++) {
-        const batch = batches[b];
-        const offset = b * BATCH_SIZE;
-        const prompt = `You are a knowledge base curator. Analyze these ${batch.length} entries (batch ${b + 1}/${batches.length}, indices ${offset}-${offset + batch.length - 1}) and produce a cleanup plan.
-
-## Entries
-
-${batch.map((m, i) => `[${offset + i}] ${m.category}/${m.file} | ${m.title} | ${m.date} | ${m.agent || '?'} | ${(m.content || '').slice(0, 200).replace(/\n/g, ' ')}`).join('\n')}
-
-## Instructions
-
-1. **Find duplicates**: entries with substantially the same content (same findings, different agents/runs). List pairs by index. Prefer keeping the more recent entry.
-2. **Find misclassified**: entries in the wrong category.
-3. **Find stale/empty**: entries with no actionable content (boilerplate, bail-out notes, "no changes needed").
-
-Respond with ONLY valid JSON: { "duplicates": [{ "keep": N, "remove": [N], "reason": "..." }], "reclassify": [{ "index": N, "from": "cat", "to": "cat", "reason": "..." }], "remove": [{ "index": N, "reason": "..." }] }
-If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
-
-        const result = await callLLM(prompt, 'Output only JSON.', {
-          timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1, direct: true
-        });
-        trackEngineUsage('kb-sweep', result.usage);
-
-        let batchPlan;
-        try {
-          let jsonStr = (result.text || '').trim();
-          const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-          if (fenceMatch) jsonStr = fenceMatch[1].trim();
-          batchPlan = JSON.parse(jsonStr);
-        } catch {
-          console.log(`[kb-sweep] batch ${b + 1}/${batches.length} returned invalid JSON, skipping`);
-          continue;
-        }
-        if (batchPlan.duplicates) plan.duplicates.push(...batchPlan.duplicates);
-        if (batchPlan.reclassify) plan.reclassify.push(...batchPlan.reclassify);
-        if (batchPlan.remove) plan.remove.push(...batchPlan.remove);
-      }
-
-      let removed = 0, reclassified = 0, merged = 0;
-      const kbDir = path.join(MINIONS_DIR, 'knowledge');
-
-      // If nothing to do, store result and return
-      const totalActions = (plan.remove || []).length + (plan.duplicates || []).reduce((n, d) => n + (d.remove || []).length, 0) + (plan.reclassify || []).length;
-      if (totalActions === 0) {
-        global._kbSweepLastResult = { ok: true, summary: 'KB is clean — nothing to sweep', plan };
-        global._kbSweepLastCompletedAt = Date.now();
-        return;
-      }
-
-      // Archive dir for swept files (never delete, always preserve)
-      const kbArchiveDir = path.join(kbDir, '_swept');
-      if (!fs.existsSync(kbArchiveDir)) fs.mkdirSync(kbArchiveDir, { recursive: true });
-
-      function archiveKbFile(filePath, reason) {
-        if (!fs.existsSync(filePath)) return;
-        const basename = path.basename(filePath);
-        const destPath = shared.uniquePath(path.join(kbArchiveDir, basename));
-        try {
-          const content = safeRead(filePath);
-          if (content === null) return; // don't delete if we can't read
-          const meta = `<!-- swept: ${new Date().toISOString()} | reason: ${reason} -->\n`;
-          safeWrite(destPath, meta + content);
-          safeUnlink(filePath);
-        } catch (e) { console.error('kb archive:', e.message); }
-      }
-
-      // Process removals (stale/empty) — archive, not delete
-      for (const r of (plan.remove || [])) {
-        const entry = manifest[r.index];
-        if (!entry) continue;
-        const fp = path.join(kbDir, entry.category, entry.file);
-        archiveKbFile(fp, 'stale: ' + (r.reason || ''));
-        removed++;
-      }
-
-      // Process duplicates — archive the duplicates, keep the primary
-      for (const d of (plan.duplicates || [])) {
-        for (const idx of (d.remove || [])) {
-          const entry = manifest[idx];
-          if (!entry) continue;
-          const fp = path.join(kbDir, entry.category, entry.file);
-          archiveKbFile(fp, 'duplicate of index ' + d.keep + ': ' + (d.reason || ''));
-          merged++;
-        }
-      }
-
-      // Process reclassifications (move between categories)
-      for (const r of (plan.reclassify || [])) {
-        const entry = manifest[r.index];
-        if (!entry || !shared.KB_CATEGORIES.includes(r.to)) continue;
-        const srcPath = path.join(kbDir, entry.category, entry.file);
-        const destDir = path.join(kbDir, r.to);
-        if (!fs.existsSync(srcPath)) continue;
-        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-        try {
-          const srcStats = fs.statSync(srcPath);
-          const content = safeRead(srcPath);
-          const updated = content.replace(/^(category:\s*).+$/m, `$1${r.to}`);
-          const destPath = path.join(destDir, entry.file);
-          safeWrite(destPath, updated);
-          fs.utimesSync(destPath, srcStats.atime, srcStats.mtime);
-          safeUnlink(srcPath);
-          reclassified++;
-        } catch (e) { console.error('kb reclassify:', e.message); }
-      }
-
-      // Prune swept files older than 30 days
-      let pruned = 0;
-      const SWEPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-      try {
-        for (const f of fs.readdirSync(kbArchiveDir)) {
-          const fp = path.join(kbArchiveDir, f);
-          try {
-            if (Date.now() - fs.statSync(fp).mtimeMs > SWEPT_RETENTION_MS) { safeUnlink(fp); pruned++; }
-          } catch { /* cleanup */ }
-        }
-      } catch { /* optional */ }
-
-      const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
-      safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
-      queries.invalidateKnowledgeBaseCache();
-      global._kbSweepLastResult = { ok: true, summary, plan };
+      const { runKbSweep } = require('./engine/kb-sweep');
+      const result = await runKbSweep({ pinnedKeys: body.pinnedKeys });
+      global._kbSweepLastResult = result;
       global._kbSweepLastCompletedAt = Date.now();
     } catch (e) {
       console.error('[kb-sweep] background error:', e.message);
@@ -2761,6 +2609,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       global._kbSweepLastCompletedAt = Date.now();
     } finally { if (global._kbSweepToken === sweepToken) global._kbSweepInFlight = false; }
   }
+
 
   function handleKnowledgeSweepStatus(req, res) {
     return jsonReply(res, 200, {
