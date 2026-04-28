@@ -6553,9 +6553,13 @@ async function testConfigAndPlaybooks() {
     assert.ok(/resolveBinary\(/.test(src),
       'detection should probe each adapter via resolveBinary()');
     // initMinions calls the helper only when defaultCli is unset (preserves user choice on --force upgrades)
-    const initFn = src.slice(src.indexOf('async function initMinions'), src.indexOf('async function addProject'));
+    const initStart = src.indexOf('async function initMinions');
+    const initEnd = src.indexOf('\nconst commands', initStart);
+    const initFn = src.slice(initStart, initEnd);
     assert.ok(/if \(!config\.engine\.defaultCli\)/.test(initFn),
       'init should only auto-set defaultCli when not already configured');
+    assert.ok(/if \(k === 'defaultCli'\) continue;/.test(initFn),
+      'init should not seed defaultCli from ENGINE_DEFAULTS before runtime detection');
     assert.ok(initFn.includes('_detectAvailableRuntimes()'),
       'init should call the detection helper');
     // When both runtimes are available, prefer claude as the historical default

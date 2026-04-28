@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects, mutateJsonFileLocked,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, PR_STATUS, ENGINE_DEFAULTS } = shared;
+  WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, PR_STATUS, ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -195,6 +195,14 @@ function getEngineLog() {
 
 function getMetrics() {
   const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+
+  for (const [agentId, m] of Object.entries(metrics)) {
+    if (agentId.startsWith('_')) continue;
+    metrics[agentId] = {
+      ...DEFAULT_AGENT_METRICS,
+      ...(m && typeof m === 'object' && !Array.isArray(m) ? m : {}),
+    };
+  }
 
   // Enrich agent PR counts from pull-requests.json (source of truth)
   const allPrs = getPullRequests();
