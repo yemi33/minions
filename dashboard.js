@@ -1291,10 +1291,109 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse } = {}) {
+  if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
+  if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
+  const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
+  const existing = resolveSession(store, sessionKey);
+  let sessionId = existing ? existing.sessionId : null;
+
+  function buildPrompt({ includePreamble = true } = {}) {
+    const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
+    if (extraContext) parts.push(extraContext);
+    parts.push(message);
+    return parts.join('\n\n---\n\n');
+  }
+
+  let result;
+
+  if (sessionId && maxTurns > 1) {
+    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
+      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      onChunk,
+      onToolUse,
+    });
+    if (onAbortReady) onAbortReady(p1.abort);
+    result = await p1;
+    llm.trackEngineUsage(label, result.usage);
+
+    if (result.text) {
+      updateSession(store, sessionKey, result.sessionId || sessionId, true);
+      return result;
+    }
+
+    const sessionStillValid = llm.isResumeSessionStillValid(result);
+    if (sessionStillValid) {
+      console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
+      updateSession(store, sessionKey, result.sessionId || sessionId, true);
+      return result;
+    }
+
+    console.log(`[${label}] Resume failed — session appears dead (code=${result.code}, empty=${!result.text}), retrying fresh...`);
+    sessionId = null;
+    if (store === 'cc') {
+      ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+      safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+    } else if (sessionKey) {
+      docSessions.delete(sessionKey);
+      schedulePersistDocSessions();
+    }
+  }
+
+  const freshPrompt = buildPrompt();
+  const p2 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    onChunk,
+    onToolUse,
+  });
+  if (onAbortReady) onAbortReady(p2.abort);
+  result = await p2;
+  llm.trackEngineUsage(label, result.usage);
+
+  if (result.text) {
+    updateSession(store, sessionKey, result.sessionId, false);
+    return result;
+  }
+
+  if (maxTurns <= 1) return result;
+  console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
+  await new Promise(r => setTimeout(r, 2000));
+  const p3 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    onChunk,
+    onToolUse,
+  });
+  if (onAbortReady) onAbortReady(p3.abort);
+  result = await p3;
+  llm.trackEngineUsage(label, result.usage);
+
+  if (result.text) {
+    updateSession(store, sessionKey, result.sessionId, false);
+  }
+  return result;
+}
+
 // Lightweight content fingerprint — same algorithm used browser-side (no crypto needed)
 function contentFingerprint(str) {
   if (!str) return '';
   return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(str.length - 1);
+}
+
+function _parseDocChatResultText(text) {
+  const delimIdx = text.indexOf('---DOCUMENT---');
+  if (delimIdx >= 0) {
+    const answerPart = text.slice(0, delimIdx).trim();
+    const { text: answer, actions } = parseCCActions(answerPart);
+    let content = text.slice(delimIdx + '---DOCUMENT---'.length).trim();
+    content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
+    return { answer, content, actions };
+  }
+  const { text: stripped, actions } = parseCCActions(text);
+  return { answer: stripped, content: null, actions };
+}
+
+function _docChatDisplayText(text) {
+  return _parseDocChatResultText(text).answer;
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
@@ -1349,18 +1448,54 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
   }
 
-  // Parse ---DOCUMENT--- BEFORE actions — document content may contain ===ACTIONS=== literally
-  const delimIdx = result.text.indexOf('---DOCUMENT---');
-  if (delimIdx >= 0) {
-    const answerPart = result.text.slice(0, delimIdx).trim();
-    const { text: answer, actions } = parseCCActions(answerPart);
-    let content = result.text.slice(delimIdx + '---DOCUMENT---'.length).trim();
-    content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
-    return { answer, content, actions };
+  return _parseDocChatResultText(result.text);
+}
+
+async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse }) {
+  const sessionKey = filePath || title;
+  const docSlice = document.slice(0, 20000);
+
+  if (freshSession && sessionKey) {
+    docSessions.delete(sessionKey);
   }
 
-  const { text: stripped, actions } = parseCCActions(result.text);
-  return { answer: stripped, content: null, actions };
+  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
+  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
+
+  let docContext;
+  if (docUnchanged) {
+    docContext = `## Document: ${title || 'Document'}${filePath ? ' (`' + filePath + '`)' : ''}${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) : ''}${canEdit ? '\nIf editing: respond with your explanation, then \`---DOCUMENT---\` on its own line, then the COMPLETE updated file.' : ''}`;
+  } else {
+    docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${docSlice}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then \`---DOCUMENT---\` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
+  }
+
+  const result = await ccCallStreaming(message, {
+    store: 'doc', sessionKey,
+    extraContext: docContext, label: 'doc-chat',
+    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+    maxTurns: canEdit ? 25 : 10,
+    skipStatePreamble: true,
+    ...(model ? { model } : {}),
+    onAbortReady,
+    onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); },
+    onToolUse,
+  });
+
+  if (freshSession && sessionKey) {
+    docSessions.delete(sessionKey);
+    schedulePersistDocSessions();
+  } else if (result.code === 0 && result.sessionId) {
+    const session = resolveSession('doc', sessionKey);
+    if (session) session._docHash = docHash;
+  }
+
+  if (result.code !== 0 || !result.text) {
+    console.error(`[doc-chat-stream] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
+    return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
+  }
+
+  return _parseDocChatResultText(result.text);
 }
 
 // -- POST helpers --
@@ -3429,7 +3564,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       docChatInFlight.add(docKey);
       // Kill LLM process + release guard if client disconnects (abort/navigation)
       let _docAbort = null;
-      req.on('close', () => { docChatInFlight.delete(docKey); if (_docAbort) _docAbort(); });
+      let _docDone = false;
+      req.on('close', () => { if (!_docDone) { docChatInFlight.delete(docKey); if (_docAbort) _docAbort(); } });
 
       try {
       const canEdit = !!body.filePath;
@@ -3478,11 +3614,150 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         safeWrite(fullPath, content);
 
+        _docDone = true;
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
       }
+      _docDone = true;
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
-      } finally { _docAbort = null; docChatInFlight.delete(docKey); }
+      } finally { _docAbort = null; _docDone = true; docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
+  async function handleDocChatStream(req, res) {
+    let docKey = null;
+    let _docAbort = null;
+    let _docStreamEnded = false;
+    let _docHeartbeatTimer = null;
+    const writeDocEvent = (payload) => {
+      try {
+        res.write('data: ' + JSON.stringify(payload) + '\n\n');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stopDocHeartbeat = () => {
+      if (_docHeartbeatTimer) {
+        clearInterval(_docHeartbeatTimer);
+        _docHeartbeatTimer = null;
+      }
+    };
+    try {
+      const body = await readBody(req);
+      if (!body.message) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: 'message required' })); return; }
+      if (!body.document) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: 'document required' })); return; }
+
+      docKey = body.filePath || body.title || 'default';
+      if (docChatInFlight.has(docKey)) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'This document is already being processed — wait for the current response.' }));
+        return;
+      }
+      docChatInFlight.add(docKey);
+
+      const canEdit = !!body.filePath;
+      const isJson = body.filePath?.endsWith('.json');
+      let currentContent = body.document;
+      let fullPath = null;
+      if (canEdit) {
+        try { shared.sanitizePath(body.filePath, MINIONS_DIR); }
+        catch { docChatInFlight.delete(docKey); res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: 'path must be under minions directory' })); return; }
+        fullPath = path.resolve(MINIONS_DIR, body.filePath);
+        const diskContent = safeRead(fullPath);
+        if (diskContent !== null) {
+          if (!(body.contentHash && contentFingerprint(diskContent) === body.contentHash)) {
+            currentContent = diskContent;
+          }
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      writeDocEvent({ type: 'heartbeat' });
+      _docHeartbeatTimer = setInterval(() => {
+        if (_docStreamEnded) {
+          stopDocHeartbeat();
+          return;
+        }
+        if (!writeDocEvent({ type: 'heartbeat' })) stopDocHeartbeat();
+      }, CC_STREAM_HEARTBEAT_MS);
+
+      req.on('close', () => {
+        if (!_docStreamEnded) {
+          stopDocHeartbeat();
+          docChatInFlight.delete(docKey);
+          if (_docAbort) _docAbort();
+        }
+      });
+
+      try {
+
+        const { answer, content, actions } = await ccDocCallStreaming({
+          message: body.message, document: currentContent, title: body.title,
+          filePath: body.filePath, selection: body.selection, canEdit, isJson,
+          model: body.model || undefined,
+          freshSession: !!body.freshSession,
+          onAbortReady: (abort) => { _docAbort = abort; },
+          onChunk: (text) => { writeDocEvent({ type: 'chunk', text }); },
+          onToolUse: (name, input) => { writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) }); },
+        });
+
+        if (!content) {
+          writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+          _docStreamEnded = true;
+          res.end();
+          return;
+        }
+
+        if (isJson) {
+          try { JSON.parse(content); } catch (e) {
+            writeDocEvent({ type: 'done', text: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false, actions });
+            _docStreamEnded = true;
+            res.end();
+            return;
+          }
+        }
+
+        if (canEdit && fullPath) {
+          if (body.filePath && /^meetings\//.test(body.filePath) && isJson) {
+            try {
+              const mtg = safeJson(fullPath);
+              if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
+                writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+                _docStreamEnded = true;
+                res.end();
+                return;
+              }
+            } catch { /* proceed with write if can't read */ }
+          }
+
+          safeWrite(fullPath, content);
+          writeDocEvent({ type: 'done', text: answer, edited: true, content, actions });
+          _docStreamEnded = true;
+          res.end();
+          return;
+        }
+
+        writeDocEvent({ type: 'done', text: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+        _docStreamEnded = true;
+        res.end();
+      } finally {
+        stopDocHeartbeat();
+        docChatInFlight.delete(docKey);
+      }
+    } catch (e) {
+      stopDocHeartbeat();
+      if (docKey) docChatInFlight.delete(docKey);
+      if (!res.headersSent) {
+        res.statusCode = e.statusCode || 500;
+        res.setHeader('Content-Type', 'application/json');
+        try { res.end(JSON.stringify({ error: e.message })); } catch {}
+      } else {
+        writeDocEvent({ type: 'error', error: e.message });
+        _docStreamEnded = true;
+        try { res.end(); } catch {}
+      }
+    }
   }
 
   async function handleInboxPersist(req, res) {
@@ -4206,6 +4481,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         if (!writeCcEvent({ type: 'heartbeat' })) stopCcHeartbeat();
       }, CC_STREAM_HEARTBEAT_MS);
+      // Kill LLM process immediately if client disconnects mid-stream.
       // Keep the LLM alive briefly after disconnect so the UI can reattach to the same in-flight turn.
       req.on('close', () => {
         if (!_ccStreamEnded) {
@@ -5229,6 +5505,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Doc chat
     { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
+    { method: 'POST', path: '/api/doc-chat/stream', desc: 'Streaming doc chat — SSE with text chunks and tool progress', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChatStream },
 
     // Inbox
     { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },

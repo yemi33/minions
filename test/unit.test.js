@@ -3626,15 +3626,12 @@ async function testArchivePathResolution() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Doc-chat should always save in-place; forking is reserved for /api/plans/revise
     const docChatSection = src.slice(src.indexOf("async function handleDocChat"), src.indexOf("async function handleInboxPersist"));
-    const finalizeSection = src.slice(src.indexOf('function _finalizeDocChatResponse'), src.indexOf('// -- POST helpers --'));
     assert.ok(!docChatSection.includes('isNewVersion'),
       'doc-chat handler should not produce isNewVersion (no forking)');
     assert.ok(!docChatSection.includes('versionedFile'),
       'doc-chat handler should not produce versionedFile (no forking)');
-    assert.ok(docChatSection.includes('_finalizeDocChatResponse'),
-      'doc-chat handler should finalize edits through the shared response helper');
-    assert.ok(finalizeSection.includes('safeWrite(fullPath, content)'),
-      'doc-chat should save directly to the original file in the finalize helper');
+    assert.ok(docChatSection.includes('safeWrite(fullPath, content)'),
+      'doc-chat should save directly to the original file');
   });
 
   await test('doc-chat does not trigger version actions or forking UI', () => {
@@ -14118,7 +14115,7 @@ async function testMeetings() {
       'Streaming CC should define a heartbeat interval for long-lived responses');
     assert.ok(dashSrc.includes("writeCcEvent({ type: 'heartbeat' })") && dashSrc.includes('setInterval(() =>'),
       'Streaming CC should emit heartbeat events while a response is in flight');
-  });
+    });
 
   await test('CC streaming endpoint buffers live state for reconnect after disconnect', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
@@ -22545,6 +22542,10 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
     assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); }'),
       'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
+    assert.ok(docStreamFn.includes("' (`' + filePath + '`)'"),
+      'Streaming doc-chat should interpolate the real file path into document context');
+    assert.ok(!docStreamFn.includes("' (\\`${filePath}\\`)'"),
+      'Streaming doc-chat should not leak a literal ${filePath} placeholder into model context');
   });
 
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
@@ -22713,7 +22714,7 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('frontend _processQaMessage sends contentHash in request body', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
-    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat'"), src.indexOf("fetch('/api/doc-chat'") + 500);
+    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat/stream'"), src.indexOf("fetch('/api/doc-chat/stream'") + 500);
     assert.ok(fetchBlock.includes('contentHash'), 'Frontend should send contentHash in doc-chat request');
   });
 
@@ -22752,6 +22753,18 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fnBody.includes("writeDocEvent({ type: 'chunk', text })"), 'Streaming doc-chat route should emit chunk events');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"), 'Streaming doc-chat route should emit tool events');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'done'"), 'Streaming doc-chat route should emit a final done event');
+  });
+
+  await test('handleDocChatStream validates editable file paths before opening SSE stream', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleDocChatStream');
+    const fnEnd = src.indexOf('async function handleInboxPersist', fnStart);
+    const fnBody = src.slice(fnStart, fnEnd);
+    const sanitizeIdx = fnBody.indexOf('shared.sanitizePath(body.filePath, MINIONS_DIR)');
+    const writeHeadIdx = fnBody.indexOf("res.writeHead(200, { 'Content-Type': 'text/event-stream'");
+    assert.ok(sanitizeIdx > 0, 'Streaming doc-chat should sanitize editable paths');
+    assert.ok(writeHeadIdx > 0, 'Streaming doc-chat should open an SSE response');
+    assert.ok(sanitizeIdx < writeHeadIdx, 'Editable path validation must happen before opening the SSE stream');
   });
 
   await test('CC system prompt discourages excessive tool use', () => {
@@ -28991,13 +29004,10 @@ async function testRenderUtils() {
     // It should NOT just JSON.stringify(input).slice(0, 200) as a flat string
     assert.ok(dashSrc.includes('_lightToolInput'),
       'dashboard.js should have _lightToolInput helper for structured input');
-    // All onToolUse handlers should use the helper
-    const toolEventMatches = [...dashSrc.matchAll(/onToolUse:\s*\(name,\s*input\)\s*=>\s*\{/g)];
-    assert.ok(toolEventMatches.length >= 2,
-      'dashboard.js should have at least 2 onToolUse handlers (primary + retry)');
-    const allUseLightInput = toolEventMatches.every(m => dashSrc.slice(m.index, m.index + 200).includes('_lightToolInput'));
-    assert.ok(allUseLightInput,
-      'Each onToolUse handler should send structured input via _lightToolInput');
+    assert.ok(dashSrc.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"),
+      'Doc-chat SSE should send structured tool input via _lightToolInput');
+    assert.ok(dashSrc.includes("if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });"),
+      'Command Center SSE should send structured tool input via _lightToolInput');
     assert.ok(dashSrc.includes('Object.entries'),
       '_lightToolInput should use Object.entries to iterate input fields');
   });
