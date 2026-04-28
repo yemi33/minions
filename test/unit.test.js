@@ -34942,6 +34942,264 @@ async function testCliCommandHandlers() {
       assert.strictEqual(item.prompt.length, 250, 'full prompt is preserved');
     } finally { h.restore(); }
   });
+
+  // ── --cli / --model fleet flags + config set-cli (P-6b3f9c2e) ──────────────
+  //
+  // These tests pin the AC list verbatim — full flag combo, empty-string model
+  // clear, unknown runtime exit, incompatibility warning, ccCli clobber warning,
+  // per-agent override preservation, and `config set-cli` no-restart variant.
+
+  function readConfig(testDir) {
+    return JSON.parse(fs.readFileSync(path.join(testDir, 'config.json'), 'utf8'));
+  }
+
+  await test('start --cli copilot --model claude-sonnet-4.5: writes fleet keys + clears CC overrides', () => {
+    const h = setupHarness({
+      // Pre-state: defaults are claude/sonnet with CC overrides already set,
+      // so we can verify the clear semantics.
+      config: {
+        projects: [], agents: { dallas: { name: 'D', role: 'E', cli: 'claude', model: 'sonnet' } },
+        engine: { defaultCli: 'claude', defaultModel: 'sonnet', ccCli: 'claude', ccModel: 'haiku' },
+      },
+      control: { state: 'running', pid: process.pid }, // early-return prevents tick/spawn
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', ['--cli', 'copilot', '--model', 'claude-sonnet-4.5']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot', 'defaultCli must flip to copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'claude-sonnet-4.5', 'defaultModel must be written');
+      assert.ok(!('ccCli' in cfg.engine), 'engine.ccCli must be deleted');
+      assert.ok(!('ccModel' in cfg.engine), 'engine.ccModel must be deleted');
+      // Per-agent overrides preserved verbatim
+      assert.strictEqual(cfg.agents.dallas.cli, 'claude', 'per-agent cli must be untouched');
+      assert.strictEqual(cfg.agents.dallas.model, 'sonnet', 'per-agent model must be untouched');
+    } finally { h.restore(); }
+  });
+
+  await test('restart-equivalent: --cli claude --model "" clears defaultModel', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-4.1' },
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', ['--cli', 'claude', '--model', '']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'claude');
+      assert.ok(!('defaultModel' in cfg.engine), 'empty-string --model must delete defaultModel');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli unknown: exits non-zero with registered runtime list', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'codex']));
+      assert.deepStrictEqual(cap.exits, [2], 'unknown runtime must exit with code 2');
+      const allErr = cap.errs.join(' | ');
+      assert.ok(/Unknown CLI runtime "codex"/.test(allErr),
+        `expected unknown-runtime error, got: ${allErr}`);
+      assert.ok(/claude/.test(allErr) && /copilot/.test(allErr),
+        'error message must enumerate every registered runtime');
+      // Config must be untouched after rejection
+      const cfg = readConfig(h.testDir);
+      assert.ok(!('defaultCli' in (cfg.engine || {})), 'rejected runtime must not be persisted');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli claude with stale defaultModel=gpt-4o: emits incompatibility warning', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-4o' },
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'claude']));
+      const allLogs = cap.logs.join(' | ');
+      assert.ok(/incompatible|Pass --model/.test(allLogs),
+        `expected incompatibility warning suggesting --model '', got: ${allLogs}`);
+      // Switch still applies — warning is advisory, not fatal
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'claude');
+      assert.strictEqual(cfg.engine.defaultModel, 'gpt-4o', 'incompatible model is preserved on disk; user must clear explicitly');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli with explicitly-set ccCli: warns before clearing', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'claude', ccCli: 'copilot' }, // user pinned CC to copilot
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'copilot']));
+      const allLogs = cap.logs.join(' | ');
+      assert.ok(/Clearing engine\.ccCli.*copilot/.test(allLogs),
+        `expected ccCli clobber warning naming the prior value, got: ${allLogs}`);
+      const cfg = readConfig(h.testDir);
+      assert.ok(!('ccCli' in cfg.engine), 'ccCli must be cleared');
+    } finally { h.restore(); }
+  });
+
+  await test('start without --cli/--model: leaves config untouched', () => {
+    const before = {
+      projects: [], agents: {},
+      engine: { defaultCli: 'copilot', defaultModel: 'gpt-4.1', ccCli: 'claude', ccModel: 'sonnet' },
+    };
+    const h = setupHarness({
+      config: before,
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', []));
+      const cfg = readConfig(h.testDir);
+      assert.deepStrictEqual(cfg.engine, before.engine,
+        'no flags = no fleet config mutation');
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli copilot --model claude-sonnet-4.5: persists without starting engine', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: { defaultCli: 'claude' } },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'copilot', '--model', 'claude-sonnet-4.5']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'claude-sonnet-4.5');
+      // No engine startup side-effects: no tick, no spawnAgent, no control mutation
+      assert.strictEqual(h.calls.tick.length, 0, 'config set-cli must not advance the tick');
+      assert.strictEqual(h.calls.spawnAgent.length, 0, 'config set-cli must not spawn agents');
+      const ctrl = JSON.parse(fs.readFileSync(path.join(h.testDir, 'engine', 'control.json'), 'utf8'));
+      assert.strictEqual(ctrl.state, 'stopped', 'config set-cli must not flip control.state');
+      // Friendly summary is printed
+      assert.ok(cap.logs.some(l => l.includes('defaultCli="copilot"')),
+        `expected summary line, got: ${cap.logs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli unknown: exits non-zero with registered list', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'codex']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Unknown CLI runtime "codex"/.test(e)),
+        `expected unknown-runtime error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli without runtime arg: prints usage + exits 2', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Usage: minions config set-cli/.test(e)),
+        `expected usage hint, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config without subcommand: prints usage + exits 2', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', []));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Usage: minions config/.test(e)),
+        `expected usage hint, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli requires a value: exits 2 with friendly error', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /--cli requires a value/.test(e)),
+        `expected --cli value error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config writes use mutateJsonFileLocked (assert source-level guarantee)', () => {
+    // Direct source-level check — the AC explicitly mandates this so a future
+    // refactor that swaps in safeWrite or fs.writeFileSync would silently
+    // re-introduce the race. The behavioral tests above prove the writes work;
+    // this one prevents regressions in the locking discipline itself.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const m = src.match(/function _applyRuntimeFlags[\s\S]*?\n\}/);
+    assert.ok(m, '_applyRuntimeFlags helper must be defined in cli.js');
+    assert.ok(/mutateJsonFileLocked/.test(m[0]),
+      '_applyRuntimeFlags must use mutateJsonFileLocked for atomic config.json writes');
+    assert.ok(!/safeWrite\(.*config\.json/.test(m[0]),
+      '_applyRuntimeFlags must NOT bypass the lock with safeWrite');
+  });
+
+  await test('commands.status: prints defaultCli, defaultModel, non-default flags, CC overrides', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {
+          defaultCli: 'copilot', defaultModel: 'claude-sonnet-4.5',
+          ccCli: 'claude', ccModel: 'haiku',
+          claudeBareMode: true, copilotStreamMode: 'off',
+        },
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(/Default CLI:\s*copilot/.test(allLogs),
+        `status should print Default CLI line, got: ${allLogs}`);
+      assert.ok(/Default model:\s*claude-sonnet-4\.5/.test(allLogs),
+        `status should print Default model line, got: ${allLogs}`);
+      assert.ok(/CC overrides:.*cli=claude.*model=haiku/.test(allLogs),
+        `status should surface CC overrides, got: ${allLogs}`);
+      assert.ok(/Flags:.*claudeBareMode=true/.test(allLogs),
+        `status should print non-default claudeBareMode flag, got: ${allLogs}`);
+      assert.ok(/Flags:.*copilotStreamMode="off"/.test(allLogs),
+        `status should print non-default copilotStreamMode flag, got: ${allLogs}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.status: hides Flags line when every feature flag is at its default', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {}, // all defaults
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(!/^Flags:/m.test(allLogs),
+        'clean install should not print a Flags: line');
+      assert.ok(!/CC overrides:/.test(allLogs),
+        'clean install should not print CC overrides line');
+      assert.ok(/Default CLI:\s*claude\s*\(default\)/.test(allLogs),
+        `default CLI line should mark "(default)" annotation when defaultCli is unset, got: ${allLogs}`);
+    } finally { h.restore(); }
+  });
 }
 
 // ─── Pipeline Behavioral Tests ──────────────────────────────────────────────

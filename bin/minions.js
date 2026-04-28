@@ -480,7 +480,7 @@ const engineCmds = new Set([
   'start', 'stop', 'status', 'pause', 'resume',
   'queue', 'sources', 'discover', 'dispatch',
   'spawn', 'work', 'cleanup', 'mcp-sync', 'plan',
-  'kill', 'complete',
+  'kill', 'complete', 'config',
 ]);
 
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
@@ -548,14 +548,16 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list' || cmd === 'scan') {
   delegate('minions.js', [cmd, ...rest]);
 } else if (cmd === 'restart') {
-  // Start both engine and dashboard — the go-to command after a reboot
+  // Start both engine and dashboard — the go-to command after a reboot.
+  // `--cli` / `--model` flags forward to `engine.js start` so the runtime
+  // fleet flips before the daemon spawns (P-6b3f9c2e AC: works on restart).
   ensureInstalled();
   // Stop engine if running (graceful attempt)
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
   // Kill all existing engine/dashboard processes — handles crashed engines and orphan dashboards
   killByPort(7331);
   killMinionsProcesses(['engine.js', 'dashboard.js']);
-  const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start'], {
+  const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start', ...rest], {
     cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
   });
   engineProc.unref();
