@@ -115,6 +115,22 @@ function runPreflight(opts = {}) {
 
   // Auth is handled by Claude Code itself (API key, Claude Max, etc.) — no check needed here.
 
+  // 4. Runtime fleet config warnings (P-3b8e5f1d) — only when the caller hands
+  //    us the config. checkOrExit() / cli start() / doctor() pass it; legacy
+  //    callers don't, in which case we skip silently.
+  if (opts && opts.config && typeof opts.config === 'object') {
+    try {
+      const shared = require('./shared');
+      let runtimeNames = [];
+      try { runtimeNames = require('./runtimes').listRuntimes(); }
+      catch { /* registry may be missing during partial installs */ }
+      const warns = shared.runtimeConfigWarnings(opts.config, runtimeNames);
+      for (const w of warns) {
+        results.push({ name: `Runtime config (${w.id})`, ok: 'warn', message: w.message });
+      }
+    } catch { /* defensive — preflight must never throw */ }
+  }
+
   return { passed: allOk, results };
 }
 
@@ -153,7 +169,12 @@ function checkOrExit({ exitOnFail = false, label = 'Preflight checks' } = {}) {
  * Requires minionsHome path for runtime checks.
  */
 function doctor(minionsHome) {
-  const { passed, results } = runPreflight();
+  // Read config first so preflight can include runtime-fleet warnings.
+  const configPathForPreflight = path.join(minionsHome, 'config.json');
+  let preflightConfig = null;
+  try { preflightConfig = JSON.parse(fs.readFileSync(configPathForPreflight, 'utf8')); }
+  catch { /* missing/invalid config is its own check below */ }
+  const { passed, results } = runPreflight({ config: preflightConfig });
 
   // Runtime checks
   const runtimeResults = [];

@@ -1866,6 +1866,322 @@ async function testEngineDefaults() {
   });
 }
 
+// ─── shared.js — Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────
+
+async function testRuntimeFleetHelpers() {
+  console.log('\n── shared.js — Runtime Fleet Helpers ──');
+
+  // ── ENGINE_DEFAULTS: 12 new fields ──────────────────────────────────────────
+
+  await test('ENGINE_DEFAULTS has all 12 new runtime-fleet fields with documented defaults', () => {
+    const D = shared.ENGINE_DEFAULTS;
+    assert.strictEqual(D.defaultCli, 'claude', 'defaultCli should default to claude');
+    assert.strictEqual(D.defaultModel, undefined, 'defaultModel should default to undefined');
+    assert.strictEqual(D.ccCli, undefined, 'ccCli should default to undefined');
+    assert.strictEqual(D.ccModel, undefined, 'ccModel should default to undefined');
+    assert.strictEqual(D.claudeBareMode, false, 'claudeBareMode should default to false');
+    assert.strictEqual(D.claudeFallbackModel, undefined, 'claudeFallbackModel should default to undefined');
+    assert.strictEqual(D.copilotDisableBuiltinMcps, true, 'copilotDisableBuiltinMcps should default to true');
+    assert.strictEqual(D.copilotSuppressAgentsMd, true, 'copilotSuppressAgentsMd should default to true');
+    assert.strictEqual(D.copilotStreamMode, 'on', 'copilotStreamMode should default to "on"');
+    assert.strictEqual(D.copilotReasoningSummaries, false, 'copilotReasoningSummaries should default to false');
+    assert.strictEqual(D.maxBudgetUsd, undefined, 'maxBudgetUsd should default to undefined');
+    assert.strictEqual(D.disableModelDiscovery, false, 'disableModelDiscovery should default to false');
+  });
+
+  // ── resolveAgentCli: per-agent → engine.defaultCli → 'claude' ───────────────
+
+  await test('resolveAgentCli: per-agent override wins', () => {
+    const cli = shared.resolveAgentCli({ cli: 'copilot' }, { defaultCli: 'claude' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveAgentCli: engine.defaultCli used when agent has no override', () => {
+    const cli = shared.resolveAgentCli({}, { defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveAgentCli: hardcoded "claude" fallback when neither agent nor engine sets it', () => {
+    assert.strictEqual(shared.resolveAgentCli({}, {}), 'claude');
+    assert.strictEqual(shared.resolveAgentCli(null, null), 'claude');
+  });
+
+  await test('resolveAgentCli: empty string treated as unset (cleared override)', () => {
+    const cli = shared.resolveAgentCli({ cli: '' }, { defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot', 'empty per-agent override should fall through to engine');
+  });
+
+  await test('resolveAgentCli: does NOT fall through to engine.ccCli', () => {
+    // Independence rule: agent path never reads ccCli. Even when ccCli is set
+    // to a different runtime, resolveAgentCli should ignore it.
+    const cli = shared.resolveAgentCli({}, { ccCli: 'copilot' });
+    assert.strictEqual(cli, 'claude', 'agent path must ignore ccCli');
+  });
+
+  // ── resolveCcCli: engine.ccCli → engine.defaultCli → 'claude' ──────────────
+
+  await test('resolveCcCli: ccCli override wins over defaultCli', () => {
+    const cli = shared.resolveCcCli({ ccCli: 'copilot', defaultCli: 'claude' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveCcCli: defaultCli used when ccCli unset', () => {
+    const cli = shared.resolveCcCli({ defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveCcCli: hardcoded "claude" fallback when nothing set', () => {
+    assert.strictEqual(shared.resolveCcCli({}), 'claude');
+    assert.strictEqual(shared.resolveCcCli(null), 'claude');
+  });
+
+  await test('resolveCcCli: does NOT inspect any agent settings', () => {
+    // Independence rule: CC path is fleet-scoped. Even if some agent specifies
+    // a different cli, resolveCcCli must only look at engine config.
+    const cli = shared.resolveCcCli({ defaultCli: 'claude' });
+    assert.strictEqual(cli, 'claude');
+  });
+
+  // ── resolveAgentModel ──────────────────────────────────────────────────────
+
+  await test('resolveAgentModel: per-agent override wins', () => {
+    const m = shared.resolveAgentModel({ model: 'gpt-5.4' }, { defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'gpt-5.4');
+  });
+
+  await test('resolveAgentModel: engine.defaultModel used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentModel({}, { defaultModel: 'sonnet' }), 'sonnet');
+  });
+
+  await test('resolveAgentModel: returns undefined when nothing set (let runtime decide)', () => {
+    assert.strictEqual(shared.resolveAgentModel({}, {}), undefined);
+    assert.strictEqual(shared.resolveAgentModel(null, null), undefined);
+  });
+
+  await test('resolveAgentModel: does NOT fall through to engine.ccModel', () => {
+    const m = shared.resolveAgentModel({}, { ccModel: 'haiku' });
+    assert.strictEqual(m, undefined, 'agent path must ignore ccModel');
+  });
+
+  // ── resolveCcModel ─────────────────────────────────────────────────────────
+
+  await test('resolveCcModel: ccModel override wins over defaultModel', () => {
+    const m = shared.resolveCcModel({ ccModel: 'haiku', defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('resolveCcModel: defaultModel used when ccModel unset (CC inherits fleet)', () => {
+    const m = shared.resolveCcModel({ defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'sonnet');
+  });
+
+  await test('resolveCcModel: returns undefined when nothing set', () => {
+    assert.strictEqual(shared.resolveCcModel({}), undefined);
+    assert.strictEqual(shared.resolveCcModel(null), undefined);
+  });
+
+  // ── resolveAgentMaxBudget — uses ?? so 0 is honored ────────────────────────
+
+  await test('resolveAgentMaxBudget: per-agent override wins', () => {
+    const b = shared.resolveAgentMaxBudget({ maxBudgetUsd: 5 }, { maxBudgetUsd: 10 });
+    assert.strictEqual(b, 5);
+  });
+
+  await test('resolveAgentMaxBudget: engine.maxBudgetUsd used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, { maxBudgetUsd: 10 }), 10);
+  });
+
+  await test('resolveAgentMaxBudget: returns undefined when nothing set', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, {}), undefined);
+  });
+
+  await test('resolveAgentMaxBudget: literal 0 honored as a valid cap (uses ??, not ||)', () => {
+    // This is the explicit acceptance criterion — `||` would treat 0 as falsy
+    // and fall through to the engine default, silently ignoring a $0 cap on
+    // read-only/dry-run agents.
+    assert.strictEqual(shared.resolveAgentMaxBudget({ maxBudgetUsd: 0 }, { maxBudgetUsd: 10 }), 0,
+      'per-agent maxBudgetUsd:0 must override engine default 10');
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, { maxBudgetUsd: 0 }), 0,
+      'engine maxBudgetUsd:0 must be honored when no per-agent override');
+  });
+
+  await test('resolveAgentMaxBudget: stringy numbers coerced (config tolerance)', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({ maxBudgetUsd: '5' }, {}), 5);
+  });
+
+  // ── resolveAgentBareMode ───────────────────────────────────────────────────
+
+  await test('resolveAgentBareMode: per-agent override wins', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({ bareMode: true }, { claudeBareMode: false }), true);
+  });
+
+  await test('resolveAgentBareMode: per-agent FALSE overrides engine TRUE (strict null check)', () => {
+    // `||` would let engine.claudeBareMode=true win; we use strict
+    // undefined/null check so a per-agent `false` is honored.
+    assert.strictEqual(shared.resolveAgentBareMode({ bareMode: false }, { claudeBareMode: true }), false);
+  });
+
+  await test('resolveAgentBareMode: engine.claudeBareMode used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({}, { claudeBareMode: true }), true);
+  });
+
+  await test('resolveAgentBareMode: defaults to false when nothing set', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({}, {}), false);
+    assert.strictEqual(shared.resolveAgentBareMode(null, null), false);
+  });
+
+  // ── Legacy ccModel → defaultModel migration ────────────────────────────────
+
+  await test('applyLegacyCcModelMigration: promotes ccModel to defaultModel when defaultModel unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: 'gpt-5.4' } };
+    const applied = shared.applyLegacyCcModelMigration(config);
+    assert.strictEqual(applied, true);
+    assert.strictEqual(config.engine.defaultModel, 'gpt-5.4', 'ccModel value should be copied to defaultModel');
+    assert.strictEqual(config.engine.ccModel, 'gpt-5.4', 'on-disk ccModel must remain unchanged (no disk write)');
+  });
+
+  await test('applyLegacyCcModelMigration: no-op when defaultModel is already set', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: 'gpt-5.4', defaultModel: 'sonnet' } };
+    const applied = shared.applyLegacyCcModelMigration(config);
+    assert.strictEqual(applied, false);
+    assert.strictEqual(config.engine.defaultModel, 'sonnet', 'should not overwrite an explicit defaultModel');
+  });
+
+  await test('applyLegacyCcModelMigration: no-op when ccModel is unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: {} };
+    assert.strictEqual(shared.applyLegacyCcModelMigration(config), false);
+    assert.strictEqual(config.engine.defaultModel, undefined);
+  });
+
+  await test('applyLegacyCcModelMigration: empty-string ccModel treated as unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: '' } };
+    assert.strictEqual(shared.applyLegacyCcModelMigration(config), false);
+  });
+
+  await test('applyLegacyCcModelMigration: logs deprecation notice exactly once', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const calls = [];
+    const logger = (level, msg) => calls.push([level, msg]);
+    shared.applyLegacyCcModelMigration({ engine: { ccModel: 'a' } }, { logger });
+    shared.applyLegacyCcModelMigration({ engine: { ccModel: 'b' } }, { logger });
+    assert.strictEqual(calls.length, 1, 'should log only once per process');
+    assert.strictEqual(calls[0][0], 'warn');
+    assert.ok(calls[0][1].includes('ccModel is now a CC-specific override'),
+      'should reference the CC-specific override deprecation');
+  });
+
+  await test('applyLegacyCcModelMigration: handles missing/invalid config without throwing', () => {
+    assert.strictEqual(shared.applyLegacyCcModelMigration(null), false);
+    assert.strictEqual(shared.applyLegacyCcModelMigration({}), false);
+    assert.strictEqual(shared.applyLegacyCcModelMigration({ engine: null }), false);
+  });
+
+  // ── Preflight warnings ─────────────────────────────────────────────────────
+
+  await test('runtimeConfigWarnings: warns on unknown defaultCli', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { defaultCli: 'codex' } }, ['claude', 'copilot']);
+    const unknown = ws.filter(w => w.id === 'unknown-cli');
+    assert.strictEqual(unknown.length, 1);
+    assert.ok(unknown[0].message.includes('codex'), 'message should name the unknown runtime');
+    assert.ok(unknown[0].message.includes('claude'), 'message should list registered runtimes');
+    assert.ok(unknown[0].message.includes('copilot'), 'message should list registered runtimes');
+  });
+
+  await test('runtimeConfigWarnings: warns on unknown ccCli independently from defaultCli', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { ccCli: 'codex' } }, ['claude', 'copilot']);
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 1);
+  });
+
+  await test('runtimeConfigWarnings: warns on unknown per-agent cli', () => {
+    const ws = shared.runtimeConfigWarnings({
+      agents: { dallas: { cli: 'codex' }, ralph: { cli: 'claude' } },
+    }, ['claude', 'copilot']);
+    const unknown = ws.filter(w => w.id === 'unknown-cli');
+    assert.strictEqual(unknown.length, 1);
+    assert.ok(unknown[0].message.includes('agents.dallas'));
+  });
+
+  await test('runtimeConfigWarnings: dedups identical unknown values across slots', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { defaultCli: 'codex', ccCli: 'codex' },
+    }, ['claude']);
+    // defaultCli:codex and ccCli:codex are different `slot:value` keys, so two
+    // warnings are expected (each labels which slot it came from). The dedup
+    // is *within* a single slot, which is verified by the next test.
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 2);
+  });
+
+  await test('runtimeConfigWarnings: empty runtime registry skips unknown-cli check (avoids false positives during partial install)', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { defaultCli: 'claude' } }, []);
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: warns on deprecated config.claude.* fields', () => {
+    const ws = shared.runtimeConfigWarnings({ claude: { binary: '/old/path' } }, ['claude']);
+    const dep = ws.filter(w => w.id === 'deprecated-config-claude');
+    assert.strictEqual(dep.length, 1);
+    assert.ok(dep[0].message.includes('binary'), 'message should name the deprecated subkey');
+  });
+
+  await test('runtimeConfigWarnings: lists multiple deprecated subkeys in one warning', () => {
+    const ws = shared.runtimeConfigWarnings({
+      claude: { binary: '/x', outputFormat: 'json', allowedTools: 'all' },
+    }, ['claude']);
+    const dep = ws.filter(w => w.id === 'deprecated-config-claude');
+    assert.strictEqual(dep.length, 1, 'should aggregate deprecated subkeys into one warning');
+    for (const k of ['binary', 'outputFormat', 'allowedTools']) {
+      assert.ok(dep[0].message.includes(k), `message should include ${k}`);
+    }
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + Claude CC + no system prompt -> warn', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, defaultCli: 'claude' },
+    }, ['claude']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 1);
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + Copilot CC -> no bare-mode warning (irrelevant on non-Claude)', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, ccCli: 'copilot' },
+    }, ['claude', 'copilot']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + explicit ccSystemPrompt -> no warning (escape hatch)', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, defaultCli: 'claude', ccSystemPrompt: '/path/to/prompt.md' },
+    }, ['claude']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: returns [] for empty/malformed config (defensive)', () => {
+    assert.deepStrictEqual(shared.runtimeConfigWarnings(null, ['claude']), []);
+    assert.deepStrictEqual(shared.runtimeConfigWarnings(undefined, ['claude']), []);
+    assert.deepStrictEqual(shared.runtimeConfigWarnings({}, ['claude']), []);
+  });
+
+  // ── Wiring sanity: engine/cli.js + engine/preflight.js consume helpers ─────
+
+  await test('engine/cli.js calls applyLegacyCcModelMigration during start()', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('applyLegacyCcModelMigration'),
+      'cli.js start() must invoke the legacy ccModel migration so single-model installs survive the runtime fleet refactor');
+  });
+
+  await test('engine/preflight.js threads config into runPreflight() and emits runtimeConfigWarnings', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('runtimeConfigWarnings'),
+      'preflight should call shared.runtimeConfigWarnings to surface fleet-config drift');
+    assert.ok(src.includes('opts.config'),
+      'runPreflight should accept opts.config so callers (cli/start, doctor) can pass it');
+  });
+}
+
 async function testProjectHelpers() {
   console.log('\n── shared.js — Project Helpers ──');
 
@@ -17550,6 +17866,7 @@ async function main() {
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
+    await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
     await testSafeWriteBackupRestore();
@@ -22982,7 +23299,11 @@ async function testAutoRecoveryAndAtomicity() {
   // ── CC Model/Effort Settings ──────────────────────────────────────────────
 
   await test('ENGINE_DEFAULTS includes ccModel and ccEffort', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.ccModel, 'sonnet', 'ccModel default should be sonnet');
+    // P-3b8e5f1d: ccModel is now an unset CC-only override (it inherits
+    // engine.defaultModel via resolveCcModel() when undefined). The hardcoded
+    // 'sonnet' default has moved into engine/llm.js destructure defaults so
+    // existing consumers keep working until P-5e1b7a3c rewires CC.
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccModel, undefined, 'ccModel default should be undefined (override-only)');
     assert.strictEqual(shared.ENGINE_DEFAULTS.ccEffort, null, 'ccEffort default should be null');
   });
 

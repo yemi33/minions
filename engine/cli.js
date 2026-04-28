@@ -66,11 +66,21 @@ const commands = {
     // Run preflight checks (warn but don't block — engine may still be useful)
     try {
       const { runPreflight, printPreflight } = require('./preflight');
-      const { results } = runPreflight();
+      // Pass config so runtime-fleet warnings (P-3b8e5f1d) can fire pre-start.
+      // getConfig() is cheap (cached); failure here is non-fatal — preflight
+      // simply skips the runtime-config warnings when config is missing.
+      let preflightConfig = null;
+      try { preflightConfig = getConfig(); } catch { /* missing config handled below */ }
+      const { results } = runPreflight({ config: preflightConfig });
       const hasFatal = results.some(r => r.ok === false);
       if (hasFatal) {
         printPreflight(results, { label: 'Preflight checks' });
         console.log('  Some checks failed — agents may not work. Run `minions doctor` for details.\n');
+      } else {
+        // Even on no-fatal startup, surface fleet-config warnings so users see
+        // them inline during `minions start` (rather than only via doctor).
+        const warns = results.filter(r => r.ok === 'warn');
+        for (const w of warns) console.log(`  ! ${w.name}: ${w.message}`);
       }
     } catch (e) { console.error('preflight:', e.message); }
 
@@ -125,6 +135,11 @@ const commands = {
     console.log(`Engine started (PID: ${process.pid})`);
 
     const config = getConfig();
+    // P-3b8e5f1d: promote legacy `engine.ccModel` to `engine.defaultModel` in
+    // memory so single-model installs keep working after the runtime fleet
+    // refactor. No disk write — the on-disk config still carries `ccModel`.
+    try { shared.applyLegacyCcModelMigration(config, { logger: e.log }); }
+    catch (err) { e.log('warn', `legacy ccModel migration failed: ${err.message}`); }
     const interval = config.engine?.tickInterval || shared.ENGINE_DEFAULTS.tickInterval;
 
     const { getProjects } = require('./shared');
