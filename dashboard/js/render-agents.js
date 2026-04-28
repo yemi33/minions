@@ -5,17 +5,23 @@
 // markup, currentColor-themed). Add a new entry here when a new runtime is
 // registered in engine/runtimes/index.js.
 const RUNTIME_TAGS = {
-  // Anthropic Claude — 8-pointed orange asterisk/burst
+  // Claude Code — pixel-art "crab" mascot in Anthropic orange. Wide blocky
+  // body with two black square eyes, side fin protrusions, and four legs at
+  // the bottom with a wide middle gap. Approximates the standalone Claude
+  // Code sticker icon.
   claude: {
     label: 'Claude',
     color: '#cc785c',
-    svg: '<svg viewBox="-12 -12 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><path d="M-1.6 -10 L1.6 -10 L1 -1 L10 -1.6 L10 1.6 L1 1 L1.6 10 L-1.6 10 L-1 1 L-10 1.6 L-10 -1.6 L-1 -1 Z"/><path d="M-1.6 -10 L1.6 -10 L1 -1 L10 -1.6 L10 1.6 L1 1 L1.6 10 L-1.6 10 L-1 1 L-10 1.6 L-10 -1.6 L-1 -1 Z" transform="rotate(45)"/></g></svg>',
+    svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><rect x="4" y="3" width="16" height="15"/><rect x="2" y="8" width="2" height="4"/><rect x="20" y="8" width="2" height="4"/><rect x="4" y="18" width="2.5" height="3"/><rect x="8" y="18" width="2.5" height="3"/><rect x="13.5" y="18" width="2.5" height="3"/><rect x="17.5" y="18" width="2.5" height="3"/></g><g fill="#000"><rect x="7" y="7.5" width="2.5" height="3"/><rect x="14.5" y="7.5" width="2.5" height="3"/></g></svg>',
   },
-  // GitHub Copilot — rounded "pilot" face from the official Octicons set
+  // GitHub Copilot — bespectacled "pilot" mascot: head with side ear cups,
+  // two round goggles, small bridge, and a rectangular grill mouth with two
+  // vertical bars. Matches the standalone github-copilot icon. Cutouts use
+  // white so the logo stays recognisable against any agent-card background.
   copilot: {
     label: 'Copilot',
     color: '#8957e5',
-    svg: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px;fill:currentColor"><path d="M7.998 15.035c-4.562 0-7.873-2.914-7.998-3.749V9.338c.085-.628.677-1.686 1.588-2.065.013-.07.024-.143.036-.218.029-.183.06-.384.126-.612-.201-.508-.254-1.084-.254-1.656 0-.87.128-1.71.354-2.434.13-.418.305-.808.516-1.142.218-.345.516-.648.886-.804.397-.167.832-.156 1.236-.014.404.142.858.396 1.342.762.227.171.487.367.733.557l.083.064c.16.124.305.236.434.337.265-.077.566-.142.879-.198a.877.877 0 0 1 .093-.013l.045-.005c.135-.018.273-.029.41-.034.137.005.275.016.41.034l.045.005a.877.877 0 0 1 .093.013c.313.056.614.121.879.198.129-.101.274-.213.434-.337l.083-.064c.246-.19.506-.386.733-.557.484-.366.938-.62 1.342-.762.404-.142.839-.153 1.236.014.37.156.668.459.886.804.21.334.385.724.516 1.142.226.724.354 1.564.354 2.434 0 .572-.053 1.148-.254 1.656.066.228.097.429.126.612.012.075.023.148.036.218.911.379 1.503 1.437 1.588 2.065v1.948c-.125.835-3.436 3.749-7.998 3.749ZM5.485 12.343a4.07 4.07 0 0 0 1.014-.214 1 1 0 0 1 .622-.001c.14.045.31.097.502.143.456.111.99.196 1.379.196.39 0 .923-.085 1.379-.196.192-.046.362-.098.502-.143a1 1 0 0 1 .622.001c.31.105.65.184 1.014.214.348.029.674-.027.927-.114a.535.535 0 0 0 .362-.51v-1.61a4.474 4.474 0 0 0-1.5-.339c-.456 0-.923.085-1.379.196-.192.046-.362.098-.502.143a1 1 0 0 1-.622-.001 11.91 11.91 0 0 1-1.014-.214 4.07 4.07 0 0 0-1.014.214 1 1 0 0 1-.622.001 13.92 13.92 0 0 0-.502-.143A6.474 6.474 0 0 0 4.5 9.769a4.474 4.474 0 0 0-1.5.339v1.611a.535.535 0 0 0 .362.51 1.95 1.95 0 0 0 .927.113Z"/></svg>',
+    svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><ellipse cx="12" cy="11" rx="10" ry="8.5"/><circle cx="2.5" cy="13" r="2.4"/><circle cx="21.5" cy="13" r="2.4"/></g><g fill="#fff"><circle cx="8" cy="10" r="3"/><circle cx="16" cy="10" r="3"/><rect x="11.2" y="9.5" width="1.6" height="1.6" rx="0.3"/><rect x="8.4" y="14" width="7.2" height="3.8" rx="0.5"/></g><g fill="currentColor"><rect x="10.4" y="14.5" width="0.9" height="2.8" rx="0.2"/><rect x="12.7" y="14.5" width="0.9" height="2.8" rx="0.2"/></g></svg>',
   },
 };
 function _runtimeTagHtml(runtime) {
