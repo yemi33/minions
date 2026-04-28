@@ -341,7 +341,7 @@ function cancelPendingDispatchesForPr(prId) {
  */
 function cleanDispatchEntries(matchFn) {
   const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-  const engineDir = path.join(MINIONS_DIR, 'engine');
+  const tmpDir = path.join(MINIONS_DIR, 'engine', 'tmp');
   let removed = 0;
   const pidsToKill = [];
   const filesToDelete = [];
@@ -353,15 +353,17 @@ function cleanDispatchEntries(matchFn) {
         if (queue === 'active') {
           for (const d of dispatch[queue]) {
             if (!matchFn(d)) continue;
-            const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
+            // PID files live in engine/tmp/ (see engine/spawn-agent.js:220 — derived
+            // from the prompt-<id>.md path that engine.js builds in engine/tmp/).
+            const pidFile = path.join(tmpDir, `pid-${d.id}.pid`);
             try {
               const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
               if (pid) pidsToKill.push(pid);
             } catch { /* PID file may not exist */ }
             filesToDelete.push(pidFile);
-            filesToDelete.push(path.join(engineDir, 'tmp', `prompt-${d.id}.md`));
-            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`));
-            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`));
+            filesToDelete.push(path.join(tmpDir, `prompt-${d.id}.md`));
+            filesToDelete.push(path.join(tmpDir, `sysprompt-${d.id}.md`));
+            filesToDelete.push(path.join(tmpDir, `sysprompt-${d.id}.md.tmp`));
           }
         }
         dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
