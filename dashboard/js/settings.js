@@ -179,7 +179,12 @@ async function openSettings() {
           '</div>' +
           '<div>' +
             '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">CC Model</label>' +
-            '<input id="set-ccModel" value="' + escHtml(e.ccModel || '') + '" placeholder="(inherits Default Model)" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+            // Wrap the input in a dedicated container so loadModelsForRuntime
+            // (which does `wrap.innerHTML = …` on the input's parent) only
+            // swaps THIS element. Without the wrap it would wipe the label
+            // and the hint below, breaking vertical alignment with the
+            // sibling CC CLI / Effort columns.
+            '<div id="set-ccModel-wrap"><input id="set-ccModel" value="' + escHtml(e.ccModel || '') + '" placeholder="(inherits Default Model)" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px"></div>' +
             '<div style="font-size:9px;color:var(--muted);margin-top:1px">Empty = inherit Default Model</div>' +
           '</div>' +
           '<div>' +
