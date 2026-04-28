@@ -64,6 +64,8 @@ The engine kills agents that produce no stdout for `heartbeatTimeout` (default *
 
 Why: each line that the build emits arrives as a notification, which resets the heartbeat. You see live progress in the dashboard. The Monitor call itself is recognised by the engine as a blocking tool (heartbeat extended ~30 min).
 
+> ⚠️ **Never use `Monitor({ command: "tail -F <file> | grep ..." })` for long builds.** It looks tidy — only the lines you care about — but it is a heartbeat trap. Cold Gradle / MSBuild / `cargo build` spend 3–8 minutes in a startup + dependency-resolution phase that produces output that **does not match** typical filter terms (`BUILD SUCCESSFUL`, `BUILD FAILED`, `error:`). The grep filter swallows every line, Monitor emits zero notifications, the heartbeat fires at 300s, and the engine kills the agent mid-build. Always pass `bash_id` directly — every output line resets the heartbeat, and noisy output is the *whole point* of the pattern.
+
 ### Pattern B — Single Bash call with explicit `timeout`
 
 ```
@@ -75,6 +77,7 @@ The engine reads `input.timeout` from the tool call and extends the heartbeat to
 ### What NOT to do
 
 - Do NOT run `./gradlew`, `mvn`, `dotnet test`, or any cold-cache build as a default `Bash` call (no `timeout`, no `run_in_background`). It will hit the 120s Bash default, then the 300s heartbeat, and the engine will kill you.
+- Do NOT use `Monitor({ command: "tail | grep ..." })` for any build that has a silent startup phase (cold Gradle, MSBuild, fresh `npm install`, `cargo build`). The grep filter suppresses Gradle's startup output, Monitor emits nothing, heartbeat fires at 300s, agent is killed. Use `Monitor({ bash_id })` instead — noisy output is better than a dead agent.
 - Do NOT loop `sleep` to "wait it out" — sleep produces no stdout and looks identical to a hang.
 - Do NOT pipe through `tee` thinking that helps — heartbeat reads agent stdout, not the underlying file.
 
