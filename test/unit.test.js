@@ -19737,6 +19737,9 @@ async function main() {
     // W-moczd52c1icm: dashboard.js pure helpers
     await testDashboardPureHelpers();
 
+    // W-moj5m3yrc963: live integration harness root safety
+    await testIntegrationHarnessSafety();
+
     // W-moczcvjl338u: engine.js pure helper coverage
     await testEngineHelperCoverage();
 
@@ -38221,6 +38224,61 @@ async function testStatusCacheTiers() {
     // Extract the slowStale logic — it should be a simple TTL check
     const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
     assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+// ─── W-moj5m3yrc963: live integration harness root safety ───────────────────
+
+async function testIntegrationHarnessSafety() {
+  console.log('\n── Live Integration Harness Safety (W-moj5m3yrc963) ──');
+
+  const harness = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+
+  await test('normalizeFsPathForCompare removes trailing separators', () => {
+    const base = path.join(createTmpDir(), 'repo');
+    assert.strictEqual(
+      harness.normalizeFsPathForCompare(base + path.sep),
+      harness.normalizeFsPathForCompare(base)
+    );
+  });
+
+  await test('assertDashboardRootMatchesLocalRoot accepts matching health minionsDir', async () => {
+    const localRoot = path.join(createTmpDir(), 'checkout');
+    const health = await harness.assertDashboardRootMatchesLocalRoot(
+      async () => ({ status: 200, json: { status: 'healthy', minionsDir: localRoot } }),
+      localRoot
+    );
+    assert.strictEqual(health.json.status, 'healthy');
+  });
+
+  await test('assertDashboardRootMatchesLocalRoot rejects missing health minionsDir', async () => {
+    await assert.rejects(
+      () => harness.assertDashboardRootMatchesLocalRoot(
+        async () => ({ status: 200, json: { status: 'healthy' } }),
+        path.join(createTmpDir(), 'checkout')
+      ),
+      /missing minionsDir/
+    );
+  });
+
+  await test('assertDashboardRootMatchesLocalRoot rejects mismatched dashboard root before mutation', async () => {
+    const localRoot = path.join(createTmpDir(), 'checkout-a');
+    const dashboardRoot = path.join(createTmpDir(), 'checkout-b');
+    await assert.rejects(
+      () => harness.assertDashboardRootMatchesLocalRoot(
+        async () => ({ status: 200, json: { status: 'healthy', minionsDir: dashboardRoot } }),
+        localRoot
+      ),
+      /Refusing to run integration tests against dashboard root/
+    );
+  });
+
+  await test('dashboard health response includes minionsDir for integration safety guard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = src.indexOf('async function handleHealth');
+    const end = src.indexOf('async function handleAgentDetail', start);
+    const healthFn = src.slice(start, end);
+    assert.ok(healthFn.includes('minionsDir: MINIONS_DIR'), 'health endpoint must expose the served root for harness safety');
   });
 }
 
