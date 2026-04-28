@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1590 (2026-04-28)
+
+### Features
+-  Pluggable CLI runtime adapters (Claude + GitHub Copilot) (#1804)
+
+### Fixes
+- remove duplicate DOC_CHAT_TIMEOUT_MS declaration crashing startup
+
 ## 0.1.1588 (2026-04-28)
 
 ### Other
