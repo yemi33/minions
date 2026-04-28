@@ -294,12 +294,15 @@ function _createStreamAccumulator({
     const alreadySeen = copilotTaskCompleteSeen && copilotTaskCompleteSummary === finalSummary;
     copilotTaskCompleteSeen = true;
     copilotTaskCompleteSummary = finalSummary;
-    copilotMessageBuffer = '';
-    text = finalSummary;
-    if (onChunk && finalSummary !== lastTextSent) {
-      lastTextSent = finalSummary;
-      onChunk(finalSummary);
+    const hadText = !!text;
+    if (!hadText) {
+      text = finalSummary;
+      if (onChunk && finalSummary !== lastTextSent) {
+        lastTextSent = finalSummary;
+        onChunk(finalSummary);
+      }
     }
+    copilotMessageBuffer = '';
     if (!alreadySeen && onTaskComplete) onTaskComplete({ summary: finalSummary, success: success !== false });
   }
 
@@ -415,6 +418,7 @@ function _createStreamAccumulator({
     if (copilotMessageBuffer && !copilotTaskCompleteSeen) {
       text = _streamText(copilotMessageBuffer);
     }
+    if (!text && copilotTaskCompleteSummary) text = copilotTaskCompleteSummary;
     // Reconciliation: if any field is still missing, ask the runtime adapter
     // to re-parse the whole stdout. parseOutput() may catch a result event
     // that was malformed when streamed in chunks.

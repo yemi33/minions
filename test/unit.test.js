@@ -1705,6 +1705,19 @@ async function testCopilotAdapter() {
     assert.strictEqual(r.sessionId, 'sess-11');
   });
 
+  await test('copilot.parseOutput preserves action-bearing answer over task_complete summary', () => {
+    const answer = 'I will dispatch Dallas.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Give Dallas work","workType":"fix","agents":["dallas"],"project":"minions","description":"Investigate a bug"}]';
+    const raw = [
+      JSON.stringify({ type: 'assistant.message', data: { content: answer, outputTokens: 20 } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'Task complete.' } }], outputTokens: 2 } }),
+      JSON.stringify({ type: 'session.task_complete', data: { summary: 'Task complete.', success: true } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-12', exitCode: 0, usage: { premiumRequests: 1 } }),
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, answer,
+      'task_complete summary must not overwrite earlier answer text containing CC actions');
+  });
+
   await test('copilot.parseOutput: model captured from session.tools_updated event', () => {
     const raw = [
       '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
@@ -32265,11 +32278,13 @@ async function testRenderUtils() {
       'SSE tool handler should capture evt.input from the server event');
   });
 
-  await test('CC stream chunks merge append-style instead of replacing prior streamed text', () => {
+  await test('CC stream chunks and terminal text merge append-style instead of replacing prior streamed text', () => {
     assert.ok(ccSrc.includes('function _ccMergeStreamText(prev, incoming)'),
       'command-center.js should define a helper that merges streamed chunks');
     assert.ok(ccSrc.includes("streamedText = _ccMergeStreamText(streamedText, evt.text || '');"),
       'Chunk events should merge into the existing streamed text instead of overwriting it');
+    assert.ok(ccSrc.includes("var finalText = _ccMergeStreamText(streamedText, evt.text || '');"),
+      'Done events should merge terminal text into the accumulated streamed text instead of replacing it');
   });
 
   await test('live-stream.js re-renders full output for Copilot runtime instead of incremental append', () => {

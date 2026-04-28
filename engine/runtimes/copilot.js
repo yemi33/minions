@@ -390,7 +390,8 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
     }
   }
 
-  let text = taskCompleteSummary || (messageContents.join('') + pendingDeltaContent);
+  let text = messageContents.join('') + pendingDeltaContent;
+  if (!text && taskCompleteSummary) text = taskCompleteSummary;
   if (maxTextLength && text.length > maxTextLength) {
     text = text.slice(-maxTextLength);
   }
