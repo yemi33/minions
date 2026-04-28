@@ -8799,6 +8799,43 @@ async function testCheckTimeouts() {
       'shared-rules.md should explain heartbeat semantics so agents understand the constraint');
   });
 
+  // ── #1794: prohibit grep-filtered Monitor for long builds ──
+  // Agents reach for `Monitor({ command: "tail -F <file> | grep ..." })` to suppress
+  // noisy build output, but Gradle's startup phase doesn't match the filter terms,
+  // Monitor emits zero events, and the heartbeat fires at 300s. The playbook must
+  // explicitly prohibit this form so agents override the instinct to filter noise.
+  // Pattern C (ScheduleWakeup) is intentionally NOT added — re-initializes the full
+  // Claude session per wakeup, has a 270s polling gap, and is for idle waits, not
+  // active monitoring.
+  await test('playbooks/shared-rules.md prohibits grep-filtered Monitor for long builds (#1794)', () => {
+    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+
+    // 1. Pattern A must carry a hard prohibition against grep-filtered Monitor —
+    //    not a soft note. The string `tail | grep` should appear with `Never` /
+    //    `Do NOT` framing so the warning is unmissable.
+    assert.ok(sharedRules.includes('tail | grep') || sharedRules.includes('tail -F'),
+      'shared-rules.md should call out the tail|grep Monitor anti-pattern by name');
+    assert.ok(/Never use `Monitor\({ command:|Do NOT use `?Monitor\({ command:/.test(sharedRules),
+      'shared-rules.md should hard-prohibit Monitor({ command: ... }) — soft notes get ignored');
+    assert.ok(sharedRules.includes('startup') || sharedRules.includes('dependency'),
+      'shared-rules.md should explain WHY: Gradle startup/dependency phase produces output that does not match typical filter terms');
+
+    // 2. The "What NOT to do" section must list the grep-filtered Monitor bullet
+    //    so agents see it next to the other anti-patterns (`tee`, `sleep` loops).
+    const notToDoIdx = sharedRules.indexOf('What NOT to do');
+    assert.ok(notToDoIdx !== -1, 'shared-rules.md should have a What NOT to do section');
+    const notToDoBlock = sharedRules.slice(notToDoIdx);
+    assert.ok(notToDoBlock.includes('Monitor({ command:') && notToDoBlock.includes('bash_id'),
+      '"What NOT to do" should call out Monitor({ command: ... }) and direct agents to Monitor({ bash_id }) instead');
+
+    // 3. Pattern C must NOT be added. ScheduleWakeup is for idle waits, not active
+    //    monitoring — re-initializes session per wake, 270s polling gap.
+    assert.ok(!/###\s+Pattern C\b/.test(sharedRules),
+      'shared-rules.md must NOT add Pattern C — ScheduleWakeup is wrong tool for active build monitoring');
+    assert.ok(!sharedRules.includes('ScheduleWakeup'),
+      'shared-rules.md must NOT recommend ScheduleWakeup for build monitoring');
+  });
+
   // ── #1786: PowerShell tool blocking detection (Windows shell parity with Bash) ──
   // The PowerShell tool is the Windows-native equivalent of Bash. It has the same
   // explicit-timeout semantics (input.timeout, max 600000ms). The blocking-tool
@@ -20106,7 +20143,17 @@ async function testSec03EscapeHtml() {
   // contains `${`, `+`, or a bare identifier. Static literal assignments
   // (`el.innerHTML = '<p class="empty">...</p>'`) are exempt because they
   // cannot carry user data.
-  const DYNAMIC_INNERHTML_BASELINE = 172;
+  //
+  // 2026-04-28: bumped 172 → 173. Source: db05264b ("feat: stream doc chat
+  // progress") added `loadingEl.innerHTML = _qaBuildLiveProgressHtml(...)` in
+  // dashboard/js/modal-qa.js:448. The new callsite is internally safe — `label`
+  // goes through `escHtml()` and `streamedText` goes through `renderMd()`, both
+  // dashboard XSS standards — but the gate counts callsites, not safety. The
+  // structure is multi-line nested HTML (dot-pulse spans, buttons, badges) that
+  // cannot reasonably be expressed via textContent. Claw back to 172 if/when
+  // _qaBuildLiveProgressHtml is refactored to update only text fields in place
+  // against a pre-built skeleton.
+  const DYNAMIC_INNERHTML_BASELINE = 173;
 
   await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
     const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
