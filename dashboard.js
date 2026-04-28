@@ -982,6 +982,19 @@ function _parseWatchInterval(val) {
   return Math.max(60000, Math.round(u === 's' ? n * 1000 : u === 'm' ? n * 60000 : n * 3600000));
 }
 
+function _normalizeAgentAssignmentInput(input = {}, options = {}) {
+  const hardPinSingleAgents = options.hardPinSingleAgents !== false;
+  const agents = Array.isArray(input.agents)
+    ? input.agents
+    : (typeof input.agents === 'string' && input.agents ? [input.agents] : []);
+  const actionAgents = agents.map(agent => String(agent).trim()).filter(Boolean);
+  const explicitAgent = input.agent ? String(input.agent).trim() : '';
+  return {
+    pinnedAgent: explicitAgent || (hardPinSingleAgents && actionAgents.length === 1 ? actionAgents[0] : null),
+    agents: actionAgents,
+  };
+}
+
 async function executeCCActions(actions) {
   const results = [];
   for (const action of actions) {
@@ -997,6 +1010,7 @@ async function executeCCActions(actions) {
           // Mark oneShot so any discovered PR is tagged _contextOnly (skips eval loop).
           const ccOneShotTypes = new Set(['review', 'explore', 'test']);
           const isOneShot = action.oneShot === true || (action.oneShot !== false && ccOneShotTypes.has(workType));
+          const { pinnedAgent, agents: actionAgents } = _normalizeAgentAssignmentInput(action);
           shared.mutateJsonFileLocked(wiPath, items => {
             if (!Array.isArray(items)) items = [];
             items.push({
@@ -1004,7 +1018,8 @@ async function executeCCActions(actions) {
               priority: action.priority || 'medium', description: action.description || '',
               status: WI_STATUS.PENDING, created: new Date().toISOString(),
               createdBy: 'command-center', project,
-              ...(action.agents?.length ? { preferred_agent: action.agents[0], agents: action.agents } : {}),
+              ...(pinnedAgent ? { agent: pinnedAgent } : {}),
+              ...(actionAgents.length ? { preferred_agent: actionAgents[0], agents: actionAgents } : {}),
               ...(isOneShot ? { oneShot: true } : {}),
             });
             return items;
@@ -2214,9 +2229,8 @@ const server = http.createServer(async (req, res) => {
       // so a hard-pinned item bypasses routing entirely and queues until that
       // exact agent is free. Multi-agent arrays remain `item.agents` (hints
       // for resolveAgent or fan-out scope).
-      const _agentsArr = Array.isArray(body.agents) ? body.agents.filter(Boolean) : (typeof body.agents === 'string' && body.agents ? [body.agents] : []);
-      if (body.agent) item.agent = String(body.agent);
-      else if (_agentsArr.length === 1 && body.scope !== 'fan-out') item.agent = String(_agentsArr[0]);
+      const { pinnedAgent, agents: _agentsArr } = _normalizeAgentAssignmentInput(body, { hardPinSingleAgents: body.scope !== 'fan-out' });
+      if (pinnedAgent) item.agent = pinnedAgent;
       if (_agentsArr.length > 0) item.agents = _agentsArr;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
@@ -6063,6 +6077,7 @@ module.exports = {
   _filterCcTabSessions,
   _getVersionCheckInterval,
   _parseWatchInterval,
+  _normalizeAgentAssignmentInput,
   parsePinnedEntries,
 };
 

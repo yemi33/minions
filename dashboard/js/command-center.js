@@ -785,7 +785,7 @@ async function ccExecuteAction(action, targetTabId) {
   // Server-executed actions: just show status, don't re-fire the API
   if (action._serverExecuted) {
     if (action._serverError) {
-      status.innerHTML = '&#10007; ' + escHtml(action.type) + ' failed: ' + escHtml(action._serverError);
+      status.textContent = 'x ' + action.type + ' failed: ' + action._serverError;
       status.style.color = 'var(--red)';
     } else {
       var label = action._serverId ? escHtml(action._serverId) : escHtml(action.title || action.type);

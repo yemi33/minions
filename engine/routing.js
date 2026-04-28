@@ -11,7 +11,7 @@ const queries = require('./queries');
 const { safeJson, safeRead, log, ts } = shared;
 const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = shared.MINIONS_DIR;
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
 
 // ─── Temp Agents ─────────────────────────────────────────────────────────────
@@ -116,9 +116,34 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function resolveAgent(workType, config, authorAgent = null) {
+function normalizeAgentHints(agentHints) {
+  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? [agentHints] : []);
+  return raw
+    .map(id => String(id).trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function collectAgentHints(item) {
+  const raw = [];
+  if (item?.preferred_agent) raw.push(item.preferred_agent);
+  if (Array.isArray(item?.agents)) raw.push(...item.agents);
+  else if (item?.agents) raw.push(item.agents);
+
+  const seen = new Set();
+  return raw
+    .map(id => String(id).trim())
+    .filter(Boolean)
+    .filter(id => {
+      const key = id.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
   const routes = getRoutingTableCached();
-  const route = routes[workType] || routes['implement'];
+  const route = routes[workType] || routes['implement'] || { preferred: null, fallback: null };
   const agents = config.agents || {};
 
   // Resolve _author_ token
@@ -144,6 +169,21 @@ function resolveAgent(workType, config, authorAgent = null) {
     if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
     return null;
   };
+
+  const hinted = normalizeAgentHints(agentHints);
+  if (hinted.length > 0) {
+    for (const hint of hinted) {
+      const id = hint === '_author_' ? authorAgent : hint;
+      if (id === '_any_') {
+        const pick = pickAnyIdle();
+        if (pick) return pick;
+      } else if (id && isAvailable(id)) {
+        _claimedAgents.add(id);
+        return id;
+      }
+    }
+    return null;
+  }
 
   // Resolve _any_ token — pick any available agent (#480)
   if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
@@ -190,6 +230,8 @@ module.exports = {
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,
+  normalizeAgentHints,
+  collectAgentHints,
   setTempBudget,
   getTempBudget,
 };

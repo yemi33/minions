@@ -6553,7 +6553,7 @@ async function testConfigAndPlaybooks() {
     assert.ok(/resolveBinary\(/.test(src),
       'detection should probe each adapter via resolveBinary()');
     // initMinions calls the helper only when defaultCli is unset (preserves user choice on --force upgrades)
-    const initFn = src.slice(src.indexOf('async function initMinions'), src.indexOf('async function addProject'));
+    const initFn = src.slice(src.indexOf('async function initMinions'), src.indexOf('const commands ='));
     assert.ok(/if \(!config\.engine\.defaultCli\)/.test(initFn),
       'init should only auto-set defaultCli when not already configured');
     assert.ok(initFn.includes('_detectAvailableRuntimes()'),
@@ -10244,6 +10244,88 @@ async function testResolveAgent() {
   console.log('\n── engine.js — resolveAgent ──');
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+  const routeFixture = [
+    '# Work Routing',
+    '| Work Type | Preferred | Fallback |',
+    '|-----------|-----------|----------|',
+    '| verify | dallas | ralph |',
+    '| implement | dallas | ralph |',
+    ''
+  ].join('\n');
+
+  function loadRoutingFixture(active = []) {
+    const restore = createTestMinionsDir();
+    fs.writeFileSync(path.join(process.env.MINIONS_TEST_DIR, 'routing.md'), routeFixture);
+    for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+      try { delete require.cache[require.resolve(m)]; } catch {}
+    }
+    const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+    const freshShared = require('../engine/shared');
+    freshShared.safeWrite(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json'), {
+      pending: [],
+      active,
+      completed: [],
+    });
+    routing.resetClaimedAgents();
+    const config = {
+      agents: {
+        dallas: { name: 'Dallas' },
+        ralph: { name: 'Ralph' },
+        lambert: { name: 'Lambert' },
+      },
+      engine: { allowTempAgents: false },
+    };
+    return { routing, config, restore };
+  }
+
+  function loadEngineWorkItemFixture(item, active = []) {
+    const restoreBase = createTestMinionsDir();
+    const projectRoot = createTmpDir();
+    const project = {
+      name: 'minions',
+      localPath: projectRoot,
+      workSources: { workItems: { enabled: true } },
+    };
+    fs.writeFileSync(path.join(process.env.MINIONS_TEST_DIR, 'routing.md'), routeFixture);
+    for (const m of ['../engine/shared', '../engine/queries', '../engine/cooldown', '../engine/routing', '../engine']) {
+      try { delete require.cache[require.resolve(m)]; } catch {}
+    }
+    const freshShared = require('../engine/shared');
+    freshShared.safeWrite(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json'), {
+      pending: [],
+      active,
+      completed: [],
+    });
+    freshShared.safeWrite(freshShared.projectWorkItemsPath(project), [item]);
+    const engine = require('../engine');
+    require('../engine/routing').resetClaimedAgents();
+    const config = {
+      agents: {
+        dallas: { name: 'Dallas', role: 'Engineer' },
+        ralph: { name: 'Ralph', role: 'Engineer' },
+        lambert: { name: 'Lambert', role: 'Analyst' },
+      },
+      engine: { allowTempAgents: false },
+    };
+    return {
+      engine,
+      config,
+      project,
+      restore() {
+        restoreBase();
+        for (const m of ['../engine/shared', '../engine/queries', '../engine/cooldown', '../engine/routing', '../engine']) {
+          try { delete require.cache[require.resolve(m)]; } catch {}
+        }
+      },
+    };
+  }
+
+  function loadNormalizeAgentAssignmentInput() {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const match = dashboardSrc.match(/function _normalizeAgentAssignmentInput[\s\S]*?^}/m);
+    assert.ok(match, 'dashboard.js should define _normalizeAgentAssignmentInput');
+    return new Function(`${match[0]}\nreturn _normalizeAgentAssignmentInput;`)();
+  }
 
   await test('resolveAgent resolves _author_ token to authorAgent', () => {
     assert.ok(src.includes("route.preferred === '_author_' ? authorAgent : route.preferred"),
@@ -10288,89 +10370,141 @@ async function testResolveAgent() {
       'Final fallback should use pickAnyIdle excluding preferred and fallback');
   });
 
-  await test('resolveAgent honors explicit agent hints before routing defaults', () => {
-    const restore = createTestMinionsDir();
+  await test('resolveAgent uses the workType default preference when no hint exists — behavioral', () => {
+    const { routing, config, restore } = loadRoutingFixture();
     try {
-      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
-      fs.writeFileSync(routingPath, [
-        '# Work Routing',
-        '| Work Type | Preferred | Fallback |',
-        '|-----------|-----------|----------|',
-        '| verify | dallas | ralph |',
-        '| implement | dallas | ralph |',
-        ''
-      ].join('\n'));
-      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
-        try { delete require.cache[require.resolve(m)]; } catch {}
-      }
-      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
-      routing.resetClaimedAgents();
-      const config = {
-        agents: {
-          dallas: { name: 'Dallas' },
-          ralph: { name: 'Ralph' },
-          lambert: { name: 'Lambert' },
-        },
-        engine: { allowTempAgents: false },
-      };
+      assert.strictEqual(routing.resolveAgent('verify', config), 'dallas',
+        'Verify work should default to the routing-table preferred agent');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent uses the workType fallback when preferred is unavailable — behavioral', () => {
+    const { routing, config, restore } = loadRoutingFixture([{ id: 'busy-dallas', agent: 'dallas' }]);
+    try {
+      assert.strictEqual(routing.resolveAgent('verify', config), 'ralph',
+        'Verify work should fall back to the routing-table fallback agent when Dallas is busy');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent honors explicit agent hints before routing defaults — behavioral', () => {
+    const { routing, config, restore } = loadRoutingFixture();
+    try {
       assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), 'lambert',
         'Lambert hint must override verify routing default of Dallas');
     } finally { restore(); }
   });
 
-  await test('resolveAgent waits for hinted agents instead of falling back to route default', () => {
-    const restore = createTestMinionsDir();
+  await test('resolveAgent tries later explicit hints before workType defaults — behavioral', () => {
+    const { routing, config, restore } = loadRoutingFixture([{ id: 'busy-lambert', agent: 'lambert' }]);
     try {
-      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
-      fs.writeFileSync(routingPath, [
-        '# Work Routing',
-        '| Work Type | Preferred | Fallback |',
-        '|-----------|-----------|----------|',
-        '| verify | dallas | ralph |',
-        '| implement | dallas | ralph |',
-        ''
-      ].join('\n'));
-      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
-        try { delete require.cache[require.resolve(m)]; } catch {}
-      }
-      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
-      routing.resetClaimedAgents();
-      const freshShared = require('../engine/shared');
-      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
-      freshShared.safeWrite(dispatchPath, {
-        pending: [],
-        active: [{ id: 'busy-lambert', agent: 'lambert' }],
-        completed: [],
-      });
-      const config = {
-        agents: {
-          dallas: { name: 'Dallas' },
-          ralph: { name: 'Ralph' },
-          lambert: { name: 'Lambert' },
-        },
-        engine: { allowTempAgents: false },
-      };
+      assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert', 'ralph']), 'ralph',
+        'A busy first hint should fall through to the next explicit hint, not the verify default');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent waits for hinted agents instead of falling back to route default — behavioral', () => {
+    const { routing, config, restore } = loadRoutingFixture([{ id: 'busy-lambert', agent: 'lambert' }]);
+    try {
       assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), null,
         'Busy Lambert hint must block dispatch instead of rerouting to Dallas');
     } finally { restore(); }
   });
 
+  await test('discoverFromWorkItems uses workType default preference when no hint exists — behavioral', () => {
+    const { engine, config, project, restore } = loadEngineWorkItemFixture({
+      id: 'W-default-verify',
+      title: 'Default verify routing',
+      type: 'verify',
+      status: shared.WI_STATUS.PENDING,
+      prompt: 'verify default',
+    });
+    try {
+      const work = engine.discoverFromWorkItems(config, project);
+      assert.strictEqual(work.length, 1);
+      assert.strictEqual(work[0].agent, 'dallas');
+    } finally { restore(); }
+  });
+
+  await test('discoverFromWorkItems lets explicit hints override workType preference — behavioral', () => {
+    const { engine, config, project, restore } = loadEngineWorkItemFixture({
+      id: 'W-hinted-verify',
+      title: 'Hinted verify routing',
+      type: 'verify',
+      status: shared.WI_STATUS.PENDING,
+      preferred_agent: 'lambert',
+      prompt: 'verify hint',
+    });
+    try {
+      const work = engine.discoverFromWorkItems(config, project);
+      assert.strictEqual(work.length, 1);
+      assert.strictEqual(work[0].agent, 'lambert');
+    } finally { restore(); }
+  });
+
+  await test('discoverFromWorkItems preserves hard-pinned item.agent ahead of hints and defaults — behavioral', () => {
+    const { engine, config, project, restore } = loadEngineWorkItemFixture({
+      id: 'W-pinned-verify',
+      title: 'Pinned verify routing',
+      type: 'verify',
+      status: shared.WI_STATUS.PENDING,
+      agent: 'ralph',
+      preferred_agent: 'lambert',
+      prompt: 'verify pin',
+    });
+    try {
+      const work = engine.discoverFromWorkItems(config, project);
+      assert.strictEqual(work.length, 1);
+      assert.strictEqual(work[0].agent, 'ralph');
+    } finally { restore(); }
+  });
+
+  await test('discoverFromWorkItems tries full hint list before workType fallback — behavioral', () => {
+    const { engine, config, project, restore } = loadEngineWorkItemFixture({
+      id: 'W-hint-list-verify',
+      title: 'Hint-list verify routing',
+      type: 'verify',
+      status: shared.WI_STATUS.PENDING,
+      preferred_agent: 'lambert',
+      agents: ['lambert', 'ralph'],
+      prompt: 'verify hint list',
+    }, [{ id: 'busy-lambert', agent: 'lambert' }]);
+    try {
+      const work = engine.discoverFromWorkItems(config, project);
+      assert.strictEqual(work.length, 1);
+      assert.strictEqual(work[0].agent, 'ralph',
+        'Engine should try ralph from item.agents before falling back to verify default dallas');
+    } finally { restore(); }
+  });
+
   await test('engine work-item discovery passes preferred_agent/agents to resolveAgent', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('item.preferred_agent || item.agents || null'),
-      'Work-item discovery should derive agent hints from preferred_agent/agents');
+    assert.ok(engineSrc.includes('collectAgentHints(item)'),
+      'Work-item discovery should derive agent hints from the shared hint collector');
     assert.ok(engineSrc.includes('resolveAgent(workType, config, null, agentHints)'),
       'Work-item discovery should pass hints into resolveAgent so routing defaults do not override them');
-    assert.ok(engineSrc.includes("item.meta?.item?.preferred_agent || item.meta?.item?.agents"),
+    assert.ok(engineSrc.includes("collectAgentHints(item.meta?.item)"),
       'Pending dispatch fallback should preserve work-item agent hints when re-resolving missing agents');
-    assert.ok(engineSrc.includes("item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length"),
+    assert.ok(engineSrc.includes("item.meta?.item?.agent || collectAgentHints(item.meta?.item).length"),
       'Busy-agent reassignment should treat hinted work as explicit assignment');
   });
 
-  await test('Command Center dispatch persists agents[] hint for engine routing', () => {
-    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(dashboardSrc.includes('preferred_agent: action.agents[0], agents: action.agents'),
-      'Command Center dispatch should persist both preferred_agent and agents so engine routing can honor the hint');
+  await test('Command Center dispatch agent normalization hard-pins one explicit agent — behavioral', () => {
+    const normalizeAgentAssignmentInput = loadNormalizeAgentAssignmentInput();
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agents: ['dallas'] }),
+      { pinnedAgent: 'dallas', agents: ['dallas'] },
+      'A one-agent dispatch action should become a hard pin plus a hint for persistence'
+    );
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agent: 'ralph', agents: ['dallas'] }),
+      { pinnedAgent: 'ralph', agents: ['dallas'] },
+      'Singular action.agent should be the hard pin when both shapes are present'
+    );
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agents: ['dallas'] }, { hardPinSingleAgents: false }),
+      { pinnedAgent: null, agents: ['dallas'] },
+      'Fan-out callers can preserve a one-agent agents array as hints without hard-pinning'
+    );
   });
 }
 
@@ -22153,21 +22287,31 @@ async function testPrWriteRaceConditions() {
       'POST /api/work-items must copy oneShot from body to item (parallel to skipPr)');
   });
 
-  await test('handleWorkItemsCreate hard-pins a single explicit agent so routing is skipped', () => {
-    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const fn = dashSrc.slice(dashSrc.indexOf('async function handleWorkItemsCreate'),
-                              dashSrc.indexOf('async function handleWorkItemsUpdate'));
-    // body.agent → item.agent (singular hard pin)
-    assert.ok(/if \(body\.agent\)\s*item\.agent\s*=/.test(fn),
-      'singular body.agent should map to item.agent (hard pin)');
-    // Single-element body.agents array → item.agent (also hard pin), unless fan-out
-    assert.ok(/_agentsArr\.length === 1/.test(fn),
-      'single-element agents array should be promoted to a hard-pin agent');
-    assert.ok(/scope !== 'fan-out'/.test(fn),
-      'fan-out scope must NOT be hard-pinned (multi-agent intentional)');
-    // Multi-agent arrays still stored as item.agents (hint list)
-    assert.ok(/item\.agents = _agentsArr/.test(fn),
-      'multi-agent arrays should still flow into item.agents for resolveAgent hints / fan-out');
+  await test('agent assignment normalizer hard-pins a single explicit agent so routing is skipped', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const match = dashboardSrc.match(/function _normalizeAgentAssignmentInput[\s\S]*?^}/m);
+    assert.ok(match, 'dashboard.js should define _normalizeAgentAssignmentInput');
+    const normalizeAgentAssignmentInput = new Function(`${match[0]}\nreturn _normalizeAgentAssignmentInput;`)();
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agent: 'dallas', agents: ['ralph'] }),
+      { pinnedAgent: 'dallas', agents: ['ralph'] },
+      'singular agent should map to a hard pin and preserve plural hints'
+    );
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agents: ['ralph'] }),
+      { pinnedAgent: 'ralph', agents: ['ralph'] },
+      'single-element agents array should be promoted to a hard pin'
+    );
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agents: ['ralph'] }, { hardPinSingleAgents: false }),
+      { pinnedAgent: null, agents: ['ralph'] },
+      'fan-out scope must be able to preserve agents without a hard pin'
+    );
+    assert.deepStrictEqual(
+      normalizeAgentAssignmentInput({ agents: ['dallas', 'ralph'] }),
+      { pinnedAgent: null, agents: ['dallas', 'ralph'] },
+      'multi-agent arrays should remain hints for resolveAgent/fan-out'
+    );
   });
 
   await test('CC dispatch client forwards both singular and plural agent fields', () => {
