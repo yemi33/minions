@@ -641,72 +641,35 @@ function gitEnv() {
   return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
 }
 
-// ── Claude Output Parsing ───────────────────────────────────────────────────
+// ── Stream-JSON Output Parsing (runtime-aware delegator) ────────────────────
 
 /**
- * Parse stream-json output from claude CLI. Returns { text, usage }.
- * Single source of truth — used by llm.js, consolidation.js, and lifecycle.js.
+ * Parse stream-json output from a CLI runtime. Returns { text, usage, sessionId, model }.
+ *
+ * As of P-7e3a8b1c this is a thin delegator over the runtime adapter registry —
+ * the actual parsing logic lives in `engine/runtimes/<name>.parseOutput()`.
+ * Kept on `shared` for backward compat with all existing callers (llm.js,
+ * consolidation.js, lifecycle.js, meeting.js, timeout.js).
+ *
+ * Signatures supported:
+ *   parseStreamJsonOutput(raw)
+ *   parseStreamJsonOutput(raw, optsObj)         ← legacy form (engine/llm.js still uses this)
+ *   parseStreamJsonOutput(raw, runtimeName)
+ *   parseStreamJsonOutput(raw, runtimeName, optsObj)
+ *
+ * `runtimeName` defaults to `'claude'`. Unknown runtime names throw via the
+ * registry — surfaces misconfiguration immediately at the parse site.
  */
-function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
-  let text = '';
-  let usage = null;
-  let sessionId = null;
-  let model = null;
-
-  function extractResult(obj) {
-    if (obj.type !== 'result') return false;
-    // Slice from the tail, not the head — review VERDICTs, structured completion
-    // blocks, PR URLs, and agent conclusions all appear at the END of the output.
-    // Head-slicing truncated VERDICTs and caused review work items to be
-    // re-dispatched up to maxRetries times despite successful completion (#1234).
-    if (obj.result) text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
-    if (obj.session_id) sessionId = obj.session_id;
-    if (obj.total_cost_usd || obj.usage) {
-      usage = {
-        costUsd: obj.total_cost_usd || 0,
-        inputTokens: obj.usage?.input_tokens || 0,
-        outputTokens: obj.usage?.output_tokens || 0,
-        cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
-        cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
-        durationMs: obj.duration_ms || 0,
-        numTurns: obj.num_turns || 0,
-      };
-    }
-    return true;
+function parseStreamJsonOutput(raw, runtimeName, opts) {
+  // Backward-compat: callers passing `(raw, optsObject)` — second arg is opts, not name
+  if (runtimeName != null && typeof runtimeName === 'object') {
+    opts = runtimeName;
+    runtimeName = undefined;
   }
-
-  const lines = raw.split('\n');
-  // Scan forward for model from init message (appears early in output)
-  for (let i = 0; i < Math.min(lines.length, 10); i++) {
-    const line = lines[i].trim();
-    if (!line || !line.startsWith('{')) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'system' && obj.subtype === 'init' && obj.model) { model = obj.model; break; }
-    } catch {}
-  }
-  // Scan backward for result (appears at end of output)
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    // Handle JSON array format (--output-format json)
-    if (line.startsWith('[')) {
-      try {
-        const arr = JSON.parse(line);
-        for (let j = arr.length - 1; j >= 0; j--) {
-          if (extractResult(arr[j])) break;
-        }
-        if (text || usage) break;
-      } catch {}
-    }
-    // Handle newline-delimited format (--output-format stream-json)
-    if (line.startsWith('{')) {
-      try {
-        if (extractResult(JSON.parse(line))) break;
-      } catch {}
-    }
-  }
-  return { text, usage, sessionId, model };
+  // Lazy require to avoid a circular dep at module init (runtimes/claude.js
+  // doesn't import shared, but downstream adapters might).
+  const { resolveRuntime } = require('./runtimes');
+  return resolveRuntime(runtimeName).parseOutput(raw, opts || {});
 }
 
 // ── Knowledge Base ──────────────────────────────────────────────────────────

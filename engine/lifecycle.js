@@ -1482,8 +1482,8 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
 
 // ─── Agent Output Parsing ────────────────────────────────────────────────────
 
-function parseAgentOutput(stdout) {
-  const { text, usage, sessionId, model } = shared.parseStreamJsonOutput(stdout, { maxTextLength: 2000 });
+function parseAgentOutput(stdout, runtimeName) {
+  const { text, usage, sessionId, model } = shared.parseStreamJsonOutput(stdout, runtimeName, { maxTextLength: 2000 });
   return { resultSummary: text, taskUsage: usage, sessionId, model };
 }
 
@@ -1493,14 +1493,14 @@ function parseAgentOutput(stdout) {
  * Returns parsed object or null if not found / malformed.
  * If multiple blocks exist, the last one wins (agent may retry).
  */
-function parseStructuredCompletion(stdout) {
+function parseStructuredCompletion(stdout, runtimeName) {
   if (!stdout || typeof stdout !== 'string') return null;
 
   // Extract text from stream-json output if needed
   let text = stdout;
   if (stdout.includes('"type":')) {
     try {
-      const parsed = shared.parseStreamJsonOutput(stdout);
+      const parsed = shared.parseStreamJsonOutput(stdout, runtimeName);
       if (parsed.text) text = parsed.text;
     } catch {}
   }
@@ -1534,13 +1534,13 @@ function parseStructuredCompletion(stdout) {
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
  */
-function handleDecompositionResult(stdout, meta, config) {
+function handleDecompositionResult(stdout, meta, config, runtimeName) {
 
   const parentId = meta?.item?.id;
   if (!parentId) return 0;
 
   // Parse sub-items JSON from agent output
-  const { text } = shared.parseStreamJsonOutput(stdout);
+  const { text } = shared.parseStreamJsonOutput(stdout, runtimeName);
   const jsonMatch = text.match(/```json\s*\n([\s\S]*?)```/);
   if (!jsonMatch) {
     log('warn', `Decomposition for ${parentId}: no JSON block found in output`);
@@ -1626,10 +1626,15 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const meta = dispatchItem.meta;
   const isSuccess = code === 0;
   const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
-  const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
+  // Runtime name comes from the dispatch entry (set when the agent was spawned).
+  // Defaults to 'claude' when missing — preserves behavior for existing dispatches
+  // and for the foundation-only state of this plan item; downstream items
+  // (P-2a6d9c4f, P-9c4f2d6a) populate dispatchItem.meta.runtimeName at spawn time.
+  const runtimeName = dispatchItem.meta?.runtimeName || dispatchItem.runtimeName || 'claude';
+  const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout, runtimeName);
 
   // Try structured completion protocol first (```completion block from agent output)
-  const structuredCompletion = parseStructuredCompletion(stdout);
+  const structuredCompletion = parseStructuredCompletion(stdout, runtimeName);
   if (structuredCompletion) {
     log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}`);
   }
@@ -1667,7 +1672,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;
   if (type === WORK_TYPE.DECOMPOSE && effectiveSuccess && meta?.item?.id) {
-    const subCount = handleDecompositionResult(stdout, meta, config);
+    const subCount = handleDecompositionResult(stdout, meta, config, runtimeName);
     if (subCount > 0) skipDoneStatus = true; // parent already marked 'decomposed' by handler
     // If decomposition produced nothing, fall through to mark parent as done
   }

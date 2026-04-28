@@ -870,7 +870,472 @@ async function testParseStreamJsonOutput() {
     const { text } = shared.parseStreamJsonOutput(lines.join('\n'));
     assert.strictEqual(text, 'final answer');
   });
+
+  // ── Delegator behavior (P-7e3a8b1c) ─────────────────────────────────────────
+
+  await test('parseStreamJsonOutput defaults to claude runtime when no name passed', () => {
+    const raw = '{"type":"result","result":"hi"}';
+    const { text } = shared.parseStreamJsonOutput(raw);
+    assert.strictEqual(text, 'hi');
+  });
+
+  await test('parseStreamJsonOutput accepts runtimeName as 2nd arg', () => {
+    const raw = '{"type":"result","result":"hi"}';
+    const { text } = shared.parseStreamJsonOutput(raw, 'claude');
+    assert.strictEqual(text, 'hi');
+  });
+
+  await test('parseStreamJsonOutput accepts runtimeName + opts (3-arg form)', () => {
+    const raw = '{"type":"result","result":"' + 'x'.repeat(1000) + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, 'claude', { maxTextLength: 25 });
+    assert.strictEqual(text.length, 25);
+  });
+
+  await test('parseStreamJsonOutput backward-compat: opts object as 2nd arg still honored (llm.js callers)', () => {
+    // engine/llm.js:209 still passes an options object as 2nd arg — must keep working
+    const raw = '{"type":"result","result":"' + 'x'.repeat(1000) + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 50 });
+    assert.strictEqual(text.length, 50);
+  });
+
+  await test('parseStreamJsonOutput throws clear error for unknown runtime', () => {
+    let thrown = null;
+    try { shared.parseStreamJsonOutput('{}', 'no-such-runtime'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected unknown runtime to throw');
+    assert.ok(/Unknown runtime/.test(thrown.message), `error message should mention unknown runtime, got: ${thrown.message}`);
+    assert.ok(/claude/.test(thrown.message), 'error message should list registered runtime names');
+  });
 }
+
+async function testRuntimeAdapters() {
+  console.log('\n── engine/runtimes — Registry & Claude Adapter ──');
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { resolveRuntime, listRuntimes, registerRuntime } = require(runtimesPath);
+  const claude = require(path.join(runtimesPath, 'claude'));
+
+  // ── Registry ──────────────────────────────────────────────────────────────
+
+  await test('resolveRuntime("claude") returns the claude adapter', () => {
+    const r = resolveRuntime('claude');
+    assert.strictEqual(r, claude);
+    assert.strictEqual(r.name, 'claude');
+  });
+
+  await test('resolveRuntime(null) defaults to claude', () => {
+    assert.strictEqual(resolveRuntime(null).name, 'claude');
+  });
+
+  await test('resolveRuntime(undefined) defaults to claude', () => {
+    assert.strictEqual(resolveRuntime(undefined).name, 'claude');
+  });
+
+  await test('resolveRuntime() defaults to claude', () => {
+    assert.strictEqual(resolveRuntime().name, 'claude');
+  });
+
+  await test('resolveRuntime throws for unknown name; message lists registered names', () => {
+    let thrown = null;
+    try { resolveRuntime('totally-fake-cli'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw');
+    assert.ok(/Unknown runtime "totally-fake-cli"/.test(thrown.message), `unexpected message: ${thrown.message}`);
+    assert.ok(/Registered runtimes:/.test(thrown.message), 'error must list registered runtimes');
+    assert.ok(/claude/.test(thrown.message), 'error must include "claude" in registered list');
+  });
+
+  await test('listRuntimes returns sorted names array including claude', () => {
+    const names = listRuntimes();
+    assert.ok(Array.isArray(names));
+    assert.ok(names.includes('claude'));
+    const sorted = [...names].sort();
+    assert.deepStrictEqual(names, sorted, 'listRuntimes must return sorted output');
+  });
+
+  await test('registerRuntime adds a new adapter; resolveRuntime finds it', () => {
+    const fake = { name: 'fake-test-rt', capabilities: {}, buildArgs: () => [] };
+    registerRuntime('fake-test-rt', fake);
+    try {
+      assert.strictEqual(resolveRuntime('fake-test-rt'), fake);
+      assert.ok(listRuntimes().includes('fake-test-rt'));
+    } finally {
+      // Clean up registry side-effect — exposed _registry for this purpose
+      const { _registry } = require(runtimesPath);
+      _registry.delete('fake-test-rt');
+    }
+  });
+
+  await test('registerRuntime rejects empty / non-string name', () => {
+    assert.throws(() => registerRuntime('', {}), /name must be a non-empty string/);
+    assert.throws(() => registerRuntime(null, {}), /name must be a non-empty string/);
+    assert.throws(() => registerRuntime(123, {}), /name must be a non-empty string/);
+  });
+
+  await test('registerRuntime rejects null / non-object adapter', () => {
+    assert.throws(() => registerRuntime('x', null), /adapter must be an object/);
+    assert.throws(() => registerRuntime('x', 'not-an-object'), /adapter must be an object/);
+  });
+
+  // ── Adapter contract surface (AC #2) ──────────────────────────────────────
+
+  await test('claude adapter exports the full contract surface', () => {
+    const required = [
+      'name', 'capabilities', 'resolveBinary', 'capsFile',
+      'listModels', 'modelsCache', 'spawnScript',
+      'buildArgs', 'buildPrompt', 'resolveModel',
+      'parseOutput', 'parseStreamChunk', 'parseError',
+    ];
+    for (const k of required) {
+      assert.ok(k in claude, `claude adapter missing required field: ${k}`);
+    }
+    assert.strictEqual(typeof claude.resolveBinary, 'function');
+    assert.strictEqual(typeof claude.listModels, 'function');
+    assert.strictEqual(typeof claude.buildArgs, 'function');
+    assert.strictEqual(typeof claude.buildPrompt, 'function');
+    assert.strictEqual(typeof claude.resolveModel, 'function');
+    assert.strictEqual(typeof claude.parseOutput, 'function');
+    assert.strictEqual(typeof claude.parseStreamChunk, 'function');
+    assert.strictEqual(typeof claude.parseError, 'function');
+    assert.strictEqual(typeof claude.capsFile, 'string');
+    assert.strictEqual(typeof claude.modelsCache, 'string');
+    assert.strictEqual(typeof claude.spawnScript, 'string');
+  });
+
+  // ── Capabilities (AC #3) ──────────────────────────────────────────────────
+
+  await test('claude.capabilities matches AC: streaming family flags', () => {
+    const c = claude.capabilities;
+    assert.strictEqual(c.streaming, true);
+    assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.systemPromptFile, true);
+    assert.strictEqual(c.effortLevels, true);
+    assert.strictEqual(c.costTracking, true);
+    assert.strictEqual(c.modelShorthands, true);
+    assert.strictEqual(c.budgetCap, true);
+    assert.strictEqual(c.bareMode, true);
+    assert.strictEqual(c.fallbackModel, true);
+    assert.strictEqual(c.sessionPersistenceControl, true);
+    assert.strictEqual(c.modelDiscovery, false);
+    assert.strictEqual(c.promptViaArg, false);
+  });
+
+  // ── buildArgs (AC #4) ─────────────────────────────────────────────────────
+
+  await test('claude.buildArgs emits --dangerously-skip-permissions (NOT --permission-mode bypassPermissions)', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxTurns: 10 });
+    assert.ok(args.includes('--dangerously-skip-permissions'),
+      `expected --dangerously-skip-permissions in: ${args.join(' ')}`);
+    assert.ok(!args.includes('--permission-mode'),
+      'must not emit legacy --permission-mode flag');
+    assert.ok(!args.includes('bypassPermissions'),
+      'must not emit legacy bypassPermissions value');
+  });
+
+  await test('claude.buildArgs baseline emits -p, --output-format stream-json, --max-turns, --model, --verbose', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxTurns: 10 });
+    assert.strictEqual(args[0], '-p', 'first arg must be -p');
+    const ofIdx = args.indexOf('--output-format');
+    assert.ok(ofIdx >= 0 && args[ofIdx + 1] === 'stream-json');
+    const mtIdx = args.indexOf('--max-turns');
+    assert.ok(mtIdx >= 0 && args[mtIdx + 1] === '10');
+    const mIdx = args.indexOf('--model');
+    assert.ok(mIdx >= 0 && args[mIdx + 1] === 'sonnet');
+    assert.ok(args.includes('--verbose'));
+  });
+
+  await test('claude.buildArgs conditional flags absent when opts are unset', () => {
+    const args = claude.buildArgs({ model: 'sonnet' });
+    assert.ok(!args.includes('--max-budget-usd'), 'no budget flag when maxBudget unset');
+    assert.ok(!args.includes('--bare'), 'no --bare when bare unset');
+    assert.ok(!args.includes('--fallback-model'), 'no --fallback-model when unset');
+    assert.ok(!args.includes('--resume'), 'no --resume when sessionId unset');
+    assert.ok(!args.includes('--effort'), 'no --effort when unset');
+    assert.ok(!args.includes('--allowedTools'), 'no --allowedTools when unset');
+    assert.ok(!args.includes('--system-prompt-file'), 'no --system-prompt-file when unset');
+  });
+
+  await test('claude.buildArgs emits --max-budget-usd N when maxBudget set', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxBudget: 5 });
+    const i = args.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && args[i + 1] === '5', `expected --max-budget-usd 5: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs honors maxBudget=0 (valid budget cap)', () => {
+    // null-vs-zero matters: 0 must be a valid budget, distinct from undefined
+    const args = claude.buildArgs({ model: 'sonnet', maxBudget: 0 });
+    const i = args.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && args[i + 1] === '0', `0 must be honored: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs emits --bare only when bare === true', () => {
+    assert.ok(claude.buildArgs({ bare: true }).includes('--bare'));
+    assert.ok(!claude.buildArgs({ bare: false }).includes('--bare'));
+    assert.ok(!claude.buildArgs({ bare: 'truthy-string' }).includes('--bare'),
+      'bare gating is strict-true to avoid surprise opt-in');
+    assert.ok(!claude.buildArgs({}).includes('--bare'));
+  });
+
+  await test('claude.buildArgs emits --fallback-model M when fallbackModel set', () => {
+    const args = claude.buildArgs({ fallbackModel: 'haiku' });
+    const i = args.indexOf('--fallback-model');
+    assert.ok(i >= 0 && args[i + 1] === 'haiku');
+  });
+
+  await test('claude.buildArgs emits --resume <id> when sessionId set', () => {
+    const args = claude.buildArgs({ sessionId: 'sess-abc' });
+    const i = args.indexOf('--resume');
+    assert.ok(i >= 0 && args[i + 1] === 'sess-abc');
+  });
+
+  await test('claude.buildArgs emits --effort <level> when effort set', () => {
+    const args = claude.buildArgs({ effort: 'low' });
+    const i = args.indexOf('--effort');
+    assert.ok(i >= 0 && args[i + 1] === 'low');
+  });
+
+  await test('claude.buildArgs emits --allowedTools <list> when allowedTools set', () => {
+    const args = claude.buildArgs({ allowedTools: 'Read,Edit' });
+    const i = args.indexOf('--allowedTools');
+    assert.ok(i >= 0 && args[i + 1] === 'Read,Edit');
+  });
+
+  await test('claude.buildArgs emits --system-prompt-file <path> when sysPromptFile set', () => {
+    const args = claude.buildArgs({ sysPromptFile: '/tmp/sys.md' });
+    const i = args.indexOf('--system-prompt-file');
+    assert.ok(i >= 0 && args[i + 1] === '/tmp/sys.md');
+  });
+
+  await test('claude.buildArgs ignores Copilot-only opts (stream/disableBuiltinMcps/suppressAgentsMd/reasoningSummaries)', () => {
+    // Adapters MUST tolerate the full unified opts bag without crashing or emitting unknown flags
+    const args = claude.buildArgs({
+      model: 'sonnet',
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.ok(!args.some(a => /^--stream$|^--disable-builtin-mcps$|^--no-custom-instructions$|^--enable-reasoning-summaries$/.test(a)),
+      `Copilot-only flags leaked into Claude args: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs verbose=false suppresses --verbose', () => {
+    const args = claude.buildArgs({ model: 'sonnet', verbose: false });
+    assert.ok(!args.includes('--verbose'));
+  });
+
+  await test('claude.buildArgs custom outputFormat is honored', () => {
+    const args = claude.buildArgs({ outputFormat: 'json' });
+    const i = args.indexOf('--output-format');
+    assert.ok(i >= 0 && args[i + 1] === 'json');
+  });
+
+  // ── resolveModel (AC #2 + shorthand expansion) ────────────────────────────
+
+  await test('claude.resolveModel(undefined) returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(undefined), undefined);
+  });
+
+  await test('claude.resolveModel(null) returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(null), undefined);
+  });
+
+  await test('claude.resolveModel("") returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(''), undefined);
+  });
+
+  await test('claude.resolveModel passes shorthand verbatim — Claude CLI expands it', () => {
+    assert.strictEqual(claude.resolveModel('sonnet'), 'sonnet');
+    assert.strictEqual(claude.resolveModel('opus'), 'opus');
+    assert.strictEqual(claude.resolveModel('haiku'), 'haiku');
+  });
+
+  await test('claude.resolveModel passes full model id verbatim', () => {
+    assert.strictEqual(claude.resolveModel('claude-sonnet-4-5'), 'claude-sonnet-4-5');
+    assert.strictEqual(claude.resolveModel('claude-opus-4-1-20250101'), 'claude-opus-4-1-20250101');
+  });
+
+  // ── listModels (AC #6) ────────────────────────────────────────────────────
+
+  await test('claude.listModels returns null (no Claude enumeration mechanism)', () => {
+    assert.strictEqual(claude.listModels(), null);
+  });
+
+  // ── buildPrompt ───────────────────────────────────────────────────────────
+
+  await test('claude.buildPrompt is passthrough — sysPrompt delivered separately', () => {
+    assert.strictEqual(claude.buildPrompt('hello'), 'hello');
+    assert.strictEqual(claude.buildPrompt('hello', 'system context'), 'hello');
+    assert.strictEqual(claude.buildPrompt(null), '');
+    assert.strictEqual(claude.buildPrompt(undefined), '');
+  });
+
+  // ── parseStreamChunk ──────────────────────────────────────────────────────
+
+  await test('claude.parseStreamChunk parses single JSONL line', () => {
+    const obj = claude.parseStreamChunk('{"type":"result","result":"hi"}');
+    assert.deepStrictEqual(obj, { type: 'result', result: 'hi' });
+  });
+
+  await test('claude.parseStreamChunk returns null for empty / whitespace / non-JSON / null', () => {
+    assert.strictEqual(claude.parseStreamChunk(''), null);
+    assert.strictEqual(claude.parseStreamChunk('   '), null);
+    assert.strictEqual(claude.parseStreamChunk('not json at all'), null);
+    assert.strictEqual(claude.parseStreamChunk(null), null);
+    assert.strictEqual(claude.parseStreamChunk(undefined), null);
+  });
+
+  await test('claude.parseStreamChunk returns null for malformed JSON (does not throw)', () => {
+    // An unterminated object — used to truncate when the stream is mid-line
+    assert.strictEqual(claude.parseStreamChunk('{"type":"result","result":'), null);
+  });
+
+  // ── parseError (AC #7) ────────────────────────────────────────────────────
+
+  await test('claude.parseError empty input → benign default { code: null, retriable: true }', () => {
+    const r = claude.parseError('');
+    assert.deepStrictEqual(r, { message: '', code: null, retriable: true });
+    const r2 = claude.parseError(null);
+    assert.strictEqual(r2.code, null);
+  });
+
+  await test('claude.parseError detects auth-failure (non-retriable)', () => {
+    const cases = [
+      'Invalid API key. Please log in to claude.ai/login',
+      'authentication failed',
+      'Unauthorized',
+      'HTTP 403 forbidden',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure, got ${r.code}`);
+      assert.strictEqual(r.retriable, false);
+      assert.ok(r.message.length > 0);
+    }
+  });
+
+  await test('claude.parseError detects context-limit (non-retriable)', () => {
+    const cases = [
+      'prompt is too long',
+      'context window exceeded',
+      'token limit reached',
+      'conversation too long',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'context-limit', `case "${c}" should map to context-limit, got ${r.code}`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('claude.parseError detects budget-exceeded (non-retriable)', () => {
+    const r = claude.parseError('budget exceeded: cost limit reached');
+    assert.strictEqual(r.code, 'budget-exceeded');
+    assert.strictEqual(r.retriable, false);
+  });
+
+  await test('claude.parseError detects crash (retriable)', () => {
+    const cases = [
+      'internal error',
+      'segmentation fault',
+      'panic: out of memory',
+      'fatal: claude exited',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'crash', `case "${c}" should map to crash, got ${r.code}`);
+      assert.strictEqual(r.retriable, true);
+    }
+  });
+
+  await test('claude.parseError unknown patterns → benign retriable default', () => {
+    const r = claude.parseError('something benign happened');
+    assert.strictEqual(r.code, null);
+    assert.strictEqual(r.retriable, true);
+  });
+
+  // ── parseOutput regression parity with shared.parseStreamJsonOutput ───────
+
+  await test('claude.parseOutput extracts text/sessionId/model from full stream', () => {
+    const raw = [
+      '{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}',
+      '{"type":"assistant","message":"thinking..."}',
+      '{"type":"result","result":"final answer","session_id":"sess-xyz","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5},"duration_ms":1000,"num_turns":1}',
+    ].join('\n');
+    const r = claude.parseOutput(raw);
+    assert.strictEqual(r.text, 'final answer');
+    assert.strictEqual(r.sessionId, 'sess-xyz');
+    assert.strictEqual(r.model, 'claude-sonnet-4-5');
+    assert.strictEqual(r.usage.costUsd, 0.01);
+    assert.strictEqual(r.usage.inputTokens, 10);
+    assert.strictEqual(r.usage.outputTokens, 5);
+  });
+
+  await test('claude.parseOutput tail-slices when maxTextLength set (#1234 regression)', () => {
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"result","result":"' + body + '"}';
+    const r = claude.parseOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(r.text.length, 500);
+    assert.ok(r.text.includes('VERDICT: APPROVE'));
+    assert.ok(!r.text.startsWith('PREAMBLE_'));
+  });
+
+  await test('claude.parseOutput handles empty/null input defensively', () => {
+    assert.deepStrictEqual(claude.parseOutput(''), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(claude.parseOutput(null), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(claude.parseOutput(undefined), { text: '', usage: null, sessionId: null, model: null });
+  });
+
+  // ── resolveBinary (AC #5: shape + config.claude.binary backward-compat) ───
+
+  await test('claude.resolveBinary honors config.claude.binary override (existing path)', () => {
+    // Use any existing file as a stand-in binary path — adapter trusts the override
+    // when the path exists on disk, returning { bin, native, leadingArgs: [] }.
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '#!/bin/sh\necho fake\n');
+    const result = claude.resolveBinary({
+      env: process.env,
+      config: { claude: { binary: fakeBin } },
+    });
+    assert.ok(result, 'expected non-null result for valid override path');
+    assert.strictEqual(result.bin, fakeBin);
+    assert.deepStrictEqual(result.leadingArgs, [], 'leadingArgs must be [] for Claude');
+    assert.strictEqual(typeof result.native, 'boolean');
+  });
+
+  await test('claude.resolveBinary ignores config.claude.binary === "claude" sentinel (legacy default)', () => {
+    // The legacy default value 'claude' meant "use PATH" — adapter must NOT treat it as an override.
+    // We verify by passing the sentinel together with a non-existent override scenario; the call
+    // should fall through to PATH/cache/npm-global resolution rather than fail because 'claude'
+    // doesn't exist as a literal file at the override branch.
+    const result = claude.resolveBinary({
+      env: process.env,
+      config: { claude: { binary: 'claude' } },
+    });
+    // Not asserting specific value (depends on host); just that it doesn't blow up by treating
+    // the sentinel as a literal path. If it took the override branch, it would have returned
+    // null because 'claude' is unlikely to exist as a literal file at CWD.
+    // The contract: either null (no claude installed) or a resolved object — never throw.
+    if (result !== null) {
+      assert.strictEqual(typeof result.bin, 'string');
+      assert.deepStrictEqual(result.leadingArgs, []);
+    }
+  });
+
+  // ── capsFile / modelsCache / spawnScript paths ────────────────────────────
+
+  await test('claude.capsFile points at engine/claude-caps.json', () => {
+    assert.ok(claude.capsFile.endsWith(path.join('engine', 'claude-caps.json')) || claude.capsFile.endsWith('claude-caps.json'));
+  });
+
+  await test('claude.modelsCache points at engine/claude-models.json', () => {
+    assert.ok(claude.modelsCache.endsWith('claude-models.json'));
+  });
+
+  await test('claude.spawnScript points at engine/spawn-agent.js', () => {
+    assert.ok(claude.spawnScript.endsWith('spawn-agent.js'));
+  });
+}
+
+function isWinPlatform() { return process.platform === 'win32'; }
 
 async function testClassifyInboxItem() {
   console.log('\n── shared.js — Knowledge Base Classification ──');
@@ -16632,6 +17097,7 @@ async function main() {
     await testValidateProjectName();
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
+    await testRuntimeAdapters();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
@@ -25989,7 +26455,9 @@ async function testStructuredCompletion() {
 
   await test('runPostCompletionHooks uses parseStructuredCompletion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('parseStructuredCompletion(stdout)'),
+    // Match both legacy `parseStructuredCompletion(stdout)` and the runtime-aware
+    // form `parseStructuredCompletion(stdout, runtimeName)` introduced in P-7e3a8b1c.
+    assert.ok(/parseStructuredCompletion\(stdout[,)]/.test(src),
       'runPostCompletionHooks should call parseStructuredCompletion');
     assert.ok(src.includes('structuredCompletion'),
       'runPostCompletionHooks should use structuredCompletion variable');
