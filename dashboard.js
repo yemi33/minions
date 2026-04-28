@@ -548,7 +548,6 @@ const ccLiveStreams = new Map(); // tabId → buffered live stream state for rec
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
-const DOC_CHAT_TIMEOUT_MS = 360000; // allow longer doc-chat turns before timing out server-side
 const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
 // Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
