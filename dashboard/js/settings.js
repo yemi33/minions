@@ -1,6 +1,25 @@
 // settings.js — Settings panel functions extracted from dashboard.html
 
 let _settingsData = null;
+// Async runtime/model discovery can resolve out of order when the operator
+// flips between runtimes quickly. Without a per-target token, a slower Copilot
+// response can repaint the Claude model field after the runtime already
+// changed, which then leaks a stale cross-runtime model into saveSettings().
+const _modelLoadEpochs = {
+  runtime: Object.create(null),
+  agent: Object.create(null),
+};
+
+function _nextModelLoadToken(scope, key) {
+  const bucket = _modelLoadEpochs[scope];
+  const next = (bucket[key] || 0) + 1;
+  bucket[key] = next;
+  return next;
+}
+
+function _isCurrentModelLoad(scope, key, token) {
+  return _modelLoadEpochs[scope][key] === token;
+}
 
 async function openSettings() {
   document.getElementById('modal-title').textContent = 'Settings';
@@ -20,11 +39,26 @@ async function openSettings() {
   const agents = data.agents || {};
   const t = data.teams || {};
 
+  // Per-agent override placeholders surface the inherited fleet defaults as
+  // muted text — operators see exactly what each agent will resolve to without
+  // chasing config files. Empty input clears the override → re-inherit fleet.
+  const fleetCliLabel = e.defaultCli || 'claude';
+  const fleetModelLabel = e.defaultModel ? String(e.defaultModel) : 'CLI default';
   const agentRows = Object.entries(agents).map(function([id, a]) {
     return '<tr>' +
       '<td style="font-weight:600">' + escHtml(a.emoji || '') + ' ' + escHtml(a.name || id) + '</td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="role" value="' + escHtml(a.role || '') + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="skills" value="' + escHtml((a.skills || []).join(', ')) + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
+      '<td data-runtime-cli="' + escHtml(id) + '" style="min-width:110px">' +
+        // Initial loading placeholder — initRuntimeFleetUI() replaces this with a
+        // <select> populated from /api/runtimes once the registry resolves.
+        '<input value="' + escHtml(a.cli || '') + '" placeholder="' + escHtml(fleetCliLabel) + ' (fleet)" disabled style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:11px">' +
+      '</td>' +
+      '<td data-runtime-model="' + escHtml(id) + '" style="min-width:140px">' +
+        // Loading placeholder — initRuntimeFleetUI() replaces this with a
+        // <select> populated from /api/runtimes/<resolved-cli>/models.
+        '<input value="' + escHtml(a.model || '') + '" placeholder="' + escHtml(fleetModelLabel) + ' (fleet)" disabled style="width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:11px">' +
+      '</td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="monthlyBudgetUsd" value="' + escHtml(a.monthlyBudgetUsd != null ? String(a.monthlyBudgetUsd) : '') + '" placeholder="unlimited" style="width:70px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;text-align:right"></td>' +
     '</tr>';
   }).join('');
@@ -112,27 +146,84 @@ async function openSettings() {
       settingsField('Decompose', 'set-mt-decompose', (e.maxTurnsByType || {}).decompose || '', '', 'Default: 15') +
     '</div>' +
 
-    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Command Center / Doc Chat</h3>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      '<div>' +
-        '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Model</label>' +
-        '<select id="set-ccModel" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
-          '<option value="sonnet"' + ((e.ccModel || 'sonnet') === 'sonnet' ? ' selected' : '') + '>Sonnet (default)</option>' +
-          '<option value="haiku"' + (e.ccModel === 'haiku' ? ' selected' : '') + '>Haiku (faster, cheaper)</option>' +
-          '<option value="opus"' + (e.ccModel === 'opus' ? ' selected' : '') + '>Opus (most capable)</option>' +
-        '</select>' +
-        '<div style="font-size:9px;color:var(--muted);margin-top:1px">Model used for CC and doc-chat conversations</div>' +
+    // ── Runtime (P-7a5c1f8e) — unified fleet runtime + CC overrides + advanced ──
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Runtime</h3>' +
+    '<div id="set-runtime-section" style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px">' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">Single source of truth for which CLI runtime + model the fleet spawns. Per-agent overrides live in the Agents table below.</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">' +
+        '<div>' +
+          '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Default CLI</label>' +
+          '<select id="set-defaultCli" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+            '<option value="">Loading…</option>' +
+          '</select>' +
+          '<div style="font-size:9px;color:var(--muted);margin-top:1px">Fleet-wide runtime — registered adapters from <code>/api/runtimes</code></div>' +
+        '</div>' +
+        '<div>' +
+          '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Default Model</label>' +
+          '<div id="set-defaultModel-wrap"><input id="set-defaultModel" value="' + escHtml(e.defaultModel || '') + '" placeholder="Default (CLI chooses)" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px"></div>' +
+          '<div style="font-size:9px;color:var(--muted);margin-top:1px">Empty = let the runtime pick its own default</div>' +
+        '</div>' +
       '</div>' +
-      '<div>' +
-        '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Effort Level</label>' +
-        '<select id="set-ccEffort" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
-          '<option value=""' + (!e.ccEffort ? ' selected' : '') + '>Default</option>' +
-          '<option value="low"' + (e.ccEffort === 'low' ? ' selected' : '') + '>Low (quick responses)</option>' +
-          '<option value="medium"' + (e.ccEffort === 'medium' ? ' selected' : '') + '>Medium</option>' +
-          '<option value="high"' + (e.ccEffort === 'high' ? ' selected' : '') + '>High (thorough)</option>' +
-        '</select>' +
-        '<div style="font-size:9px;color:var(--muted);margin-top:1px">Controls response depth and reasoning effort</div>' +
-      '</div>' +
+      // CC overrides — collapsed by default
+      '<details id="set-cc-overrides-details"' + ((e.ccCli || e.ccModel) ? ' open' : '') + ' style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
+        '<summary style="cursor:pointer;font-size:11px;color:var(--text);user-select:none">Customize CC separately ' +
+          '<span style="font-size:9px;color:var(--muted)">(Command Center + doc-chat use the fleet defaults unless overridden)</span>' +
+        '</summary>' +
+        '<div style="display:grid;grid-template-columns:1fr 2fr 1fr;gap:8px;margin-top:8px">' +
+          '<div>' +
+            '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">CC CLI</label>' +
+            '<select id="set-ccCli" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+              '<option value="">Loading…</option>' +
+            '</select>' +
+            '<div style="font-size:9px;color:var(--muted);margin-top:1px">Empty = inherit Default CLI</div>' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">CC Model</label>' +
+            '<input id="set-ccModel" value="' + escHtml(e.ccModel || '') + '" placeholder="(inherits Default Model)" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+            '<div style="font-size:9px;color:var(--muted);margin-top:1px">Empty = inherit Default Model</div>' +
+          '</div>' +
+          '<div>' +
+            '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Effort</label>' +
+            '<select id="set-ccEffort" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+              '<option value=""' + (!e.ccEffort ? ' selected' : '') + '>Default</option>' +
+              '<option value="low"' + (e.ccEffort === 'low' ? ' selected' : '') + '>Low</option>' +
+              '<option value="medium"' + (e.ccEffort === 'medium' ? ' selected' : '') + '>Medium</option>' +
+              '<option value="high"' + (e.ccEffort === 'high' ? ' selected' : '') + '>High</option>' +
+            '</select>' +
+            '<div style="font-size:9px;color:var(--muted);margin-top:1px">CC reasoning depth</div>' +
+          '</div>' +
+        '</div>' +
+      '</details>' +
+      // Advanced runtime settings — collapsed by default
+      '<details id="set-runtime-advanced-details" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">' +
+        '<summary style="cursor:pointer;font-size:11px;color:var(--text);user-select:none">Advanced runtime settings ' +
+          '<span style="font-size:9px;color:var(--muted)">(per-runtime feature flags)</span>' +
+        '</summary>' +
+        '<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">' +
+          settingsToggle('Claude bare mode', 'set-claudeBareMode', !!e.claudeBareMode, '--bare suppresses CLAUDE.md auto-discovery; pair with explicit ccSystemPrompt or context will be lost') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">' +
+          settingsField('Claude fallback model', 'set-claudeFallbackModel', e.claudeFallbackModel || '', '', 'Used by --fallback-model on rate-limit / overload (Claude only)') +
+          settingsField('Max budget (USD)', 'set-maxBudgetUsd', e.maxBudgetUsd != null ? String(e.maxBudgetUsd) : '', '', 'Fleet ceiling for --max-budget-usd. 0 is a valid cap (read-only / dry-run). Empty = no cap. Claude only.') +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">' +
+          // Tooltip on copilotDisableBuiltinMcps MUST warn about the split-brain risk
+          settingsToggle('Copilot: disable built-in MCPs', 'set-copilotDisableBuiltinMcps', e.copilotDisableBuiltinMcps !== false,
+            '⚠ When OFF, Copilot agents can autonomously create PRs/labels/comments via the github-mcp-server, bypassing pull-requests.json tracking — Minions and Copilot end up with split views of the same PR. Keep ON unless you understand the risk.') +
+          settingsToggle('Copilot: suppress AGENTS.md', 'set-copilotSuppressAgentsMd', e.copilotSuppressAgentsMd !== false, '--no-custom-instructions: stops AGENTS.md auto-load from fighting Minions playbook prompts') +
+          settingsToggle('Copilot: reasoning summaries', 'set-copilotReasoningSummaries', !!e.copilotReasoningSummaries, '--enable-reasoning-summaries (Anthropic-family models only)') +
+          settingsToggle('Disable model discovery', 'set-disableModelDiscovery', !!e.disableModelDiscovery, 'Skip /api/runtimes/<name>/models REST calls fleet-wide. Settings UI falls back to free-text.') +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 3fr;gap:8px;margin-top:8px">' +
+          '<div>' +
+            '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Copilot stream</label>' +
+            '<select id="set-copilotStreamMode" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+              '<option value="on"' + ((e.copilotStreamMode || 'on') === 'on' ? ' selected' : '') + '>on (incremental)</option>' +
+              '<option value="off"' + (e.copilotStreamMode === 'off' ? ' selected' : '') + '>off (batched)</option>' +
+            '</select>' +
+          '</div>' +
+        '</div>' +
+      '</details>' +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Teams Integration</h3>' +
@@ -175,8 +266,9 @@ async function openSettings() {
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
+    '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">CLI / Model placeholders show the fleet default each agent will inherit. Pick a value to pin per-agent; clear to re-inherit.</div>' +
     '<table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11px">' +
-      '<tr style="text-align:left;color:var(--muted)"><th style="padding:4px">Agent</th><th style="padding:4px">Role</th><th style="padding:4px">Skills</th><th style="padding:4px">Budget $/mo</th></tr>' +
+      '<tr style="text-align:left;color:var(--muted)"><th style="padding:4px">Agent</th><th style="padding:4px">Role</th><th style="padding:4px">Skills</th><th style="padding:4px">CLI</th><th style="padding:4px">Model</th><th style="padding:4px">Budget $/mo</th></tr>' +
       agentRows +
     '</table>' +
 
@@ -226,6 +318,183 @@ async function openSettings() {
       warn.style.display = 'none';
     }
   });
+
+  // ── Runtime fleet wiring (P-7a5c1f8e) ──────────────────────────────────────
+  // 1. Load registered runtimes into the defaultCli + ccCli dropdowns.
+  // 2. Load models for the selected defaultCli into the defaultModel input.
+  // 3. On defaultCli change → re-fetch models so the input never shows stale list.
+  // The same pattern wires ccCli → ccModel; ccCli inherits defaultCli when unset.
+  initRuntimeFleetUI(e, agents);
+}
+
+async function initRuntimeFleetUI(engineCfg, agentsCfg) {
+  const cliSelect = document.getElementById('set-defaultCli');
+  const ccCliSelect = document.getElementById('set-ccCli');
+  if (!cliSelect || !ccCliSelect) return;
+
+  // Fetch the registry; render an empty fallback on failure so the rest of the
+  // settings panel still works.
+  let runtimes = [];
+  try {
+    const r = await fetch('/api/runtimes');
+    const d = await r.json();
+    runtimes = Array.isArray(d.runtimes) ? d.runtimes : [];
+  } catch { /* ignore — we'll surface a free-text-only path below */ }
+
+  // Always include 'claude' as a fallback option even if /api/runtimes is empty;
+  // legacy installs without the registry endpoint should still see something pickable.
+  const names = runtimes.length ? runtimes.map(rt => rt.name) : ['claude'];
+  const currentDefault = engineCfg.defaultCli || 'claude';
+  const currentCc = engineCfg.ccCli || '';
+  cliSelect.innerHTML = names.map(n =>
+    '<option value="' + escHtml(n) + '"' + (n === currentDefault ? ' selected' : '') + '>' + escHtml(n) + '</option>'
+  ).join('');
+  ccCliSelect.innerHTML =
+    '<option value=""' + (!currentCc ? ' selected' : '') + '>Inherit Default CLI</option>' +
+    names.map(n =>
+      '<option value="' + escHtml(n) + '"' + (n === currentCc ? ' selected' : '') + '>' + escHtml(n) + '</option>'
+    ).join('');
+
+  // Hydrate per-agent CLI dropdowns now that we know the registered names. The
+  // Agents table renders cells with `data-runtime-cli="<id>"` as a hook.
+  const cliCells = document.querySelectorAll('[data-runtime-cli]');
+  for (const cell of cliCells) {
+    const agentId = cell.getAttribute('data-runtime-cli');
+    const agent = (agentsCfg || {})[agentId] || {};
+    const current = agent.cli || '';
+    cell.innerHTML =
+      '<select data-agent="' + escHtml(agentId) + '" data-field="cli" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px">' +
+        '<option value=""' + (!current ? ' selected' : '') + '>(fleet default)</option>' +
+        names.map(n =>
+          '<option value="' + escHtml(n) + '"' + (n === current ? ' selected' : '') + '>' + escHtml(n) + '</option>'
+        ).join('') +
+      '</select>';
+  }
+  // Hydrate per-agent model dropdowns. The model list is keyed off the
+  // agent's RESOLVED runtime: per-agent override → fleet default. Without
+  // this the input was free-text and a user could (and did) save an agent
+  // with cli=claude + model=<some gpt> — invalid combination that crashed
+  // dispatch. Refreshing on CLI change clears stale model values.
+  const fleetDefaultCli = engineCfg.defaultCli || 'claude';
+  for (const cell of cliCells) {
+    const agentId = cell.getAttribute('data-runtime-cli');
+    const agent = (agentsCfg || {})[agentId] || {};
+    const resolvedCli = agent.cli || fleetDefaultCli;
+    loadModelsForAgent(agentId, resolvedCli, agent.model || '');
+    // CLI dropdown change → refresh that agent's model dropdown to match.
+    const sel = cell.querySelector('select[data-field="cli"]');
+    if (sel) {
+      sel.addEventListener('change', () => {
+        const newCli = sel.value || fleetDefaultCli;
+        loadModelsForAgent(agentId, newCli, ''); // clear value: previous model may not exist for the new runtime
+      });
+    }
+  }
+
+  // Models load for the resolved default + CC CLIs. ccCli falls back to
+  // defaultCli when unset — same rule as resolveCcCli().
+  loadModelsForRuntime(cliSelect.value, 'set-defaultModel', engineCfg.defaultModel || '');
+  loadModelsForRuntime(currentCc || cliSelect.value, 'set-ccModel', engineCfg.ccModel || '');
+
+  // CLI change → re-fetch models. NEVER carry the previous runtime's list over.
+  cliSelect.addEventListener('change', () => {
+    loadModelsForRuntime(cliSelect.value, 'set-defaultModel', '');
+    if (!ccCliSelect.value) {
+      // CC inherits defaultCli — its model list must follow.
+      loadModelsForRuntime(cliSelect.value, 'set-ccModel', '');
+    }
+  });
+  ccCliSelect.addEventListener('change', () => {
+    const target = ccCliSelect.value || cliSelect.value;
+    loadModelsForRuntime(target, 'set-ccModel', '');
+  });
+}
+
+/**
+ * Replace the input/select at `inputId` with a dropdown when the runtime
+ * exposes a model list, or a free-text input when `{ models: null }` (e.g.
+ * Claude or model-discovery disabled). The "Default (CLI chooses)" option is
+ * always present and submits empty string.
+ */
+async function loadModelsForRuntime(runtimeName, inputId, currentValue) {
+  const wrap = document.getElementById(inputId)?.parentElement;
+  if (!wrap) return;
+  const token = _nextModelLoadToken('runtime', inputId);
+  if (!runtimeName) {
+    wrap.innerHTML = '<input id="' + inputId + '" value="' + escHtml(currentValue || '') + '" placeholder="(no runtime selected)" disabled style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:12px">';
+    return;
+  }
+  let payload = { models: null };
+  try {
+    const res = await fetch('/api/runtimes/' + encodeURIComponent(runtimeName) + '/models');
+    if (res.ok) payload = await res.json();
+  } catch { /* fall through to free-text */ }
+
+  if (!_isCurrentModelLoad('runtime', inputId, token)) return;
+  const models = Array.isArray(payload.models) ? payload.models : null;
+  if (!models || models.length === 0) {
+    // Free-text fallback — let the user type anything (custom Anthropic /
+    // OpenAI model IDs, future models, etc.).
+    wrap.innerHTML = '<input id="' + inputId + '" value="' + escHtml(currentValue || '') + '" placeholder="Default (CLI chooses)" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">';
+    return;
+  }
+  // Dropdown. The first option submits empty string → "Default (CLI chooses)".
+  let opts = '<option value=""' + (!currentValue ? ' selected' : '') + '>Default (CLI chooses)</option>';
+  for (const m of models) {
+    const id = m.id || m.name || '';
+    if (!id) continue;
+    const label = m.name && m.name !== id ? (id + ' — ' + m.name) : id;
+    opts += '<option value="' + escHtml(id) + '"' + (id === currentValue ? ' selected' : '') + '>' + escHtml(label) + '</option>';
+  }
+  // If the current value isn't in the model list (custom / older choice),
+  // surface it as a selectable option so the user doesn't lose it on next save.
+  if (currentValue && !models.some(m => (m.id || m.name) === currentValue)) {
+    opts += '<option value="' + escHtml(currentValue) + '" selected>' + escHtml(currentValue) + ' (custom)</option>';
+  }
+  wrap.innerHTML = '<select id="' + inputId + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' + opts + '</select>';
+}
+
+/**
+ * Per-agent model hydrator. Replaces the placeholder input in the cell
+ * `[data-runtime-model="<agentId>"]` with a <select> of valid models for the
+ * given runtime. Output element keeps `data-agent` + `data-field="model"` so
+ * the existing save flow picks it up unchanged. Free-text input fallback
+ * when the runtime returns no model list (Claude / discovery disabled).
+ */
+async function loadModelsForAgent(agentId, runtimeName, currentValue) {
+  const cell = document.querySelector('[data-runtime-model="' + agentId + '"]');
+  if (!cell) return;
+  const baseAttrs = 'data-agent="' + escHtml(agentId) + '" data-field="model"';
+  const baseStyle = 'width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px';
+  const token = _nextModelLoadToken('agent', agentId);
+  if (!runtimeName) {
+    cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="(no runtime)" disabled style="' + baseStyle + ';color:var(--muted)">';
+    return;
+  }
+  let payload = { models: null };
+  try {
+    const res = await fetch('/api/runtimes/' + encodeURIComponent(runtimeName) + '/models');
+    if (res.ok) payload = await res.json();
+  } catch { /* fall through to free-text */ }
+
+  if (!_isCurrentModelLoad('agent', agentId, token)) return;
+  const models = Array.isArray(payload.models) ? payload.models : null;
+  if (!models || models.length === 0) {
+    cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="' + escHtml(runtimeName) + ' default" style="' + baseStyle + '">';
+    return;
+  }
+  let opts = '<option value=""' + (!currentValue ? ' selected' : '') + '>(fleet/default)</option>';
+  for (const m of models) {
+    const id = m.id || m.name || '';
+    if (!id) continue;
+    const label = m.name && m.name !== id ? (id + ' — ' + m.name) : id;
+    opts += '<option value="' + escHtml(id) + '"' + (id === currentValue ? ' selected' : '') + '>' + escHtml(label) + '</option>';
+  }
+  // Preserve unknown saved values so a user-set custom ID survives the next save.
+  if (currentValue && !models.some(m => (m.id || m.name) === currentValue)) {
+    opts += '<option value="' + escHtml(currentValue) + '" selected>' + escHtml(currentValue) + ' (custom — invalid for ' + escHtml(runtimeName) + '?)</option>';
+  }
+  cell.innerHTML = '<select ' + baseAttrs + ' style="' + baseStyle + '">' + opts + '</select>';
 }
 
 function settingsToggle(label, id, checked, hint) {
@@ -284,8 +553,21 @@ async function saveSettings() {
       agentBusyReassignMs: document.getElementById('set-agentBusyReassignMs').value,
       ignoredCommentAuthors: document.getElementById('set-ignoredCommentAuthors').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
-      ccModel: document.getElementById('set-ccModel').value,
+      // Runtime fleet (P-7a5c1f8e). Empty strings are intentional — they signal
+      // "clear this override". The server deletes the key from config.engine.
+      defaultCli: (document.getElementById('set-defaultCli')?.value ?? '').trim(),
+      defaultModel: (document.getElementById('set-defaultModel')?.value ?? '').trim(),
+      ccCli: (document.getElementById('set-ccCli')?.value ?? '').trim(),
+      ccModel: (document.getElementById('set-ccModel')?.value ?? '').trim(),
       ccEffort: document.getElementById('set-ccEffort').value || null,
+      claudeBareMode: !!document.getElementById('set-claudeBareMode')?.checked,
+      claudeFallbackModel: (document.getElementById('set-claudeFallbackModel')?.value ?? '').trim(),
+      copilotDisableBuiltinMcps: !!document.getElementById('set-copilotDisableBuiltinMcps')?.checked,
+      copilotSuppressAgentsMd: !!document.getElementById('set-copilotSuppressAgentsMd')?.checked,
+      copilotStreamMode: document.getElementById('set-copilotStreamMode')?.value || 'on',
+      copilotReasoningSummaries: !!document.getElementById('set-copilotReasoningSummaries')?.checked,
+      maxBudgetUsd: (document.getElementById('set-maxBudgetUsd')?.value ?? '').trim(),
+      disableModelDiscovery: !!document.getElementById('set-disableModelDiscovery')?.checked,
       maxTurnsByType: (function() {
         var mbt = {};
         var types = ['explore', 'ask', 'review', 'implement', 'fix', 'test', 'verify', 'plan', 'decompose'];

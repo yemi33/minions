@@ -641,72 +641,35 @@ function gitEnv() {
   return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
 }
 
-// ── Claude Output Parsing ───────────────────────────────────────────────────
+// ── Stream-JSON Output Parsing (runtime-aware delegator) ────────────────────
 
 /**
- * Parse stream-json output from claude CLI. Returns { text, usage }.
- * Single source of truth — used by llm.js, consolidation.js, and lifecycle.js.
+ * Parse stream-json output from a CLI runtime. Returns { text, usage, sessionId, model }.
+ *
+ * As of P-7e3a8b1c this is a thin delegator over the runtime adapter registry —
+ * the actual parsing logic lives in `engine/runtimes/<name>.parseOutput()`.
+ * Kept on `shared` for backward compat with all existing callers (llm.js,
+ * consolidation.js, lifecycle.js, meeting.js, timeout.js).
+ *
+ * Signatures supported:
+ *   parseStreamJsonOutput(raw)
+ *   parseStreamJsonOutput(raw, optsObj)         ← legacy form (engine/llm.js still uses this)
+ *   parseStreamJsonOutput(raw, runtimeName)
+ *   parseStreamJsonOutput(raw, runtimeName, optsObj)
+ *
+ * `runtimeName` defaults to `'claude'`. Unknown runtime names throw via the
+ * registry — surfaces misconfiguration immediately at the parse site.
  */
-function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
-  let text = '';
-  let usage = null;
-  let sessionId = null;
-  let model = null;
-
-  function extractResult(obj) {
-    if (obj.type !== 'result') return false;
-    // Slice from the tail, not the head — review VERDICTs, structured completion
-    // blocks, PR URLs, and agent conclusions all appear at the END of the output.
-    // Head-slicing truncated VERDICTs and caused review work items to be
-    // re-dispatched up to maxRetries times despite successful completion (#1234).
-    if (obj.result) text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
-    if (obj.session_id) sessionId = obj.session_id;
-    if (obj.total_cost_usd || obj.usage) {
-      usage = {
-        costUsd: obj.total_cost_usd || 0,
-        inputTokens: obj.usage?.input_tokens || 0,
-        outputTokens: obj.usage?.output_tokens || 0,
-        cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
-        cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
-        durationMs: obj.duration_ms || 0,
-        numTurns: obj.num_turns || 0,
-      };
-    }
-    return true;
+function parseStreamJsonOutput(raw, runtimeName, opts) {
+  // Backward-compat: callers passing `(raw, optsObject)` — second arg is opts, not name
+  if (runtimeName != null && typeof runtimeName === 'object') {
+    opts = runtimeName;
+    runtimeName = undefined;
   }
-
-  const lines = raw.split('\n');
-  // Scan forward for model from init message (appears early in output)
-  for (let i = 0; i < Math.min(lines.length, 10); i++) {
-    const line = lines[i].trim();
-    if (!line || !line.startsWith('{')) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'system' && obj.subtype === 'init' && obj.model) { model = obj.model; break; }
-    } catch {}
-  }
-  // Scan backward for result (appears at end of output)
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    // Handle JSON array format (--output-format json)
-    if (line.startsWith('[')) {
-      try {
-        const arr = JSON.parse(line);
-        for (let j = arr.length - 1; j >= 0; j--) {
-          if (extractResult(arr[j])) break;
-        }
-        if (text || usage) break;
-      } catch {}
-    }
-    // Handle newline-delimited format (--output-format stream-json)
-    if (line.startsWith('{')) {
-      try {
-        if (extractResult(JSON.parse(line))) break;
-      } catch {}
-    }
-  }
-  return { text, usage, sessionId, model };
+  // Lazy require to avoid a circular dep at module init (runtimes/claude.js
+  // doesn't import shared, but downstream adapters might).
+  const { resolveRuntime } = require('./runtimes');
+  return resolveRuntime(runtimeName).parseOutput(raw, opts || {});
 }
 
 // ── Knowledge Base ──────────────────────────────────────────────────────────
@@ -776,8 +739,25 @@ const ENGINE_DEFAULTS = {
   prMergeMethod: 'squash', // merge method: squash, merge, rebase
   ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
   agentBusyReassignMs: 600000, // 10min — reassign work item to another agent if preferred agent is busy beyond this threshold
-  ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
+
+  // ── Runtime fleet (P-3b8e5f1d) ──────────────────────────────────────────────
+  // Single source of truth for which CLI runtime + model every spawn uses.
+  // Engine code MUST go through the resolveAgent*/resolveCc* helpers below;
+  // never read these fields directly. New runtimes are added by registering
+  // an adapter in engine/runtimes/index.js — these defaults stay stable.
+  defaultCli: 'claude',          // fleet-wide CLI runtime (must be a key in engine/runtimes/index.js)
+  defaultModel: undefined,       // fleet-wide model; undefined = let the runtime adapter pick its own default
+  ccCli: undefined,              // CC/doc-chat CLI override; undefined = inherit defaultCli (independent of agent path)
+  ccModel: undefined,            // CC/doc-chat model override; undefined = inherit defaultModel
+  claudeBareMode: false,         // Claude --bare: suppress CLAUDE.md auto-discovery (per-agent override: agents.<id>.bareMode)
+  claudeFallbackModel: undefined,// Claude --fallback-model on rate-limit / overload (Claude-only)
+  copilotDisableBuiltinMcps: true,   // Copilot --disable-builtin-mcps: keep github-mcp-server out so it can't bypass pull-requests.json tracking
+  copilotSuppressAgentsMd: true,     // Copilot --no-custom-instructions: stop AGENTS.md auto-load from fighting Minions playbook prompts
+  copilotStreamMode: 'on',           // Copilot --stream <on|off>: 'on' streams assistant.message_delta events live; 'off' batches them
+  copilotReasoningSummaries: false,  // Copilot --enable-reasoning-summaries (Anthropic-family models only)
+  maxBudgetUsd: undefined,       // fleet USD ceiling for --max-budget-usd (per-agent override: agents.<id>.maxBudgetUsd). Honors 0 via ?? so a literal cap of $0 works
+  disableModelDiscovery: false,  // skip runtime.listModels() REST calls fleet-wide (settings UI falls back to free-text)
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
   maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
@@ -797,6 +777,10 @@ const ENGINE_DEFAULTS = {
   maxMeetingHumanNotesBytes: 2 * 1024, // cap human note bullet lists injected into meeting prompts
   maxPipelineMeetingContextBytes: 16 * 1024, // cap aggregated meeting/dependency context for pipeline plan generation
   notesArchiveMaxFiles: 2000, // keep notes/archive bounded during periodic cleanup
+  // Backward-compat: keep `engine.claude.*` field family deprecation tracker. Listed here so preflight
+  // knows which subkeys to flag as deprecated. Do not consume `claude.*` in new code — use the runtime
+  // adapter system (engine/runtimes/) and the resolveAgent*/resolveCc* helpers instead.
+  _deprecatedConfigClaudeFields: ['binary', 'outputFormat', 'allowedTools', 'maxTurns', 'effort', 'budgetCap'],
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
   teams: {
@@ -811,6 +795,254 @@ const ENGINE_DEFAULTS = {
     inboxPollInterval: 15000,
   },
 };
+
+// ─── Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────────────────
+//
+// Six helpers that are the single source of truth for "which CLI runtime + model
+// + budget + bare-mode applies to this spawn?". Engine code MUST go through
+// these — never read `agent.cli`, `engine.defaultCli`, etc. directly. Future
+// agents adding new resolution rules should extend these helpers, not bypass
+// them.
+//
+// Independence rule: the agent path (`resolveAgent*`) and the CC path
+// (`resolveCc*`) do not fall through to each other. CC overrides via
+// `engine.ccCli` / `engine.ccModel` are CC-only. Per-agent overrides via
+// `agents.<id>.cli` / `agents.<id>.model` are agent-only. A user who wants
+// fleet-wide change sets `engine.defaultCli` / `engine.defaultModel`.
+//
+// Empty strings (`''`) are treated as "unset" so the dashboard's "Default
+// (CLI chooses)" option (which submits an empty string) clears the override
+// instead of pinning the runtime to nothing.
+
+function _isMeaningful(v) {
+  return v !== undefined && v !== null && v !== '';
+}
+
+/**
+ * Resolve the CLI runtime for a per-agent spawn. Priority:
+ *   1. `agent.cli`              — per-agent override
+ *   2. `engine.defaultCli`      — fleet default
+ *   3. `ENGINE_DEFAULTS.defaultCli` ('claude') — hardcoded fallback
+ *
+ * Does NOT fall through to `engine.ccCli`. CC and agents are independent paths.
+ */
+function resolveAgentCli(agent, engine) {
+  if (agent && _isMeaningful(agent.cli)) return String(agent.cli);
+  if (engine && _isMeaningful(engine.defaultCli)) return String(engine.defaultCli);
+  return ENGINE_DEFAULTS.defaultCli;
+}
+
+/**
+ * Resolve the CLI runtime for the Command Center / doc-chat. Priority:
+ *   1. `engine.ccCli`           — CC-only override
+ *   2. `engine.defaultCli`      — fleet default
+ *   3. `ENGINE_DEFAULTS.defaultCli` ('claude') — hardcoded fallback
+ *
+ * Does NOT inspect any agent overrides. CC has no notion of "which agent" —
+ * it's a fleet-wide singleton.
+ */
+function resolveCcCli(engine) {
+  if (engine && _isMeaningful(engine.ccCli)) return String(engine.ccCli);
+  if (engine && _isMeaningful(engine.defaultCli)) return String(engine.defaultCli);
+  return ENGINE_DEFAULTS.defaultCli;
+}
+
+/**
+ * Resolve the model for a per-agent spawn. Priority:
+ *   1. `agent.model`            — per-agent override
+ *   2. `engine.defaultModel`    — fleet default
+ *   3. `undefined`              — let the runtime adapter pick its own default
+ *
+ * Returning `undefined` is intentional: it tells the adapter to omit the
+ * `--model` flag entirely so the underlying CLI uses whatever the user has
+ * configured globally (Claude defaults to its own preferred model, Copilot
+ * to the user's `~/.copilot/settings.json` model).
+ */
+function resolveAgentModel(agent, engine) {
+  if (agent && _isMeaningful(agent.model)) return String(agent.model);
+  if (engine && _isMeaningful(engine.defaultModel)) return String(engine.defaultModel);
+  return undefined;
+}
+
+/**
+ * Resolve the model for the Command Center / doc-chat. Priority:
+ *   1. `engine.ccModel`         — CC-only override
+ *   2. `engine.defaultModel`    — fleet default (CC inherits this when ccModel unset)
+ *   3. `undefined`              — let the runtime adapter pick
+ */
+function resolveCcModel(engine) {
+  if (engine && _isMeaningful(engine.ccModel)) return String(engine.ccModel);
+  if (engine && _isMeaningful(engine.defaultModel)) return String(engine.defaultModel);
+  return undefined;
+}
+
+/**
+ * Resolve the per-spawn USD budget cap. Priority:
+ *   1. `agent.maxBudgetUsd`     — per-agent override
+ *   2. `engine.maxBudgetUsd`    — fleet default
+ *   3. `undefined`              — no cap
+ *
+ * Uses nullish coalescing so a literal `0` is honored as a valid cap (for
+ * read-only / dry-run agents) instead of being treated as "no cap" — the
+ * acceptance criteria are explicit about this.
+ */
+function resolveAgentMaxBudget(agent, engine) {
+  const a = agent ? agent.maxBudgetUsd : undefined;
+  if (a !== undefined && a !== null) {
+    const n = typeof a === 'number' ? a : Number(a);
+    if (!Number.isNaN(n)) return n;
+  }
+  const e = engine ? engine.maxBudgetUsd : undefined;
+  if (e !== undefined && e !== null) {
+    const n = typeof e === 'number' ? e : Number(e);
+    if (!Number.isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve whether this agent should run in Claude `--bare` mode. Priority:
+ *   1. `agent.bareMode`           — per-agent override (boolean)
+ *   2. `engine.claudeBareMode`    — fleet default
+ *   3. `false`                    — hardcoded fallback
+ *
+ * Strict undefined/null check (not falsy) so a per-agent `false` correctly
+ * overrides an engine `true`.
+ */
+function resolveAgentBareMode(agent, engine) {
+  const a = agent ? agent.bareMode : undefined;
+  if (a !== undefined && a !== null) return !!a;
+  const e = engine ? engine.claudeBareMode : undefined;
+  if (e !== undefined && e !== null) return !!e;
+  return false;
+}
+
+// ─── Legacy ccModel → defaultModel Migration ─────────────────────────────────
+//
+// Pre-P-3b8e5f1d, `engine.ccModel` was the single fleet-wide model knob (it
+// was also used for agent dispatch via fall-through). The new architecture
+// makes `defaultModel` the fleet knob and demotes `ccModel` to a CC-only
+// override. To avoid breaking installs that have only `ccModel` configured,
+// promote `ccModel` to act as `defaultModel` in memory at startup, log a
+// deprecation notice once, and leave the on-disk config alone (so a future
+// admin edit can decide whether to keep `ccModel` as override or remove it).
+
+let _legacyCcModelMigrationLogged = false;
+
+/**
+ * If `config.engine.ccModel` is set but `config.engine.defaultModel` is unset,
+ * mutate the in-memory `config.engine` so `defaultModel` mirrors `ccModel` and
+ * log a one-time deprecation notice. Does NOT write to disk.
+ *
+ * Returns `true` when the migration was applied (useful for tests).
+ *
+ * The dedup flag is module-scoped so the warning fires once per Node process
+ * even if multiple subsystems independently call this — e.g., engine startup
+ * + a settings-reset path + a hot-reload tick.
+ */
+function applyLegacyCcModelMigration(config, { logger = log } = {}) {
+  if (!config || !config.engine || typeof config.engine !== 'object') return false;
+  const e = config.engine;
+  if (_isMeaningful(e.defaultModel)) return false;
+  if (!_isMeaningful(e.ccModel)) return false;
+  e.defaultModel = e.ccModel;
+  if (!_legacyCcModelMigrationLogged) {
+    _legacyCcModelMigrationLogged = true;
+    try {
+      logger('warn', 'ccModel is now a CC-specific override; set defaultModel to apply fleet-wide');
+    } catch { /* logger may not be wired during tests — best-effort */ }
+  }
+  return true;
+}
+
+/** Test helper: reset the dedup flag so repeated tests can re-trigger the log. */
+function _resetLegacyCcModelMigrationFlag() {
+  _legacyCcModelMigrationLogged = false;
+}
+
+// ─── Runtime Config Preflight Warnings ──────────────────────────────────────
+//
+// Emit non-fatal warnings about runtime/CLI configuration drift. Consumed by
+// engine/preflight.js (which converts the entries to `{ name, ok: 'warn',
+// message }` shape) and surfaced via `minions doctor`.
+//
+// The function is pure: takes the config and the list of registered runtime
+// names, returns warning objects. No FS, no console writes — preflight owns
+// presentation.
+
+/**
+ * Inspect runtime fleet config and return warning entries for misconfiguration.
+ *
+ * Warnings emitted:
+ *   - Unknown CLI: any `cli` value (per-agent, ccCli, defaultCli) not in
+ *     `registeredRuntimes`. Each unknown value produces one entry.
+ *   - Deprecated `config.claude.*` fields: presence of any field in
+ *     `ENGINE_DEFAULTS._deprecatedConfigClaudeFields` under `config.claude`.
+ *   - Bare-mode misconfig: `engine.claudeBareMode === true` paired with
+ *     CC running on the Claude runtime (resolved via `resolveCcCli`) and no
+ *     explicit `engine.ccSystemPrompt` configured. `--bare` strips
+ *     CLAUDE.md auto-discovery, so users should know CC will lose project
+ *     context unless they wire an explicit system prompt.
+ *
+ * Returns: `{ id, message }[]` — `id` is a stable kebab-case identifier so
+ * tests can assert specific warnings without matching message text.
+ */
+function runtimeConfigWarnings(config, registeredRuntimes) {
+  const warnings = [];
+  if (!config || typeof config !== 'object') return warnings;
+  const known = new Set(Array.isArray(registeredRuntimes) ? registeredRuntimes : []);
+  const engine = config.engine || {};
+  const agents = config.agents || {};
+
+  // 1. Unknown CLI values across the fleet.
+  const seen = new Set();
+  const checkCli = (label, value) => {
+    if (!_isMeaningful(value)) return;
+    const key = `${label}:${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (known.size > 0 && !known.has(String(value))) {
+      const knownList = Array.from(known).sort().join(', ');
+      warnings.push({
+        id: 'unknown-cli',
+        message: `Unknown CLI runtime "${value}" (${label}). Registered runtimes: ${knownList}`,
+      });
+    }
+  };
+  checkCli('engine.defaultCli', engine.defaultCli);
+  checkCli('engine.ccCli', engine.ccCli);
+  for (const [agentId, agent] of Object.entries(agents)) {
+    if (agent && typeof agent === 'object') checkCli(`agents.${agentId}.cli`, agent.cli);
+  }
+
+  // 2. Deprecated `config.claude.*` fields.
+  const claude = config.claude;
+  if (claude && typeof claude === 'object') {
+    const deprecatedKeys = ENGINE_DEFAULTS._deprecatedConfigClaudeFields || [];
+    const present = deprecatedKeys.filter(k => Object.prototype.hasOwnProperty.call(claude, k));
+    if (present.length > 0) {
+      warnings.push({
+        id: 'deprecated-config-claude',
+        message: `config.claude.{${present.join(',')}} is deprecated. Use the runtime adapter (engine/runtimes/) and resolveAgent*/resolveCc* helpers instead.`,
+      });
+    }
+  }
+
+  // 3. Bare-mode misconfig: claudeBareMode + Claude as CC runtime + no explicit
+  // CC system prompt. `--bare` suppresses CLAUDE.md auto-discovery; CC will
+  // lose project context unless the user wires an explicit prompt.
+  if (engine.claudeBareMode === true) {
+    const ccCli = resolveCcCli(engine);
+    if (ccCli === 'claude' && !_isMeaningful(engine.ccSystemPrompt)) {
+      warnings.push({
+        id: 'bare-mode-misconfig',
+        message: 'engine.claudeBareMode is true but CC runs on Claude with no engine.ccSystemPrompt — CLAUDE.md auto-discovery is suppressed and CC will lose project context.',
+      });
+    }
+  }
+
+  return warnings;
+}
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
 
@@ -1834,6 +2066,10 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
+  resolveAgentCli, resolveCcCli, resolveAgentModel, resolveCcModel,
+  resolveAgentMaxBudget, resolveAgentBareMode,
+  applyLegacyCcModelMigration, _resetLegacyCcModelMigrationFlag,
+  runtimeConfigWarnings,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
   WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,

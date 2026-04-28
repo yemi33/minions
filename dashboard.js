@@ -474,7 +474,8 @@ function getStatus() {
         decompose: CONFIG.engine?.autoDecompose !== false,
         tempAgents: !!CONFIG.engine?.allowTempAgents,
         inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
-        ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
+        ccCli: shared.resolveCcCli(CONFIG.engine),
+        ccModel: shared.resolveCcModel(CONFIG.engine),
         ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
       },
       initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
@@ -548,9 +549,12 @@ const ccLiveStreams = new Map(); // tabId → buffered live stream state for rec
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
-const DOC_CHAT_TIMEOUT_MS = 360000; // allow longer doc-chat turns before timing out server-side
 const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
+// Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
+// 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
+// edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
+const DOC_CHAT_TIMEOUT_MS = 360000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
@@ -1230,6 +1234,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      engineConfig: CONFIG.engine,
     });
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
@@ -1241,9 +1246,10 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     }
 
     // No text — distinguish "session exists but call failed" (e.g. tool timeout)
-    // from "session is truly dead" (no sessionId returned, or stderr indicates invalid session).
-    const sessionStillValid = llm.isResumeSessionStillValid(result);
-    if (sessionStillValid) {
+    // from "session is truly dead" (no sessionId in the parsed output).
+    // Per P-5e1b7a3c: trust the runtime adapter's parseOutput — if it found a
+    // sessionId the session is alive; if not, treat it as dead and retry fresh.
+    if (result.sessionId !== null) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
@@ -1265,6 +1271,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
@@ -1281,6 +1288,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   await new Promise(r => setTimeout(r, 2000));
   const p3 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
@@ -1311,6 +1319,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      engineConfig: CONFIG.engine,
       onChunk,
       onToolUse,
     });
@@ -1323,8 +1332,10 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
       return result;
     }
 
-    const sessionStillValid = llm.isResumeSessionStillValid(result);
-    if (sessionStillValid) {
+    // Per P-5e1b7a3c: parsedOutput.sessionId !== null means the runtime adapter
+    // successfully captured a session — preserve it for retry. null means the
+    // session is truly dead (or never started); rotate it.
+    if (result.sessionId !== null) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
@@ -1344,6 +1355,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
   });
@@ -1361,6 +1373,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   await new Promise(r => setTimeout(r, 2000));
   const p3 = llm.callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
   });
@@ -1429,6 +1442,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     timeout: DOC_CHAT_TIMEOUT_MS,
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
     maxTurns: canEdit ? 25 : 10,
+    timeout: DOC_CHAT_TIMEOUT_MS,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
     onAbortReady,
@@ -1478,6 +1492,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     timeout: DOC_CHAT_TIMEOUT_MS,
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
     maxTurns: canEdit ? 25 : 10,
+    timeout: DOC_CHAT_TIMEOUT_MS,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
     onAbortReady,
@@ -4525,6 +4540,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
+          engineConfig: CONFIG.engine,
           onChunk: (text) => {
             const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
@@ -4554,6 +4570,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
               allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
               effort: streamEffort, direct: true,
+              engineConfig: CONFIG.engine,
               onChunk: (text) => {
                 const actIdx = findCCActionsDelimiter(text);
                 const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
@@ -4876,10 +4893,102 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         delete config.engine.adoPollCommentsEvery;
         // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        // CC model/effort
+
+        // ── Runtime fleet (P-7a5c1f8e) ─────────────────────────────────────
+        // Empty string clears the override — the dashboard's "Default (CLI
+        // chooses)" option submits '' and we must persist that as "unset".
+        // Validate `defaultCli` and `ccCli` against the runtime registry so a
+        // typo in the dashboard can't pin the fleet to a non-existent runtime.
+        const _isClear = (v) => v === '' || v === null;
+        let _registeredCliNames = null;
+        const _validCli = (name) => {
+          if (_registeredCliNames == null) {
+            try { _registeredCliNames = require('./engine/runtimes').listRuntimes(); }
+            catch { _registeredCliNames = []; }
+          }
+          return _registeredCliNames.length === 0 || _registeredCliNames.includes(String(name));
+        };
+        if (e.defaultCli !== undefined) {
+          if (_isClear(e.defaultCli)) delete config.engine.defaultCli;
+          else if (_validCli(e.defaultCli)) config.engine.defaultCli = String(e.defaultCli);
+          else _clamped.push(`defaultCli: "${e.defaultCli}" not registered (kept previous value)`);
+        }
+        if (e.ccCli !== undefined) {
+          if (_isClear(e.ccCli)) delete config.engine.ccCli;
+          else if (_validCli(e.ccCli)) config.engine.ccCli = String(e.ccCli);
+          else _clamped.push(`ccCli: "${e.ccCli}" not registered (kept previous value)`);
+        }
+        // Validate fleet-level model assignments against the resolved runtime.
+        // This is where the bug bit: defaultCli=copilot + defaultModel=gpt-5.5
+        // (where gpt-5.5 doesn't actually exist) cascaded into every agent
+        // that didn't pin its own model. Reject when the model is known to
+        // belong to a different runtime than the one it'll spawn against.
+        const _engineModelDiscovery = require('./engine/model-discovery');
+        const _engineRuntimes = require('./engine/runtimes');
+        async function _validateFleetModel(modelStr, resolvedRuntime) {
+          if (!modelStr) return null;
+          let knownForResolved = null;
+          try {
+            const list = await _engineModelDiscovery.getRuntimeModels(resolvedRuntime, { config });
+            if (Array.isArray(list?.models) && list.models.length > 0) {
+              knownForResolved = new Set(list.models.map(m => m.id || m.name).filter(Boolean));
+            }
+          } catch { /* unknown runtime */ }
+          if (knownForResolved && !knownForResolved.has(modelStr)) {
+            return `not a valid model for runtime "${resolvedRuntime}" (known: ${[...knownForResolved].slice(0, 4).join(', ')}${knownForResolved.size > 4 ? '…' : ''})`;
+          }
+          if (!knownForResolved) {
+            // Free-text runtime (Claude). Reject only if model belongs to a different runtime's published list.
+            for (const rt of _engineRuntimes.listRuntimes()) {
+              if (rt === resolvedRuntime) continue;
+              try {
+                const otherList = await _engineModelDiscovery.getRuntimeModels(rt, { config });
+                if (Array.isArray(otherList?.models) && otherList.models.some(m => (m.id || m.name) === modelStr)) {
+                  return `belongs to runtime "${rt}" but resolved runtime is "${resolvedRuntime}" — incompatible combination`;
+                }
+              } catch { /* skip */ }
+            }
+          }
+          return null;
+        }
+        if (e.defaultModel !== undefined) {
+          if (_isClear(e.defaultModel)) delete config.engine.defaultModel;
+          else {
+            const candidate = String(e.defaultModel);
+            const resolvedCli = config.engine.defaultCli || 'claude';
+            const rejection = await _validateFleetModel(candidate, resolvedCli);
+            if (rejection) _clamped.push(`engine.defaultModel: "${candidate}" ${rejection} — kept previous value`);
+            else config.engine.defaultModel = candidate;
+          }
+        }
         if (e.ccModel !== undefined) {
-          const valid = ['sonnet', 'haiku', 'opus'];
-          config.engine.ccModel = valid.includes(e.ccModel) ? e.ccModel : D.ccModel;
+          if (_isClear(e.ccModel)) delete config.engine.ccModel;
+          else {
+            const candidate = String(e.ccModel);
+            const resolvedCli = config.engine.ccCli || config.engine.defaultCli || 'claude';
+            const rejection = await _validateFleetModel(candidate, resolvedCli);
+            if (rejection) _clamped.push(`engine.ccModel: "${candidate}" ${rejection} — kept previous value`);
+            else config.engine.ccModel = candidate;
+          }
+        }
+        if (e.claudeFallbackModel !== undefined) {
+          if (_isClear(e.claudeFallbackModel)) delete config.engine.claudeFallbackModel;
+          else config.engine.claudeFallbackModel = String(e.claudeFallbackModel);
+        }
+        if (e.copilotStreamMode !== undefined) {
+          const valid = ['on', 'off'];
+          if (_isClear(e.copilotStreamMode)) delete config.engine.copilotStreamMode;
+          else if (valid.includes(e.copilotStreamMode)) config.engine.copilotStreamMode = e.copilotStreamMode;
+          else _clamped.push(`copilotStreamMode: "${e.copilotStreamMode}" not in [on, off] (kept previous value)`);
+        }
+        // maxBudgetUsd uses ?? semantics — 0 is a valid cap (read-only / dry-run agents).
+        if (e.maxBudgetUsd !== undefined) {
+          if (_isClear(e.maxBudgetUsd)) delete config.engine.maxBudgetUsd;
+          else {
+            const n = Number(e.maxBudgetUsd);
+            if (Number.isFinite(n) && n >= 0) config.engine.maxBudgetUsd = n;
+            else _clamped.push(`maxBudgetUsd: "${e.maxBudgetUsd}" must be ≥ 0 (kept previous value)`);
+          }
         }
         if (e.ccEffort !== undefined) {
           const valid = [null, 'low', 'medium', 'high'];
@@ -4918,6 +5027,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       if (body.agents) {
+        // Cache cross-runtime model lists once per request so we can reject
+        // claude+gpt-* / copilot+claude-* combinations before they crash a
+        // dispatch (see #model-validation: a stray engine.defaultModel='gpt-5.5'
+        // pinned every Claude agent into a 404 spawn loop).
+        const _modelDiscovery = require('./engine/model-discovery');
+        const _runtimeModelsCache = new Map(); // runtimeName → Set<modelId> (or null when unknown / Claude)
+        async function _modelsFor(runtimeName) {
+          if (_runtimeModelsCache.has(runtimeName)) return _runtimeModelsCache.get(runtimeName);
+          let set = null;
+          try {
+            const list = await _modelDiscovery.getRuntimeModels(runtimeName, { config });
+            if (Array.isArray(list?.models) && list.models.length > 0) {
+              set = new Set(list.models.map(m => m.id || m.name).filter(Boolean));
+            }
+          } catch { /* unknown runtime → free-text */ }
+          _runtimeModelsCache.set(runtimeName, set);
+          return set;
+        }
+        // Returns the runtime that "owns" this model, or null if no other
+        // runtime claims it. Catches "claude + gpt-5.5" by spotting that
+        // gpt-5.5 belongs to copilot's list.
+        async function _ownerOfModel(modelId) {
+          for (const rt of require('./engine/runtimes').listRuntimes()) {
+            const set = await _modelsFor(rt);
+            if (set && set.has(modelId)) return rt;
+          }
+          return null;
+        }
         for (const [id, updates] of Object.entries(body.agents)) {
           if (!config.agents[id]) continue;
           if (updates.role !== undefined) config.agents[id].role = String(updates.role);
@@ -4926,6 +5063,54 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
             if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
             else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+          }
+          // Per-agent runtime overrides (P-7a5c1f8e). Empty string clears
+          // the override so the agent inherits the fleet default; validated
+          // CLI values pin the agent to a specific runtime. `0` is a valid
+          // maxBudgetUsd (read-only / dry-run agents).
+          if (updates.cli !== undefined) {
+            if (updates.cli === '' || updates.cli === null) delete config.agents[id].cli;
+            else config.agents[id].cli = String(updates.cli);
+          }
+          if (updates.model !== undefined) {
+            if (updates.model === '' || updates.model === null) delete config.agents[id].model;
+            else {
+              const candidate = String(updates.model);
+              const resolvedCli = config.agents[id].cli || config.engine.defaultCli || 'claude';
+              const knownModels = await _modelsFor(resolvedCli);
+              // Two validation paths:
+              //   1. If the runtime publishes a model list, enforce membership.
+              //   2. If the runtime doesn't (Claude), still reject when the
+              //      model belongs to a DIFFERENT runtime's list — that's how
+              //      we catch claude+gpt-5.5 (gpt-5.5 is in Copilot's list).
+              let rejection = null;
+              if (knownModels && !knownModels.has(candidate)) {
+                rejection = `not a valid model for runtime "${resolvedCli}" (known: ${[...knownModels].slice(0, 4).join(', ')}${knownModels.size > 4 ? '…' : ''})`;
+              } else if (!knownModels) {
+                const owner = await _ownerOfModel(candidate);
+                if (owner && owner !== resolvedCli) {
+                  rejection = `belongs to runtime "${owner}" but agent uses "${resolvedCli}" — incompatible combination`;
+                }
+              }
+              if (rejection) {
+                _clamped.push(`agents.${id}.model: "${candidate}" ${rejection} — kept previous value`);
+              } else {
+                config.agents[id].model = candidate;
+              }
+            }
+          }
+          if (updates.maxBudgetUsd !== undefined) {
+            if (updates.maxBudgetUsd === '' || updates.maxBudgetUsd === null) delete config.agents[id].maxBudgetUsd;
+            else {
+              const n = Number(updates.maxBudgetUsd);
+              if (Number.isFinite(n) && n >= 0) config.agents[id].maxBudgetUsd = n;
+            }
+          }
+          if (updates.bareMode !== undefined) {
+            // Boolean override — explicit false should override engine.claudeBareMode=true,
+            // so we accept all three states (true, false, "unset" via empty/null).
+            if (updates.bareMode === '' || updates.bareMode === null) delete config.agents[id].bareMode;
+            else config.agents[id].bareMode = !!updates.bareMode;
           }
         }
       }
@@ -5748,6 +5933,44 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, message: 'Wakeup signal sent' });
     }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
+
+    // Runtimes (CLI fleet) — model discovery + capability surface
+    { method: 'GET', path: '/api/runtimes', desc: 'List registered CLI runtimes and their capability flags', handler: (req, res) => {
+      const md = require('./engine/model-discovery');
+      return jsonReply(res, 200, { runtimes: md.listAllRuntimes() }, req);
+    }},
+    { method: 'POST', path: /^\/api\/runtimes\/([\w-]+)\/models\/refresh$/, desc: 'Invalidate the models cache for a runtime and re-fetch', handler: async (req, res, match) => {
+      const md = require('./engine/model-discovery');
+      const name = match[1];
+      try {
+        md.invalidateRuntimeModelsCache(name);
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      let payload;
+      try {
+        reloadConfig();
+        payload = await md.getRuntimeModels(name, { force: true, config: CONFIG });
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      return jsonReply(res, 200, payload, req);
+    }},
+    { method: 'GET', path: /^\/api\/runtimes\/([\w-]+)\/models$/, desc: 'Get cached or fresh model list for a runtime', handler: async (req, res, match) => {
+      const md = require('./engine/model-discovery');
+      const name = match[1];
+      let payload;
+      try {
+        reloadConfig();
+        payload = await md.getRuntimeModels(name, { config: CONFIG });
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      return jsonReply(res, 200, payload, req);
+    }},
 
     // Settings
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },

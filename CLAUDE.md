@@ -41,12 +41,19 @@ Each phase is independently wrapped in try-catch — a failure in one phase does
 engine.js spawnAgent()
   → builds prompt BEFORE worktree setup (parallel — prompt doesn't depend on worktree path)
   → git worktree add (20-60s for write tasks, skipped for read-only)
-  → node engine/spawn-agent.js <prompt> <sysprompt> [args]
-    → resolves claude CLI binary path (cached in claude-caps.json)
-    → node <claude-cli> -p --system-prompt-file ... (prompt piped via stdin)
+  → resolves runtime via registry: resolveRuntime(resolveAgentCli(agent, engine))
+  → node engine/spawn-agent.js <prompt> <sysprompt> --runtime <name> [opts...]
+    → adapter.resolveBinary() returns { bin, native, leadingArgs }
+    → spawn(bin, [...leadingArgs, ...adapter.buildArgs(opts)])
+    → prompt delivered via stdin OR --prompt arg per adapter.capabilities.promptViaArg
 ```
 
-**CC/doc-chat use a direct spawn path** (`direct: true` in `callLLM`/`callLLMStreaming`) that bypasses `spawn-agent.js` entirely — spawns claude CLI directly using the cached binary path. Fewer file syscalls, no extra Node process.
+The CLI runtime is fully pluggable — see **Runtime Adapters** below for the
+adapter contract, the registry, and the resolution helpers. Engine code
+NEVER branches on `runtime.name === ...`; capability flags are the only
+conditional gate.
+
+**CC/doc-chat use a direct spawn path** (`direct: true` in `callLLM`/`callLLMStreaming`) that bypasses `spawn-agent.js` entirely — spawns the runtime CLI directly using the cached binary path resolved through the same adapter contract. Fewer file syscalls, no extra Node process.
 
 **Dependency branches are fetched in parallel** via `Promise.allSettled`, then merged sequentially into the worktree.
 
@@ -314,7 +321,13 @@ When a project is removed, in order:
     }
   }],
   "agents": {
-    "dallas": { "name": "Dallas", "role": "Engineer", "skills": [] }
+    "dallas": {
+      "name": "Dallas", "role": "Engineer", "skills": [],
+      "cli": "copilot",            // optional — overrides engine.defaultCli for this agent
+      "model": "gpt-5.4",          // optional — overrides engine.defaultModel for this agent
+      "maxBudgetUsd": 5,           // optional — overrides engine.maxBudgetUsd; 0 is a valid cap
+      "bareMode": false            // optional — overrides engine.claudeBareMode
+    }
   },
   "engine": {
     "tickInterval": 60000,
@@ -331,8 +344,19 @@ When a project is removed, in order:
     "evalMaxIterations": 3,
     "adoPollEnabled": true,
     "ghPollEnabled": true,
-    "ccModel": "sonnet",
-    "ccEffort": null
+    "defaultCli": "claude",          // fleet runtime — must be a key registered in engine/runtimes/index.js
+    "defaultModel": null,            // fleet model — null/undefined lets the runtime pick its own default
+    "ccCli": null,                   // CC/doc-chat runtime override — null inherits defaultCli (independent of agent path)
+    "ccModel": null,                 // CC/doc-chat model override — null inherits defaultModel
+    "ccEffort": null,                // CC reasoning depth — null | 'low' | 'medium' | 'high'
+    "claudeBareMode": false,         // Claude --bare (suppresses CLAUDE.md auto-discovery)
+    "claudeFallbackModel": null,     // Claude --fallback-model on rate-limit / overload
+    "copilotDisableBuiltinMcps": true,   // Copilot --disable-builtin-mcps (keep github-mcp-server out — see split-brain risk below)
+    "copilotSuppressAgentsMd": true,     // Copilot --no-custom-instructions (stop AGENTS.md auto-load)
+    "copilotStreamMode": "on",           // Copilot --stream on|off
+    "copilotReasoningSummaries": false,  // Copilot --enable-reasoning-summaries (Anthropic-family models only)
+    "maxBudgetUsd": null,            // fleet --max-budget-usd ceiling; 0 is a valid cap (read-only / dry-run)
+    "disableModelDiscovery": false   // skip runtime.listModels() REST calls fleet-wide
   },
   "schedules": [{
     "id": "nightly-tests", "cron": "0 2 *", "type": "test",
@@ -450,9 +474,273 @@ User sends message → POST /api/doc-chat { message, document, title, filePath, 
 
 Both CC and doc-chat use:
 - `ccCall()` — retry logic (resume → fresh → retry after 2s), session management, preamble injection
-- `llm.callLLM({ direct: true })` — bypasses spawn-agent.js, spawns claude CLI directly via cached binary path
+- `llm.callLLM({ direct: true })` — bypasses spawn-agent.js, spawns the runtime CLI directly via the adapter's cached binary path
 - `trackEngineUsage()` — records calls, tokens, cost, duration per category (`command-center`, `doc-chat`)
-- Configurable model/effort via `ENGINE_DEFAULTS.ccModel` / `ccEffort`
+- Configurable runtime/model/effort via `engine.ccCli` / `engine.ccModel` / `engine.ccEffort` (resolved via `resolveCcCli` / `resolveCcModel` — see **Runtime Adapters** below)
+
+## Runtime Adapters
+
+The CLI runtime is pluggable. Each adapter lives in `engine/runtimes/<name>.js`,
+is registered in `engine/runtimes/index.js`, and exposes a fixed contract that
+the engine, dashboard, preflight, and doctor all consume through the same
+five entry points: `resolveBinary`, `buildArgs`, `buildPrompt`, `parseOutput`,
+`parseStreamChunk`. Adding a new runtime is a single-file change — `engine.js`
+and `engine/spawn-agent.js` know nothing CLI-specific.
+
+**Bundled adapters:** Claude (`engine/runtimes/claude.js`) and GitHub Copilot
+(`engine/runtimes/copilot.js`).
+
+### Adapter Contract
+
+Every adapter exports the following fields. Required methods are *necessary*;
+required fields are *configuration data the engine reads at dispatch / preflight
+time*.
+
+| Field | Kind | Role |
+|-------|------|------|
+| `name` | string | Registry key — must match the file name |
+| `capabilities` | object | Feature flags consumed by engine code (table below) |
+| `resolveBinary({ env, config })` | function → `{ bin, native, leadingArgs } \| null` | Locate the runtime CLI binary. `leadingArgs` is `[]` for standalone binaries, `['copilot']` for `gh copilot` extensions |
+| `capsFile` | string (path) | Cached binary-resolution path (`engine/<name>-caps.json`) |
+| `installHint` | string | Human-readable install instructions surfaced when `resolveBinary()` returns null |
+| `listModels()` | async function → `{id,name,provider}[] \| null` | Returns null when the runtime has no enumeration mechanism (Claude) |
+| `modelsCache` | string (path) | Per-runtime model catalog cache (`engine/<name>-models.json`) |
+| `spawnScript` | string (path) | Wrapper script (always `engine/spawn-agent.js` today; reserved for future runtimes that need a different wrapper) |
+| `buildArgs(opts)` | function → `string[]` | CLI args excluding the binary; receives the resolved opts bag |
+| `buildPrompt(promptText, sysPromptText)` | function → string | Final prompt delivered. Claude returns the user prompt verbatim (sysprompt goes via `--system-prompt-file`); Copilot inlines `<system>...</system>` into the user prompt |
+| `resolveModel(input)` | function → string \| undefined | Shorthand expansion / passthrough. Returns `undefined` for nullish input |
+| `parseOutput(raw, { maxTextLength })` | function → `{ text, usage, sessionId, model }` | Full stream parse — used by `lifecycle.parseAgentOutput` |
+| `parseStreamChunk(line)` | function → object \| null | Single-line streaming parse |
+| `parseError(rawOutput)` | function → `{ message, code, retriable }` | Normalize CLI error patterns onto stable `code` values: `auth-failure`, `context-limit`, `budget-exceeded`, `crash`, or `null` |
+
+### Capability Flags
+
+Capability flags are the **only** legal conditional gate in engine code —
+`runtime.name === 'claude'` (or any other name) branches are banned by the
+test suite (see `test/unit.test.js` "engine.js source contains zero
+`runtime.name ===` (or ==) branches"). Adding a new feature means adding a
+capability flag, not a name check.
+
+| Flag | Claude | Copilot | What it gates |
+|------|--------|---------|---------------|
+| `streaming` | true | true | JSONL events on stdout |
+| `sessionResume` | true | true | `--resume <id>` resumes a prior session |
+| `systemPromptFile` | true | false | sysprompt accepted via `--system-prompt-file` (vs inlined into the user prompt) |
+| `effortLevels` | true | true | `--effort low\|medium\|high\|xhigh` is honored |
+| `costTracking` | true | false | Result event includes USD + token usage (Copilot only emits `premiumRequests` count) |
+| `modelShorthands` | true | false | Bare `sonnet` / `opus` / `haiku` are accepted (Copilot expects full model IDs like `claude-sonnet-4.5`) |
+| `modelDiscovery` | false | true | `listModels()` returns a real catalog (Claude has no public model API) |
+| `promptViaArg` | false | false | When `true`, the adapter injects `--prompt <text>` instead of piping via stdin |
+| `budgetCap` | true | false | `--max-budget-usd <n>` is supported |
+| `bareMode` | true | false | `--bare` (suppresses CLAUDE.md auto-discovery) is supported |
+| `fallbackModel` | true | false | `--fallback-model <id>` on rate-limit / overload |
+| `sessionPersistenceControl` | true | false | The engine writes `session.json` (Copilot manages session state in `~/.copilot/session-state/`) |
+
+Source: `engine/runtimes/claude.js:357-389`, `engine/runtimes/copilot.js:509-534`.
+
+### Six Resolution Helpers (in `engine/shared.js`)
+
+The engine never reads `agent.cli` / `engine.defaultCli` / etc. directly. All
+resolution flows through these six helpers — they are the single source of
+truth for "which CLI runtime + model + budget + bare-mode applies to this
+spawn?" (source: `engine/shared.js:797-948`).
+
+| Helper | Priority chain |
+|--------|----------------|
+| `resolveAgentCli(agent, engine)` | `agent.cli` → `engine.defaultCli` → `'claude'` |
+| `resolveCcCli(engine)` | `engine.ccCli` → `engine.defaultCli` → `'claude'` |
+| `resolveAgentModel(agent, engine)` | `agent.model` → `engine.defaultModel` → `undefined` (let the runtime pick) |
+| `resolveCcModel(engine)` | `engine.ccModel` → `engine.defaultModel` → `undefined` |
+| `resolveAgentMaxBudget(agent, engine)` | `agent.maxBudgetUsd` → `engine.maxBudgetUsd` → `undefined`. Honors literal `0` |
+| `resolveAgentBareMode(agent, engine)` | `agent.bareMode` → `engine.claudeBareMode` → `false`. Strict null check so per-agent `false` overrides engine `true` |
+
+**Independence rule (CRITICAL):** the agent path (`resolveAgent*`) and the
+CC path (`resolveCc*`) **do not fall through to each other**. A user setting
+`engine.ccCli: copilot` for CC alone must NOT silently switch agents to
+Copilot too. Both paths fall through to `engine.defaultCli` (the
+fleet-wide knob), but they do not see each other's overrides. Tests
+"resolveAgentCli: does NOT fall through to engine.ccCli" and "resolveCcCli:
+does NOT inspect any agent settings" enforce this.
+
+### Three-Tier Model Resolution
+
+Every spawn resolves the model via the chain
+**per-agent → `engine.defaultModel` → CLI default**. CC adds one extra
+override slot (`engine.ccModel`) that takes precedence over `defaultModel`.
+Worked example:
+
+```jsonc
+// config.json
+{
+  "engine": { "defaultCli": "copilot", "defaultModel": "claude-sonnet-4.5", "ccModel": "gpt-5.4" },
+  "agents": {
+    "dallas":  { "model": "gpt-5.4" },                           // pin per-agent
+    "ripley":  { /* no model field */ },                         // inherits defaultModel
+    "rebecca": { "cli": "claude", "model": "claude-opus-4-1" }   // overrides BOTH cli + model
+  }
+}
+```
+
+Resolution at dispatch time:
+- `dallas` → Copilot (defaultCli) running `gpt-5.4` (per-agent)
+- `ripley` → Copilot running `claude-sonnet-4.5` (defaultModel)
+- `rebecca` → Claude (per-agent override) running `claude-opus-4-1` (per-agent)
+- CC (Command Center) → Copilot (`ccCli` falls through to `defaultCli`) running `gpt-5.4` (`ccModel` override beats `defaultModel`)
+
+When `resolveAgentModel` returns `undefined` (no model set anywhere), the
+adapter omits `--model` from `buildArgs` and the underlying CLI uses
+whatever model the user has globally configured.
+
+### Fleet Config Fields
+
+Every new field added by the runtime fleet refactor (P-3b8e5f1d), with its
+default and per-agent override path. Documented defaults: see
+`engine/shared.js:739-790` for the authoritative source.
+
+| Field | Default | Per-agent override | Purpose |
+|-------|---------|-------------------|---------|
+| `engine.defaultCli` | `'claude'` | `agent.cli` | Fleet runtime — must be a key registered in `engine/runtimes/index.js` |
+| `engine.defaultModel` | `undefined` | `agent.model` | Fleet model — `undefined` lets the runtime pick its own default |
+| `engine.ccCli` | `undefined` | — (no fall-through) | CC runtime override; inherits `defaultCli` when unset |
+| `engine.ccModel` | `undefined` | — (no fall-through) | CC model override; inherits `defaultModel` when unset |
+| `engine.claudeBareMode` | `false` | `agent.bareMode` | Claude `--bare` (see "Claude Bare Mode" below) |
+| `engine.claudeFallbackModel` | `undefined` | — | Claude `--fallback-model` on rate-limit / overload |
+| `engine.copilotDisableBuiltinMcps` | `true` | — | Copilot `--disable-builtin-mcps` (see "Split-Brain Risk" below) |
+| `engine.copilotSuppressAgentsMd` | `true` | — | Copilot `--no-custom-instructions` (suppress AGENTS.md) |
+| `engine.copilotStreamMode` | `'on'` | — | Copilot `--stream <on\|off>` |
+| `engine.copilotReasoningSummaries` | `false` | — | Copilot `--enable-reasoning-summaries` (Anthropic-family models only) |
+| `engine.maxBudgetUsd` | `undefined` | `agent.maxBudgetUsd` | Fleet `--max-budget-usd` ceiling. Honors literal `0` (read-only / dry-run agents) |
+| `engine.disableModelDiscovery` | `false` | — | Skip `runtime.listModels()` REST calls fleet-wide |
+
+### Migration Paths
+
+- **`config.claude.*` deprecation** — fields like `config.claude.binary`,
+  `config.claude.outputFormat`, `config.claude.allowedTools`,
+  `config.claude.permissionMode` are deprecated in favor of the runtime
+  adapter system. `engine/preflight.js` surfaces a `deprecated-config-claude`
+  warning when any such field is present (see `_deprecatedConfigClaudeFields`
+  in `engine/shared.js:782`). The fields still work for backward compat;
+  they will be removed when the deprecation tracker (`docs/deprecated.json`)
+  cleanup window expires.
+- **Legacy `ccModel`-only configs** — pre-P-3b8e5f1d installs set
+  `engine.ccModel` as the de-facto fleet model. Engine startup runs
+  `applyLegacyCcModelMigration(config)` which copies `ccModel` →
+  `defaultModel` **in memory only** (no disk write) and logs a one-time
+  deprecation notice ("ccModel is now a CC-specific override; set
+  defaultModel to apply fleet-wide"). On-disk config is untouched so a
+  user can audit the change before saving. Source:
+  `engine/shared.js:957-987`.
+
+### Switching the Fleet from the CLI
+
+```bash
+minions start --cli copilot --model claude-sonnet-4.5    # switch fleet to Copilot
+minions restart --cli claude --model ''                  # switch back; --model '' clears the override
+minions config set-cli copilot --model gpt-5.4           # write config without restarting the engine
+```
+
+`--model ''` (empty string) **deletes** `engine.defaultModel` from
+`config.json` so the runtime falls back to its own default — DO NOT pin
+it to an empty string, that emits `--model ""` and crashes the CLI.
+Source: `engine/cli.js` (P-6b3f9c2e).
+
+### Model Discovery
+
+| Runtime | Mechanism |
+|---------|-----------|
+| Claude | `capabilities.modelDiscovery: false` — no public enumeration. Settings UI renders a free-text input. `listModels()` returns `null` |
+| Copilot | `GET https://api.githubcopilot.com/models` with `Authorization: Bearer ${GH_TOKEN \|\| COPILOT_GITHUB_TOKEN}`. Cache lives at `engine/copilot-models.json` (1h TTL); refresh via `POST /api/runtimes/copilot/models/refresh` |
+| Any | `engine.disableModelDiscovery: true` opts out fleet-wide; `getRuntimeModels()` short-circuits to `{ models: null }` without calling the adapter. Useful for air-gapped installs or when you don't want Minions making outbound HTTPS calls |
+
+### Effort Level Normalization
+
+| Input | Claude | Copilot |
+|-------|--------|---------|
+| `'low'` / `'medium'` / `'high'` | passes verbatim | passes verbatim |
+| `'xhigh'` | passes verbatim | passes verbatim |
+| `'max'` | passes verbatim (Claude accepts it) | mapped to `'xhigh'` (Claude-ism normalized to Copilot's vocab — see `engine/runtimes/copilot.js:_mapEffort`) |
+
+The Copilot adapter logs a one-time warning when it sees a Claude family
+shorthand (`sonnet` / `opus` / `haiku`) in `resolveModel` — Copilot expects
+full model IDs like `claude-sonnet-4.5`, so silently passing the shorthand
+through would let it fail at the CLI level with no explanation. Source:
+`engine/runtimes/copilot.js:154-172`.
+
+### Copilot `--disable-builtin-mcps` and the Split-Brain Risk
+
+Copilot ships with a built-in `github-mcp-server` MCP that lets the agent
+autonomously create PRs, labels, and comments via the GitHub API. Set
+`engine.copilotDisableBuiltinMcps: true` (the default) to keep this MCP
+out of the agent's tool list. The dashboard tooltip on the corresponding
+toggle warns about the consequences when it's set to `false`:
+
+> When OFF, Copilot agents can autonomously create PRs/labels/comments via
+> the github-mcp-server, bypassing Minions' `pull-requests.json` tracking —
+> Minions and Copilot end up with split views of the same PR. Keep ON
+> unless you understand the risk.
+
+Same risk class — different surface — applies to ANY MCP that mutates state
+the engine also tracks (work items, files, PRs). The default is always
+"strip the MCP" because Minions' tracking files (`pull-requests.json`,
+`work-items.json`, `dispatch.json`) are the source of truth.
+
+### Copilot `--no-custom-instructions` (AGENTS.md Suppression)
+
+When `engine.copilotSuppressAgentsMd: true` (the default), spawn-agent
+emits `--no-custom-instructions` to Copilot. Without this flag, Copilot
+auto-loads any `AGENTS.md` file in the worktree and merges those
+instructions into its system prompt — fighting whatever the Minions
+playbook told the agent to do. The flag exists for the same reason Claude
+has `--bare`: keep the runtime CLI from layering its own context on top
+of the playbook system prompt. Source: `engine/runtimes/copilot.js`
+(P-1d4a8e7c).
+
+### Claude Bare Mode (`--bare`) — Requires Explicit Context
+
+`engine.claudeBareMode: true` adds `--bare` to every Claude spawn, which
+**suppresses CLAUDE.md auto-discovery in the agent's CWD**. This is
+useful for runtimes-vs-runtimes parity (Copilot has no equivalent
+auto-loaded context — bare-mode Claude is the closest equivalent), but
+it has a hard limitation: agents lose the project conventions baked into
+CLAUDE.md unless an explicit system prompt feeds those rules in. Pair
+`claudeBareMode: true` with an explicit `engine.ccSystemPrompt` (CC) or
+override the playbook to embed the conventions inline. Preflight emits a
+`bare-mode-misconfig` warning when `claudeBareMode: true` is paired with
+Claude as the CC runtime AND no `ccSystemPrompt` is configured. Source:
+`engine/shared.js:1004-1064` (`runtimeConfigWarnings`).
+
+### Windows WinGet Path for Copilot
+
+WinGet installs Copilot's CLI shim at:
+
+```
+%LOCALAPPDATA%\Microsoft\WinGet\Links\copilot.exe
+```
+
+`engine/runtimes/copilot.js resolveBinary` probes PATH (which WinGet adds
+the Links directory to), so installs via `winget install --id GitHub.cli &&
+gh extension install github/gh-copilot` work without further configuration.
+The standalone Copilot binary is the preferred path; the `gh copilot`
+extension fallback returns `leadingArgs: ['copilot']` so spawn-agent
+correctly invokes `gh copilot ...`. Source:
+`engine/runtimes/copilot.js:113-150`, `docs/copilot-cli-schema.md`.
+
+### Adding a New Runtime (Recipe)
+
+1. Create `engine/runtimes/<name>.js`. Implement every field in the
+   adapter contract above. Set `installHint` to a one-line install
+   command that covers all platforms.
+2. Register: `engine/runtimes/index.js` →
+   `registry.set('<name>', require('./<name>'))`.
+3. The dashboard `/api/runtimes` endpoint, the `--cli` flag, the per-agent
+   CLI dropdown, the per-runtime preflight binary check, and the model
+   discovery cache all light up automatically — no edits to engine.js,
+   spawn-agent.js, dashboard.js, or preflight.js.
+4. Capability flags drive the engine's behavior. If your runtime doesn't
+   support `--max-budget-usd`, set `capabilities.budgetCap: false` and the
+   helper that builds spawn flags will silently drop the opt. Don't
+   special-case in engine code — let the registry + capability flags do
+   the routing.
 
 ## Dashboard API
 

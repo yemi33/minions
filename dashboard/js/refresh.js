@@ -35,6 +35,20 @@ function _changed(key, value) {
   return true;
 }
 
+function _formatCcPowerLabel(autoMode) {
+  var runtime = autoMode && autoMode.ccCli ? String(autoMode.ccCli) : 'claude';
+  var runtimeLabel = runtime.charAt(0).toUpperCase() + runtime.slice(1);
+  var model = autoMode && autoMode.ccModel ? String(autoMode.ccModel) : '';
+  return 'Ask anything, dispatch work, manage plans — powered by ' + runtimeLabel + (model ? ' (' + model + ')' : '');
+}
+
+function _formatCcDrawerLabel(autoMode) {
+  var runtime = autoMode && autoMode.ccCli ? String(autoMode.ccCli) : 'claude';
+  var runtimeLabel = runtime.charAt(0).toUpperCase() + runtime.slice(1);
+  var model = autoMode && autoMode.ccModel ? String(autoMode.ccModel) : '';
+  return runtimeLabel + (model ? ' (' + model + ')' : '') + '-powered. Full minions context. Enter to send, Shift+Enter for newline.';
+}
+
 function _processStatusUpdate(data) {
   // Detect fresh install — clear stale browser state if install ID changed
   if (data.installId) {
@@ -53,6 +67,10 @@ function _processStatusUpdate(data) {
   if (autoEl) autoEl.innerHTML = data.autoMode?.approvePlans
     ? '<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--green);border:1px solid rgba(63,185,80,0.3)">AUTO-APPROVE</span>'
     : '';
+  const ccLabelEl = document.getElementById('cmd-powered-by');
+  if (ccLabelEl) ccLabelEl.textContent = _formatCcPowerLabel(data.autoMode);
+  const ccDrawerLabelEl = document.getElementById('cc-powered-by');
+  if (ccDrawerLabelEl) ccDrawerLabelEl.textContent = _formatCcDrawerLabel(data.autoMode);
   const threshEl = document.getElementById('inbox-threshold');
   if (threshEl && data.autoMode?.inboxThreshold) threshEl.textContent = data.autoMode.inboxThreshold;
 

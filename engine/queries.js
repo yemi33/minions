@@ -399,6 +399,10 @@ function getAgents(config) {
   const allInboxFiles = safeReadDir(INBOX_DIR);
 
   return roster.map(a => {
+    // Resolve which CLI runtime this agent dispatches to: per-agent override
+    // → engine.defaultCli → 'claude'. Surfaced so the dashboard can show a
+    // runtime tag next to the agent name.
+    const runtime = shared.resolveAgentCli(a, config.engine || {});
     const inboxFiles = allInboxFiles.filter(f => f.includes(a.id));
     const s = getAgentStatus(a.id); // derives from dispatch.json
 
@@ -414,7 +418,7 @@ function getAgents(config) {
     const chartered = fs.existsSync(path.join(AGENTS_DIR, a.id, 'charter.md'));
     if (lastAction.length > 120) lastAction = lastAction.slice(0, 120) + '...';
     return {
-      ...a, status: s.status, lastAction,
+      ...a, runtime, status: s.status, lastAction,
       currentTask: (s.task || '').slice(0, 200),
       resultSummary: (s.resultSummary || '').slice(0, 500),
       started_at: s.started_at || null,

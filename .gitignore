@@ -4,6 +4,9 @@ engine/log.json
 engine/control.json
 engine/doc-sessions.json
 engine/claude-caps.json
+engine/copilot-caps.json
+engine/copilot-models.json
+engine/claude-models.json
 engine/pid-*.pid
 engine/pid-*-implement
 engine/kb-sweep-pid-*.pid
