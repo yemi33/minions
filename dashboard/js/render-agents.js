@@ -14,14 +14,14 @@ const RUNTIME_TAGS = {
     color: '#cc785c',
     svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><rect x="4" y="3" width="16" height="15"/><rect x="2" y="8" width="2" height="4"/><rect x="20" y="8" width="2" height="4"/><rect x="4" y="18" width="2.5" height="3"/><rect x="8" y="18" width="2.5" height="3"/><rect x="13.5" y="18" width="2.5" height="3"/><rect x="17.5" y="18" width="2.5" height="3"/></g><g fill="#000"><rect x="7" y="7.5" width="2.5" height="3"/><rect x="14.5" y="7.5" width="2.5" height="3"/></g></svg>',
   },
-  // GitHub Copilot — bespectacled "pilot" mascot: head with side ear cups,
-  // two round goggles, small bridge, and a rectangular grill mouth with two
-  // vertical bars. Matches the standalone github-copilot icon. Cutouts use
-  // white so the logo stays recognisable against any agent-card background.
+  // GitHub Copilot — bespectacled "pilot" mascot, color-inverted so the
+  // silhouette is white-ish and the goggle/mouth cutouts pick up the
+  // currentColor accent. Reads better as a small inline tag against the
+  // dark dashboard theme than the conventional dark-on-light rendering.
   copilot: {
     label: 'Copilot',
     color: '#8957e5',
-    svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><ellipse cx="12" cy="11" rx="10" ry="8.5"/><circle cx="2.5" cy="13" r="2.4"/><circle cx="21.5" cy="13" r="2.4"/></g><g fill="#fff"><circle cx="8" cy="10" r="3"/><circle cx="16" cy="10" r="3"/><rect x="11.2" y="9.5" width="1.6" height="1.6" rx="0.3"/><rect x="8.4" y="14" width="7.2" height="3.8" rx="0.5"/></g><g fill="currentColor"><rect x="10.4" y="14.5" width="0.9" height="2.8" rx="0.2"/><rect x="12.7" y="14.5" width="0.9" height="2.8" rx="0.2"/></g></svg>',
+    svg: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="#fff"><ellipse cx="12" cy="11" rx="10" ry="8.5"/><circle cx="2.5" cy="13" r="2.4"/><circle cx="21.5" cy="13" r="2.4"/></g><g fill="currentColor"><circle cx="8" cy="10" r="3"/><circle cx="16" cy="10" r="3"/><rect x="11.2" y="9.5" width="1.6" height="1.6" rx="0.3"/><rect x="8.4" y="14" width="7.2" height="3.8" rx="0.5"/></g><g fill="#fff"><rect x="10.4" y="14.5" width="0.9" height="2.8" rx="0.2"/><rect x="12.7" y="14.5" width="0.9" height="2.8" rx="0.2"/></g></svg>',
   },
 };
 function _runtimeTagHtml(runtime) {
