@@ -22153,6 +22153,32 @@ async function testPrWriteRaceConditions() {
       'POST /api/work-items must copy oneShot from body to item (parallel to skipPr)');
   });
 
+  await test('handleWorkItemsCreate hard-pins a single explicit agent so routing is skipped', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('async function handleWorkItemsCreate'),
+                              dashSrc.indexOf('async function handleWorkItemsUpdate'));
+    // body.agent → item.agent (singular hard pin)
+    assert.ok(/if \(body\.agent\)\s*item\.agent\s*=/.test(fn),
+      'singular body.agent should map to item.agent (hard pin)');
+    // Single-element body.agents array → item.agent (also hard pin), unless fan-out
+    assert.ok(/_agentsArr\.length === 1/.test(fn),
+      'single-element agents array should be promoted to a hard-pin agent');
+    assert.ok(/scope !== 'fan-out'/.test(fn),
+      'fan-out scope must NOT be hard-pinned (multi-agent intentional)');
+    // Multi-agent arrays still stored as item.agents (hint list)
+    assert.ok(/item\.agents = _agentsArr/.test(fn),
+      'multi-agent arrays should still flow into item.agents for resolveAgent hints / fan-out');
+  });
+
+  await test('CC dispatch client forwards both singular and plural agent fields', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const dispatchCase = ccSrc.slice(ccSrc.indexOf("case 'dispatch':"), ccSrc.indexOf("case 'note':"));
+    assert.ok(/agent:\s*action\.agent/.test(dispatchCase),
+      'CC client should forward action.agent (singular) so the server can hard-pin');
+    assert.ok(/agents:\s*action\.agents/.test(dispatchCase),
+      'CC client should still forward action.agents (plural) for multi-agent / fan-out cases');
+  });
+
   await test('CC review action sets oneShot on dispatched work item', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Find the executeCCActions dispatch case

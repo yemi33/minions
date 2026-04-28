@@ -1004,7 +1004,7 @@ async function executeCCActions(actions) {
               priority: action.priority || 'medium', description: action.description || '',
               status: WI_STATUS.PENDING, created: new Date().toISOString(),
               createdBy: 'command-center', project,
-              ...(action.agents?.length ? { preferred_agent: action.agents[0] } : {}),
+              ...(action.agents?.length ? { preferred_agent: action.agents[0], agents: action.agents } : {}),
               ...(isOneShot ? { oneShot: true } : {}),
             });
             return items;
@@ -2207,8 +2207,17 @@ const server = http.createServer(async (req, res) => {
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
       if (body.scope) item.scope = body.scope;
-      if (body.agent) item.agent = body.agent;
-      if (body.agents) item.agents = body.agents;
+      // Agent assignment normalization: when the caller (CC, dashboard form,
+      // direct API) supplies a single explicit agent — either via `agent`
+      // (singular) or a one-element `agents` array — treat it as a HARD pin
+      // by setting `item.agent`. The engine reads `item.agent || resolveAgent(…)`,
+      // so a hard-pinned item bypasses routing entirely and queues until that
+      // exact agent is free. Multi-agent arrays remain `item.agents` (hints
+      // for resolveAgent or fan-out scope).
+      const _agentsArr = Array.isArray(body.agents) ? body.agents.filter(Boolean) : (typeof body.agents === 'string' && body.agents ? [body.agents] : []);
+      if (body.agent) item.agent = String(body.agent);
+      else if (_agentsArr.length === 1 && body.scope !== 'fan-out') item.agent = String(_agentsArr[0]);
+      if (_agentsArr.length > 0) item.agents = _agentsArr;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr) item.skipPr = true;

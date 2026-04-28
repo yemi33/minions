@@ -807,10 +807,16 @@ async function ccExecuteAction(action, targetTabId) {
       case 'review':
       case 'test': {
         var workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
+        // Forward both singular (`agent`) and plural (`agents`) hint shapes —
+        // the LLM emits either depending on phrasing ("assign to lambert" vs
+        // "dispatch to dallas, ralph"). The server-side handler promotes a
+        // single explicit agent to a hard pin so routing doesn't reassign it.
         var res = await _ccFetch('/api/work-items', {
             title: action.title, type: workType,
             priority: action.priority || 'medium', description: action.description || '',
-            project: action.project || '', agents: action.agents || [],
+            project: action.project || '',
+            agent: action.agent || '',
+            agents: action.agents || [],
         });
         var d = await res.json();
         status.innerHTML = '&#10003; Dispatched: <strong>' + escHtml(d.id || action.title) + '</strong>';
