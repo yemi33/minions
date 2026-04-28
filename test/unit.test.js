@@ -1337,6 +1337,398 @@ async function testRuntimeAdapters() {
 
 function isWinPlatform() { return process.platform === 'win32'; }
 
+async function testSpawnAgentHelpers() {
+  console.log('\n── engine/spawn-agent.js — Runtime-Agnostic Wrapper (P-9c4f2d6a) ──');
+  const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+  const claudeAdapter = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+
+  // ── parseSpawnArgs ────────────────────────────────────────────────────────
+
+  await test('parseSpawnArgs returns null when fewer than 2 positional args', () => {
+    assert.strictEqual(spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js']), null);
+    assert.strictEqual(spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', 'p.md']), null);
+  });
+
+  await test('parseSpawnArgs reads positional prompt + sysprompt', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p.md', '/s.md']);
+    assert.strictEqual(r.promptFile, '/p.md');
+    assert.strictEqual(r.sysPromptFile, '/s.md');
+  });
+
+  await test('parseSpawnArgs defaults runtimeName to "claude"', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s']);
+    assert.strictEqual(r.runtimeName, 'claude');
+  });
+
+  await test('parseSpawnArgs reads --runtime <name>', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s', '--runtime', 'copilot']);
+    assert.strictEqual(r.runtimeName, 'copilot');
+  });
+
+  await test('parseSpawnArgs maps every recognized adapter flag into opts', () => {
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--model', 'sonnet',
+      '--max-turns', '42',
+      '--allowedTools', 'Read,Edit',
+      '--effort', 'low',
+      '--resume', 'sess-abc',
+      '--max-budget-usd', '5',
+      '--bare',
+      '--fallback-model', 'haiku',
+      '--output-format', 'json',
+      '--verbose',
+      '--stream', 'on',
+      '--disable-builtin-mcps',
+      '--no-custom-instructions',
+      '--enable-reasoning-summaries',
+    ]);
+    assert.deepStrictEqual(r.opts, {
+      model: 'sonnet',
+      maxTurns: '42',
+      allowedTools: 'Read,Edit',
+      effort: 'low',
+      sessionId: 'sess-abc',
+      maxBudget: '5',
+      bare: true,
+      fallbackModel: 'haiku',
+      outputFormat: 'json',
+      verbose: true,
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.deepStrictEqual(r.passthrough, []);
+  });
+
+  await test('parseSpawnArgs --no-verbose explicitly suppresses verbose', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s', '--no-verbose']);
+    assert.strictEqual(r.opts.verbose, false);
+  });
+
+  await test('parseSpawnArgs DROPS legacy --permission-mode bypassPermissions (with its value)', () => {
+    // Pre-P-2a6d9c4f engine.js still passes the legacy flag. Letting it through
+    // would duplicate the permission flag for Claude (adapter emits its own
+    // --dangerously-skip-permissions). The flag AND its value must be consumed.
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--max-turns', '10',
+      '--permission-mode', 'bypassPermissions',
+      '--effort', 'low',
+    ]);
+    assert.deepStrictEqual(r.passthrough, [], 'no legacy flag should leak into passthrough');
+    assert.strictEqual(r.opts.maxTurns, '10');
+    assert.strictEqual(r.opts.effort, 'low', 'flags after dropped --permission-mode must still parse');
+  });
+
+  await test('parseSpawnArgs forwards unknown args to passthrough', () => {
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--some-future-flag', 'value',
+    ]);
+    assert.deepStrictEqual(r.passthrough, ['--some-future-flag', 'value']);
+  });
+
+  // ── buildSpawnInvocation ──────────────────────────────────────────────────
+
+  // Helper: a fake stdin-mode runtime — independent of Claude's filesystem state
+  function _makeStdinFakeRuntime({ name = 'fake-stdin', leadingArgs = [], extraArgs = [] } = {}) {
+    return {
+      name,
+      capabilities: { promptViaArg: false, systemPromptFile: false },
+      buildArgs: (opts) => {
+        const args = ['--exec'];
+        if (opts.model) args.push('--m', opts.model);
+        if (opts.maxBudget != null) args.push('--budget', String(opts.maxBudget));
+        if (opts.bare === true) args.push('--bare-mode');
+        if (opts.fallbackModel) args.push('--fb', opts.fallbackModel);
+        if (opts.stream) args.push('--stream', opts.stream);
+        if (opts.disableBuiltinMcps === true) args.push('--no-mcp');
+        if (opts.suppressAgentsMd === true) args.push('--no-agents-md');
+        if (opts.reasoningSummaries === true) args.push('--reasoning');
+        if (Array.isArray(opts.addDirs)) for (const d of opts.addDirs) args.push('--dir', d);
+        return [...args, ...extraArgs];
+      },
+      buildPrompt: (p, s) => (s ? `[SYS]\n${s}\n[END]\n${p}` : (p == null ? '' : String(p))),
+      _leadingArgs: leadingArgs,
+    };
+  }
+
+  // Helper: fake arg-mode runtime (for promptViaArg tests)
+  function _makeArgFakeRuntime({ name = 'fake-arg', leadingArgs = [] } = {}) {
+    return {
+      name,
+      capabilities: { promptViaArg: true, systemPromptFile: false },
+      buildArgs: (opts) => {
+        const args = ['--exec'];
+        if (opts.prompt != null) args.push('--prompt', String(opts.prompt));
+        if (Array.isArray(opts.addDirs)) for (const d of opts.addDirs) args.push('--dir', d);
+        return args;
+      },
+      buildPrompt: (p) => (p == null ? '' : String(p)),
+      _leadingArgs: leadingArgs,
+    };
+  }
+
+  await test('buildSpawnInvocation defaults deliveryMode to "stdin" for promptViaArg=false', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/fake', native: true, leadingArgs: [] },
+      promptText: 'hello',
+      sysPromptText: 'you are helpful',
+      opts: {},
+      passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'stdin');
+    assert.strictEqual(inv.finalPrompt, '[SYS]\nyou are helpful\n[END]\nhello');
+    assert.ok(!inv.args.includes('--prompt'), 'stdin mode must NOT splice --prompt into args');
+  });
+
+  await test('buildSpawnInvocation deliveryMode is "arg" for promptViaArg=true; adapter receives prompt', () => {
+    const runtime = _makeArgFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/fake', native: true, leadingArgs: [] },
+      promptText: 'hi there',
+      sysPromptText: '',
+      opts: {},
+      passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'arg');
+    const i = inv.args.indexOf('--prompt');
+    assert.ok(i >= 0 && inv.args[i + 1] === 'hi there', `expected --prompt "hi there" in: ${inv.args.join(' ')}`);
+  });
+
+  await test('buildSpawnInvocation: leadingArgs flow through resolved.leadingArgs', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/gh', native: true, leadingArgs: ['copilot'] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.deepStrictEqual(inv.leadingArgs, ['copilot']);
+    assert.strictEqual(inv.bin, '/usr/bin/gh');
+    assert.strictEqual(inv.native, true);
+  });
+
+  await test('buildSpawnInvocation: leadingArgs defaults to [] when adapter omits it', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/x', native: true }, // no leadingArgs key
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.deepStrictEqual(inv.leadingArgs, []);
+  });
+
+  await test('buildSpawnInvocation: addDirs are passed to runtime.buildArgs as opts.addDirs', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+    assert.ok(inv.args.includes('/repo/minions'));
+    assert.ok(inv.args.includes('/home/user/.claude'));
+  });
+
+  await test('buildSpawnInvocation: empty addDirs are not forwarded as opts.addDirs', () => {
+    const calls = [];
+    const runtime = {
+      name: 'spy', capabilities: {},
+      buildArgs: (opts) => { calls.push(opts); return ['--ok']; },
+      buildPrompt: (p) => p || '',
+    };
+    spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: [],
+    });
+    assert.ok(!('addDirs' in calls[0]), 'empty addDirs must not pollute opts bag');
+    assert.strictEqual(calls.length, 1);
+  });
+
+  await test('buildSpawnInvocation: passthrough args appended AFTER adapter args', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {},
+      passthrough: ['--legacy-pass', 'value', '--orphan'],
+    });
+    const idx = inv.args.indexOf('--legacy-pass');
+    assert.ok(idx > 0, 'passthrough should be present and not first');
+    assert.strictEqual(inv.args[idx + 1], 'value');
+    assert.strictEqual(inv.args[idx + 2], '--orphan');
+    // adapter's own first arg (--exec) must come before passthrough
+    assert.ok(inv.args.indexOf('--exec') < idx);
+  });
+
+  await test('buildSpawnInvocation: every new opt (maxBudget/bare/fallbackModel/stream/disableBuiltinMcps/suppressAgentsMd/reasoningSummaries) flows to buildArgs', () => {
+    const calls = [];
+    const runtime = {
+      name: 'spy', capabilities: {},
+      buildArgs: (opts) => { calls.push(opts); return []; },
+      buildPrompt: (p) => p || '',
+    };
+    spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {
+        maxBudget: 5, bare: true, fallbackModel: 'haiku',
+        stream: 'on', disableBuiltinMcps: true,
+        suppressAgentsMd: true, reasoningSummaries: true,
+      },
+      passthrough: [],
+    });
+    const seen = calls[0];
+    assert.strictEqual(seen.maxBudget, 5);
+    assert.strictEqual(seen.bare, true);
+    assert.strictEqual(seen.fallbackModel, 'haiku');
+    assert.strictEqual(seen.stream, 'on');
+    assert.strictEqual(seen.disableBuiltinMcps, true);
+    assert.strictEqual(seen.suppressAgentsMd, true);
+    assert.strictEqual(seen.reasoningSummaries, true);
+  });
+
+  await test('buildSpawnInvocation: usingNodeShim reflects native flag (true → native, false → cli.js)', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const native = spawnAgent.buildSpawnInvocation({
+      runtime, resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '', opts: {}, passthrough: [],
+    });
+    const cliJs = spawnAgent.buildSpawnInvocation({
+      runtime, resolved: { bin: '/x/cli.js', native: false, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '', opts: {}, passthrough: [],
+    });
+    assert.strictEqual(native.usingNodeShim, false);
+    assert.strictEqual(cliJs.usingNodeShim, true);
+  });
+
+  // ── Claude path regression — end-to-end (parse → invocation) ──────────────
+
+  await test('Claude regression: legacy engine.js argv parses to expected adapter invocation', () => {
+    // Mimic the EXACT argv engine.js currently passes (engine.js:817-844):
+    //   --output-format stream-json --max-turns 100 --verbose
+    //   --permission-mode bypassPermissions [--allowedTools <list>] [--effort low]
+    //   [--resume <sessionId>]
+    const argv = [
+      'node', 'spawn-agent.js', '/tmp/p.md', '/tmp/s.md',
+      '--output-format', 'stream-json',
+      '--max-turns', '100',
+      '--verbose',
+      '--permission-mode', 'bypassPermissions',
+      '--allowedTools', 'Read,Edit,Bash',
+      '--effort', 'low',
+      '--resume', 'sess-xyz',
+    ];
+    const parsed = spawnAgent.parseSpawnArgs(argv);
+    assert.strictEqual(parsed.runtimeName, 'claude');
+    assert.deepStrictEqual(parsed.passthrough, [], 'no legacy flag must leak into passthrough on Claude path');
+
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claudeAdapter,
+      resolved: { bin: '/usr/local/bin/claude', native: true, leadingArgs: [] },
+      promptText: 'do the thing',
+      sysPromptText: 'you are dallas',
+      opts: parsed.opts,
+      passthrough: parsed.passthrough,
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+
+    // Adapter emits the modern flag, NOT the legacy one
+    assert.ok(inv.args.includes('--dangerously-skip-permissions'),
+      `expected --dangerously-skip-permissions in args: ${inv.args.join(' ')}`);
+    assert.ok(!inv.args.includes('--permission-mode'),
+      'legacy --permission-mode must NOT appear in final args');
+    assert.ok(!inv.args.includes('bypassPermissions'),
+      'legacy bypassPermissions value must NOT appear in final args');
+
+    // Core Claude flags preserved
+    const ofIdx = inv.args.indexOf('--output-format');
+    assert.ok(ofIdx >= 0 && inv.args[ofIdx + 1] === 'stream-json');
+    const mtIdx = inv.args.indexOf('--max-turns');
+    assert.ok(mtIdx >= 0 && inv.args[mtIdx + 1] === '100');
+    assert.ok(inv.args.includes('--verbose'));
+    const atIdx = inv.args.indexOf('--allowedTools');
+    assert.ok(atIdx >= 0 && inv.args[atIdx + 1] === 'Read,Edit,Bash');
+    const eIdx = inv.args.indexOf('--effort');
+    assert.ok(eIdx >= 0 && inv.args[eIdx + 1] === 'low');
+    const rIdx = inv.args.indexOf('--resume');
+    assert.ok(rIdx >= 0 && inv.args[rIdx + 1] === 'sess-xyz');
+
+    // -p prepended by Claude adapter
+    assert.strictEqual(inv.args[0], '-p');
+
+    // --add-dir flags surfaced via the addDirs opt
+    const addDirIdxs = inv.args
+      .map((a, i) => a === '--add-dir' ? i : -1)
+      .filter(i => i >= 0);
+    assert.strictEqual(addDirIdxs.length, 2, 'expected exactly 2 --add-dir flags');
+    assert.strictEqual(inv.args[addDirIdxs[0] + 1], '/repo/minions');
+    assert.strictEqual(inv.args[addDirIdxs[1] + 1], '/home/user/.claude');
+
+    // Stdin delivery for Claude
+    assert.strictEqual(inv.deliveryMode, 'stdin');
+    assert.strictEqual(inv.finalPrompt, 'do the thing', 'Claude buildPrompt is passthrough — sys delivered separately');
+
+    // leadingArgs empty for Claude (standalone binary)
+    assert.deepStrictEqual(inv.leadingArgs, []);
+  });
+
+  await test('Claude regression: --system-prompt-file flag flows through opts.sysPromptFile', () => {
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claudeAdapter,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: 's',
+      opts: { sysPromptFile: '/tmp/sys.tmp', maxTurns: '10' },
+      passthrough: [],
+    });
+    const i = inv.args.indexOf('--system-prompt-file');
+    assert.ok(i >= 0 && inv.args[i + 1] === '/tmp/sys.tmp');
+  });
+
+  // ── Spec compliance: zero Claude-specific code in spawn-agent.js source ──
+
+  await test('spawn-agent.js source contains zero Claude-specific identifiers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    // Strip comments + strings before scanning so install-hint references
+    // (necessary for user-facing error messages) don't trip the assertion.
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')         // block comments
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')     // line comments (keep https://)
+      .replace(/'[^'\n]*'/g, "''")              // single-quoted strings
+      .replace(/"[^"\n]*"/g, '""')              // double-quoted strings
+      .replace(/`[^`]*`/g, '``');               // template strings
+    const banned = [
+      /claudeBin\b/, /claudeIsNative\b/,
+      /_probeClaudePackage\b/, /claude-caps\.json\b/,
+      /@anthropic-ai\/claude-code\b/,
+      /--permission-mode\b/, /bypassPermissions\b/,
+      /--system-prompt-file\b/, /--add-dir\b/,
+    ];
+    for (const re of banned) {
+      assert.ok(!re.test(codeOnly),
+        `spawn-agent.js code body still references Claude-specific identifier matching ${re}: ${codeOnly.match(re)}`);
+    }
+  });
+
+  await test('spawn-agent.js exports parseSpawnArgs and buildSpawnInvocation', () => {
+    assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
+    assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
+  });
+}
+
 async function testClassifyInboxItem() {
   console.log('\n── shared.js — Knowledge Base Classification ──');
 
@@ -11661,36 +12053,65 @@ async function testSpawnAgentScript() {
       'Should not use spawnSync --help for capability detection (removed as bottleneck)');
   });
 
-  // Issue #1231: skills discovery across external repo worktrees
-  await test('spawn-agent.js passes --add-dir for minions project dir', () => {
+  // Issue #1231: skills discovery across external repo worktrees.
+  // After P-9c4f2d6a these are behavioral tests against the pure helpers —
+  // the literal --add-dir flag now lives in the Claude adapter, not in
+  // spawn-agent.js itself.
+  await test('spawn-agent.js sources skill-discovery dirs from minions repo + ~/.claude', () => {
+    // Smoke: spawn-agent.js still imports os and resolves minionsDir from __dirname.
+    // These are the inputs to the addDirs array passed to runtime.buildArgs().
     assert.ok(src.includes("require('os')"),
       'Should import os module for homedir()');
-    // Minions dir resolves up one from engine/ to repo root
     assert.ok(src.includes("path.resolve(__dirname, '..')"),
       'Should resolve minions project dir via path.resolve(__dirname, "..")');
-    assert.ok(src.includes("'--add-dir'"),
-      'Should pass --add-dir flag to claude CLI for skill discovery');
-  });
-
-  await test('spawn-agent.js passes --add-dir for user ~/.claude dir', () => {
-    // Must use os.homedir() per CLAUDE.md cross-platform rule, not $HOME/$USERPROFILE
     assert.ok(src.includes('os.homedir()'),
       'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
     assert.ok(src.includes("'.claude'"),
       'Should target the .claude subdirectory under home for global skill discovery');
   });
 
-  await test('spawn-agent.js includes --add-dir on both resume and non-resume paths', () => {
+  await test('addDirs flow through to Claude adapter as --add-dir flags', () => {
+    // Behavioral: the Claude adapter's buildArgs is the single source of truth for
+    // --add-dir emission. Verify spawn-agent's pure helper hands addDirs over
+    // unchanged so each one becomes a `--add-dir <path>` pair.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+    const idxs = inv.args.reduce((acc, a, i) => (a === '--add-dir' ? acc.concat(i) : acc), []);
+    assert.strictEqual(idxs.length, 2, 'expected exactly 2 --add-dir flags');
+    assert.strictEqual(inv.args[idxs[0] + 1], '/repo/minions');
+    assert.strictEqual(inv.args[idxs[1] + 1], '/home/user/.claude');
+  });
+
+  await test('addDirs are emitted on both resume (sessionId set) and non-resume (sessionId unset)', () => {
     // Agents run as fresh processes even on resume — CWD is still the external worktree,
-    // so skill discovery dirs must be passed in both branches of the cliArgs assignment.
-    const resumeIdx = src.indexOf('if (isResume)');
-    assert.ok(resumeIdx !== -1, 'isResume branch must exist');
-    const closeBrace = src.indexOf('\n}\n', resumeIdx);
-    assert.ok(closeBrace !== -1, 'isResume branch should end with closing brace');
-    const branchBlock = src.slice(resumeIdx, closeBrace);
-    const addDirSpreadMatches = branchBlock.match(/\.\.\.addDirArgs/g) || [];
-    assert.ok(addDirSpreadMatches.length >= 2,
-      'Both resume and non-resume cliArgs must spread ...addDirArgs (got ' + addDirSpreadMatches.length + ')');
+    // so skill discovery dirs must propagate regardless of session state.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const addDirs = ['/repo/minions', '/home/user/.claude'];
+
+    const fresh = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [], addDirs,
+    });
+    const resumed = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: { sessionId: 'sess-xyz' }, passthrough: [], addDirs,
+    });
+
+    const countAddDir = (args) => args.filter(a => a === '--add-dir').length;
+    assert.strictEqual(countAddDir(fresh.args), 2, 'non-resume path must include both --add-dir flags');
+    assert.strictEqual(countAddDir(resumed.args), 2, 'resume path must include both --add-dir flags');
   });
 }
 
@@ -12765,17 +13186,44 @@ async function testAgentSteering() {
       'Stale steering recovery should attempt process tree kill on Unix');
   });
 
-  await test('spawn-agent.js skips system prompt on resume', () => {
-    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
-    const resumeBlock = spawnSrc.slice(spawnSrc.indexOf('if (isResume)'), spawnSrc.indexOf('if (isResume)') + 200);
-    assert.ok(resumeBlock.includes("cliArgs = ['-p'") && !resumeBlock.includes('system-prompt'),
-      'Resume should use -p without --system-prompt-file (session has its own context)');
+  await test('spawn-agent.js skips --system-prompt-file on resume (behavioral via Claude adapter)', () => {
+    // Resume sessions have the system prompt baked in. spawn-agent's main()
+    // only sets opts.sysPromptFile when sessionId is unset. Verify the adapter
+    // correctly omits --system-prompt-file when opts.sysPromptFile is missing
+    // (the resume case after spawn-agent's gate).
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const resumed = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: 's',
+      opts: { sessionId: 'sess-xyz' }, // resume — main() does NOT inject sysPromptFile
+      passthrough: [],
+    });
+    assert.ok(!resumed.args.includes('--system-prompt-file'),
+      'Resume must omit --system-prompt-file (session has its own context)');
+    const i = resumed.args.indexOf('--resume');
+    assert.ok(i >= 0 && resumed.args[i + 1] === 'sess-xyz', 'resume sessionId must reach the adapter args');
   });
 
-  await test('steering prompt piped via stdin through spawn-agent', () => {
+  await test('steering prompt piped via stdin through spawn-agent (behavioral)', () => {
+    // After P-9c4f2d6a, the prompt-via-stdin path is gated by
+    // runtime.capabilities.promptViaArg. Claude's adapter has promptViaArg=false,
+    // so spawn-agent's main() pipes the prompt via stdin. Verify deliveryMode
+    // and that the source still wires up the stdin-write call.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'steer me', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'stdin', 'Claude must use stdin delivery');
+
     const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
-    assert.ok(spawnSrc.includes('proc.stdin.write(prompt)'),
-      'spawn-agent should write prompt to Claude CLI stdin');
+    assert.ok(/proc\.stdin\.write\(\s*invocation\.finalPrompt\s*\)/.test(spawnSrc),
+      'spawn-agent should write the adapter-built finalPrompt to stdin');
     assert.ok(spawnSrc.includes('proc.stdin.end()'),
       'spawn-agent should close stdin after writing prompt');
   });
@@ -17098,6 +17546,7 @@ async function main() {
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
     await testRuntimeAdapters();
+    await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();

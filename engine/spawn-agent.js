@@ -1,209 +1,289 @@
 #!/usr/bin/env node
 /**
- * spawn-agent.js — Wrapper to spawn claude CLI safely
- * Reads prompt and system prompt from files, avoiding shell metacharacter issues.
+ * spawn-agent.js — Runtime-agnostic wrapper for spawning a CLI runtime.
  *
- * Usage: node spawn-agent.js <prompt-file> <sysprompt-file> [claude-args...]
+ * As of P-9c4f2d6a this script knows nothing CLI-specific. All binary
+ * resolution, arg construction, and prompt prep flows through the runtime
+ * adapter resolved from `--runtime <name>` (defaults to 'claude').
+ *
+ * Usage:
+ *   node spawn-agent.js <prompt-file> <sysprompt-file> [--runtime <name>] [adapter opts...] [unknown args...]
+ *
+ * Recognized adapter opts (parsed and forwarded to `runtime.buildArgs(opts)`):
+ *   --model <m>                 → opts.model
+ *   --max-turns <n>             → opts.maxTurns
+ *   --allowedTools <list>       → opts.allowedTools
+ *   --effort <level>            → opts.effort
+ *   --resume <sessionId>        → opts.sessionId
+ *   --max-budget-usd <n>        → opts.maxBudget
+ *   --bare                      → opts.bare = true
+ *   --fallback-model <m>        → opts.fallbackModel
+ *   --output-format <f>         → opts.outputFormat
+ *   --verbose / --no-verbose    → opts.verbose
+ *   --stream <on|off>           → opts.stream                (Copilot)
+ *   --disable-builtin-mcps      → opts.disableBuiltinMcps    (Copilot)
+ *   --no-custom-instructions    → opts.suppressAgentsMd      (Copilot)
+ *   --enable-reasoning-summaries→ opts.reasoningSummaries    (Copilot)
+ *
+ * Legacy --permission-mode <X> is dropped: the new Claude adapter emits
+ * `--dangerously-skip-permissions` itself, so passing the legacy flag from a
+ * pre-P-2a6d9c4f engine.js would only produce a duplicate flag. Other unknown
+ * args are forwarded verbatim to the runtime binary as a defensive escape
+ * hatch.
  */
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { exec, runFile, cleanChildEnv, killGracefully, killImmediate, ts, safeJson, safeWrite } = require('./shared');
+const { runFile, cleanChildEnv, killGracefully, killImmediate, ts } = require('./shared');
+const { resolveRuntime } = require('./runtimes');
 
-const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
+// ─── Pure helpers (exported for tests) ──────────────────────────────────────
 
-if (!promptFile || !sysPromptFile) {
-  console.error('Usage: node spawn-agent.js <prompt-file> <sysprompt-file> [args...]');
-  process.exit(1);
-}
+/**
+ * Parse argv into { promptFile, sysPromptFile, runtimeName, opts, passthrough }.
+ * Returns null when the two positional args are missing.
+ */
+function parseSpawnArgs(argv) {
+  const args = (argv || []).slice(2);
+  if (args.length < 2) return null;
 
-const prompt = fs.readFileSync(promptFile, 'utf8');
-const sysPrompt = fs.readFileSync(sysPromptFile, 'utf8');
+  const promptFile = args[0];
+  const sysPromptFile = args[1];
+  let runtimeName = 'claude';
+  const opts = {};
+  const passthrough = [];
 
-const env = cleanChildEnv();
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i];
+    const peek = () => args[++i];
 
-// Resolve claude binary — supports both npm install (cli.js) and native installer (binary on PATH)
-let claudeBin;
-let claudeIsNative = false; // true = native binary, false = node cli.js
-const capsCachePath = path.join(__dirname, 'claude-caps.json');
-let _cacheHit = false;
-const isWin = process.platform === 'win32';
-
-// Probe a @anthropic-ai/claude-code package dir for the best binary: native exe > cli.js
-function _probeClaudePackage(pkgDir) {
-  const nativeBin = path.join(pkgDir, 'bin', isWin ? 'claude.exe' : 'claude');
-  if (fs.existsSync(nativeBin)) return { bin: nativeBin, native: true };
-  const cliJs = path.join(pkgDir, 'cli.js');
-  if (fs.existsSync(cliJs)) return { bin: cliJs, native: false };
-  return null;
-}
-
-// Fast path: use cached binary path if it still exists on disk
-const caps = safeJson(capsCachePath);
-if (caps?.claudeBin && fs.existsSync(caps.claudeBin)) {
-  claudeBin = caps.claudeBin;
-  claudeIsNative = !!caps.claudeIsNative;
-  _cacheHit = true;
-}
-
-// Strategy 1: Find `claude` on PATH, then probe known binary locations relative to the wrapper's directory
-if (!claudeBin) try {
-  const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
-  const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
-  if (which) {
-    // On non-Windows under Git Bash/MSYS, `which` returns POSIX paths (/c/Users/...) — normalize
-    const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
-    const ccPkg = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code');
-    const found = _probeClaudePackage(ccPkg);
-    if (found) {
-      claudeBin = found.bin;
-      claudeIsNative = found.native;
-    } else {
-      // Not an npm wrapper — on Windows, only trust .exe files (shell scripts can't be spawned directly)
-      if (!isWin || path.extname(whichNative).toLowerCase() === '.exe') {
-        claudeBin = whichNative;
-        claudeIsNative = true;
-      }
+    switch (a) {
+      case '--runtime':                    runtimeName = peek(); break;
+      case '--model':                      opts.model = peek(); break;
+      case '--max-turns':                  opts.maxTurns = peek(); break;
+      case '--allowedTools':               opts.allowedTools = peek(); break;
+      case '--effort':                     opts.effort = peek(); break;
+      case '--resume':                     opts.sessionId = peek(); break;
+      case '--max-budget-usd':             opts.maxBudget = peek(); break;
+      case '--bare':                       opts.bare = true; break;
+      case '--fallback-model':             opts.fallbackModel = peek(); break;
+      case '--output-format':              opts.outputFormat = peek(); break;
+      case '--verbose':                    opts.verbose = true; break;
+      case '--no-verbose':                 opts.verbose = false; break;
+      case '--stream':                     opts.stream = peek(); break;
+      case '--disable-builtin-mcps':       opts.disableBuiltinMcps = true; break;
+      case '--no-custom-instructions':     opts.suppressAgentsMd = true; break;
+      case '--enable-reasoning-summaries': opts.reasoningSummaries = true; break;
+      // LEGACY: dropped — the runtime adapter emits its own permission flag.
+      // Pre-P-2a6d9c4f engine.js still passes `--permission-mode bypassPermissions`;
+      // letting it through would duplicate the permission flag for Claude.
+      case '--permission-mode':            i++; break;
+      default:                             passthrough.push(a); break;
     }
   }
-} catch { /* optional */ }
 
-// Strategy 2: Known node_modules locations (npm global installs)
-if (!claudeBin) {
-  const prefixes = [
-    process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code') : '',
-    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code') : '',
-    '/usr/local/lib/node_modules/@anthropic-ai/claude-code',
-    '/usr/lib/node_modules/@anthropic-ai/claude-code',
-    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code',
-    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code'),
-    path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code'),
-    path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code'),
-  ].filter(Boolean);
-  for (const pkg of prefixes) {
+  return { promptFile, sysPromptFile, runtimeName, opts, passthrough };
+}
+
+/**
+ * Compose the final spawn invocation. Pure: no FS, no spawn. Caller is
+ * responsible for writing the sysprompt tmp file (when `sysPromptFile` is
+ * supplied via opts) and for cleanup.
+ *
+ * Returns:
+ *   {
+ *     bin, leadingArgs, args,         // → spawn(execPath OR bin, [bin?, ...leadingArgs, ...args])
+ *     deliveryMode,                   // 'stdin' | 'arg' (per runtime.capabilities.promptViaArg)
+ *     finalPrompt,                    // adapter-built prompt text (may include sysprompt for some runtimes)
+ *     usingNodeShim,                  // true → runtime returned a non-native binary (Claude cli.js)
+ *   }
+ */
+function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, opts, passthrough, addDirs }) {
+  const finalPrompt = runtime.buildPrompt(promptText, sysPromptText);
+  const adapterOpts = { ...opts };
+  if (Array.isArray(addDirs) && addDirs.length) adapterOpts.addDirs = addDirs;
+  // When the adapter delivers the prompt via argv, hand it the prompt so it
+  // can splice `--prompt <text>` into its args.
+  if (runtime.capabilities && runtime.capabilities.promptViaArg) {
+    adapterOpts.prompt = finalPrompt;
+  }
+  const adapterArgs = runtime.buildArgs(adapterOpts);
+  const { bin, native, leadingArgs = [] } = resolved;
+  return {
+    bin,
+    native,
+    leadingArgs,
+    args: [...adapterArgs, ...(passthrough || [])],
+    deliveryMode: runtime.capabilities && runtime.capabilities.promptViaArg ? 'arg' : 'stdin',
+    finalPrompt,
+    usingNodeShim: !native,
+  };
+}
+
+// ─── Main script execution ──────────────────────────────────────────────────
+
+function _installHint(name) {
+  if (name === 'claude') return 'install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
+  if (name === 'copilot') return 'install via WinGet (winget install GitHub.cli && gh extension install github/gh-copilot) or download standalone';
+  return `${name} CLI binary not found on PATH`;
+}
+
+function main() {
+  const parsed = parseSpawnArgs(process.argv);
+  if (!parsed) {
+    console.error('Usage: node spawn-agent.js <prompt-file> <sysprompt-file> [--runtime <name>] [args...]');
+    process.exit(1);
+  }
+  const { promptFile, sysPromptFile, runtimeName, opts, passthrough } = parsed;
+
+  const env = cleanChildEnv();
+
+  let runtime;
+  try { runtime = resolveRuntime(runtimeName); }
+  catch (err) {
+    console.error(`FATAL: ${err.message}`);
+    process.exit(78);
+  }
+
+  const promptText = fs.readFileSync(promptFile, 'utf8');
+  const sysPromptText = fs.readFileSync(sysPromptFile, 'utf8');
+
+  // Sys prompt tmp file — only when (a) NOT resuming and (b) the adapter
+  // accepts a system prompt as a separate file. For runtimes that bake the
+  // system prompt into the user prompt (e.g. Copilot), sysPromptText is
+  // already merged inside `runtime.buildPrompt(prompt, sys)`.
+  const isResume = opts.sessionId != null;
+  const sysTmpPath = sysPromptFile + '.tmp';
+  const wantsSystemPromptFile = !isResume && runtime.capabilities && runtime.capabilities.systemPromptFile;
+  if (wantsSystemPromptFile) {
+    fs.writeFileSync(sysTmpPath, sysPromptText);
+    opts.sysPromptFile = sysTmpPath;
+  }
+
+  // Skill discovery dirs — agents run with CWD set to an external repo
+  // worktree, so skills in the minions repo and the user's global ~/.claude
+  // dir are otherwise invisible. The adapter decides how to surface them
+  // (Claude → `--add-dir <path>`; Copilot → ignored).
+  const minionsDir = path.resolve(__dirname, '..');
+  const userClaudeDir = path.join(os.homedir(), '.claude');
+  const addDirs = [minionsDir];
+  if (fs.existsSync(userClaudeDir) && path.resolve(userClaudeDir) !== path.resolve(minionsDir)) {
+    addDirs.push(userClaudeDir);
+  }
+
+  let resolved;
+  try { resolved = runtime.resolveBinary({ env }); }
+  catch (err) {
+    console.error(`FATAL: ${runtimeName} runtime resolveBinary failed: ${err.message}`);
+    process.exit(78);
+  }
+  if (!resolved) {
+    console.error(`FATAL: Cannot find ${runtimeName} CLI — ${_installHint(runtimeName)}`);
+    process.exit(78);
+  }
+
+  const invocation = buildSpawnInvocation({
+    runtime, resolved,
+    promptText, sysPromptText,
+    opts, passthrough, addDirs,
+  });
+
+  // Debug log (async — not on critical path)
+  const tmpDir = path.join(__dirname, 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const debugPath = path.join(tmpDir, 'spawn-debug.log');
+  fs.writeFile(
+    debugPath,
+    `spawn-agent.js at ${ts()}\nruntime=${runtimeName}\nbin=${invocation.bin}\nnative=${invocation.native}\n` +
+      `leadingArgs=${invocation.leadingArgs.join(' ')}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\n` +
+      `delivery=${invocation.deliveryMode}\nargs=${invocation.args.join(' ').slice(0, 800)}\n`,
+    () => {},
+  );
+
+  // Build the actual exec form. If the runtime returns a non-native binary
+  // (e.g. Claude's cli.js), shim it under the current node process.
+  const execBin = invocation.native ? invocation.bin : process.execPath;
+  const execArgs = invocation.native
+    ? [...invocation.leadingArgs, ...invocation.args]
+    : [invocation.bin, ...invocation.leadingArgs, ...invocation.args];
+
+  const proc = runFile(execBin, execArgs, { stdio: ['pipe', 'pipe', 'pipe'], env });
+
+  fs.appendFile(debugPath, `PID=${proc.pid || 'none'}\n`, () => {});
+
+  // Write PID file for parent engine to verify spawn (async — engine checks after 5s)
+  const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
+  fs.writeFile(pidFile, String(proc.pid || ''), () => {});
+
+  // Deliver the prompt — stdin (Claude default) vs argv (handled by adapter).
+  if (invocation.deliveryMode === 'stdin') {
     try {
-      const found = _probeClaudePackage(pkg);
-      if (found) { claudeBin = found.bin; claudeIsNative = found.native; break; }
-    } catch {}
+      proc.stdin.write(invocation.finalPrompt);
+      proc.stdin.end();
+    } catch (err) {
+      console.error(`FATAL: stdin write failed (broken pipe): ${err.message}`);
+      fs.appendFileSync(debugPath, `STDIN ERROR: ${err.message}\n`);
+      killImmediate(proc);
+      process.exit(1);
+    }
+  } else {
+    // Adapter has already spliced the prompt into argv (--prompt <text>).
+    // Close stdin so the runtime doesn't wait on it.
+    try { proc.stdin.end(); } catch { /* may already be closed */ }
   }
-}
 
-// Strategy 3: npm root -g
-if (!claudeBin) {
-  try {
-    const globalRoot = exec('npm root -g', { encoding: 'utf8', env, timeout: 10000 }).trim();
-    const found = _probeClaudePackage(path.join(globalRoot, '@anthropic-ai', 'claude-code'));
-    if (found) { claudeBin = found.bin; claudeIsNative = found.native; }
-  } catch { /* optional */ }
-}
-
-// Debug log (async — not on critical path)
-const tmpDir = path.join(__dirname, 'tmp');
-if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-const debugPath = path.join(tmpDir, 'spawn-debug.log');
-fs.writeFile(debugPath, `spawn-agent.js at ${ts()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`, () => {});
-
-// Skill discovery dirs — agents run with CWD set to an external repo worktree,
-// so skills in the minions repo and the user's global ~/.claude dir are otherwise
-// invisible. Pass them via --add-dir on every invocation (resume included, since
-// each resume spawns a fresh CLI process with the same CWD). See issue #1231.
-const minionsDir = path.resolve(__dirname, '..');
-const userClaudeDir = path.join(os.homedir(), '.claude');
-const addDirArgs = ['--add-dir', minionsDir];
-if (fs.existsSync(userClaudeDir) && path.resolve(userClaudeDir) !== path.resolve(minionsDir)) {
-  addDirArgs.push('--add-dir', userClaudeDir);
-}
-
-// When resuming a session, skip system prompt (it's baked into the session)
-const isResume = extraArgs.includes('--resume');
-const sysTmpPath = sysPromptFile + '.tmp';
-let cliArgs;
-if (isResume) {
-  cliArgs = ['-p', ...addDirArgs, ...extraArgs];
-} else {
-  // Pass system prompt via file to avoid ENAMETOOLONG on Windows (32KB arg limit)
-  fs.writeFileSync(sysTmpPath, sysPrompt);
-  cliArgs = ['-p', '--system-prompt-file', sysTmpPath, ...addDirArgs, ...extraArgs];
-}
-
-if (!claudeBin) {
-  const msg = 'FATAL: Cannot find Claude Code CLI — install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
-  fs.appendFileSync(debugPath, msg + '\n');
-  console.error(msg);
-  process.exit(78); // 78 = configuration error (distinct from runtime failures)
-}
-
-// Save binary path cache on first resolution (subsequent spawns use fast path)
-let actualArgs = cliArgs;
-if (!_cacheHit) {
-  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative }); } catch {}
-}
-
-const proc = claudeIsNative
-  ? runFile(claudeBin, actualArgs, { stdio: ['pipe', 'pipe', 'pipe'], env })
-  : runFile(process.execPath, [claudeBin, ...actualArgs], { stdio: ['pipe', 'pipe', 'pipe'], env });
-
-fs.appendFile(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`, () => {});
-
-// Write PID file for parent engine to verify spawn (async — engine checks after 5s)
-const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
-fs.writeFile(pidFile, String(proc.pid || ''), () => {});
-
-// Send prompt via stdin
-try {
-  proc.stdin.write(prompt);
-  proc.stdin.end();
-} catch (err) {
-  console.error(`FATAL: stdin write failed (broken pipe): ${err.message}`);
-  fs.appendFileSync(debugPath, `STDIN ERROR: ${err.message}\n`);
-  killImmediate(proc);
-  process.exit(1);
-}
-
-// Clean up temp file (only created for non-resume sessions)
-if (!isResume) setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch { /* cleanup */ } }, 5000);
-
-// Register exit handler to clean up orphaned temp files (system prompt tmp)
-function _cleanupSpawnTempFiles() {
-  try { fs.unlinkSync(sysTmpPath); } catch { /* may already be cleaned */ }
-}
-process.on('exit', _cleanupSpawnTempFiles);
-process.on('SIGTERM', () => { _cleanupSpawnTempFiles(); process.exit(143); });
-
-// Capture stderr separately for debugging
-let stderrBuf = '';
-proc.stderr.on('data', (chunk) => {
-  stderrBuf += chunk.toString();
-  process.stderr.write(chunk);
-});
-
-// Pipe stdout to parent
-proc.stdout.pipe(process.stdout);
-
-// MCP startup timeout: kill if no stdout within 3 minutes (MCP servers downloading/starting)
-const MCP_STARTUP_TIMEOUT = 180000; // 3 minutes
-let gotFirstOutput = false;
-const startupTimer = setTimeout(() => {
-  if (!gotFirstOutput) {
-    const msg = `TIMEOUT: Claude CLI produced no output after ${MCP_STARTUP_TIMEOUT / 1000}s (likely MCP server startup stall)`;
-    console.error(msg);
-    fs.appendFileSync(debugPath, msg + '\n');
-    killGracefully(proc);
+  // Clean up sys tmp (only created for non-resume sessions on adapters that
+  // use --system-prompt-file).
+  if (wantsSystemPromptFile) {
+    setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch { /* cleanup */ } }, 5000);
   }
-}, MCP_STARTUP_TIMEOUT);
-proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });
 
-proc.on('close', (code) => {
-  clearTimeout(startupTimer);
-  // Write process-exit sentinel to stdout so the engine can detect completion (#716).
-  // This is a backup for cases where Claude CLI crashes without writing a result line.
-  // process.stdout.write is synchronous for pipes, so it will be captured by the parent.
-  try { process.stdout.write(`\n[process-exit] code=${code}\n`); } catch { /* stdout may be closed */ }
-  fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
-  process.exit(code || 0);
-});
-proc.on('error', (err) => {
-  fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
-  process.exit(1);
-});
+  // Register exit handler to clean up orphaned temp files
+  function _cleanupSpawnTempFiles() {
+    if (wantsSystemPromptFile) {
+      try { fs.unlinkSync(sysTmpPath); } catch { /* may already be cleaned */ }
+    }
+  }
+  process.on('exit', _cleanupSpawnTempFiles);
+  process.on('SIGTERM', () => { _cleanupSpawnTempFiles(); process.exit(143); });
+
+  // Capture stderr separately for debugging
+  let stderrBuf = '';
+  proc.stderr.on('data', (chunk) => {
+    stderrBuf += chunk.toString();
+    process.stderr.write(chunk);
+  });
+
+  // Pipe stdout to parent
+  proc.stdout.pipe(process.stdout);
+
+  // MCP startup timeout: kill if no stdout within 3 minutes
+  const MCP_STARTUP_TIMEOUT = 180000; // 3 minutes
+  let gotFirstOutput = false;
+  const startupTimer = setTimeout(() => {
+    if (!gotFirstOutput) {
+      const msg = `TIMEOUT: ${runtimeName} CLI produced no output after ${MCP_STARTUP_TIMEOUT / 1000}s (likely MCP server startup stall)`;
+      console.error(msg);
+      fs.appendFileSync(debugPath, msg + '\n');
+      killGracefully(proc);
+    }
+  }, MCP_STARTUP_TIMEOUT);
+  proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });
+
+  proc.on('close', (code) => {
+    clearTimeout(startupTimer);
+    // Write process-exit sentinel to stdout so the engine can detect completion (#716).
+    try { process.stdout.write(`\n[process-exit] code=${code}\n`); } catch { /* stdout may be closed */ }
+    fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
+    process.exit(code || 0);
+  });
+  proc.on('error', (err) => {
+    fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseSpawnArgs, buildSpawnInvocation };
+
+if (require.main === module) main();

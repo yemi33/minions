@@ -182,9 +182,9 @@ const MODELS_CACHE = path.join(ENGINE_DIR, 'claude-models.json');
  *   - spawn-agent.js:118-128 (--system-prompt-file injection on first turn)
  *
  * Per the plan: emits `--dangerously-skip-permissions` (the modern Claude flag)
- * instead of the old `--permission-mode bypassPermissions`. `spawn-agent.js`
- * still owns `--add-dir` injection and prompt-via-stdin; the adapter does NOT
- * duplicate those concerns.
+ * instead of the old `--permission-mode bypassPermissions`. The adapter owns
+ * `--add-dir` injection too (when `opts.addDirs` is supplied); spawn-agent.js
+ * just hands the dirs over so the wrapper itself stays runtime-agnostic.
  *
  * Conditional flags are emitted ONLY when their corresponding capability is
  * truthy. Copilot-only flags (`stream`, `disableBuiltinMcps`,
@@ -200,6 +200,7 @@ function buildArgs(opts = {}) {
     effort,
     sessionId,
     sysPromptFile,
+    addDirs,
     outputFormat = 'stream-json',
     verbose = true,
     maxBudget,
@@ -212,6 +213,11 @@ function buildArgs(opts = {}) {
   if (model) args.push('--model', String(model));
   if (verbose) args.push('--verbose');
   if (sysPromptFile) args.push('--system-prompt-file', sysPromptFile);
+  if (Array.isArray(addDirs)) {
+    for (const d of addDirs) {
+      if (d) args.push('--add-dir', String(d));
+    }
+  }
   if (allowedTools) args.push('--allowedTools', allowedTools);
   if (effort) args.push('--effort', String(effort));
   args.push('--dangerously-skip-permissions');
