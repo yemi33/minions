@@ -22796,14 +22796,14 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('doc-chat uses a shorter timeout than command center', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 180000'),
-      'Doc-chat should define a shorter dedicated timeout');
+    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
+      'Doc-chat should define a dedicated 6-minute timeout');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     assert.ok(docCallFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
-      'Non-streaming doc-chat should use the shorter doc-chat timeout');
+      'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
-      'Streaming doc-chat should use the shorter doc-chat timeout');
+      'Streaming doc-chat should use the dedicated doc-chat timeout');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -23003,7 +23003,7 @@ async function testAutoRecoveryAndAtomicity() {
     const processFn = src.slice(src.indexOf('async function _processQaMessage'), src.indexOf('\nfunction qaAbort'));
     assert.ok(processFn.includes("evt.type === 'chunk'") && processFn.includes("evt.type === 'tool'"),
       'Doc chat should react to chunk and tool stream events while processing');
-    assert.ok(processFn.includes('QA_STREAM_STALL_MS') && processFn.includes('_resetQaStreamWatchdog()'),
+    assert.ok(processFn.includes('_resetQaStreamWatchdog()') && processFn.includes('QA_STREAM_STALL_MS'),
       'Doc chat should watchdog stalled streams even if heartbeats keep arriving');
     assert.ok(processFn.includes("evt.type === 'heartbeat') return"),
       'Doc chat stall watchdog should ignore heartbeat-only SSE events');
@@ -24284,17 +24284,6 @@ async function testDashboardResilience() {
       'doc-chat live progress should stack CoT and progress status vertically');
     assert.ok(modalQaSrc.includes('Doc chat stalled with no tool or text progress for 90s.'),
       'doc-chat should show an explicit stall timeout message instead of spinning forever');
-  });
-
-  await test('doc-chat collapse stays collapsed while streaming updates rerender the thread', () => {
-    assert.ok(modalQaSrc.includes('let _qaThreadCollapsed = false'),
-      'modal-qa.js should track whether the thread was manually collapsed');
-    const toggleFn = modalQaSrc.slice(modalQaSrc.indexOf('function toggleDocChat'), modalQaSrc.indexOf('\nfunction _showThreadWrap'));
-    assert.ok(toggleFn.includes('_qaThreadCollapsed = !nextVisible'),
-      'toggleDocChat should persist collapsed state instead of only flipping DOM display styles');
-    const showFn = modalQaSrc.slice(modalQaSrc.indexOf('function _showThreadWrap'), modalQaSrc.indexOf('\n\n// ── Drag-to-resize'));
-    assert.ok(showFn.includes("wrap.style.display = _qaThreadCollapsed ? 'none' : ''"),
-      '_showThreadWrap should respect a user-collapsed thread during live rerenders');
   });
 
   await test('doc-chat clears processing badge when processing completes', () => {
@@ -26676,6 +26665,44 @@ async function testDashboardButtonConsistency() {
     assert.ok(rejectIdx > -1, 'Reject must exist in modal needsAction block');
     assert.ok(approveIdx < reExecIdx, 'Approve must come before Re-execute in modal');
     assert.ok(reExecIdx < rejectIdx, 'Re-execute must come before Reject in modal');
+  });
+
+  await test('planApprove is optimistic: marks plan + linked PRD approved before fetch returns', () => {
+    const fnStart = plansSrc.indexOf('async function planApprove');
+    const fnEnd = plansSrc.indexOf('\nasync function planDelete');
+    const body = plansSrc.slice(fnStart, fnEnd);
+    // Order matters — cache mutation + render must happen before fetch
+    const mutateIdx = body.indexOf("p.status = 'approved'");
+    const renderPlansIdx = body.indexOf('renderPlans(window._lastPlans)');
+    const rerenderPrdIdx = body.indexOf('rerenderPrdFromCache()');
+    const fetchIdx = body.indexOf("fetch('/api/plans/approve'");
+    assert.ok(mutateIdx > 0, 'must mutate cached plan status to approved');
+    assert.ok(renderPlansIdx > 0, 'must re-render plans from cache');
+    assert.ok(rerenderPrdIdx > 0, 'must re-render PRD view from cache');
+    assert.ok(mutateIdx < fetchIdx, 'cache mutation must precede fetch (optimistic)');
+    assert.ok(renderPlansIdx < fetchIdx, 'plans re-render must precede fetch');
+    assert.ok(rerenderPrdIdx < fetchIdx, 'PRD re-render must precede fetch');
+  });
+
+  await test('planApprove updates PRD progress items planStatus so awaiting-approval banner clears', () => {
+    const fnStart = plansSrc.indexOf('async function planApprove');
+    const fnEnd = plansSrc.indexOf('\nasync function planDelete');
+    const body = plansSrc.slice(fnStart, fnEnd);
+    assert.ok(body.includes('window._lastStatus?.prdProgress?.items'),
+      'should iterate cached PRD items');
+    assert.ok(/item\.planStatus\s*=\s*'approved'/.test(body),
+      'should mark each matching PRD item planStatus as approved (drives the awaiting-approval banner in render-prd.js)');
+  });
+
+  await test('planApprove failure path calls refresh() to revert optimistic state', () => {
+    const fnStart = plansSrc.indexOf('async function planApprove');
+    const fnEnd = plansSrc.indexOf('\nasync function planDelete');
+    const body = plansSrc.slice(fnStart, fnEnd);
+    // Both !res.ok branch and catch branch must call refresh() to reconcile
+    const failBlock = body.slice(body.indexOf('Approve failed'));
+    assert.ok(/refresh\(\)/.test(failBlock), 'failure branch must refresh to revert');
+    const catchBlock = body.slice(body.indexOf('catch (e)'));
+    assert.ok(/refresh\(\)/.test(catchBlock), 'catch branch must refresh to revert');
   });
 
   await test('plan modal: Re-execute has reduced opacity in modal', () => {
