@@ -29,28 +29,169 @@ function handleCommand(cmd, args) {
   } else {
     console.log(`Unknown command: ${cmd}`);
     console.log('Commands:');
-    console.log('  start            Start engine daemon');
-    console.log('  stop             Stop engine');
-    console.log('  pause / resume   Pause/resume dispatching');
-    console.log('  status           Show engine + agent state');
-    console.log('  queue            Show dispatch queue');
-    console.log('  sources          Show work source status');
-    console.log('  discover         Dry-run work discovery');
-    console.log('  dispatch         Force a dispatch cycle');
-    console.log('  spawn <a> <p>    Manually spawn agent with prompt');
-    console.log('  work <title> [o] Add to work-items.json queue');
-    console.log('  plan <src> [p]   Generate PRD from a plan (file or text)');
-    console.log('  kill             Kill all active agents, reset to pending');
-    console.log('  complete <id>    Mark a dispatch as done');
-    console.log('  cleanup          Clean temp files, worktrees, zombies');
-    console.log('  mcp-sync         Sync MCP servers from ~/.claude.json');
-    console.log('  doctor           Check prerequisites and runtime health');
+    console.log('  start [--cli R] [--model M]   Start engine daemon (R = registered runtime)');
+    console.log('  stop                          Stop engine');
+    console.log('  pause / resume                Pause/resume dispatching');
+    console.log('  status                        Show engine + agent state + fleet config');
+    console.log('  queue                         Show dispatch queue');
+    console.log('  sources                       Show work source status');
+    console.log('  discover                      Dry-run work discovery');
+    console.log('  dispatch                      Force a dispatch cycle');
+    console.log('  spawn <a> <p>                 Manually spawn agent with prompt');
+    console.log('  work <title> [o]              Add to work-items.json queue');
+    console.log('  plan <src> [p]                Generate PRD from a plan (file or text)');
+    console.log('  kill                          Kill all active agents, reset to pending');
+    console.log('  complete <id>                 Mark a dispatch as done');
+    console.log('  cleanup                       Clean temp files, worktrees, zombies');
+    console.log('  mcp-sync                      Sync MCP servers from ~/.claude.json');
+    console.log('  doctor                        Check prerequisites and runtime health');
+    console.log('  config set-cli <R> [--model M]  Persist defaultCli/defaultModel without starting');
     process.exit(1);
   }
 }
 
+// ─── Runtime fleet flags (--cli / --model) ───────────────────────────────────
+//
+// Shared by `start`, `restart`, and `config set-cli`. Single source of truth
+// for: flag parsing, runtime validation, incompatibility heuristics, and the
+// atomic config write. AC: "All config writes use mutateJsonFileLocked on
+// config.json" — the helper below is the only caller that mutates fleet keys.
+
+/**
+ * Strip `--cli <name>` / `--model <value>` from `args` (in-place). Returns
+ * `{ cli, model, modelExplicit, errors }`. `modelExplicit` distinguishes
+ * "user passed --model with empty string" (clear) from "no flag" (no-op).
+ *
+ * Errors (e.g. `--cli` with no follow-up token) are collected for the caller
+ * to print + exit-non-zero, instead of throwing — matches existing CLI flow.
+ */
+function _parseRuntimeFlags(args) {
+  const out = { cli: undefined, model: undefined, modelExplicit: false, errors: [] };
+  let i = 0;
+  while (i < args.length) {
+    const a = args[i];
+    if (a === '--cli') {
+      if (i + 1 >= args.length) { out.errors.push('--cli requires a value'); args.splice(i, 1); break; }
+      out.cli = String(args[i + 1]);
+      args.splice(i, 2);
+    } else if (a === '--model') {
+      if (i + 1 >= args.length) { out.errors.push('--model requires a value (use --model "" to clear)'); args.splice(i, 1); break; }
+      out.model = String(args[i + 1]);
+      out.modelExplicit = true;
+      args.splice(i, 2);
+    } else {
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Heuristic flag for "this model is obviously wrong for this runtime". Used
+ * to surface the "pass --model '' to clear" hint when a user switches CLIs
+ * but leaves a stale model behind. Errs on the side of false-negatives —
+ * unknown runtime → no opinion, unknown model on Copilot → no opinion.
+ */
+function _modelLooksIncompatible(runtime, model) {
+  if (!model) return false;
+  const m = String(model).toLowerCase();
+  if (runtime === 'claude') {
+    if (m.startsWith('claude-')) return false;
+    if (m === 'sonnet' || m === 'opus' || m === 'haiku') return false;
+    return true; // gpt-*, o3-*, codex, etc. — wrong CLI for these
+  }
+  if (runtime === 'copilot') {
+    // Copilot accepts the full catalog by ID; only Claude shorthands are wrong.
+    return m === 'sonnet' || m === 'opus' || m === 'haiku';
+  }
+  return false;
+}
+
+/**
+ * Apply parsed `--cli`/`--model` flags to `config.json`. Returns
+ * `{ warnings, applied }`. Throws when the runtime name is unknown — caller
+ * decides whether to exit (start/restart/config-set-cli all do).
+ *
+ * Per-agent `cli` / `model` overrides under `config.agents.*` are NEVER
+ * touched. Only `engine.defaultCli`, `engine.defaultModel`, `engine.ccCli`,
+ * `engine.ccModel` are written. CC overrides are cleared on every fleet
+ * change so the user's intent ("switch the whole fleet to X") is honored.
+ */
+function _applyRuntimeFlags({ cli, model, modelExplicit }) {
+  const warnings = [];
+  if (cli === undefined && !modelExplicit) {
+    return { warnings, applied: false };
+  }
+
+  // Validate the runtime name BEFORE touching disk so typos fail loudly with
+  // a list of registered runtimes — same UX shape as resolveRuntime() throws.
+  let registered = [];
+  try { registered = require('./runtimes').listRuntimes(); }
+  catch { /* registry missing during partial install — skip validation */ }
+  if (cli !== undefined && registered.length > 0 && !registered.includes(cli)) {
+    const err = new Error(`Unknown CLI runtime "${cli}". Registered runtimes: ${registered.join(', ')}`);
+    err._unknownCli = true;
+    throw err;
+  }
+
+  const CONFIG_PATH = path.join(shared.MINIONS_DIR, 'config.json');
+  shared.mutateJsonFileLocked(CONFIG_PATH, (cfg) => {
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return cfg;
+    cfg.engine = cfg.engine || {};
+    const e = cfg.engine;
+
+    if (cli !== undefined) {
+      // Effective post-write defaultModel: if the same call also passed --model,
+      // use that value; otherwise the existing on-disk defaultModel wins.
+      let effectiveModel;
+      if (modelExplicit) effectiveModel = (model === '' ? undefined : model);
+      else effectiveModel = e.defaultModel;
+      if (_modelLooksIncompatible(cli, effectiveModel)) {
+        warnings.push(`defaultModel "${effectiveModel}" appears incompatible with --cli ${cli}. Pass --model '' to clear it.`);
+      }
+
+      // Surface the implicit clear of an explicitly-set ccCli before doing it,
+      // so users discover that fleet flags reset CC overrides.
+      if (e.ccCli !== undefined && e.ccCli !== null && e.ccCli !== '') {
+        warnings.push(`Clearing engine.ccCli (was "${e.ccCli}") so CC inherits the new defaultCli.`);
+      }
+
+      e.defaultCli = cli;
+      delete e.ccCli;
+    }
+
+    if (modelExplicit) {
+      if (model === '') delete e.defaultModel;
+      else e.defaultModel = model;
+      delete e.ccModel;
+    }
+    return cfg;
+  });
+
+  return { warnings, applied: true };
+}
+
 const commands = {
-  start() {
+  start(...startArgs) {
+    // Apply --cli / --model fleet flags before any engine wiring touches
+    // config — the rest of start() reads config.engine assuming it's already
+    // been mutated. Unknown runtime exits non-zero with the registered list.
+    const flags = _parseRuntimeFlags(startArgs);
+    if (flags.errors.length > 0) {
+      for (const msg of flags.errors) console.error(`error: ${msg}`);
+      process.exit(2); // 2 = misuse of shell builtins / bad CLI args
+    }
+    try {
+      const { warnings } = _applyRuntimeFlags(flags);
+      for (const w of warnings) console.log(`  ! ${w}`);
+    } catch (err) {
+      if (err && err._unknownCli) {
+        console.error(`error: ${err.message}`);
+        process.exit(2);
+      }
+      throw err;
+    }
+
     // Startup state-file size guard (#1167): dispatch.json / cooldowns.json
     // bloated past 100 MB silently OOMed V8 on JSON.parse at startup. Fail fast
     // with an actionable message instead.
@@ -66,11 +207,21 @@ const commands = {
     // Run preflight checks (warn but don't block — engine may still be useful)
     try {
       const { runPreflight, printPreflight } = require('./preflight');
-      const { results } = runPreflight();
+      // Pass config so runtime-fleet warnings (P-3b8e5f1d) can fire pre-start.
+      // getConfig() is cheap (cached); failure here is non-fatal — preflight
+      // simply skips the runtime-config warnings when config is missing.
+      let preflightConfig = null;
+      try { preflightConfig = getConfig(); } catch { /* missing config handled below */ }
+      const { results } = runPreflight({ config: preflightConfig });
       const hasFatal = results.some(r => r.ok === false);
       if (hasFatal) {
         printPreflight(results, { label: 'Preflight checks' });
         console.log('  Some checks failed — agents may not work. Run `minions doctor` for details.\n');
+      } else {
+        // Even on no-fatal startup, surface fleet-config warnings so users see
+        // them inline during `minions start` (rather than only via doctor).
+        const warns = results.filter(r => r.ok === 'warn');
+        for (const w of warns) console.log(`  ! ${w.name}: ${w.message}`);
       }
     } catch (e) { console.error('preflight:', e.message); }
 
@@ -125,6 +276,11 @@ const commands = {
     console.log(`Engine started (PID: ${process.pid})`);
 
     const config = getConfig();
+    // P-3b8e5f1d: promote legacy `engine.ccModel` to `engine.defaultModel` in
+    // memory so single-model installs keep working after the runtime fleet
+    // refactor. No disk write — the on-disk config still carries `ccModel`.
+    try { shared.applyLegacyCcModelMigration(config, { logger: e.log }); }
+    catch (err) { e.log('warn', `legacy ccModel migration failed: ${err.message}`); }
     const interval = config.engine?.tickInterval || shared.ENGINE_DEFAULTS.tickInterval;
 
     const { getProjects } = require('./shared');
@@ -621,6 +777,34 @@ const commands = {
     const healthyProjects = projects.filter(p => p.localPath && fs.existsSync(path.resolve(p.localPath)));
     const missingProjects = projects.filter(p => !p.localPath || !fs.existsSync(path.resolve(p.localPath)));
     console.log(`Projects: ${healthyProjects.length} linked${missingProjects.length ? ` (${missingProjects.length} path missing)` : ''}`);
+
+    // Fleet runtime config — what every spawn defaults to + every override.
+    // Only fields that diverge from ENGINE_DEFAULTS are listed under "Flags",
+    // so a clean install prints nothing extra and a tweaked install reads at
+    // a glance. Per AC: defaultCli/defaultModel always shown, non-default
+    // flags + CC overrides shown when set.
+    const eng = config.engine || {};
+    const defaultCli = shared.resolveAgentCli(null, eng);
+    const defaultModelResolved = shared.resolveAgentModel(null, eng);
+    console.log(`Default CLI: ${defaultCli}${eng.defaultCli ? '' : ' (default)'}`);
+    console.log(`Default model: ${defaultModelResolved || '(runtime default)'}`);
+    const ccCliOverride = (eng.ccCli !== undefined && eng.ccCli !== null && eng.ccCli !== '') ? String(eng.ccCli) : null;
+    const ccModelOverride = (eng.ccModel !== undefined && eng.ccModel !== null && eng.ccModel !== '') ? String(eng.ccModel) : null;
+    if (ccCliOverride || ccModelOverride) {
+      console.log(`CC overrides: cli=${ccCliOverride || '(inherit)'}, model=${ccModelOverride || '(inherit)'}`);
+    }
+    const flagFields = [
+      'claudeBareMode', 'claudeFallbackModel',
+      'copilotDisableBuiltinMcps', 'copilotSuppressAgentsMd', 'copilotStreamMode', 'copilotReasoningSummaries',
+      'maxBudgetUsd', 'disableModelDiscovery',
+    ];
+    const activeFlags = [];
+    for (const f of flagFields) {
+      if (eng[f] === undefined || eng[f] === null || eng[f] === '') continue;
+      if (eng[f] === shared.ENGINE_DEFAULTS[f]) continue;
+      activeFlags.push(`${f}=${JSON.stringify(eng[f])}`);
+    }
+    if (activeFlags.length > 0) console.log(`Flags: ${activeFlags.join(', ')}`);
     console.log('');
 
     console.log('Agents:');
@@ -1026,6 +1210,54 @@ const commands = {
     doctor(MINIONS_DIR).then(ok => {
       if (!ok) process.exit(1);
     });
+  },
+
+  config(...configArgs) {
+    const sub = configArgs[0];
+    const rest = configArgs.slice(1);
+    if (sub === 'set-cli') {
+      const cliName = rest[0];
+      if (!cliName || cliName.startsWith('--')) {
+        console.error('Usage: minions config set-cli <runtime> [--model <model>]');
+        let registered = [];
+        try { registered = require('./runtimes').listRuntimes(); } catch {}
+        if (registered.length > 0) console.error(`Registered runtimes: ${registered.join(', ')}`);
+        process.exit(2);
+      }
+      // Drop the positional <runtime> token; whatever's left is parsed as flags.
+      const flagArgs = rest.slice(1);
+      const parsed = _parseRuntimeFlags(flagArgs);
+      if (parsed.errors.length > 0) {
+        for (const msg of parsed.errors) console.error(`error: ${msg}`);
+        process.exit(2);
+      }
+      // Reject any leftover non-flag args — keeps the surface tight + catches typos.
+      if (flagArgs.length > 0) {
+        console.error(`error: unexpected arguments after set-cli: ${flagArgs.join(' ')}`);
+        process.exit(2);
+      }
+      try {
+        const { warnings } = _applyRuntimeFlags({
+          cli: cliName,
+          model: parsed.model,
+          modelExplicit: parsed.modelExplicit,
+        });
+        for (const w of warnings) console.log(`  ! ${w}`);
+        const modelDesc = parsed.modelExplicit
+          ? (parsed.model === '' ? '(cleared)' : `"${parsed.model}"`)
+          : '(unchanged)';
+        console.log(`config: defaultCli="${cliName}", defaultModel=${modelDesc}, ccCli/ccModel cleared.`);
+      } catch (err) {
+        if (err && err._unknownCli) {
+          console.error(`error: ${err.message}`);
+          process.exit(2);
+        }
+        throw err;
+      }
+      return;
+    }
+    console.error('Usage: minions config set-cli <runtime> [--model <model>]');
+    process.exit(2);
   },
 
   discover() {

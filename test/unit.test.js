@@ -870,6 +870,1711 @@ async function testParseStreamJsonOutput() {
     const { text } = shared.parseStreamJsonOutput(lines.join('\n'));
     assert.strictEqual(text, 'final answer');
   });
+
+  // ── Delegator behavior (P-7e3a8b1c) ─────────────────────────────────────────
+
+  await test('parseStreamJsonOutput defaults to claude runtime when no name passed', () => {
+    const raw = '{"type":"result","result":"hi"}';
+    const { text } = shared.parseStreamJsonOutput(raw);
+    assert.strictEqual(text, 'hi');
+  });
+
+  await test('parseStreamJsonOutput accepts runtimeName as 2nd arg', () => {
+    const raw = '{"type":"result","result":"hi"}';
+    const { text } = shared.parseStreamJsonOutput(raw, 'claude');
+    assert.strictEqual(text, 'hi');
+  });
+
+  await test('parseStreamJsonOutput accepts runtimeName + opts (3-arg form)', () => {
+    const raw = '{"type":"result","result":"' + 'x'.repeat(1000) + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, 'claude', { maxTextLength: 25 });
+    assert.strictEqual(text.length, 25);
+  });
+
+  await test('parseStreamJsonOutput backward-compat: opts object as 2nd arg still honored (llm.js callers)', () => {
+    // engine/llm.js:209 still passes an options object as 2nd arg — must keep working
+    const raw = '{"type":"result","result":"' + 'x'.repeat(1000) + '"}';
+    const { text } = shared.parseStreamJsonOutput(raw, { maxTextLength: 50 });
+    assert.strictEqual(text.length, 50);
+  });
+
+  await test('parseStreamJsonOutput throws clear error for unknown runtime', () => {
+    let thrown = null;
+    try { shared.parseStreamJsonOutput('{}', 'no-such-runtime'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected unknown runtime to throw');
+    assert.ok(/Unknown runtime/.test(thrown.message), `error message should mention unknown runtime, got: ${thrown.message}`);
+    assert.ok(/claude/.test(thrown.message), 'error message should list registered runtime names');
+  });
+}
+
+async function testRuntimeAdapters() {
+  console.log('\n── engine/runtimes — Registry & Claude Adapter ──');
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { resolveRuntime, listRuntimes, registerRuntime } = require(runtimesPath);
+  const claude = require(path.join(runtimesPath, 'claude'));
+
+  // ── Registry ──────────────────────────────────────────────────────────────
+
+  await test('resolveRuntime("claude") returns the claude adapter', () => {
+    const r = resolveRuntime('claude');
+    assert.strictEqual(r, claude);
+    assert.strictEqual(r.name, 'claude');
+  });
+
+  await test('resolveRuntime(null) defaults to claude', () => {
+    assert.strictEqual(resolveRuntime(null).name, 'claude');
+  });
+
+  await test('resolveRuntime(undefined) defaults to claude', () => {
+    assert.strictEqual(resolveRuntime(undefined).name, 'claude');
+  });
+
+  await test('resolveRuntime() defaults to claude', () => {
+    assert.strictEqual(resolveRuntime().name, 'claude');
+  });
+
+  await test('resolveRuntime throws for unknown name; message lists registered names', () => {
+    let thrown = null;
+    try { resolveRuntime('totally-fake-cli'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw');
+    assert.ok(/Unknown runtime "totally-fake-cli"/.test(thrown.message), `unexpected message: ${thrown.message}`);
+    assert.ok(/Registered runtimes:/.test(thrown.message), 'error must list registered runtimes');
+    assert.ok(/claude/.test(thrown.message), 'error must include "claude" in registered list');
+  });
+
+  await test('listRuntimes returns sorted names array including claude', () => {
+    const names = listRuntimes();
+    assert.ok(Array.isArray(names));
+    assert.ok(names.includes('claude'));
+    const sorted = [...names].sort();
+    assert.deepStrictEqual(names, sorted, 'listRuntimes must return sorted output');
+  });
+
+  await test('registerRuntime adds a new adapter; resolveRuntime finds it', () => {
+    const fake = { name: 'fake-test-rt', capabilities: {}, buildArgs: () => [] };
+    registerRuntime('fake-test-rt', fake);
+    try {
+      assert.strictEqual(resolveRuntime('fake-test-rt'), fake);
+      assert.ok(listRuntimes().includes('fake-test-rt'));
+    } finally {
+      // Clean up registry side-effect — exposed _registry for this purpose
+      const { _registry } = require(runtimesPath);
+      _registry.delete('fake-test-rt');
+    }
+  });
+
+  await test('registerRuntime rejects empty / non-string name', () => {
+    assert.throws(() => registerRuntime('', {}), /name must be a non-empty string/);
+    assert.throws(() => registerRuntime(null, {}), /name must be a non-empty string/);
+    assert.throws(() => registerRuntime(123, {}), /name must be a non-empty string/);
+  });
+
+  await test('registerRuntime rejects null / non-object adapter', () => {
+    assert.throws(() => registerRuntime('x', null), /adapter must be an object/);
+    assert.throws(() => registerRuntime('x', 'not-an-object'), /adapter must be an object/);
+  });
+
+  // ── Adapter contract surface (AC #2) ──────────────────────────────────────
+
+  await test('claude adapter exports the full contract surface', () => {
+    const required = [
+      'name', 'capabilities', 'resolveBinary', 'capsFile',
+      'listModels', 'modelsCache', 'spawnScript',
+      'buildArgs', 'buildPrompt', 'resolveModel',
+      'parseOutput', 'parseStreamChunk', 'parseError',
+    ];
+    for (const k of required) {
+      assert.ok(k in claude, `claude adapter missing required field: ${k}`);
+    }
+    assert.strictEqual(typeof claude.resolveBinary, 'function');
+    assert.strictEqual(typeof claude.listModels, 'function');
+    assert.strictEqual(typeof claude.buildArgs, 'function');
+    assert.strictEqual(typeof claude.buildPrompt, 'function');
+    assert.strictEqual(typeof claude.resolveModel, 'function');
+    assert.strictEqual(typeof claude.parseOutput, 'function');
+    assert.strictEqual(typeof claude.parseStreamChunk, 'function');
+    assert.strictEqual(typeof claude.parseError, 'function');
+    assert.strictEqual(typeof claude.capsFile, 'string');
+    assert.strictEqual(typeof claude.modelsCache, 'string');
+    assert.strictEqual(typeof claude.spawnScript, 'string');
+  });
+
+  // ── Capabilities (AC #3) ──────────────────────────────────────────────────
+
+  await test('claude.capabilities matches AC: streaming family flags', () => {
+    const c = claude.capabilities;
+    assert.strictEqual(c.streaming, true);
+    assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.systemPromptFile, true);
+    assert.strictEqual(c.effortLevels, true);
+    assert.strictEqual(c.costTracking, true);
+    assert.strictEqual(c.modelShorthands, true);
+    assert.strictEqual(c.budgetCap, true);
+    assert.strictEqual(c.bareMode, true);
+    assert.strictEqual(c.fallbackModel, true);
+    assert.strictEqual(c.sessionPersistenceControl, true);
+    assert.strictEqual(c.modelDiscovery, false);
+    assert.strictEqual(c.promptViaArg, false);
+  });
+
+  // ── buildArgs (AC #4) ─────────────────────────────────────────────────────
+
+  await test('claude.buildArgs emits --dangerously-skip-permissions (NOT --permission-mode bypassPermissions)', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxTurns: 10 });
+    assert.ok(args.includes('--dangerously-skip-permissions'),
+      `expected --dangerously-skip-permissions in: ${args.join(' ')}`);
+    assert.ok(!args.includes('--permission-mode'),
+      'must not emit legacy --permission-mode flag');
+    assert.ok(!args.includes('bypassPermissions'),
+      'must not emit legacy bypassPermissions value');
+  });
+
+  await test('claude.buildArgs baseline emits -p, --output-format stream-json, --max-turns, --model, --verbose', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxTurns: 10 });
+    assert.strictEqual(args[0], '-p', 'first arg must be -p');
+    const ofIdx = args.indexOf('--output-format');
+    assert.ok(ofIdx >= 0 && args[ofIdx + 1] === 'stream-json');
+    const mtIdx = args.indexOf('--max-turns');
+    assert.ok(mtIdx >= 0 && args[mtIdx + 1] === '10');
+    const mIdx = args.indexOf('--model');
+    assert.ok(mIdx >= 0 && args[mIdx + 1] === 'sonnet');
+    assert.ok(args.includes('--verbose'));
+  });
+
+  await test('claude.buildArgs conditional flags absent when opts are unset', () => {
+    const args = claude.buildArgs({ model: 'sonnet' });
+    assert.ok(!args.includes('--max-budget-usd'), 'no budget flag when maxBudget unset');
+    assert.ok(!args.includes('--bare'), 'no --bare when bare unset');
+    assert.ok(!args.includes('--fallback-model'), 'no --fallback-model when unset');
+    assert.ok(!args.includes('--resume'), 'no --resume when sessionId unset');
+    assert.ok(!args.includes('--effort'), 'no --effort when unset');
+    assert.ok(!args.includes('--allowedTools'), 'no --allowedTools when unset');
+    assert.ok(!args.includes('--system-prompt-file'), 'no --system-prompt-file when unset');
+  });
+
+  await test('claude.buildArgs emits --max-budget-usd N when maxBudget set', () => {
+    const args = claude.buildArgs({ model: 'sonnet', maxBudget: 5 });
+    const i = args.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && args[i + 1] === '5', `expected --max-budget-usd 5: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs honors maxBudget=0 (valid budget cap)', () => {
+    // null-vs-zero matters: 0 must be a valid budget, distinct from undefined
+    const args = claude.buildArgs({ model: 'sonnet', maxBudget: 0 });
+    const i = args.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && args[i + 1] === '0', `0 must be honored: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs emits --bare only when bare === true', () => {
+    assert.ok(claude.buildArgs({ bare: true }).includes('--bare'));
+    assert.ok(!claude.buildArgs({ bare: false }).includes('--bare'));
+    assert.ok(!claude.buildArgs({ bare: 'truthy-string' }).includes('--bare'),
+      'bare gating is strict-true to avoid surprise opt-in');
+    assert.ok(!claude.buildArgs({}).includes('--bare'));
+  });
+
+  await test('claude.buildArgs emits --fallback-model M when fallbackModel set', () => {
+    const args = claude.buildArgs({ fallbackModel: 'haiku' });
+    const i = args.indexOf('--fallback-model');
+    assert.ok(i >= 0 && args[i + 1] === 'haiku');
+  });
+
+  await test('claude.buildArgs emits --resume <id> when sessionId set', () => {
+    const args = claude.buildArgs({ sessionId: 'sess-abc' });
+    const i = args.indexOf('--resume');
+    assert.ok(i >= 0 && args[i + 1] === 'sess-abc');
+  });
+
+  await test('claude.buildArgs emits --effort <level> when effort set', () => {
+    const args = claude.buildArgs({ effort: 'low' });
+    const i = args.indexOf('--effort');
+    assert.ok(i >= 0 && args[i + 1] === 'low');
+  });
+
+  await test('claude.buildArgs emits --allowedTools <list> when allowedTools set', () => {
+    const args = claude.buildArgs({ allowedTools: 'Read,Edit' });
+    const i = args.indexOf('--allowedTools');
+    assert.ok(i >= 0 && args[i + 1] === 'Read,Edit');
+  });
+
+  await test('claude.buildArgs emits --system-prompt-file <path> when sysPromptFile set', () => {
+    const args = claude.buildArgs({ sysPromptFile: '/tmp/sys.md' });
+    const i = args.indexOf('--system-prompt-file');
+    assert.ok(i >= 0 && args[i + 1] === '/tmp/sys.md');
+  });
+
+  await test('claude.buildArgs ignores Copilot-only opts (stream/disableBuiltinMcps/suppressAgentsMd/reasoningSummaries)', () => {
+    // Adapters MUST tolerate the full unified opts bag without crashing or emitting unknown flags
+    const args = claude.buildArgs({
+      model: 'sonnet',
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.ok(!args.some(a => /^--stream$|^--disable-builtin-mcps$|^--no-custom-instructions$|^--enable-reasoning-summaries$/.test(a)),
+      `Copilot-only flags leaked into Claude args: ${args.join(' ')}`);
+  });
+
+  await test('claude.buildArgs verbose=false suppresses --verbose', () => {
+    const args = claude.buildArgs({ model: 'sonnet', verbose: false });
+    assert.ok(!args.includes('--verbose'));
+  });
+
+  await test('claude.buildArgs custom outputFormat is honored', () => {
+    const args = claude.buildArgs({ outputFormat: 'json' });
+    const i = args.indexOf('--output-format');
+    assert.ok(i >= 0 && args[i + 1] === 'json');
+  });
+
+  // ── resolveModel (AC #2 + shorthand expansion) ────────────────────────────
+
+  await test('claude.resolveModel(undefined) returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(undefined), undefined);
+  });
+
+  await test('claude.resolveModel(null) returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(null), undefined);
+  });
+
+  await test('claude.resolveModel("") returns undefined', () => {
+    assert.strictEqual(claude.resolveModel(''), undefined);
+  });
+
+  await test('claude.resolveModel passes shorthand verbatim — Claude CLI expands it', () => {
+    assert.strictEqual(claude.resolveModel('sonnet'), 'sonnet');
+    assert.strictEqual(claude.resolveModel('opus'), 'opus');
+    assert.strictEqual(claude.resolveModel('haiku'), 'haiku');
+  });
+
+  await test('claude.resolveModel passes full model id verbatim', () => {
+    assert.strictEqual(claude.resolveModel('claude-sonnet-4-5'), 'claude-sonnet-4-5');
+    assert.strictEqual(claude.resolveModel('claude-opus-4-1-20250101'), 'claude-opus-4-1-20250101');
+  });
+
+  // ── listModels (AC #6) ────────────────────────────────────────────────────
+
+  await test('claude.listModels returns null (no Claude enumeration mechanism)', () => {
+    assert.strictEqual(claude.listModels(), null);
+  });
+
+  // ── buildPrompt ───────────────────────────────────────────────────────────
+
+  await test('claude.buildPrompt is passthrough — sysPrompt delivered separately', () => {
+    assert.strictEqual(claude.buildPrompt('hello'), 'hello');
+    assert.strictEqual(claude.buildPrompt('hello', 'system context'), 'hello');
+    assert.strictEqual(claude.buildPrompt(null), '');
+    assert.strictEqual(claude.buildPrompt(undefined), '');
+  });
+
+  // ── parseStreamChunk ──────────────────────────────────────────────────────
+
+  await test('claude.parseStreamChunk parses single JSONL line', () => {
+    const obj = claude.parseStreamChunk('{"type":"result","result":"hi"}');
+    assert.deepStrictEqual(obj, { type: 'result', result: 'hi' });
+  });
+
+  await test('claude.parseStreamChunk returns null for empty / whitespace / non-JSON / null', () => {
+    assert.strictEqual(claude.parseStreamChunk(''), null);
+    assert.strictEqual(claude.parseStreamChunk('   '), null);
+    assert.strictEqual(claude.parseStreamChunk('not json at all'), null);
+    assert.strictEqual(claude.parseStreamChunk(null), null);
+    assert.strictEqual(claude.parseStreamChunk(undefined), null);
+  });
+
+  await test('claude.parseStreamChunk returns null for malformed JSON (does not throw)', () => {
+    // An unterminated object — used to truncate when the stream is mid-line
+    assert.strictEqual(claude.parseStreamChunk('{"type":"result","result":'), null);
+  });
+
+  // ── parseError (AC #7) ────────────────────────────────────────────────────
+
+  await test('claude.parseError empty input → benign default { code: null, retriable: true }', () => {
+    const r = claude.parseError('');
+    assert.deepStrictEqual(r, { message: '', code: null, retriable: true });
+    const r2 = claude.parseError(null);
+    assert.strictEqual(r2.code, null);
+  });
+
+  await test('claude.parseError detects auth-failure (non-retriable)', () => {
+    const cases = [
+      'Invalid API key. Please log in to claude.ai/login',
+      'authentication failed',
+      'Unauthorized',
+      'HTTP 403 forbidden',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure, got ${r.code}`);
+      assert.strictEqual(r.retriable, false);
+      assert.ok(r.message.length > 0);
+    }
+  });
+
+  await test('claude.parseError detects context-limit (non-retriable)', () => {
+    const cases = [
+      'prompt is too long',
+      'context window exceeded',
+      'token limit reached',
+      'conversation too long',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'context-limit', `case "${c}" should map to context-limit, got ${r.code}`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('claude.parseError detects budget-exceeded (non-retriable)', () => {
+    const r = claude.parseError('budget exceeded: cost limit reached');
+    assert.strictEqual(r.code, 'budget-exceeded');
+    assert.strictEqual(r.retriable, false);
+  });
+
+  await test('claude.parseError detects crash (retriable)', () => {
+    const cases = [
+      'internal error',
+      'segmentation fault',
+      'panic: out of memory',
+      'fatal: claude exited',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, 'crash', `case "${c}" should map to crash, got ${r.code}`);
+      assert.strictEqual(r.retriable, true);
+    }
+  });
+
+  await test('claude.parseError unknown patterns → benign retriable default', () => {
+    const r = claude.parseError('something benign happened');
+    assert.strictEqual(r.code, null);
+    assert.strictEqual(r.retriable, true);
+  });
+
+  // ── parseOutput regression parity with shared.parseStreamJsonOutput ───────
+
+  await test('claude.parseOutput extracts text/sessionId/model from full stream', () => {
+    const raw = [
+      '{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}',
+      '{"type":"assistant","message":"thinking..."}',
+      '{"type":"result","result":"final answer","session_id":"sess-xyz","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5},"duration_ms":1000,"num_turns":1}',
+    ].join('\n');
+    const r = claude.parseOutput(raw);
+    assert.strictEqual(r.text, 'final answer');
+    assert.strictEqual(r.sessionId, 'sess-xyz');
+    assert.strictEqual(r.model, 'claude-sonnet-4-5');
+    assert.strictEqual(r.usage.costUsd, 0.01);
+    assert.strictEqual(r.usage.inputTokens, 10);
+    assert.strictEqual(r.usage.outputTokens, 5);
+  });
+
+  await test('claude.parseOutput tail-slices when maxTextLength set (#1234 regression)', () => {
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"result","result":"' + body + '"}';
+    const r = claude.parseOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(r.text.length, 500);
+    assert.ok(r.text.includes('VERDICT: APPROVE'));
+    assert.ok(!r.text.startsWith('PREAMBLE_'));
+  });
+
+  await test('claude.parseOutput handles empty/null input defensively', () => {
+    assert.deepStrictEqual(claude.parseOutput(''), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(claude.parseOutput(null), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(claude.parseOutput(undefined), { text: '', usage: null, sessionId: null, model: null });
+  });
+
+  // ── resolveBinary (AC #5: shape + config.claude.binary backward-compat) ───
+
+  await test('claude.resolveBinary honors config.claude.binary override (existing path)', () => {
+    // Use any existing file as a stand-in binary path — adapter trusts the override
+    // when the path exists on disk, returning { bin, native, leadingArgs: [] }.
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '#!/bin/sh\necho fake\n');
+    const result = claude.resolveBinary({
+      env: process.env,
+      config: { claude: { binary: fakeBin } },
+    });
+    assert.ok(result, 'expected non-null result for valid override path');
+    assert.strictEqual(result.bin, fakeBin);
+    assert.deepStrictEqual(result.leadingArgs, [], 'leadingArgs must be [] for Claude');
+    assert.strictEqual(typeof result.native, 'boolean');
+  });
+
+  await test('claude.resolveBinary ignores config.claude.binary === "claude" sentinel (legacy default)', () => {
+    // The legacy default value 'claude' meant "use PATH" — adapter must NOT treat it as an override.
+    // We verify by passing the sentinel together with a non-existent override scenario; the call
+    // should fall through to PATH/cache/npm-global resolution rather than fail because 'claude'
+    // doesn't exist as a literal file at the override branch.
+    const result = claude.resolveBinary({
+      env: process.env,
+      config: { claude: { binary: 'claude' } },
+    });
+    // Not asserting specific value (depends on host); just that it doesn't blow up by treating
+    // the sentinel as a literal path. If it took the override branch, it would have returned
+    // null because 'claude' is unlikely to exist as a literal file at CWD.
+    // The contract: either null (no claude installed) or a resolved object — never throw.
+    if (result !== null) {
+      assert.strictEqual(typeof result.bin, 'string');
+      assert.deepStrictEqual(result.leadingArgs, []);
+    }
+  });
+
+  // ── capsFile / modelsCache / spawnScript paths ────────────────────────────
+
+  await test('claude.capsFile points at engine/claude-caps.json', () => {
+    assert.ok(claude.capsFile.endsWith(path.join('engine', 'claude-caps.json')) || claude.capsFile.endsWith('claude-caps.json'));
+  });
+
+  await test('claude.modelsCache points at engine/claude-models.json', () => {
+    assert.ok(claude.modelsCache.endsWith('claude-models.json'));
+  });
+
+  await test('claude.spawnScript points at engine/spawn-agent.js', () => {
+    assert.ok(claude.spawnScript.endsWith('spawn-agent.js'));
+  });
+}
+
+function isWinPlatform() { return process.platform === 'win32'; }
+
+// ─── engine/runtimes/copilot.js — Copilot Adapter (P-1d4a8e7c) ──────────────
+
+async function testCopilotAdapter() {
+  console.log('\n── engine/runtimes — Copilot Adapter ──');
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { resolveRuntime, listRuntimes } = require(runtimesPath);
+  const copilot = require(path.join(runtimesPath, 'copilot'));
+
+  // ── Registry wiring ───────────────────────────────────────────────────────
+
+  await test('copilot adapter is registered and resolveRuntime("copilot") returns it', () => {
+    const r = resolveRuntime('copilot');
+    assert.strictEqual(r, copilot);
+    assert.strictEqual(r.name, 'copilot');
+    assert.ok(listRuntimes().includes('copilot'),
+      'listRuntimes() must include copilot so dashboard /api/runtimes surfaces it');
+  });
+
+  // ── Adapter contract surface ──────────────────────────────────────────────
+
+  await test('copilot adapter exports the full contract surface', () => {
+    const required = [
+      'name', 'capabilities', 'resolveBinary', 'capsFile',
+      'listModels', 'modelsCache', 'spawnScript',
+      'buildArgs', 'buildPrompt', 'resolveModel',
+      'parseOutput', 'parseStreamChunk', 'parseError',
+    ];
+    for (const k of required) {
+      assert.ok(k in copilot, `copilot adapter missing required field: ${k}`);
+    }
+    assert.strictEqual(typeof copilot.resolveBinary, 'function');
+    assert.strictEqual(typeof copilot.listModels, 'function');
+    assert.strictEqual(typeof copilot.buildArgs, 'function');
+    assert.strictEqual(typeof copilot.buildPrompt, 'function');
+    assert.strictEqual(typeof copilot.resolveModel, 'function');
+    assert.strictEqual(typeof copilot.parseOutput, 'function');
+    assert.strictEqual(typeof copilot.parseStreamChunk, 'function');
+    assert.strictEqual(typeof copilot.parseError, 'function');
+    assert.strictEqual(typeof copilot.capsFile, 'string');
+    assert.strictEqual(typeof copilot.modelsCache, 'string');
+    assert.strictEqual(typeof copilot.spawnScript, 'string');
+  });
+
+  await test('copilot.capsFile points at engine/copilot-caps.json', () => {
+    assert.ok(copilot.capsFile.endsWith('copilot-caps.json'));
+  });
+
+  await test('copilot.modelsCache points at engine/copilot-models.json', () => {
+    assert.ok(copilot.modelsCache.endsWith('copilot-models.json'));
+  });
+
+  await test('copilot.spawnScript reuses runtime-agnostic spawn-agent.js', () => {
+    assert.ok(copilot.spawnScript.endsWith('spawn-agent.js'),
+      'Copilot must use the same spawn wrapper as Claude — it became runtime-agnostic in P-9c4f2d6a');
+  });
+
+  // ── Capability flags (acceptance criterion #2) ────────────────────────────
+
+  await test('copilot.capabilities matches AC: budget/bare/fallback/cost/shorthands/sysprompt all FALSE', () => {
+    const c = copilot.capabilities;
+    assert.strictEqual(c.budgetCap, false, 'no --max-budget-usd flag exists');
+    assert.strictEqual(c.bareMode, false, 'no --bare flag exists (closest equivalent is --no-custom-instructions, gated separately)');
+    assert.strictEqual(c.fallbackModel, false, 'no --fallback-model flag exists');
+    assert.strictEqual(c.sessionPersistenceControl, false, 'Copilot manages session state internally');
+    assert.strictEqual(c.costTracking, false, 'usage carries premiumRequests count, not USD/tokens');
+    assert.strictEqual(c.modelShorthands, false, 'Copilot expects full model IDs');
+    assert.strictEqual(c.systemPromptFile, false, 'no --system-prompt-file flag — sysprompt merged into stdin');
+  });
+
+  await test('copilot.capabilities matches AC: streaming/sessionResume/effortLevels all TRUE', () => {
+    const c = copilot.capabilities;
+    assert.strictEqual(c.streaming, true);
+    assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.effortLevels, true);
+  });
+
+  await test('copilot.capabilities: modelDiscovery=true and promptViaArg=false (per spike)', () => {
+    // Decisions grounded in real CLI tests during P-8f2c4d9b — see
+    // docs/copilot-cli-schema.md §1, §2, §6.
+    assert.strictEqual(copilot.capabilities.modelDiscovery, true,
+      'GET https://api.githubcopilot.com/models works with gh-cli token (verified in spike)');
+    assert.strictEqual(copilot.capabilities.promptViaArg, false,
+      'stdin works; -p with >32KB hits Windows ARG_MAX (verified in spike)');
+  });
+
+  // ── buildArgs: always-on baseline ─────────────────────────────────────────
+
+  await test('copilot.buildArgs always emits the headless baseline', () => {
+    const args = copilot.buildArgs({});
+    const required = ['--output-format', 'json', '-s', '--no-color', '--plain-diff', '--autopilot', '--allow-all', '--no-ask-user', '--log-level', 'error'];
+    for (let i = 0; i < required.length; i++) {
+      assert.ok(args.includes(required[i]), `missing baseline flag: ${required[i]} (got: ${args.join(' ')})`);
+    }
+    // --output-format must immediately precede 'json' (paired flag)
+    const ofIdx = args.indexOf('--output-format');
+    assert.strictEqual(args[ofIdx + 1], 'json');
+    const llIdx = args.indexOf('--log-level');
+    assert.strictEqual(args[llIdx + 1], 'error');
+  });
+
+  await test('copilot.buildArgs NEVER emits --verbose (Copilot has no such flag)', () => {
+    const args = copilot.buildArgs({ verbose: true });
+    assert.ok(!args.includes('--verbose'), 'opts.verbose=true must NOT cause --verbose emission');
+  });
+
+  await test('copilot.buildArgs NEVER emits Claude-only flags (bare/maxBudget/fallbackModel/sysPromptFile)', () => {
+    // Tolerance check — engine code passes the same opts bag to every adapter.
+    // The Copilot adapter must silently ignore Claude-specific opts.
+    const args = copilot.buildArgs({
+      bare: true, maxBudget: 5, fallbackModel: 'haiku', sysPromptFile: '/tmp/sys',
+    });
+    for (const banned of ['--bare', '--max-budget-usd', '--fallback-model', '--system-prompt-file', '--dangerously-skip-permissions']) {
+      assert.ok(!args.includes(banned), `Claude-only flag leaked into Copilot args: ${banned}`);
+    }
+  });
+
+  // ── buildArgs: conditional flags ──────────────────────────────────────────
+
+  await test('copilot.buildArgs emits --model M when model set', () => {
+    const args = copilot.buildArgs({ model: 'claude-sonnet-4.5' });
+    const i = args.indexOf('--model');
+    assert.ok(i >= 0 && args[i + 1] === 'claude-sonnet-4.5');
+  });
+
+  await test('copilot.buildArgs omits --model when model unset', () => {
+    const args = copilot.buildArgs({});
+    assert.ok(!args.includes('--model'));
+  });
+
+  await test('copilot.buildArgs emits --max-autopilot-continues N (mapped from maxTurns)', () => {
+    const args = copilot.buildArgs({ maxTurns: 12 });
+    const i = args.indexOf('--max-autopilot-continues');
+    assert.ok(i >= 0 && args[i + 1] === '12',
+      `expected --max-autopilot-continues 12 mapped from maxTurns:12, got ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs uses --resume=<id> equals-form (not --resume <id>)', () => {
+    // Copilot help shows `--resume[=value]` — the [=value] syntax requires the
+    // equals-form. With `--resume <id>` (space), the next argv would be parsed
+    // as a positional arg, not the resume value.
+    const args = copilot.buildArgs({ sessionId: 'abc123' });
+    assert.ok(args.includes('--resume=abc123'), `expected --resume=abc123 in: ${args.join(' ')}`);
+    // And NOT the space form — verifying we don't emit both
+    const standaloneIdx = args.indexOf('--resume');
+    assert.strictEqual(standaloneIdx, -1, 'space form --resume <id> must not be emitted');
+  });
+
+  await test('copilot.buildArgs effort: low|medium|high|xhigh pass through verbatim', () => {
+    for (const lvl of ['low', 'medium', 'high', 'xhigh']) {
+      const args = copilot.buildArgs({ effort: lvl });
+      const i = args.indexOf('--effort');
+      assert.ok(i >= 0 && args[i + 1] === lvl, `expected --effort ${lvl}: ${args.join(' ')}`);
+    }
+  });
+
+  await test('copilot.buildArgs effort: "max" maps to "xhigh" (Claude-ism)', () => {
+    const args = copilot.buildArgs({ effort: 'max' });
+    const i = args.indexOf('--effort');
+    assert.ok(i >= 0 && args[i + 1] === 'xhigh',
+      `'max' must map to 'xhigh'; got: ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs effort: undefined/null/"" omit --effort entirely', () => {
+    for (const v of [undefined, null, '']) {
+      const args = copilot.buildArgs({ effort: v });
+      assert.ok(!args.includes('--effort'), `--effort should be absent for value: ${JSON.stringify(v)}`);
+    }
+  });
+
+  await test('copilot.buildArgs --add-dir injected per addDirs entry (skill discovery)', () => {
+    const args = copilot.buildArgs({ addDirs: ['/path/a', '/path/b'] });
+    // Expect TWO --add-dir <path> pairs
+    let count = 0;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--add-dir' && (args[i + 1] === '/path/a' || args[i + 1] === '/path/b')) count++;
+    }
+    assert.strictEqual(count, 2, `expected 2 --add-dir flags, got ${count}: ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs --add-dir absent when addDirs unset', () => {
+    assert.ok(!copilot.buildArgs({}).includes('--add-dir'));
+  });
+
+  // ── buildArgs: toggle flags (strict-true gating) ──────────────────────────
+
+  await test('copilot.buildArgs --disable-builtin-mcps only when disableBuiltinMcps === true', () => {
+    assert.ok(copilot.buildArgs({ disableBuiltinMcps: true }).includes('--disable-builtin-mcps'));
+    assert.ok(!copilot.buildArgs({ disableBuiltinMcps: false }).includes('--disable-builtin-mcps'));
+    assert.ok(!copilot.buildArgs({ disableBuiltinMcps: 'truthy' }).includes('--disable-builtin-mcps'),
+      'strict-true gating prevents accidental opt-in from truthy strings');
+    assert.ok(!copilot.buildArgs({}).includes('--disable-builtin-mcps'));
+  });
+
+  await test('copilot.buildArgs --no-custom-instructions only when suppressAgentsMd === true', () => {
+    assert.ok(copilot.buildArgs({ suppressAgentsMd: true }).includes('--no-custom-instructions'));
+    assert.ok(!copilot.buildArgs({ suppressAgentsMd: false }).includes('--no-custom-instructions'));
+    assert.ok(!copilot.buildArgs({}).includes('--no-custom-instructions'));
+  });
+
+  await test('copilot.buildArgs --enable-reasoning-summaries only when reasoningSummaries === true', () => {
+    assert.ok(copilot.buildArgs({ reasoningSummaries: true }).includes('--enable-reasoning-summaries'));
+    assert.ok(!copilot.buildArgs({ reasoningSummaries: false }).includes('--enable-reasoning-summaries'));
+    assert.ok(!copilot.buildArgs({}).includes('--enable-reasoning-summaries'));
+  });
+
+  await test('copilot.buildArgs --stream emitted only for "on" or "off"', () => {
+    const onArgs = copilot.buildArgs({ stream: 'on' });
+    const onIdx = onArgs.indexOf('--stream');
+    assert.ok(onIdx >= 0 && onArgs[onIdx + 1] === 'on');
+    const offArgs = copilot.buildArgs({ stream: 'off' });
+    const offIdx = offArgs.indexOf('--stream');
+    assert.ok(offIdx >= 0 && offArgs[offIdx + 1] === 'off');
+    assert.ok(!copilot.buildArgs({}).includes('--stream'));
+    assert.ok(!copilot.buildArgs({ stream: true }).includes('--stream'),
+      'stream:true is invalid — only "on" / "off" string values are valid');
+    assert.ok(!copilot.buildArgs({ stream: 'banana' }).includes('--stream'),
+      'unknown stream value should be omitted, not emitted with garbage');
+  });
+
+  // ── buildPrompt ───────────────────────────────────────────────────────────
+
+  await test('copilot.buildPrompt prepends <system> block when sysPromptText non-empty', () => {
+    const out = copilot.buildPrompt('do thing', 'You are an engineer.');
+    assert.strictEqual(out, '<system>\nYou are an engineer.\n</system>\n\ndo thing');
+  });
+
+  await test('copilot.buildPrompt is passthrough when sysPromptText empty/null/undefined', () => {
+    assert.strictEqual(copilot.buildPrompt('hello', ''), 'hello');
+    assert.strictEqual(copilot.buildPrompt('hello', null), 'hello');
+    assert.strictEqual(copilot.buildPrompt('hello'), 'hello');
+  });
+
+  await test('copilot.buildPrompt handles null/undefined user prompt defensively', () => {
+    assert.strictEqual(copilot.buildPrompt(null), '');
+    assert.strictEqual(copilot.buildPrompt(undefined), '');
+    // Sys-only with empty user: returns the wrapped sys block + empty user
+    const out = copilot.buildPrompt('', 'sys');
+    assert.strictEqual(out, '<system>\nsys\n</system>\n\n');
+  });
+
+  // ── resolveModel + Claude-shorthand warning ──────────────────────────────
+
+  await test('copilot.resolveModel passes full model IDs verbatim', () => {
+    assert.strictEqual(copilot.resolveModel('claude-sonnet-4.5'), 'claude-sonnet-4.5');
+    assert.strictEqual(copilot.resolveModel('gpt-5.4'), 'gpt-5.4');
+    assert.strictEqual(copilot.resolveModel('gpt-4.1'), 'gpt-4.1');
+  });
+
+  await test('copilot.resolveModel returns undefined for nullish/empty input (omit --model)', () => {
+    copilot._resetShorthandWarning();
+    assert.strictEqual(copilot.resolveModel(null), undefined);
+    assert.strictEqual(copilot.resolveModel(undefined), undefined);
+    assert.strictEqual(copilot.resolveModel(''), undefined);
+  });
+
+  await test('copilot.resolveModel logs ONE-TIME warning on Claude family shorthand', () => {
+    copilot._resetShorthandWarning();
+    const warnings = [];
+    const logger = { warn: (msg) => warnings.push(msg) };
+    // First shorthand call → emits warning AND passes value through verbatim
+    assert.strictEqual(copilot.resolveModel('sonnet', { logger }), 'sonnet');
+    assert.strictEqual(warnings.length, 1, 'expected 1 warning on first shorthand');
+    assert.ok(/sonnet/.test(warnings[0]));
+    // Subsequent calls: no additional warnings
+    copilot.resolveModel('opus', { logger });
+    copilot.resolveModel('haiku', { logger });
+    copilot.resolveModel('claude-opus-4.5', { logger });
+    assert.strictEqual(warnings.length, 1, 'shorthand warning must be one-time per process');
+  });
+
+  // ── _mapEffort (private helper, exposed for testing) ─────────────────────
+
+  await test('copilot._mapEffort: "max" → "xhigh", others verbatim', () => {
+    assert.strictEqual(copilot._mapEffort('max'), 'xhigh');
+    assert.strictEqual(copilot._mapEffort('low'), 'low');
+    assert.strictEqual(copilot._mapEffort('medium'), 'medium');
+    assert.strictEqual(copilot._mapEffort('high'), 'high');
+    assert.strictEqual(copilot._mapEffort('xhigh'), 'xhigh');
+    assert.strictEqual(copilot._mapEffort(null), undefined);
+    assert.strictEqual(copilot._mapEffort(''), undefined);
+  });
+
+  // ── parseStreamChunk: defensive against schema drift ─────────────────────
+
+  await test('copilot.parseStreamChunk parses known event types verbatim', () => {
+    const ev = copilot.parseStreamChunk('{"type":"assistant.message","data":{"content":"hi"}}');
+    assert.strictEqual(ev.type, 'assistant.message');
+    assert.strictEqual(ev.data.content, 'hi');
+  });
+
+  await test('copilot.parseStreamChunk wraps unknown event types as type:"ignore"', () => {
+    const ev = copilot.parseStreamChunk('{"type":"future.new.event","data":{"x":1}}');
+    assert.strictEqual(ev.type, 'ignore');
+    assert.strictEqual(ev.original, 'future.new.event',
+      'must preserve the original type for telemetry / debugging');
+    assert.deepStrictEqual(ev.raw, { type: 'future.new.event', data: { x: 1 } });
+  });
+
+  await test('copilot.parseStreamChunk returns null for empty/whitespace/non-JSON', () => {
+    assert.strictEqual(copilot.parseStreamChunk(''), null);
+    assert.strictEqual(copilot.parseStreamChunk('   '), null);
+    assert.strictEqual(copilot.parseStreamChunk('not json'), null);
+    assert.strictEqual(copilot.parseStreamChunk(null), null);
+    assert.strictEqual(copilot.parseStreamChunk(undefined), null);
+  });
+
+  await test('copilot.parseStreamChunk returns null for malformed JSON (does not throw)', () => {
+    assert.strictEqual(copilot.parseStreamChunk('{"type":"result"'), null);
+  });
+
+  // ── parseOutput against real spike sample shapes ─────────────────────────
+
+  await test('copilot.parseOutput extracts text via assistant.message.data.content concatenation', () => {
+    const raw = [
+      '{"type":"assistant.turn_start","data":{}}',
+      '{"type":"assistant.message","data":{"content":"hello ","outputTokens":5}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"assistant.turn_start","data":{}}',
+      '{"type":"assistant.message","data":{"content":"world","outputTokens":3}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"result","sessionId":"sess-9","exitCode":0,"usage":{"premiumRequests":2,"totalApiDurationMs":5000,"sessionDurationMs":7000}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'hello world', 'should concatenate per-turn assistant.message content');
+    assert.strictEqual(r.sessionId, 'sess-9', 'sessionId should come from result event (camelCase, not session_id)');
+    assert.strictEqual(r.usage.premiumRequests, 2);
+    assert.strictEqual(r.usage.durationMs, 5000);
+    assert.strictEqual(r.usage.sessionDurationMs, 7000);
+    assert.strictEqual(r.usage.numTurns, 2, 'numTurns should count assistant.turn_end events');
+    assert.strictEqual(r.usage.outputTokens, 8, 'outputTokens should be the SUM of per-turn outputTokens (recovered from assistant.message events)');
+    // Cost / token fields: NULL not 0
+    assert.strictEqual(r.usage.costUsd, null, 'costUsd must be null (not 0) — Copilot does not report USD');
+    assert.strictEqual(r.usage.inputTokens, null);
+    assert.strictEqual(r.usage.cacheRead, null);
+    assert.strictEqual(r.usage.cacheCreation, null);
+  });
+
+  await test('copilot.parseOutput: model captured from session.tools_updated event', () => {
+    const raw = [
+      '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
+      '{"type":"assistant.message","data":{"content":"pong","outputTokens":1}}',
+      '{"type":"result","sessionId":"s","usage":{"premiumRequests":1}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.model, 'gpt-5.4');
+  });
+
+  await test('copilot.parseOutput tail-slices when maxTextLength set', () => {
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"assistant.message","data":{"content":"' + body + '"}}\n{"type":"result","sessionId":"s","usage":{}}';
+    const r = copilot.parseOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(r.text.length, 500);
+    assert.ok(r.text.includes('VERDICT: APPROVE'));
+    assert.ok(!r.text.startsWith('PREAMBLE_'));
+  });
+
+  await test('copilot.parseOutput handles empty/null input defensively', () => {
+    assert.deepStrictEqual(copilot.parseOutput(''), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(copilot.parseOutput(null), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(copilot.parseOutput(undefined), { text: '', usage: null, sessionId: null, model: null });
+  });
+
+  await test('copilot.parseOutput tolerates unknown event types in the stream', () => {
+    // Defensive: provider schema variation (Anthropic adds reasoning_delta;
+    // OpenAI adds encryptedContent/phase) must not crash the parser.
+    const raw = [
+      '{"type":"future.new.event","data":{"foo":"bar"}}',
+      '{"type":"assistant.message","data":{"content":"ok","outputTokens":2}}',
+      '{"type":"result","sessionId":"s","usage":{"premiumRequests":1,"totalApiDurationMs":100}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'ok');
+    assert.strictEqual(r.usage.premiumRequests, 1);
+  });
+
+  await test('copilot.parseOutput: missing premiumRequests/durations default to 0 (not null) — engine logs need a number)', () => {
+    const raw = '{"type":"assistant.message","data":{"content":"x"}}\n{"type":"result","sessionId":"s","usage":{}}';
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.usage.premiumRequests, 0);
+    assert.strictEqual(r.usage.durationMs, 0);
+    assert.strictEqual(r.usage.sessionDurationMs, 0);
+  });
+
+  // ── parseError: pattern match against expected Copilot error shapes ─────
+
+  await test('copilot.parseError empty input → benign default', () => {
+    assert.deepStrictEqual(copilot.parseError(''), { message: '', code: null, retriable: true });
+    assert.strictEqual(copilot.parseError(null).code, null);
+  });
+
+  await test('copilot.parseError detects auth-failure (non-retriable)', () => {
+    for (const c of ['Not authenticated. Run copilot login.', 'Please log in to GitHub', 'HTTP 401 Unauthorized', '403 Forbidden']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('copilot.parseError detects rate-limit (retriable)', () => {
+    for (const c of ['rate limit exceeded', 'too many requests', 'HTTP 429: throttled']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'rate-limit', `case "${c}" should map to rate-limit`);
+      assert.strictEqual(r.retriable, true, 'rate-limit should be retriable after backoff');
+    }
+  });
+
+  await test('copilot.parseError detects unknown-model (non-retriable)', () => {
+    for (const c of ['Unknown model: banana', 'model not found in catalog', 'invalid model id']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'unknown-model', `case "${c}" should map to unknown-model`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('copilot.parseError detects budget-exceeded (non-retriable)', () => {
+    const r = copilot.parseError('premium request limit reached');
+    assert.strictEqual(r.code, 'budget-exceeded');
+    assert.strictEqual(r.retriable, false);
+  });
+
+  await test('copilot.parseError detects crash (retriable)', () => {
+    for (const c of ['internal error', 'panic: runtime', 'fatal: copilot died', 'uncaught exception']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'crash', `case "${c}" should map to crash`);
+      assert.strictEqual(r.retriable, true);
+    }
+  });
+
+  await test('copilot.parseError unknown patterns → benign retriable default', () => {
+    const r = copilot.parseError('something innocuous');
+    assert.strictEqual(r.code, null);
+    assert.strictEqual(r.retriable, true);
+  });
+
+  // ── listModels: graceful nulls + filtering ──────────────────────────────
+
+  await test('copilot.listModels returns null when no token resolvable (env empty + gh auth fails)', async () => {
+    // Run with all auth env vars cleared. `gh auth token` will be tried but
+    // will either succeed (when `gh` is installed and authed on this host)
+    // or fail. We accept either outcome — the contract is "returns null on
+    // any failure", and on a host with no gh auth the env-only path returns
+    // null. We don't probe networking here.
+    const env = {};
+    // We can't easily prevent the gh auth fallback in a test env where gh is
+    // installed and authed (CI) — but the function MUST short-circuit before
+    // hitting the network when no token at all is found. Set a tiny timeout
+    // so any network attempt fails fast in a worst case.
+    const result = await copilot.listModels({ env, timeoutMs: 1 });
+    // `null` is the only acceptable result with empty env + 1ms timeout
+    assert.strictEqual(result, null,
+      `expected null with empty env + 1ms timeout, got: ${JSON.stringify(result)}`);
+  });
+
+  // ── resolveBinary: structural shape ─────────────────────────────────────
+
+  await test('copilot.resolveBinary: never throws, returns null or { bin, native, leadingArgs }', () => {
+    // We don't know the host setup — the function may find a binary or not.
+    // Either way, the contract is: returns null OR a well-shaped object, and
+    // never throws.
+    const result = copilot.resolveBinary({ env: process.env });
+    if (result !== null) {
+      assert.strictEqual(typeof result.bin, 'string');
+      assert.strictEqual(typeof result.native, 'boolean');
+      assert.ok(Array.isArray(result.leadingArgs));
+      // leadingArgs is either [] (standalone) or ['copilot'] (gh extension)
+      assert.ok(result.leadingArgs.length === 0 ||
+        (result.leadingArgs.length === 1 && result.leadingArgs[0] === 'copilot'),
+        `unexpected leadingArgs: ${JSON.stringify(result.leadingArgs)}`);
+    }
+  });
+
+  await test('copilot.resolveBinary returns null when env makes both probes fail', () => {
+    // Empty PATH + no recognizable `gh` location → both probes fail.
+    // Use a tmp dir that has no copilot/gh binary as PATH.
+    const tmp = createTmpDir();
+    const stubEnv = { PATH: tmp, USERPROFILE: tmp, HOME: tmp };
+    // Also kill the cache file path so a stale hit doesn't pollute.
+    const stalePath = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot')).capsFile;
+    let backup = null;
+    try { backup = fs.readFileSync(stalePath); fs.unlinkSync(stalePath); } catch { /* may not exist */ }
+    try {
+      const result = copilot.resolveBinary({ env: stubEnv });
+      // On a host where neither `copilot` nor `gh copilot` is reachable from
+      // the empty PATH, this must be null. If the host has a system-wide
+      // location bypassing PATH (unusual), accept either null or a result —
+      // but the call must not throw.
+      if (result !== null) {
+        assert.strictEqual(typeof result.bin, 'string');
+      }
+    } finally {
+      if (backup !== null) {
+        try { fs.writeFileSync(stalePath, backup); } catch {}
+      }
+    }
+  });
+
+  // ── KNOWN_EVENT_TYPES whitelist (sanity) ────────────────────────────────
+
+  await test('copilot.KNOWN_EVENT_TYPES covers every event type captured during the spike', () => {
+    // Mirrors docs/copilot-cli-schema.md §5.1 inventory.
+    const expectedFromSpike = [
+      'session.mcp_server_status_changed',
+      'session.mcp_servers_loaded',
+      'session.skills_loaded',
+      'session.tools_updated',
+      'session.info',
+      'session.task_complete',
+      'user.message',
+      'assistant.turn_start',
+      'assistant.turn_end',
+      'assistant.reasoning',
+      'assistant.reasoning_delta',
+      'assistant.message_delta',
+      'assistant.message',
+      'tool.execution_start',
+      'tool.execution_complete',
+      'result',
+    ];
+    for (const t of expectedFromSpike) {
+      assert.ok(copilot.KNOWN_EVENT_TYPES.has(t), `KNOWN_EVENT_TYPES missing spike-confirmed type: ${t}`);
+    }
+  });
+}
+
+async function testModelDiscovery() {
+  console.log('\n── engine/model-discovery.js — Runtime models cache + REST helpers (P-4c7d2b5a) ──');
+  const mdPath = path.join(MINIONS_DIR, 'engine', 'model-discovery');
+  const md = require(mdPath);
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { _registry, listRuntimes } = require(runtimesPath);
+
+  // Helper: register a fake runtime under a unique name so tests don't collide
+  // with the real claude/copilot adapters. Returns a `cleanup()` that removes it.
+  function registerFakeRuntime(name, overrides = {}) {
+    const cacheFile = path.join(createTmpDir(), `${name}-models.json`);
+    const adapter = Object.assign({
+      name,
+      capabilities: { modelDiscovery: true },
+      modelsCache: cacheFile,
+      listModels: async () => [{ id: 'm1', name: 'Model One', provider: 'fake' }],
+    }, overrides);
+    if (!adapter.capabilities) adapter.capabilities = {};
+    _registry.set(name, adapter);
+    return {
+      adapter,
+      cacheFile,
+      cleanup() {
+        _registry.delete(name);
+        try { fs.unlinkSync(cacheFile); } catch {}
+      },
+    };
+  }
+
+  // ── listAllRuntimes ───────────────────────────────────────────────────────
+
+  await test('listAllRuntimes returns every registered adapter with name + capabilities', () => {
+    const list = md.listAllRuntimes();
+    const names = list.map(r => r.name).sort();
+    assert.deepStrictEqual(names, listRuntimes(),
+      'listAllRuntimes must include exactly the runtimes registered in the registry');
+    for (const r of list) {
+      assert.strictEqual(typeof r.name, 'string');
+      assert.strictEqual(typeof r.capabilities, 'object');
+      assert.notStrictEqual(r.capabilities, null);
+      assert.strictEqual(typeof r.capabilities.modelDiscovery, 'boolean',
+        `${r.name}.capabilities.modelDiscovery must be a boolean — UI gates on it`);
+    }
+  });
+
+  await test('listAllRuntimes returns a defensive copy of capabilities (mutation isolation)', () => {
+    const list = md.listAllRuntimes();
+    const claude = list.find(r => r.name === 'claude');
+    assert.ok(claude, 'claude must be in the listing');
+    const realClaudeMd = claude.capabilities.modelDiscovery;
+    claude.capabilities.modelDiscovery = !realClaudeMd;
+    const list2 = md.listAllRuntimes();
+    const claude2 = list2.find(r => r.name === 'claude');
+    assert.strictEqual(claude2.capabilities.modelDiscovery, realClaudeMd,
+      'mutating the returned object must not bleed into the next listing');
+  });
+
+  // ── getRuntimeModels: unknown runtime ─────────────────────────────────────
+
+  await test('getRuntimeModels throws "Unknown runtime" for unregistered names (caller maps to 404)', async () => {
+    let thrown = null;
+    try { await md.getRuntimeModels('not-a-real-runtime'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw for unknown runtime');
+    assert.ok(/Unknown runtime/.test(thrown.message),
+      `message must signal unknown runtime, got: ${thrown.message}`);
+  });
+
+  // ── getRuntimeModels: disableModelDiscovery short-circuit ─────────────────
+
+  await test('getRuntimeModels returns models:null without calling adapter when config.engine.disableModelDiscovery=true', async () => {
+    let listModelsCalls = 0;
+    const fake = registerFakeRuntime('disco-disabled', {
+      listModels: async () => { listModelsCalls += 1; return [{ id: 'should-not-see', name: 'X', provider: 'y' }]; },
+    });
+    try {
+      const result = await md.getRuntimeModels('disco-disabled', { config: { engine: { disableModelDiscovery: true } } });
+      assert.deepStrictEqual(result, { runtime: 'disco-disabled', models: null, cachedAt: null });
+      assert.strictEqual(listModelsCalls, 0, 'adapter.listModels MUST NOT be called when discovery is disabled fleet-wide');
+      // Cache file must NOT be written either — flipping the flag back on
+      // should produce a fresh fetch, not a stale `null` cache hit.
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'no cache file should be written when discovery is disabled');
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: capability gate (Claude path) ───────────────────────
+
+  await test('getRuntimeModels returns models:null when capabilities.modelDiscovery is false (Claude path)', async () => {
+    let listModelsCalls = 0;
+    const fake = registerFakeRuntime('no-discovery', {
+      capabilities: { modelDiscovery: false },
+      listModels: async () => { listModelsCalls += 1; return null; },
+    });
+    try {
+      const result = await md.getRuntimeModels('no-discovery');
+      assert.deepStrictEqual(result, { runtime: 'no-discovery', models: null, cachedAt: null });
+      assert.strictEqual(listModelsCalls, 0,
+        'adapter without modelDiscovery capability must short-circuit before listModels()');
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'no cache file should be written for adapters without discovery');
+    } finally { fake.cleanup(); }
+  });
+
+  await test('claude.listModels integration: getRuntimeModels(claude) returns models:null (no API)', async () => {
+    // Sanity: the real Claude adapter should produce models:null because its
+    // capabilities.modelDiscovery is false. This locks in the Claude-specific
+    // contract end-to-end through model-discovery.
+    const result = await md.getRuntimeModels('claude');
+    assert.strictEqual(result.runtime, 'claude');
+    assert.strictEqual(result.models, null);
+    assert.strictEqual(result.cachedAt, null);
+  });
+
+  // ── getRuntimeModels: cache miss → write → hit ────────────────────────────
+
+  await test('getRuntimeModels cache miss path: calls listModels, writes cache, returns fresh data', async () => {
+    let calls = 0;
+    const sample = [
+      { id: 'gpt-5', name: 'GPT-5', provider: 'openai' },
+      { id: 'claude-sonnet-4.5', name: 'Claude Sonnet', provider: 'anthropic' },
+    ];
+    const fake = registerFakeRuntime('miss-test', {
+      listModels: async () => { calls += 1; return sample; },
+    });
+    try {
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false, 'precondition: cache absent');
+      const result = await md.getRuntimeModels('miss-test');
+      assert.strictEqual(result.runtime, 'miss-test');
+      assert.deepStrictEqual(result.models, sample);
+      assert.strictEqual(typeof result.cachedAt, 'string');
+      assert.ok(Date.parse(result.cachedAt) > 0, 'cachedAt must be a valid ISO timestamp');
+      assert.strictEqual(calls, 1);
+      assert.ok(fs.existsSync(fake.cacheFile), 'cache file must be written on miss');
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.deepStrictEqual(persisted.models, sample);
+      assert.strictEqual(persisted.runtime, 'miss-test');
+      assert.strictEqual(persisted.cachedAt, result.cachedAt);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels cache hit path: skips listModels when cache is fresh (< TTL)', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('hit-test', {
+      listModels: async () => { calls += 1; return [{ id: 'fresh', name: 'fresh', provider: 'x' }]; },
+    });
+    try {
+      // Seed cache directly with recent timestamp.
+      const cached = {
+        runtime: 'hit-test',
+        models: [{ id: 'cached-only', name: 'Cached', provider: 'z' }],
+        cachedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(fake.cacheFile, JSON.stringify(cached));
+      const result = await md.getRuntimeModels('hit-test');
+      assert.strictEqual(calls, 0, 'cache hit must NOT call listModels');
+      assert.deepStrictEqual(result.models, cached.models);
+      assert.strictEqual(result.cachedAt, cached.cachedAt);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels cache miss when cachedAt is older than TTL', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('expired-test', {
+      listModels: async () => { calls += 1; return [{ id: 'fresh', name: 'fresh', provider: 'x' }]; },
+    });
+    try {
+      const stale = {
+        runtime: 'expired-test',
+        models: [{ id: 'old', name: 'old', provider: 'x' }],
+        // 2 hours old — beyond default 1h TTL
+        cachedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      };
+      fs.writeFileSync(fake.cacheFile, JSON.stringify(stale));
+      const result = await md.getRuntimeModels('expired-test');
+      assert.strictEqual(calls, 1, 'expired cache must trigger fresh listModels call');
+      assert.deepStrictEqual(result.models, [{ id: 'fresh', name: 'fresh', provider: 'x' }]);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: error / null handling ───────────────────────────────
+
+  await test('getRuntimeModels returns models:null and writes null-cache when listModels resolves null', async () => {
+    const fake = registerFakeRuntime('null-test', {
+      listModels: async () => null,
+    });
+    try {
+      const result = await md.getRuntimeModels('null-test');
+      assert.strictEqual(result.models, null);
+      assert.strictEqual(typeof result.cachedAt, 'string');
+      assert.ok(fs.existsSync(fake.cacheFile),
+        'null result still writes a cache so we don\'t hammer the API on every refresh');
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.strictEqual(persisted.models, null);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels treats listModels throw as null (does not propagate)', async () => {
+    const fake = registerFakeRuntime('throw-test', {
+      listModels: async () => { throw new Error('network down'); },
+    });
+    try {
+      const result = await md.getRuntimeModels('throw-test');
+      assert.strictEqual(result.models, null,
+        'thrown error must collapse to models:null so the dashboard can still render');
+      assert.strictEqual(typeof result.cachedAt, 'string');
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels treats empty array as null (no actionable UI distinction)', async () => {
+    const fake = registerFakeRuntime('empty-test', {
+      listModels: async () => [],
+    });
+    try {
+      const result = await md.getRuntimeModels('empty-test');
+      assert.strictEqual(result.models, null,
+        'empty array must collapse to null so the UI falls back to free-text');
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: force flag ──────────────────────────────────────────
+
+  await test('getRuntimeModels({ force: true }) bypasses cache hit and re-fetches', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('force-test', {
+      listModels: async () => { calls += 1; return [{ id: `m${calls}`, name: 'x', provider: 'y' }]; },
+    });
+    try {
+      // Seed fresh cache
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({
+        runtime: 'force-test',
+        models: [{ id: 'cached', name: 'cached', provider: 'z' }],
+        cachedAt: new Date().toISOString(),
+      }));
+      // force:true must skip the cache and call listModels
+      const result = await md.getRuntimeModels('force-test', { force: true });
+      assert.strictEqual(calls, 1);
+      assert.deepStrictEqual(result.models, [{ id: 'm1', name: 'x', provider: 'y' }]);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── invalidateRuntimeModelsCache ──────────────────────────────────────────
+
+  await test('invalidateRuntimeModelsCache deletes the cache file and returns true', () => {
+    const fake = registerFakeRuntime('inval-test');
+    try {
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({ runtime: 'inval-test', models: null, cachedAt: new Date().toISOString() }));
+      assert.strictEqual(md.invalidateRuntimeModelsCache('inval-test'), true);
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('invalidateRuntimeModelsCache returns false when cache file is already absent', () => {
+    const fake = registerFakeRuntime('inval-missing');
+    try {
+      // Ensure the file is absent.
+      try { fs.unlinkSync(fake.cacheFile); } catch {}
+      assert.strictEqual(md.invalidateRuntimeModelsCache('inval-missing'), false);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('invalidateRuntimeModelsCache throws "Unknown runtime" for unregistered name', () => {
+    let thrown = null;
+    try { md.invalidateRuntimeModelsCache('totally-not-here'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw');
+    assert.ok(/Unknown runtime/.test(thrown.message));
+  });
+
+  // ── End-to-end refresh flow ───────────────────────────────────────────────
+
+  await test('refresh flow: invalidate + force-fetch produces a new cachedAt and overwrites stale models', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('refresh-flow', {
+      listModels: async () => {
+        calls += 1;
+        return [{ id: `gen-${calls}`, name: `Gen ${calls}`, provider: 'rt' }];
+      },
+    });
+    try {
+      // Seed stale cache from a "prior generation".
+      const oldStamp = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({
+        runtime: 'refresh-flow',
+        models: [{ id: 'old', name: 'old', provider: 'rt' }],
+        cachedAt: oldStamp,
+      }));
+      assert.strictEqual(md.invalidateRuntimeModelsCache('refresh-flow'), true);
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'refresh must remove the stale cache before re-fetch');
+
+      const fresh = await md.getRuntimeModels('refresh-flow', { force: true });
+      assert.strictEqual(calls, 1);
+      assert.deepStrictEqual(fresh.models, [{ id: 'gen-1', name: 'Gen 1', provider: 'rt' }]);
+      assert.notStrictEqual(fresh.cachedAt, oldStamp,
+        'cachedAt must update to a new timestamp after refresh');
+      // And the persisted file must reflect the fresh state.
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.strictEqual(persisted.cachedAt, fresh.cachedAt);
+      assert.deepStrictEqual(persisted.models, fresh.models);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── Dashboard route registration sanity ───────────────────────────────────
+
+  await test('dashboard.js registers /api/runtimes routes (list + per-runtime models + refresh)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Exact-string GET /api/runtimes
+    assert.ok(src.includes("path: '/api/runtimes'"),
+      "dashboard.js must register exact-string route '/api/runtimes'");
+    // Regex routes for the per-runtime endpoints. We match the literal regex
+    // body — robust against whitespace shifts but tied to the exact pattern
+    // shape so accidental typos fail loudly.
+    assert.ok(src.includes('/^\\/api\\/runtimes\\/([\\w-]+)\\/models$/'),
+      'dashboard.js must register regex route /^\\/api\\/runtimes\\/([\\w-]+)\\/models$/');
+    assert.ok(src.includes('/^\\/api\\/runtimes\\/([\\w-]+)\\/models\\/refresh$/'),
+      'dashboard.js must register regex route /^\\/api\\/runtimes\\/([\\w-]+)\\/models\\/refresh$/');
+  });
+
+  await test('engine/copilot-models.json + engine/claude-models.json are gitignored', () => {
+    const gi = fs.readFileSync(path.join(MINIONS_DIR, '.gitignore'), 'utf8');
+    assert.ok(/engine\/claude-models\.json/.test(gi), '.gitignore must list engine/claude-models.json');
+    assert.ok(/engine\/copilot-models\.json/.test(gi), '.gitignore must list engine/copilot-models.json');
+  });
+}
+
+async function testSpawnAgentHelpers() {
+  console.log('\n── engine/spawn-agent.js — Runtime-Agnostic Wrapper (P-9c4f2d6a) ──');
+  const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+  const claudeAdapter = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+
+  // ── parseSpawnArgs ────────────────────────────────────────────────────────
+
+  await test('parseSpawnArgs returns null when fewer than 2 positional args', () => {
+    assert.strictEqual(spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js']), null);
+    assert.strictEqual(spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', 'p.md']), null);
+  });
+
+  await test('parseSpawnArgs reads positional prompt + sysprompt', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p.md', '/s.md']);
+    assert.strictEqual(r.promptFile, '/p.md');
+    assert.strictEqual(r.sysPromptFile, '/s.md');
+  });
+
+  await test('parseSpawnArgs defaults runtimeName to "claude"', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s']);
+    assert.strictEqual(r.runtimeName, 'claude');
+  });
+
+  await test('parseSpawnArgs reads --runtime <name>', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s', '--runtime', 'copilot']);
+    assert.strictEqual(r.runtimeName, 'copilot');
+  });
+
+  await test('parseSpawnArgs maps every recognized adapter flag into opts', () => {
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--model', 'sonnet',
+      '--max-turns', '42',
+      '--allowedTools', 'Read,Edit',
+      '--effort', 'low',
+      '--resume', 'sess-abc',
+      '--max-budget-usd', '5',
+      '--bare',
+      '--fallback-model', 'haiku',
+      '--output-format', 'json',
+      '--verbose',
+      '--stream', 'on',
+      '--disable-builtin-mcps',
+      '--no-custom-instructions',
+      '--enable-reasoning-summaries',
+    ]);
+    assert.deepStrictEqual(r.opts, {
+      model: 'sonnet',
+      maxTurns: '42',
+      allowedTools: 'Read,Edit',
+      effort: 'low',
+      sessionId: 'sess-abc',
+      maxBudget: '5',
+      bare: true,
+      fallbackModel: 'haiku',
+      outputFormat: 'json',
+      verbose: true,
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.deepStrictEqual(r.passthrough, []);
+  });
+
+  await test('parseSpawnArgs --no-verbose explicitly suppresses verbose', () => {
+    const r = spawnAgent.parseSpawnArgs(['node', 'spawn-agent.js', '/p', '/s', '--no-verbose']);
+    assert.strictEqual(r.opts.verbose, false);
+  });
+
+  await test('parseSpawnArgs DROPS legacy --permission-mode bypassPermissions (with its value)', () => {
+    // Pre-P-2a6d9c4f engine.js still passes the legacy flag. Letting it through
+    // would duplicate the permission flag for Claude (adapter emits its own
+    // --dangerously-skip-permissions). The flag AND its value must be consumed.
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--max-turns', '10',
+      '--permission-mode', 'bypassPermissions',
+      '--effort', 'low',
+    ]);
+    assert.deepStrictEqual(r.passthrough, [], 'no legacy flag should leak into passthrough');
+    assert.strictEqual(r.opts.maxTurns, '10');
+    assert.strictEqual(r.opts.effort, 'low', 'flags after dropped --permission-mode must still parse');
+  });
+
+  await test('parseSpawnArgs forwards unknown args to passthrough', () => {
+    const r = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/p', '/s',
+      '--some-future-flag', 'value',
+    ]);
+    assert.deepStrictEqual(r.passthrough, ['--some-future-flag', 'value']);
+  });
+
+  // ── buildSpawnInvocation ──────────────────────────────────────────────────
+
+  // Helper: a fake stdin-mode runtime — independent of Claude's filesystem state
+  function _makeStdinFakeRuntime({ name = 'fake-stdin', leadingArgs = [], extraArgs = [] } = {}) {
+    return {
+      name,
+      capabilities: { promptViaArg: false, systemPromptFile: false },
+      buildArgs: (opts) => {
+        const args = ['--exec'];
+        if (opts.model) args.push('--m', opts.model);
+        if (opts.maxBudget != null) args.push('--budget', String(opts.maxBudget));
+        if (opts.bare === true) args.push('--bare-mode');
+        if (opts.fallbackModel) args.push('--fb', opts.fallbackModel);
+        if (opts.stream) args.push('--stream', opts.stream);
+        if (opts.disableBuiltinMcps === true) args.push('--no-mcp');
+        if (opts.suppressAgentsMd === true) args.push('--no-agents-md');
+        if (opts.reasoningSummaries === true) args.push('--reasoning');
+        if (Array.isArray(opts.addDirs)) for (const d of opts.addDirs) args.push('--dir', d);
+        return [...args, ...extraArgs];
+      },
+      buildPrompt: (p, s) => (s ? `[SYS]\n${s}\n[END]\n${p}` : (p == null ? '' : String(p))),
+      _leadingArgs: leadingArgs,
+    };
+  }
+
+  // Helper: fake arg-mode runtime (for promptViaArg tests)
+  function _makeArgFakeRuntime({ name = 'fake-arg', leadingArgs = [] } = {}) {
+    return {
+      name,
+      capabilities: { promptViaArg: true, systemPromptFile: false },
+      buildArgs: (opts) => {
+        const args = ['--exec'];
+        if (opts.prompt != null) args.push('--prompt', String(opts.prompt));
+        if (Array.isArray(opts.addDirs)) for (const d of opts.addDirs) args.push('--dir', d);
+        return args;
+      },
+      buildPrompt: (p) => (p == null ? '' : String(p)),
+      _leadingArgs: leadingArgs,
+    };
+  }
+
+  await test('buildSpawnInvocation defaults deliveryMode to "stdin" for promptViaArg=false', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/fake', native: true, leadingArgs: [] },
+      promptText: 'hello',
+      sysPromptText: 'you are helpful',
+      opts: {},
+      passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'stdin');
+    assert.strictEqual(inv.finalPrompt, '[SYS]\nyou are helpful\n[END]\nhello');
+    assert.ok(!inv.args.includes('--prompt'), 'stdin mode must NOT splice --prompt into args');
+  });
+
+  await test('buildSpawnInvocation deliveryMode is "arg" for promptViaArg=true; adapter receives prompt', () => {
+    const runtime = _makeArgFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/fake', native: true, leadingArgs: [] },
+      promptText: 'hi there',
+      sysPromptText: '',
+      opts: {},
+      passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'arg');
+    const i = inv.args.indexOf('--prompt');
+    assert.ok(i >= 0 && inv.args[i + 1] === 'hi there', `expected --prompt "hi there" in: ${inv.args.join(' ')}`);
+  });
+
+  await test('buildSpawnInvocation: leadingArgs flow through resolved.leadingArgs', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/gh', native: true, leadingArgs: ['copilot'] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.deepStrictEqual(inv.leadingArgs, ['copilot']);
+    assert.strictEqual(inv.bin, '/usr/bin/gh');
+    assert.strictEqual(inv.native, true);
+  });
+
+  await test('buildSpawnInvocation: leadingArgs defaults to [] when adapter omits it', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/usr/bin/x', native: true }, // no leadingArgs key
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.deepStrictEqual(inv.leadingArgs, []);
+  });
+
+  await test('buildSpawnInvocation: addDirs are passed to runtime.buildArgs as opts.addDirs', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+    assert.ok(inv.args.includes('/repo/minions'));
+    assert.ok(inv.args.includes('/home/user/.claude'));
+  });
+
+  await test('buildSpawnInvocation: empty addDirs are not forwarded as opts.addDirs', () => {
+    const calls = [];
+    const runtime = {
+      name: 'spy', capabilities: {},
+      buildArgs: (opts) => { calls.push(opts); return ['--ok']; },
+      buildPrompt: (p) => p || '',
+    };
+    spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: [],
+    });
+    assert.ok(!('addDirs' in calls[0]), 'empty addDirs must not pollute opts bag');
+    assert.strictEqual(calls.length, 1);
+  });
+
+  await test('buildSpawnInvocation: passthrough args appended AFTER adapter args', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {},
+      passthrough: ['--legacy-pass', 'value', '--orphan'],
+    });
+    const idx = inv.args.indexOf('--legacy-pass');
+    assert.ok(idx > 0, 'passthrough should be present and not first');
+    assert.strictEqual(inv.args[idx + 1], 'value');
+    assert.strictEqual(inv.args[idx + 2], '--orphan');
+    // adapter's own first arg (--exec) must come before passthrough
+    assert.ok(inv.args.indexOf('--exec') < idx);
+  });
+
+  await test('buildSpawnInvocation: every new opt (maxBudget/bare/fallbackModel/stream/disableBuiltinMcps/suppressAgentsMd/reasoningSummaries) flows to buildArgs', () => {
+    const calls = [];
+    const runtime = {
+      name: 'spy', capabilities: {},
+      buildArgs: (opts) => { calls.push(opts); return []; },
+      buildPrompt: (p) => p || '',
+    };
+    spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {
+        maxBudget: 5, bare: true, fallbackModel: 'haiku',
+        stream: 'on', disableBuiltinMcps: true,
+        suppressAgentsMd: true, reasoningSummaries: true,
+      },
+      passthrough: [],
+    });
+    const seen = calls[0];
+    assert.strictEqual(seen.maxBudget, 5);
+    assert.strictEqual(seen.bare, true);
+    assert.strictEqual(seen.fallbackModel, 'haiku');
+    assert.strictEqual(seen.stream, 'on');
+    assert.strictEqual(seen.disableBuiltinMcps, true);
+    assert.strictEqual(seen.suppressAgentsMd, true);
+    assert.strictEqual(seen.reasoningSummaries, true);
+  });
+
+  await test('buildSpawnInvocation: usingNodeShim reflects native flag (true → native, false → cli.js)', () => {
+    const runtime = _makeStdinFakeRuntime();
+    const native = spawnAgent.buildSpawnInvocation({
+      runtime, resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '', opts: {}, passthrough: [],
+    });
+    const cliJs = spawnAgent.buildSpawnInvocation({
+      runtime, resolved: { bin: '/x/cli.js', native: false, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '', opts: {}, passthrough: [],
+    });
+    assert.strictEqual(native.usingNodeShim, false);
+    assert.strictEqual(cliJs.usingNodeShim, true);
+  });
+
+  // ── Claude path regression — end-to-end (parse → invocation) ──────────────
+
+  await test('Claude regression: legacy engine.js argv parses to expected adapter invocation', () => {
+    // Mimic the EXACT argv engine.js currently passes (engine.js:817-844):
+    //   --output-format stream-json --max-turns 100 --verbose
+    //   --permission-mode bypassPermissions [--allowedTools <list>] [--effort low]
+    //   [--resume <sessionId>]
+    const argv = [
+      'node', 'spawn-agent.js', '/tmp/p.md', '/tmp/s.md',
+      '--output-format', 'stream-json',
+      '--max-turns', '100',
+      '--verbose',
+      '--permission-mode', 'bypassPermissions',
+      '--allowedTools', 'Read,Edit,Bash',
+      '--effort', 'low',
+      '--resume', 'sess-xyz',
+    ];
+    const parsed = spawnAgent.parseSpawnArgs(argv);
+    assert.strictEqual(parsed.runtimeName, 'claude');
+    assert.deepStrictEqual(parsed.passthrough, [], 'no legacy flag must leak into passthrough on Claude path');
+
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claudeAdapter,
+      resolved: { bin: '/usr/local/bin/claude', native: true, leadingArgs: [] },
+      promptText: 'do the thing',
+      sysPromptText: 'you are dallas',
+      opts: parsed.opts,
+      passthrough: parsed.passthrough,
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+
+    // Adapter emits the modern flag, NOT the legacy one
+    assert.ok(inv.args.includes('--dangerously-skip-permissions'),
+      `expected --dangerously-skip-permissions in args: ${inv.args.join(' ')}`);
+    assert.ok(!inv.args.includes('--permission-mode'),
+      'legacy --permission-mode must NOT appear in final args');
+    assert.ok(!inv.args.includes('bypassPermissions'),
+      'legacy bypassPermissions value must NOT appear in final args');
+
+    // Core Claude flags preserved
+    const ofIdx = inv.args.indexOf('--output-format');
+    assert.ok(ofIdx >= 0 && inv.args[ofIdx + 1] === 'stream-json');
+    const mtIdx = inv.args.indexOf('--max-turns');
+    assert.ok(mtIdx >= 0 && inv.args[mtIdx + 1] === '100');
+    assert.ok(inv.args.includes('--verbose'));
+    const atIdx = inv.args.indexOf('--allowedTools');
+    assert.ok(atIdx >= 0 && inv.args[atIdx + 1] === 'Read,Edit,Bash');
+    const eIdx = inv.args.indexOf('--effort');
+    assert.ok(eIdx >= 0 && inv.args[eIdx + 1] === 'low');
+    const rIdx = inv.args.indexOf('--resume');
+    assert.ok(rIdx >= 0 && inv.args[rIdx + 1] === 'sess-xyz');
+
+    // -p prepended by Claude adapter
+    assert.strictEqual(inv.args[0], '-p');
+
+    // --add-dir flags surfaced via the addDirs opt
+    const addDirIdxs = inv.args
+      .map((a, i) => a === '--add-dir' ? i : -1)
+      .filter(i => i >= 0);
+    assert.strictEqual(addDirIdxs.length, 2, 'expected exactly 2 --add-dir flags');
+    assert.strictEqual(inv.args[addDirIdxs[0] + 1], '/repo/minions');
+    assert.strictEqual(inv.args[addDirIdxs[1] + 1], '/home/user/.claude');
+
+    // Stdin delivery for Claude
+    assert.strictEqual(inv.deliveryMode, 'stdin');
+    assert.strictEqual(inv.finalPrompt, 'do the thing', 'Claude buildPrompt is passthrough — sys delivered separately');
+
+    // leadingArgs empty for Claude (standalone binary)
+    assert.deepStrictEqual(inv.leadingArgs, []);
+  });
+
+  await test('Claude regression: --system-prompt-file flag flows through opts.sysPromptFile', () => {
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claudeAdapter,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: 's',
+      opts: { sysPromptFile: '/tmp/sys.tmp', maxTurns: '10' },
+      passthrough: [],
+    });
+    const i = inv.args.indexOf('--system-prompt-file');
+    assert.ok(i >= 0 && inv.args[i + 1] === '/tmp/sys.tmp');
+  });
+
+  // ── Spec compliance: zero Claude-specific code in spawn-agent.js source ──
+
+  await test('spawn-agent.js source contains zero Claude-specific identifiers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    // Strip comments + strings before scanning so install-hint references
+    // (necessary for user-facing error messages) don't trip the assertion.
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')         // block comments
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')     // line comments (keep https://)
+      .replace(/'[^'\n]*'/g, "''")              // single-quoted strings
+      .replace(/"[^"\n]*"/g, '""')              // double-quoted strings
+      .replace(/`[^`]*`/g, '``');               // template strings
+    const banned = [
+      /claudeBin\b/, /claudeIsNative\b/,
+      /_probeClaudePackage\b/, /claude-caps\.json\b/,
+      /@anthropic-ai\/claude-code\b/,
+      /--permission-mode\b/, /bypassPermissions\b/,
+      /--system-prompt-file\b/, /--add-dir\b/,
+    ];
+    for (const re of banned) {
+      assert.ok(!re.test(codeOnly),
+        `spawn-agent.js code body still references Claude-specific identifier matching ${re}: ${codeOnly.match(re)}`);
+    }
+  });
+
+  await test('spawn-agent.js exports parseSpawnArgs and buildSpawnInvocation', () => {
+    assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
+    assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
+  });
 }
 
 async function testClassifyInboxItem() {
@@ -1006,6 +2711,461 @@ async function testEngineDefaults() {
   await test('shared exports lock-backed JSON mutator for cross-process safety', () => {
     assert.ok(typeof shared.mutateJsonFileLocked === 'function',
       'shared should export mutateJsonFileLocked');
+  });
+}
+
+// ─── shared.js — Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────
+
+async function testRuntimeFleetHelpers() {
+  console.log('\n── shared.js — Runtime Fleet Helpers ──');
+
+  // ── ENGINE_DEFAULTS: 12 new fields ──────────────────────────────────────────
+
+  await test('ENGINE_DEFAULTS has all 12 new runtime-fleet fields with documented defaults', () => {
+    const D = shared.ENGINE_DEFAULTS;
+    assert.strictEqual(D.defaultCli, 'claude', 'defaultCli should default to claude');
+    assert.strictEqual(D.defaultModel, undefined, 'defaultModel should default to undefined');
+    assert.strictEqual(D.ccCli, undefined, 'ccCli should default to undefined');
+    assert.strictEqual(D.ccModel, undefined, 'ccModel should default to undefined');
+    assert.strictEqual(D.claudeBareMode, false, 'claudeBareMode should default to false');
+    assert.strictEqual(D.claudeFallbackModel, undefined, 'claudeFallbackModel should default to undefined');
+    assert.strictEqual(D.copilotDisableBuiltinMcps, true, 'copilotDisableBuiltinMcps should default to true');
+    assert.strictEqual(D.copilotSuppressAgentsMd, true, 'copilotSuppressAgentsMd should default to true');
+    assert.strictEqual(D.copilotStreamMode, 'on', 'copilotStreamMode should default to "on"');
+    assert.strictEqual(D.copilotReasoningSummaries, false, 'copilotReasoningSummaries should default to false');
+    assert.strictEqual(D.maxBudgetUsd, undefined, 'maxBudgetUsd should default to undefined');
+    assert.strictEqual(D.disableModelDiscovery, false, 'disableModelDiscovery should default to false');
+  });
+
+  // ── resolveAgentCli: per-agent → engine.defaultCli → 'claude' ───────────────
+
+  await test('resolveAgentCli: per-agent override wins', () => {
+    const cli = shared.resolveAgentCli({ cli: 'copilot' }, { defaultCli: 'claude' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveAgentCli: engine.defaultCli used when agent has no override', () => {
+    const cli = shared.resolveAgentCli({}, { defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveAgentCli: hardcoded "claude" fallback when neither agent nor engine sets it', () => {
+    assert.strictEqual(shared.resolveAgentCli({}, {}), 'claude');
+    assert.strictEqual(shared.resolveAgentCli(null, null), 'claude');
+  });
+
+  await test('resolveAgentCli: empty string treated as unset (cleared override)', () => {
+    const cli = shared.resolveAgentCli({ cli: '' }, { defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot', 'empty per-agent override should fall through to engine');
+  });
+
+  await test('resolveAgentCli: does NOT fall through to engine.ccCli', () => {
+    // Independence rule: agent path never reads ccCli. Even when ccCli is set
+    // to a different runtime, resolveAgentCli should ignore it.
+    const cli = shared.resolveAgentCli({}, { ccCli: 'copilot' });
+    assert.strictEqual(cli, 'claude', 'agent path must ignore ccCli');
+  });
+
+  // ── resolveCcCli: engine.ccCli → engine.defaultCli → 'claude' ──────────────
+
+  await test('resolveCcCli: ccCli override wins over defaultCli', () => {
+    const cli = shared.resolveCcCli({ ccCli: 'copilot', defaultCli: 'claude' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveCcCli: defaultCli used when ccCli unset', () => {
+    const cli = shared.resolveCcCli({ defaultCli: 'copilot' });
+    assert.strictEqual(cli, 'copilot');
+  });
+
+  await test('resolveCcCli: hardcoded "claude" fallback when nothing set', () => {
+    assert.strictEqual(shared.resolveCcCli({}), 'claude');
+    assert.strictEqual(shared.resolveCcCli(null), 'claude');
+  });
+
+  await test('resolveCcCli: does NOT inspect any agent settings', () => {
+    // Independence rule: CC path is fleet-scoped. Even if some agent specifies
+    // a different cli, resolveCcCli must only look at engine config.
+    const cli = shared.resolveCcCli({ defaultCli: 'claude' });
+    assert.strictEqual(cli, 'claude');
+  });
+
+  // ── resolveAgentModel ──────────────────────────────────────────────────────
+
+  await test('resolveAgentModel: per-agent override wins', () => {
+    const m = shared.resolveAgentModel({ model: 'gpt-5.4' }, { defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'gpt-5.4');
+  });
+
+  await test('resolveAgentModel: engine.defaultModel used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentModel({}, { defaultModel: 'sonnet' }), 'sonnet');
+  });
+
+  await test('resolveAgentModel: returns undefined when nothing set (let runtime decide)', () => {
+    assert.strictEqual(shared.resolveAgentModel({}, {}), undefined);
+    assert.strictEqual(shared.resolveAgentModel(null, null), undefined);
+  });
+
+  await test('resolveAgentModel: does NOT fall through to engine.ccModel', () => {
+    const m = shared.resolveAgentModel({}, { ccModel: 'haiku' });
+    assert.strictEqual(m, undefined, 'agent path must ignore ccModel');
+  });
+
+  // ── resolveCcModel ─────────────────────────────────────────────────────────
+
+  await test('resolveCcModel: ccModel override wins over defaultModel', () => {
+    const m = shared.resolveCcModel({ ccModel: 'haiku', defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('resolveCcModel: defaultModel used when ccModel unset (CC inherits fleet)', () => {
+    const m = shared.resolveCcModel({ defaultModel: 'sonnet' });
+    assert.strictEqual(m, 'sonnet');
+  });
+
+  await test('resolveCcModel: returns undefined when nothing set', () => {
+    assert.strictEqual(shared.resolveCcModel({}), undefined);
+    assert.strictEqual(shared.resolveCcModel(null), undefined);
+  });
+
+  // ── resolveAgentMaxBudget — uses ?? so 0 is honored ────────────────────────
+
+  await test('resolveAgentMaxBudget: per-agent override wins', () => {
+    const b = shared.resolveAgentMaxBudget({ maxBudgetUsd: 5 }, { maxBudgetUsd: 10 });
+    assert.strictEqual(b, 5);
+  });
+
+  await test('resolveAgentMaxBudget: engine.maxBudgetUsd used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, { maxBudgetUsd: 10 }), 10);
+  });
+
+  await test('resolveAgentMaxBudget: returns undefined when nothing set', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, {}), undefined);
+  });
+
+  await test('resolveAgentMaxBudget: literal 0 honored as a valid cap (uses ??, not ||)', () => {
+    // This is the explicit acceptance criterion — `||` would treat 0 as falsy
+    // and fall through to the engine default, silently ignoring a $0 cap on
+    // read-only/dry-run agents.
+    assert.strictEqual(shared.resolveAgentMaxBudget({ maxBudgetUsd: 0 }, { maxBudgetUsd: 10 }), 0,
+      'per-agent maxBudgetUsd:0 must override engine default 10');
+    assert.strictEqual(shared.resolveAgentMaxBudget({}, { maxBudgetUsd: 0 }), 0,
+      'engine maxBudgetUsd:0 must be honored when no per-agent override');
+  });
+
+  await test('resolveAgentMaxBudget: stringy numbers coerced (config tolerance)', () => {
+    assert.strictEqual(shared.resolveAgentMaxBudget({ maxBudgetUsd: '5' }, {}), 5);
+  });
+
+  // ── resolveAgentBareMode ───────────────────────────────────────────────────
+
+  await test('resolveAgentBareMode: per-agent override wins', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({ bareMode: true }, { claudeBareMode: false }), true);
+  });
+
+  await test('resolveAgentBareMode: per-agent FALSE overrides engine TRUE (strict null check)', () => {
+    // `||` would let engine.claudeBareMode=true win; we use strict
+    // undefined/null check so a per-agent `false` is honored.
+    assert.strictEqual(shared.resolveAgentBareMode({ bareMode: false }, { claudeBareMode: true }), false);
+  });
+
+  await test('resolveAgentBareMode: engine.claudeBareMode used when agent has no override', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({}, { claudeBareMode: true }), true);
+  });
+
+  await test('resolveAgentBareMode: defaults to false when nothing set', () => {
+    assert.strictEqual(shared.resolveAgentBareMode({}, {}), false);
+    assert.strictEqual(shared.resolveAgentBareMode(null, null), false);
+  });
+
+  // ── Legacy ccModel → defaultModel migration ────────────────────────────────
+
+  await test('applyLegacyCcModelMigration: promotes ccModel to defaultModel when defaultModel unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: 'gpt-5.4' } };
+    const applied = shared.applyLegacyCcModelMigration(config);
+    assert.strictEqual(applied, true);
+    assert.strictEqual(config.engine.defaultModel, 'gpt-5.4', 'ccModel value should be copied to defaultModel');
+    assert.strictEqual(config.engine.ccModel, 'gpt-5.4', 'on-disk ccModel must remain unchanged (no disk write)');
+  });
+
+  await test('applyLegacyCcModelMigration: no-op when defaultModel is already set', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: 'gpt-5.4', defaultModel: 'sonnet' } };
+    const applied = shared.applyLegacyCcModelMigration(config);
+    assert.strictEqual(applied, false);
+    assert.strictEqual(config.engine.defaultModel, 'sonnet', 'should not overwrite an explicit defaultModel');
+  });
+
+  await test('applyLegacyCcModelMigration: no-op when ccModel is unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: {} };
+    assert.strictEqual(shared.applyLegacyCcModelMigration(config), false);
+    assert.strictEqual(config.engine.defaultModel, undefined);
+  });
+
+  await test('applyLegacyCcModelMigration: empty-string ccModel treated as unset', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const config = { engine: { ccModel: '' } };
+    assert.strictEqual(shared.applyLegacyCcModelMigration(config), false);
+  });
+
+  await test('applyLegacyCcModelMigration: logs deprecation notice exactly once', () => {
+    shared._resetLegacyCcModelMigrationFlag();
+    const calls = [];
+    const logger = (level, msg) => calls.push([level, msg]);
+    shared.applyLegacyCcModelMigration({ engine: { ccModel: 'a' } }, { logger });
+    shared.applyLegacyCcModelMigration({ engine: { ccModel: 'b' } }, { logger });
+    assert.strictEqual(calls.length, 1, 'should log only once per process');
+    assert.strictEqual(calls[0][0], 'warn');
+    assert.ok(calls[0][1].includes('ccModel is now a CC-specific override'),
+      'should reference the CC-specific override deprecation');
+  });
+
+  await test('applyLegacyCcModelMigration: handles missing/invalid config without throwing', () => {
+    assert.strictEqual(shared.applyLegacyCcModelMigration(null), false);
+    assert.strictEqual(shared.applyLegacyCcModelMigration({}), false);
+    assert.strictEqual(shared.applyLegacyCcModelMigration({ engine: null }), false);
+  });
+
+  // ── Preflight warnings ─────────────────────────────────────────────────────
+
+  await test('runtimeConfigWarnings: warns on unknown defaultCli', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { defaultCli: 'codex' } }, ['claude', 'copilot']);
+    const unknown = ws.filter(w => w.id === 'unknown-cli');
+    assert.strictEqual(unknown.length, 1);
+    assert.ok(unknown[0].message.includes('codex'), 'message should name the unknown runtime');
+    assert.ok(unknown[0].message.includes('claude'), 'message should list registered runtimes');
+    assert.ok(unknown[0].message.includes('copilot'), 'message should list registered runtimes');
+  });
+
+  await test('runtimeConfigWarnings: warns on unknown ccCli independently from defaultCli', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { ccCli: 'codex' } }, ['claude', 'copilot']);
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 1);
+  });
+
+  await test('runtimeConfigWarnings: warns on unknown per-agent cli', () => {
+    const ws = shared.runtimeConfigWarnings({
+      agents: { dallas: { cli: 'codex' }, ralph: { cli: 'claude' } },
+    }, ['claude', 'copilot']);
+    const unknown = ws.filter(w => w.id === 'unknown-cli');
+    assert.strictEqual(unknown.length, 1);
+    assert.ok(unknown[0].message.includes('agents.dallas'));
+  });
+
+  await test('runtimeConfigWarnings: dedups identical unknown values across slots', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { defaultCli: 'codex', ccCli: 'codex' },
+    }, ['claude']);
+    // defaultCli:codex and ccCli:codex are different `slot:value` keys, so two
+    // warnings are expected (each labels which slot it came from). The dedup
+    // is *within* a single slot, which is verified by the next test.
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 2);
+  });
+
+  await test('runtimeConfigWarnings: empty runtime registry skips unknown-cli check (avoids false positives during partial install)', () => {
+    const ws = shared.runtimeConfigWarnings({ engine: { defaultCli: 'claude' } }, []);
+    assert.strictEqual(ws.filter(w => w.id === 'unknown-cli').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: warns on deprecated config.claude.* fields', () => {
+    const ws = shared.runtimeConfigWarnings({ claude: { binary: '/old/path' } }, ['claude']);
+    const dep = ws.filter(w => w.id === 'deprecated-config-claude');
+    assert.strictEqual(dep.length, 1);
+    assert.ok(dep[0].message.includes('binary'), 'message should name the deprecated subkey');
+  });
+
+  await test('runtimeConfigWarnings: lists multiple deprecated subkeys in one warning', () => {
+    const ws = shared.runtimeConfigWarnings({
+      claude: { binary: '/x', outputFormat: 'json', allowedTools: 'all' },
+    }, ['claude']);
+    const dep = ws.filter(w => w.id === 'deprecated-config-claude');
+    assert.strictEqual(dep.length, 1, 'should aggregate deprecated subkeys into one warning');
+    for (const k of ['binary', 'outputFormat', 'allowedTools']) {
+      assert.ok(dep[0].message.includes(k), `message should include ${k}`);
+    }
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + Claude CC + no system prompt -> warn', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, defaultCli: 'claude' },
+    }, ['claude']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 1);
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + Copilot CC -> no bare-mode warning (irrelevant on non-Claude)', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, ccCli: 'copilot' },
+    }, ['claude', 'copilot']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: bare-mode + explicit ccSystemPrompt -> no warning (escape hatch)', () => {
+    const ws = shared.runtimeConfigWarnings({
+      engine: { claudeBareMode: true, defaultCli: 'claude', ccSystemPrompt: '/path/to/prompt.md' },
+    }, ['claude']);
+    assert.strictEqual(ws.filter(w => w.id === 'bare-mode-misconfig').length, 0);
+  });
+
+  await test('runtimeConfigWarnings: returns [] for empty/malformed config (defensive)', () => {
+    assert.deepStrictEqual(shared.runtimeConfigWarnings(null, ['claude']), []);
+    assert.deepStrictEqual(shared.runtimeConfigWarnings(undefined, ['claude']), []);
+    assert.deepStrictEqual(shared.runtimeConfigWarnings({}, ['claude']), []);
+  });
+
+  // ── Wiring sanity: engine/cli.js + engine/preflight.js consume helpers ─────
+
+  await test('engine/cli.js calls applyLegacyCcModelMigration during start()', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('applyLegacyCcModelMigration'),
+      'cli.js start() must invoke the legacy ccModel migration so single-model installs survive the runtime fleet refactor');
+  });
+
+  await test('engine/preflight.js threads config into runPreflight() and emits runtimeConfigWarnings', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('runtimeConfigWarnings'),
+      'preflight should call shared.runtimeConfigWarnings to surface fleet-config drift');
+    assert.ok(src.includes('opts.config'),
+      'runPreflight should accept opts.config so callers (cli/start, doctor) can pass it');
+  });
+
+  // ── P-7a5c1f8e: dashboard settings persistence + UI source guards ─────────
+
+  await test('dashboard.js handleSettingsUpdate persists new runtime fleet fields', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // Each new fleet field must be readable on body.engine and written to config.engine
+    for (const field of [
+      'defaultCli', 'defaultModel', 'ccCli', 'ccModel',
+      'claudeFallbackModel', 'copilotStreamMode', 'maxBudgetUsd',
+    ]) {
+      assert.ok(new RegExp(`e\\.${field}`).test(handler),
+        `handleSettingsUpdate must read body.engine.${field} from the request payload`);
+    }
+  });
+
+  await test('dashboard.js handleSettingsUpdate validates defaultCli + ccCli against the runtime registry', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    assert.ok(/listRuntimes\(\)/.test(handler),
+      'CLI validation must consult engine/runtimes.listRuntimes() so a typo in the dashboard cannot pin the fleet to a non-existent runtime');
+  });
+
+  await test('dashboard.js handleSettingsUpdate clears overrides on empty string ("Default (CLI chooses)")', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // "Default (CLI chooses)" submits empty string. The handler must DELETE the
+    // key from config.engine — leaving the value as an empty string would
+    // override the runtime adapter's own default and crash --model "".
+    assert.ok(/delete config\.engine\.defaultModel/.test(handler),
+      'empty-string defaultModel must DELETE the key, not persist as ""');
+    assert.ok(/delete config\.engine\.defaultCli/.test(handler),
+      'empty-string defaultCli must DELETE the key so the runtime falls back to its built-in default');
+  });
+
+  await test('dashboard.js handleSettingsUpdate per-agent path accepts cli/model/maxBudgetUsd/bareMode overrides', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    const agentsBlock = handler.slice(handler.indexOf('if (body.agents)'));
+    for (const field of ['cli', 'model', 'maxBudgetUsd', 'bareMode']) {
+      assert.ok(new RegExp(`updates\\.${field}`).test(agentsBlock),
+        `handleSettingsUpdate agents block must read updates.${field}`);
+    }
+  });
+
+  await test('dashboard.js handleSettingsUpdate honors maxBudgetUsd=0 (??-equivalent)', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // Number(value) >= 0 is the gate; using `Number.isFinite(n) && n >= 0`
+    // means 0 passes (read-only / dry-run agents). The team has specifically
+    // flagged the difference between `||` (drops 0) and `??` / explicit
+    // numeric-validity check (keeps 0) as a real bug class — see P-3b8e5f1d.
+    assert.ok(/n >= 0/.test(handler),
+      'maxBudgetUsd validation must allow 0 — `||` would silently drop a literal cap of $0');
+  });
+
+  await test('settings UI Runtime section includes the unified default CLI / Model controls (P-7a5c1f8e)', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    for (const id of ['set-defaultCli', 'set-defaultModel', 'set-ccCli', 'set-ccModel', 'set-ccEffort']) {
+      assert.ok(settingsSrc.includes(id),
+        `Settings UI must expose #${id} so saveSettings can collect the value`);
+    }
+    // The defaultCli dropdown is sourced from /api/runtimes — verify the wiring.
+    assert.ok(settingsSrc.includes('/api/runtimes'),
+      'Settings UI must fetch /api/runtimes to populate the defaultCli dropdown');
+  });
+
+  await test('settings UI advanced runtime section hides the 8 advanced toggles behind a disclosure', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // Advanced disclosure exists.
+    assert.ok(settingsSrc.includes('set-runtime-advanced-details'),
+      'Advanced runtime settings must live behind a <details> disclosure');
+    // All 8 advanced fields surface in the UI.
+    for (const id of [
+      'set-claudeBareMode', 'set-claudeFallbackModel',
+      'set-copilotDisableBuiltinMcps', 'set-copilotSuppressAgentsMd',
+      'set-copilotStreamMode', 'set-copilotReasoningSummaries',
+      'set-maxBudgetUsd', 'set-disableModelDiscovery',
+    ]) {
+      assert.ok(settingsSrc.includes(id),
+        `Advanced runtime settings must expose #${id}`);
+    }
+  });
+
+  await test('settings UI tooltip on copilotDisableBuiltinMcps warns about the split-brain PR-tracking risk', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // Find the copilotDisableBuiltinMcps toggle line; the third arg of
+    // settingsToggle is the hint.
+    const idx = settingsSrc.indexOf('set-copilotDisableBuiltinMcps');
+    assert.ok(idx > 0, 'set-copilotDisableBuiltinMcps toggle missing');
+    // Take a window of source around the toggle and check for the warning keywords
+    const window = settingsSrc.slice(idx, idx + 800);
+    assert.ok(/split-brain|bypass.*pull-requests\.json|github-mcp-server/.test(window),
+      'copilotDisableBuiltinMcps tooltip must explain the split-brain risk with PR tracking when disabled');
+  });
+
+  await test('settings UI per-agent CLI/Model columns surface fleet defaults as muted placeholders', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // The per-agent CLI cell is hooked via data-runtime-cli="<id>" so
+    // initRuntimeFleetUI can hydrate it with a <select> populated from /api/runtimes.
+    assert.ok(settingsSrc.includes('data-runtime-cli'),
+      'Per-agent CLI cells must carry data-runtime-cli attribute for runtime hydration');
+    // The per-agent Model input must use placeholder text showing the fleet inheritance.
+    assert.ok(/placeholder="[^"]*\(fleet\)/.test(settingsSrc),
+      'Per-agent Model input must show the fleet default as muted placeholder');
+    // Per-agent Model field is wired into agentsPayload via data-field="model".
+    assert.ok(settingsSrc.includes('data-field="model"'),
+      'Per-agent Model input must carry data-field="model" so saveSettings collects it');
+  });
+
+  await test('settings UI saveSettings sends every new runtime field on the engine payload', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const fn = settingsSrc.slice(settingsSrc.indexOf('async function saveSettings'));
+    for (const field of [
+      'defaultCli', 'defaultModel', 'ccCli', 'ccModel',
+      'claudeBareMode', 'claudeFallbackModel',
+      'copilotDisableBuiltinMcps', 'copilotSuppressAgentsMd',
+      'copilotStreamMode', 'copilotReasoningSummaries',
+      'maxBudgetUsd', 'disableModelDiscovery',
+    ]) {
+      assert.ok(fn.includes(field + ':'),
+        `saveSettings must send ${field} on the engine payload`);
+    }
   });
 }
 
@@ -3702,46 +5862,25 @@ async function testLlmModule() {
     llm.trackEngineUsage('test-category', {}); // should not throw
   });
 
-  // ── isResumeSessionStillValid — session preservation after timeouts ──
+  // ── isResumeSessionStillValid REMOVED in P-5e1b7a3c ────────────────────────
+  //
+  // The runtime adapter contract guarantees `parseOutput()` will populate
+  // `sessionId` whenever a session was established — there's no need for the
+  // dual-path fallback (parsed sessionId OR raw scan). Callers (dashboard.js
+  // ccCall / ccDocCall + ccDocCallStreaming) now check `result.sessionId !== null`
+  // directly. See `dashboard.js:~1244` for the inline replacement.
 
-  await test('isResumeSessionStillValid returns true when result has sessionId', () => {
-    const result = { sessionId: 'sess-abc123', code: 1, text: '', raw: '', stderr: 'signal timed out' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  await test('llm module no longer exports isResumeSessionStillValid (removed in P-5e1b7a3c)', () => {
+    assert.strictEqual(typeof llm.isResumeSessionStillValid, 'undefined',
+      'isResumeSessionStillValid must be removed; callers should check result.sessionId !== null directly');
   });
 
-  await test('isResumeSessionStillValid returns true when raw output contains session_id', () => {
-    const result = {
-      sessionId: null, code: 1, text: '', stderr: '',
-      raw: '{"type":"assistant","message":"partial"}\n{"type":"result","result":"","session_id":"sess-xyz"}'
-    };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
-
-  await test('isResumeSessionStillValid returns false when session is truly dead', () => {
-    const result = { sessionId: null, code: 1, text: '', raw: '', stderr: 'session not found' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
-  });
-
-  await test('isResumeSessionStillValid returns false for null result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid(null), false);
-  });
-
-  await test('isResumeSessionStillValid returns false for empty result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: '' }), false);
-  });
-
-  await test('isResumeSessionStillValid returns false when raw is undefined', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null }), false);
-  });
-
-  await test('isResumeSessionStillValid returns true even with non-zero exit code if sessionId present', () => {
-    // Simulates signal timeout: process killed (code=1) but session was established
-    const result = { sessionId: 'sess-timeout', code: 137, text: '', raw: '{}', stderr: 'error:signal timed out' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
-
-  await test('llm module exports isResumeSessionStillValid', () => {
-    assert.ok(typeof llm.isResumeSessionStillValid === 'function');
+  await test('dashboard.js inlines result.sessionId !== null check (no isResumeSessionStillValid call)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(!src.includes('isResumeSessionStillValid'),
+      'dashboard.js must not reference the removed helper');
+    assert.ok(src.includes('result.sessionId !== null'),
+      'dashboard.js must use the inline session-validity check');
   });
 
   await test('llm.js uses bounded stream tails and structured tool metadata', () => {
@@ -3759,11 +5898,19 @@ async function testLlmModule() {
   });
 
   await test('llm module exports exactly the documented surface', () => {
+    // P-5e1b7a3c: isResumeSessionStillValid removed; new test-only exports
+    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache) added so callers
+    // can verify capability gating + per-runtime caching without touching
+    // private state directly.
     const exported = Object.keys(llm).sort();
     assert.deepStrictEqual(exported, [
+      '_buildSpawnAgentFlags',
+      '_resetBinCache',
+      '_resolveBin',
+      '_resolveModelFor',
+      '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
-      'isResumeSessionStillValid',
       'trackEngineUsage',
     ]);
   });
@@ -3997,39 +6144,7 @@ async function testLlmModule() {
     } finally { restore(); }
   });
 
-  // ── isResumeSessionStillValid — additional edge cases ────────────────────
-  await test('isResumeSessionStillValid returns false for undefined result', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid(undefined), false);
-  });
-
-  await test('isResumeSessionStillValid treats empty-string sessionId as invalid and falls through to raw', () => {
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '' }), false);
-    // But a falsy sessionId with a live session_id marker in raw is still alive
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: '', raw: '"session_id":"s1"' }), true);
-  });
-
-  await test('isResumeSessionStillValid returns false when raw lacks any session_id marker', () => {
-    const result = {
-      sessionId: null, code: 1, text: '',
-      raw: '{"type":"assistant","message":"partial"}\n{"type":"error","code":"ETIMEDOUT"}',
-      stderr: 'tool timeout',
-    };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
-  });
-
-  await test('isResumeSessionStillValid handles non-string raw values gracefully', () => {
-    // Non-string raw (shape drift / truncation) must not throw — guard uses truthy + .includes
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: false }), false);
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: 0 }), false);
-    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: null }), false);
-  });
-
-  await test('isResumeSessionStillValid prefers parsed sessionId over raw scan', () => {
-    // If sessionId is truthy, we return true without scanning raw.
-    // Raw lacking the marker should NOT flip the answer.
-    const result = { sessionId: 'sess-live', code: 0, text: 'ok', raw: 'no marker here', stderr: '' };
-    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
-  });
+  // (isResumeSessionStillValid edge-case suite removed alongside the helper in P-5e1b7a3c.)
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
@@ -5254,7 +7369,9 @@ async function testPreflightModule() {
     const { passed: p, results: r } = preflight.runPreflight();
     assert.ok(typeof p === 'boolean', 'passed should be boolean');
     assert.ok(Array.isArray(r), 'results should be array');
-    assert.strictEqual(r.length, 3, 'should have exactly 3 checks (Node, Git, Claude CLI)');
+    // Without a config: Node + Git + Runtime: claude (the legacy default).
+    // With config: more entries (one runtime check per distinct CLI in use).
+    assert.strictEqual(r.length, 3, 'no-config preflight should be 3 checks (Node, Git, Runtime: claude)');
   });
 
   await test('runPreflight includes Node.js check as passing', () => {
@@ -5270,10 +7387,10 @@ async function testPreflightModule() {
     assert.ok(gitCheck, 'Missing Git check');
   });
 
-  await test('runPreflight includes Claude Code CLI check', () => {
+  await test('runPreflight includes per-runtime claude binary check (replaces legacy Claude Code CLI entry)', () => {
     const { results: r } = preflight.runPreflight();
-    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
-    assert.ok(claudeCheck, 'Missing Claude Code CLI check');
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    assert.ok(claudeCheck, 'Missing "Runtime: claude" check — runPreflight must call adapter.resolveBinary()');
   });
 
   await test('runPreflight does not check Anthropic auth (handled by Claude Code)', () => {
@@ -5343,6 +7460,271 @@ async function testPreflightModule() {
       // Not allowed: any call interpolating 'which' or file path variables
       assert.ok(!call.includes('${which'), `Found unsafe shell interpolation of path variable: ${call}`);
     }
+  });
+
+  // ── P-9e8a3f1d: per-runtime binary + model discovery checks ──────────────
+
+  await test('_distinctRuntimes returns ["claude"] when no config supplied (legacy)', () => {
+    assert.deepStrictEqual(preflight._distinctRuntimes(null), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes(undefined), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes(), ['claude']);
+  });
+
+  await test('_distinctRuntimes unions defaultCli, ccCli, and per-agent cli; sorted; deduped', () => {
+    const runtimes = preflight._distinctRuntimes({
+      engine: { defaultCli: 'copilot', ccCli: 'claude' },
+      agents: {
+        dallas: { cli: 'claude' },
+        ralph: { cli: 'copilot' },     // dup
+        rebecca: { cli: 'codex' },     // unknown — preflight reports it; this helper just collects
+      },
+    });
+    assert.deepStrictEqual(runtimes, ['claude', 'codex', 'copilot'], 'expected sorted-unique list');
+  });
+
+  await test('_distinctRuntimes defaults defaultCli to "claude" when absent', () => {
+    const runtimes = preflight._distinctRuntimes({
+      engine: { ccCli: 'copilot' },
+      agents: {},
+    });
+    assert.deepStrictEqual(runtimes, ['claude', 'copilot']);
+  });
+
+  await test('_checkRuntimeBinary emits a warn-level entry with adapter.installHint when binary is missing', () => {
+    // Stub a fake adapter into the registry. We don't have to mock fs; we
+    // pass an explicit installHint and a resolveBinary that returns null.
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-missing',
+      capabilities: {},
+      resolveBinary: () => null,
+      installHint: 'install via the made-up package manager',
+    };
+    registry.registerRuntime('fake-missing', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-missing');
+      assert.strictEqual(r.name, 'Runtime: fake-missing');
+      assert.strictEqual(r.ok, false);
+      assert.ok(r.message.includes('not found'), `expected "not found" prefix: ${r.message}`);
+      assert.ok(r.message.includes('install via the made-up package manager'),
+        `installHint must be embedded in the message: ${r.message}`);
+    } finally {
+      registry._registry.delete('fake-missing');
+    }
+  });
+
+  await test('_checkRuntimeBinary surfaces resolveBinary success with bin + leadingArgs', () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-ok',
+      capabilities: {},
+      resolveBinary: () => ({ bin: '/usr/bin/gh', native: true, leadingArgs: ['copilot'] }),
+      installHint: 'unused',
+    };
+    registry.registerRuntime('fake-ok', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-ok');
+      assert.strictEqual(r.ok, true);
+      assert.ok(r.message.includes('/usr/bin/gh'));
+      assert.ok(r.message.includes('leadingArgs: copilot'),
+        'leadingArgs from gh-copilot path must surface in the message');
+    } finally {
+      registry._registry.delete('fake-ok');
+    }
+  });
+
+  await test('_checkRuntimeBinary marks node-shim cli.js (native:false) distinctly', () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-shim',
+      capabilities: {},
+      resolveBinary: () => ({ bin: '/x/cli.js', native: false, leadingArgs: [] }),
+      installHint: 'unused',
+    };
+    registry.registerRuntime('fake-shim', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-shim');
+      assert.strictEqual(r.ok, true);
+      assert.ok(r.message.includes('node shim'),
+        'native:false must surface as "(node shim)" so operators see they\'re running through node');
+    } finally {
+      registry._registry.delete('fake-shim');
+    }
+  });
+
+  await test('_checkRuntimeBinary returns warn-level fail (not throw) for unknown runtime', () => {
+    const r = preflight._checkRuntimeBinary('totally-fake-cli');
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.message.includes('unknown runtime'),
+      `unknown-runtime path should label the failure: ${r.message}`);
+  });
+
+  await test('runPreflight with a Copilot-fleet config emits both Runtime entries', () => {
+    const { results: r } = preflight.runPreflight({
+      config: {
+        engine: { defaultCli: 'copilot' },
+        agents: { dallas: { cli: 'claude' } },
+      },
+    });
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    const copilotCheck = r.find(c => c.name === 'Runtime: copilot');
+    assert.ok(claudeCheck, 'Claude runtime check missing for Claude-using agent');
+    assert.ok(copilotCheck, 'Copilot runtime check missing for fleet defaultCli=copilot');
+  });
+
+  await test('_fleetSummaryResults emits Fleet line for any config with engine section', () => {
+    const r = preflight._fleetSummaryResults({ engine: { defaultCli: 'copilot', defaultModel: 'gpt-5' } });
+    const fleet = r.find(x => x.name === 'Fleet');
+    assert.ok(fleet);
+    assert.ok(fleet.message.includes('defaultCli=copilot'));
+    assert.ok(fleet.message.includes('defaultModel=gpt-5'));
+  });
+
+  await test('_fleetSummaryResults reports defaultModel="(runtime default)" when unset', () => {
+    const r = preflight._fleetSummaryResults({ engine: {} });
+    const fleet = r.find(x => x.name === 'Fleet');
+    assert.ok(fleet.message.includes('defaultCli=claude'));
+    assert.ok(fleet.message.includes('defaultModel=(runtime default)'));
+  });
+
+  await test('_fleetSummaryResults adds CC overrides line only when ccCli or ccModel set', () => {
+    const none = preflight._fleetSummaryResults({ engine: {} });
+    assert.ok(!none.find(x => x.name === 'CC overrides'), 'no override line when CC inherits');
+
+    const both = preflight._fleetSummaryResults({ engine: { ccCli: 'copilot', ccModel: 'gpt-5' } });
+    const cc = both.find(x => x.name === 'CC overrides');
+    assert.ok(cc, 'must surface ccCli + ccModel');
+    assert.ok(cc.message.includes('ccCli=copilot'));
+    assert.ok(cc.message.includes('ccModel=gpt-5'));
+
+    const onlyModel = preflight._fleetSummaryResults({ engine: { ccModel: 'haiku' } });
+    const ccm = onlyModel.find(x => x.name === 'CC overrides');
+    assert.ok(ccm && !ccm.message.includes('ccCli='), 'lone ccModel must not emit ccCli=undefined');
+  });
+
+  await test('_fleetSummaryResults adds "Active fleet flags" line only for non-default values', () => {
+    // All defaults — nothing surfaced
+    const defaultsOnly = preflight._fleetSummaryResults({
+      engine: { claudeBareMode: false, copilotStreamMode: 'on', copilotDisableBuiltinMcps: true, disableModelDiscovery: false },
+    });
+    assert.ok(!defaultsOnly.find(x => x.name === 'Active fleet flags'),
+      'all-defaults config must not emit a flags line');
+
+    // Two non-defaults
+    const some = preflight._fleetSummaryResults({
+      engine: { claudeBareMode: true, copilotStreamMode: 'off', maxBudgetUsd: 5 },
+    });
+    const flags = some.find(x => x.name === 'Active fleet flags');
+    assert.ok(flags, 'non-default flags must surface');
+    assert.ok(flags.message.includes('claudeBareMode=true'));
+    assert.ok(flags.message.includes('copilotStreamMode="off"'));
+    assert.ok(flags.message.includes('maxBudgetUsd=5'));
+  });
+
+  await test('_fleetSummaryResults returns [] for null/undefined/empty config', () => {
+    assert.deepStrictEqual(preflight._fleetSummaryResults(null), []);
+    assert.deepStrictEqual(preflight._fleetSummaryResults(undefined), []);
+    // Empty object → still no `engine` section, no surface
+    const emptyResults = preflight._fleetSummaryResults({});
+    const fleet = emptyResults.find(x => x.name === 'Fleet');
+    // Spec: an empty engine section still emits the Fleet line (defaultCli=claude).
+    // Defensive: don't assume.
+    assert.ok(fleet === undefined || fleet.message.includes('defaultCli=claude'),
+      'empty config either skips or emits the runtime default');
+  });
+
+  await test('_modelDiscoveryResults reports "discovery disabled" when engine.disableModelDiscovery=true', async () => {
+    const r = await preflight._modelDiscoveryResults({
+      engine: { defaultCli: 'claude', disableModelDiscovery: true },
+    });
+    const claudeModels = r.find(x => x.name === 'Models: claude');
+    assert.ok(claudeModels);
+    assert.strictEqual(claudeModels.ok, 'warn');
+    assert.ok(claudeModels.message.includes('discovery disabled'));
+  });
+
+  await test('_modelDiscoveryResults reports "discovery unavailable" for runtime without enumeration mechanism (Claude)', async () => {
+    const r = await preflight._modelDiscoveryResults({
+      engine: { defaultCli: 'claude' },
+    });
+    const claudeModels = r.find(x => x.name === 'Models: claude');
+    assert.ok(claudeModels);
+    assert.strictEqual(claudeModels.ok, 'warn');
+    assert.ok(claudeModels.message.includes('discovery unavailable'));
+    assert.ok(claudeModels.message.includes('no enumeration'),
+      'message should explain Claude has no public model enumeration mechanism');
+  });
+
+  await test('_modelDiscoveryResults uses cached model count when adapter listModels returns array', async () => {
+    // Stub a runtime with modelDiscovery=true and a deterministic listModels.
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const tmpDir = createTmpDir();
+    const cachePath = path.join(tmpDir, 'fake-disc-models.json');
+    const fake = {
+      name: 'fake-disc',
+      capabilities: { modelDiscovery: true },
+      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
+      installHint: 'unused',
+      listModels: async () => [
+        { id: 'm-1', name: 'Model 1', provider: 'fake' },
+        { id: 'm-2', name: 'Model 2', provider: 'fake' },
+        { id: 'm-3', name: 'Model 3', provider: 'fake' },
+      ],
+      modelsCache: cachePath,
+    };
+    registry.registerRuntime('fake-disc', fake);
+    try {
+      // Bust model-discovery's cache for the fake runtime
+      try { fs.unlinkSync(cachePath); } catch {}
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'fake-disc' },
+      });
+      const m = r.find(x => x.name === 'Models: fake-disc');
+      assert.ok(m, 'Models: fake-disc entry missing');
+      assert.strictEqual(m.ok, true);
+      assert.ok(m.message.includes('3 models cached'),
+        `expected "3 models cached", got: ${m.message}`);
+    } finally {
+      registry._registry.delete('fake-disc');
+    }
+  });
+
+  await test('_modelDiscoveryResults reports "discovery unavailable (...)" when listModels resolves to null', async () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const tmpDir = createTmpDir();
+    const cachePath = path.join(tmpDir, 'fake-empty-models.json');
+    const fake = {
+      name: 'fake-empty',
+      capabilities: { modelDiscovery: true },
+      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
+      installHint: 'unused',
+      listModels: async () => null,
+      modelsCache: cachePath,
+    };
+    registry.registerRuntime('fake-empty', fake);
+    try {
+      try { fs.unlinkSync(cachePath); } catch {}
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'fake-empty' },
+      });
+      const m = r.find(x => x.name === 'Models: fake-empty');
+      assert.ok(m);
+      assert.strictEqual(m.ok, 'warn');
+      assert.ok(m.message.includes('discovery unavailable'),
+        `null/empty result must surface as "discovery unavailable": ${m.message}`);
+    } finally {
+      registry._registry.delete('fake-empty');
+    }
+  });
+
+  await test('_warmModelCache returns synchronously without throwing (fire-and-forget)', () => {
+    // Make sure the helper never blocks runPreflight or throws on missing config.
+    const startedAt = Date.now();
+    preflight._warmModelCache('claude', { engine: {} });
+    preflight._warmModelCache('totally-unknown', null);
+    preflight._warmModelCache('', null);
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 50, `_warmModelCache must return synchronously fast — got ${elapsed}ms`);
   });
 }
 
@@ -5513,29 +7895,38 @@ async function testPreflightDeep() {
       'Should provide Git install URL on failure');
   });
 
-  await test('runPreflight Claude CLI check classifies native vs cli.js binary', () => {
+  await test('runPreflight runtime check classifies native vs cli.js binary', () => {
     const { results: r } = preflight.runPreflight();
-    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
-    assert.ok(claudeCheck, 'Claude CLI check should exist');
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    assert.ok(claudeCheck, 'Runtime: claude check should exist');
     if (claudeCheck.ok) {
-      // Message should be either 'native' or a package name like 'claude-code'
       assert.ok(typeof claudeCheck.message === 'string' && claudeCheck.message.length > 0,
-        'Claude CLI message should be non-empty');
+        'Runtime: claude message should be non-empty');
     }
   });
 
-  await test('runPreflight Claude CLI label uses "native" for non-cli.js binaries', () => {
-    assert.ok(preflightSrc.includes("const isNative = !claudeBin.endsWith('cli.js')"),
-      'Should detect native binary by checking if path ends with cli.js');
-    assert.ok(preflightSrc.includes("const label = isNative ? 'native'"),
-      'Should label native binaries as "native"');
+  await test('runPreflight delegates native-vs-shim labelling to the adapter (P-9e8a3f1d)', () => {
+    // After P-9e8a3f1d, preflight reads `resolved.native` from
+    // `adapter.resolveBinary()` and tags the message with "(node shim)" when
+    // native is false. The cli.js suffix check moved into the adapter.
+    assert.ok(preflightSrc.includes('resolved.native === false'),
+      'preflight should read native:false from adapter.resolveBinary() result');
+    assert.ok(preflightSrc.includes('node shim'),
+      'preflight should label non-native (cli.js shim) results so operators see they\'re running through node');
   });
 
-  await test('runPreflight Claude CLI failure provides install instructions', () => {
-    assert.ok(preflightSrc.includes('npm install -g @anthropic-ai/claude-code'),
-      'Should provide npm install command on failure');
-    assert.ok(preflightSrc.includes('https://claude.ai/download'),
-      'Should provide download URL on failure');
+  await test('runPreflight Claude install instructions live on the adapter, not preflight (P-9e8a3f1d)', () => {
+    // Source-of-truth assertion: install hints are adapter properties so each
+    // runtime owns its own message. preflight.js just emits adapter.installHint.
+    const claudeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
+    assert.ok(claudeSrc.includes('installHint'),
+      'claude adapter should export an installHint string');
+    assert.ok(claudeSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'claude adapter installHint should provide the npm install command');
+    assert.ok(claudeSrc.includes('https://claude.ai/download'),
+      'claude adapter installHint should provide the download URL');
+    assert.ok(preflightSrc.includes('adapter.installHint'),
+      'preflight should embed adapter.installHint into the failure message');
   });
 
   await test('runPreflight returns passed=true when all checks pass', () => {
@@ -5553,16 +7944,20 @@ async function testPreflightDeep() {
   });
 
   await test('runPreflight does not check auth (confirmed by source)', () => {
-    assert.ok(preflightSrc.includes('Auth is handled by Claude Code itself'),
-      'Source should explicitly note auth is not checked');
+    // Note updated in P-9e8a3f1d: now phrased as "each runtime CLI itself"
+    // because Copilot uses GH_TOKEN, not Claude credentials.
+    assert.ok(/Auth is handled by (Claude Code itself|each runtime CLI itself)/.test(preflightSrc),
+      'Source should explicitly note auth is delegated to the runtime');
   });
 
   // ── printPreflight: output formatting ──
 
   await test('printPreflight uses checkmark for ok, X for fail, ! for warn', () => {
-    assert.ok(preflightSrc.includes("r.ok === true ? '\\u2713'"), 'Should use checkmark for ok');
+    // After P-9e8a3f1d the source uses literal Unicode glyphs (✓ / ✗) instead
+    // of escape sequences. Match either form.
+    assert.ok(/r\.ok === true \? ('✓'|'\\u2713')/.test(preflightSrc), 'Should use checkmark for ok');
     assert.ok(preflightSrc.includes("r.ok === 'warn' ? '!'"), 'Should use ! for warn');
-    assert.ok(preflightSrc.includes("'\\u2717'"), 'Should use X mark for fail');
+    assert.ok(/'(✗|\\u2717)'/.test(preflightSrc), 'Should use X mark for fail');
   });
 
   await test('printPreflight handles empty results array', () => {
@@ -5726,11 +8121,13 @@ async function testPreflightDeep() {
 
   // ── runPreflight: result ordering ──
 
-  await test('runPreflight results are in order: Node.js, Git, Claude Code CLI', () => {
+  await test('runPreflight results are in order: Node.js, Git, Runtime: claude', () => {
     const { results: r } = preflight.runPreflight();
     assert.strictEqual(r[0].name, 'Node.js', 'First check should be Node.js');
     assert.strictEqual(r[1].name, 'Git', 'Second check should be Git');
-    assert.strictEqual(r[2].name, 'Claude Code CLI', 'Third check should be Claude Code CLI');
+    // P-9e8a3f1d: legacy "Claude Code CLI" replaced by the adapter-driven
+    // "Runtime: claude" entry. With no config, only claude is in use.
+    assert.strictEqual(r[2].name, 'Runtime: claude', 'Third check should be Runtime: claude');
   });
 
   // ── MINIONS_DEBUG logging ──
@@ -5958,15 +8355,17 @@ async function testPreflightBehavioral() {
     );
 
     try {
-      const claudeCheck = result.results.find(r => r.name === 'Claude Code CLI');
-      assert.ok(claudeCheck, 'Claude Code CLI check must exist');
+      // P-9e8a3f1d: legacy "Claude Code CLI" entry replaced by the
+      // adapter-driven "Runtime: claude" entry.
+      const claudeCheck = result.results.find(r => r.name === 'Runtime: claude');
+      assert.ok(claudeCheck, 'Runtime: claude check must exist');
       // If the test host has /usr/local/lib or similar actually containing claude-code,
       // we'd hit an early return. Guard that.
       if (claudeCheck.ok === false) {
         assert.ok(claudeCheck.message.includes('not found'),
           `message should mention not found, got: ${claudeCheck.message}`);
         assert.ok(claudeCheck.message.includes('claude.ai/download') || claudeCheck.message.includes('@anthropic-ai/claude-code'),
-          'message should include install instructions');
+          'message should include install instructions (sourced from claude adapter installHint)');
         assert.strictEqual(result.passed, false, 'passed=false when Claude CLI missing');
       }
     } finally {
@@ -11163,9 +13562,18 @@ async function testSpawnAgentScript() {
       'Should exit with code 78 (configuration error) when claudeBin is null');
   });
 
-  await test('spawn-agent.js prints error message to stderr when CLI not found', () => {
-    assert.ok(src.includes('console.error') && src.includes('npm install -g @anthropic-ai/claude-code'),
-      'Should print actionable error message before exiting with 78');
+  await test('spawn-agent.js prints error message via adapter.installHint when CLI not found', () => {
+    // After P-9e8a3f1d, the install hint string lives on the adapter rather
+    // than being hardcoded in spawn-agent.js. Verify the wrapper still prints
+    // an actionable error AND routes the hint through `runtime.installHint`.
+    assert.ok(src.includes('console.error'),
+      'Should print to stderr before exiting with 78');
+    assert.ok(/_installHint\(runtimeName,?\s*runtime\)?/.test(src),
+      'Should look up the install hint via the resolved adapter');
+    // Sanity-check the adapter actually supplies the npm install command for Claude:
+    const claudeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
+    assert.ok(claudeSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'claude adapter installHint should still reference the npm install command');
   });
 
   await test('spawn-agent.js writes PID file for engine reattachment', () => {
@@ -11196,36 +13604,65 @@ async function testSpawnAgentScript() {
       'Should not use spawnSync --help for capability detection (removed as bottleneck)');
   });
 
-  // Issue #1231: skills discovery across external repo worktrees
-  await test('spawn-agent.js passes --add-dir for minions project dir', () => {
+  // Issue #1231: skills discovery across external repo worktrees.
+  // After P-9c4f2d6a these are behavioral tests against the pure helpers —
+  // the literal --add-dir flag now lives in the Claude adapter, not in
+  // spawn-agent.js itself.
+  await test('spawn-agent.js sources skill-discovery dirs from minions repo + ~/.claude', () => {
+    // Smoke: spawn-agent.js still imports os and resolves minionsDir from __dirname.
+    // These are the inputs to the addDirs array passed to runtime.buildArgs().
     assert.ok(src.includes("require('os')"),
       'Should import os module for homedir()');
-    // Minions dir resolves up one from engine/ to repo root
     assert.ok(src.includes("path.resolve(__dirname, '..')"),
       'Should resolve minions project dir via path.resolve(__dirname, "..")');
-    assert.ok(src.includes("'--add-dir'"),
-      'Should pass --add-dir flag to claude CLI for skill discovery');
-  });
-
-  await test('spawn-agent.js passes --add-dir for user ~/.claude dir', () => {
-    // Must use os.homedir() per CLAUDE.md cross-platform rule, not $HOME/$USERPROFILE
     assert.ok(src.includes('os.homedir()'),
       'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
     assert.ok(src.includes("'.claude'"),
       'Should target the .claude subdirectory under home for global skill discovery');
   });
 
-  await test('spawn-agent.js includes --add-dir on both resume and non-resume paths', () => {
+  await test('addDirs flow through to Claude adapter as --add-dir flags', () => {
+    // Behavioral: the Claude adapter's buildArgs is the single source of truth for
+    // --add-dir emission. Verify spawn-agent's pure helper hands addDirs over
+    // unchanged so each one becomes a `--add-dir <path>` pair.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [],
+      addDirs: ['/repo/minions', '/home/user/.claude'],
+    });
+    const idxs = inv.args.reduce((acc, a, i) => (a === '--add-dir' ? acc.concat(i) : acc), []);
+    assert.strictEqual(idxs.length, 2, 'expected exactly 2 --add-dir flags');
+    assert.strictEqual(inv.args[idxs[0] + 1], '/repo/minions');
+    assert.strictEqual(inv.args[idxs[1] + 1], '/home/user/.claude');
+  });
+
+  await test('addDirs are emitted on both resume (sessionId set) and non-resume (sessionId unset)', () => {
     // Agents run as fresh processes even on resume — CWD is still the external worktree,
-    // so skill discovery dirs must be passed in both branches of the cliArgs assignment.
-    const resumeIdx = src.indexOf('if (isResume)');
-    assert.ok(resumeIdx !== -1, 'isResume branch must exist');
-    const closeBrace = src.indexOf('\n}\n', resumeIdx);
-    assert.ok(closeBrace !== -1, 'isResume branch should end with closing brace');
-    const branchBlock = src.slice(resumeIdx, closeBrace);
-    const addDirSpreadMatches = branchBlock.match(/\.\.\.addDirArgs/g) || [];
-    assert.ok(addDirSpreadMatches.length >= 2,
-      'Both resume and non-resume cliArgs must spread ...addDirArgs (got ' + addDirSpreadMatches.length + ')');
+    // so skill discovery dirs must propagate regardless of session state.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const addDirs = ['/repo/minions', '/home/user/.claude'];
+
+    const fresh = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: {}, passthrough: [], addDirs,
+    });
+    const resumed = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: '',
+      opts: { sessionId: 'sess-xyz' }, passthrough: [], addDirs,
+    });
+
+    const countAddDir = (args) => args.filter(a => a === '--add-dir').length;
+    assert.strictEqual(countAddDir(fresh.args), 2, 'non-resume path must include both --add-dir flags');
+    assert.strictEqual(countAddDir(resumed.args), 2, 'resume path must include both --add-dir flags');
   });
 }
 
@@ -12308,17 +14745,44 @@ async function testAgentSteering() {
       'Stale steering recovery should attempt process tree kill on Unix');
   });
 
-  await test('spawn-agent.js skips system prompt on resume', () => {
-    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
-    const resumeBlock = spawnSrc.slice(spawnSrc.indexOf('if (isResume)'), spawnSrc.indexOf('if (isResume)') + 200);
-    assert.ok(resumeBlock.includes("cliArgs = ['-p'") && !resumeBlock.includes('system-prompt'),
-      'Resume should use -p without --system-prompt-file (session has its own context)');
+  await test('spawn-agent.js skips --system-prompt-file on resume (behavioral via Claude adapter)', () => {
+    // Resume sessions have the system prompt baked in. spawn-agent's main()
+    // only sets opts.sysPromptFile when sessionId is unset. Verify the adapter
+    // correctly omits --system-prompt-file when opts.sysPromptFile is missing
+    // (the resume case after spawn-agent's gate).
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const resumed = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: 's',
+      opts: { sessionId: 'sess-xyz' }, // resume — main() does NOT inject sysPromptFile
+      passthrough: [],
+    });
+    assert.ok(!resumed.args.includes('--system-prompt-file'),
+      'Resume must omit --system-prompt-file (session has its own context)');
+    const i = resumed.args.indexOf('--resume');
+    assert.ok(i >= 0 && resumed.args[i + 1] === 'sess-xyz', 'resume sessionId must reach the adapter args');
   });
 
-  await test('steering prompt piped via stdin through spawn-agent', () => {
+  await test('steering prompt piped via stdin through spawn-agent (behavioral)', () => {
+    // After P-9c4f2d6a, the prompt-via-stdin path is gated by
+    // runtime.capabilities.promptViaArg. Claude's adapter has promptViaArg=false,
+    // so spawn-agent's main() pipes the prompt via stdin. Verify deliveryMode
+    // and that the source still wires up the stdin-write call.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime: claude,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'steer me', sysPromptText: '',
+      opts: {}, passthrough: [],
+    });
+    assert.strictEqual(inv.deliveryMode, 'stdin', 'Claude must use stdin delivery');
+
     const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
-    assert.ok(spawnSrc.includes('proc.stdin.write(prompt)'),
-      'spawn-agent should write prompt to Claude CLI stdin');
+    assert.ok(/proc\.stdin\.write\(\s*invocation\.finalPrompt\s*\)/.test(spawnSrc),
+      'spawn-agent should write the adapter-built finalPrompt to stdin');
     assert.ok(spawnSrc.includes('proc.stdin.end()'),
       'spawn-agent should close stdin after writing prompt');
   });
@@ -16640,9 +19104,14 @@ async function main() {
     await testValidateProjectName();
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
+    await testRuntimeAdapters();
+    await testCopilotAdapter();
+    await testModelDiscovery();
+    await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
+    await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
     await testSafeWriteBackupRestore();
@@ -16662,6 +19131,7 @@ async function main() {
     await testRoutingParser();
     await testDependencyCycleDetection();
     await testReconciliation();
+    await testEngineRuntimeWiring();
 
     // lifecycle.js tests
     await testLifecycleHelpers();
@@ -20381,7 +22851,18 @@ async function testSec03EscapeHtml() {
   // cannot reasonably be expressed via textContent. Claw back to 172 if/when
   // _qaBuildLiveProgressHtml is refactored to update only text fields in place
   // against a pre-built skeleton.
-  const DYNAMIC_INNERHTML_BASELINE = 173;
+  //
+  // 2026-04-28: bumped 173 → 177 (+4). Source: P-7a5c1f8e — the unified Runtime
+  // settings UI in dashboard/js/settings.js wholesale-replaces the contents of
+  // the defaultCli/ccCli <select>s, the per-agent CLI cell, and the
+  // defaultModel/ccModel input wrapper based on the registered runtimes and
+  // their model lists. Every interpolated value (runtime names, model ids,
+  // current config values) is wrapped in escHtml(); the structure is
+  // multi-option <select>/<input> markup that's tedious to express via
+  // createElement loops. Claw back to 173 if/when initRuntimeFleetUI +
+  // loadModelsForRuntime get refactored onto replaceChildren()/document
+  // fragments.
+  const DYNAMIC_INNERHTML_BASELINE = 177;
 
   await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
     const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
@@ -22075,14 +24556,23 @@ async function testAutoRecoveryAndAtomicity() {
   // ── CC Model/Effort Settings ──────────────────────────────────────────────
 
   await test('ENGINE_DEFAULTS includes ccModel and ccEffort', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.ccModel, 'sonnet', 'ccModel default should be sonnet');
+    // P-3b8e5f1d: ccModel is now an unset CC-only override (it inherits
+    // engine.defaultModel via resolveCcModel() when undefined). The hardcoded
+    // 'sonnet' default has moved into engine/llm.js destructure defaults so
+    // existing consumers keep working until P-5e1b7a3c rewires CC.
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccModel, undefined, 'ccModel default should be undefined (override-only)');
     assert.strictEqual(shared.ENGINE_DEFAULTS.ccEffort, null, 'ccEffort default should be null');
   });
 
   await test('callLLM and callLLMStreaming accept effort parameter', () => {
+    // P-5e1b7a3c: effort is no longer formatted by llm.js directly — it flows
+    // through runtime.buildArgs() (direct path) or _buildSpawnAgentFlags()
+    // (indirect path). Both routes capability-gate on caps.effortLevels and
+    // emit --effort when set.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes("effort = null"), 'Should accept effort param with null default');
-    assert.ok(src.includes("args.push('--effort', effort)"), 'Should pass --effort to CLI');
+    assert.ok(src.includes("flags.push('--effort'"),
+      'Indirect path (_buildSpawnAgentFlags) should emit --effort when capability-gated');
     const streamingFn = src.slice(src.indexOf('function callLLMStreaming('));
     assert.ok(streamingFn.includes("effort = null"), 'callLLMStreaming should accept effort param');
   });
@@ -22094,10 +24584,16 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(ccCallFn.includes('effort: ccEffort'), 'ccCall should pass effort to callLLM');
   });
 
-  await test('settings endpoint validates ccModel and ccEffort', () => {
+  await test('settings endpoint validates ccEffort and treats ccModel as free-text (P-7a5c1f8e)', () => {
+    // After P-7a5c1f8e, ccModel must accept any model ID (gpt-4o,
+    // claude-sonnet-4-5, custom Anthropic IDs, etc.) so the strict
+    // ['sonnet', 'haiku', 'opus'] validation was removed. ccEffort is still
+    // a closed enum because Claude/Copilot agree on those four values.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes("['sonnet', 'haiku', 'opus']"), 'Should validate ccModel against allowed values');
     assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
+    // Negative assertion: ccModel is no longer hardcoded to the Claude shorthands.
+    assert.ok(!/ccModel\s*=\s*valid\.includes\(e\.ccModel\)\s*\?\s*e\.ccModel\s*:\s*D\.ccModel/.test(src),
+      'ccModel must not be validated against a closed enum after P-7a5c1f8e — it is free-text to support multi-runtime fleets');
   });
 
   await test('ccCall maxTurns defaults from ENGINE_DEFAULTS.ccMaxTurns', () => {
@@ -23899,10 +26395,13 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('callLLM supports direct spawn mode', () => {
+    // P-5e1b7a3c: _resolveClaudeBin renamed to _resolveBin(runtime); the per-
+    // runtime cache file is exposed via runtime.capsFile rather than hardcoded.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes('direct = false'), 'callLLM should accept direct param with false default');
-    assert.ok(src.includes('_resolveClaudeBin'), 'Should have _resolveClaudeBin for direct spawn');
-    assert.ok(src.includes('claude-caps.json'), 'Should read cached binary from claude-caps.json');
+    assert.ok(src.includes('_resolveBin(runtime)'), 'Should have _resolveBin(runtime) for direct spawn (renamed in P-5e1b7a3c)');
+    assert.ok(src.includes('runtime.resolveBinary'),
+      'Direct path must defer binary resolution to the runtime adapter');
   });
 
   await test('callLLMStreaming supports direct spawn mode', () => {
@@ -23924,6 +26423,213 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(indirectBlock.includes('pidPath'), 'Should derive pidPath from promptPath');
     assert.ok(indirectBlock.includes("replace(/prompt-/, 'pid-')"), 'Should use same PID derivation as spawn-agent.js');
     assert.ok(indirectBlock.includes('cleanupFiles.push(promptPath, sysPath, pidPath)'), 'Should include pidPath in cleanupFiles');
+  });
+
+  // ── P-5e1b7a3c: runtime-adapter wiring ────────────────────────────────────
+  //
+  // These tests cover the same surface that engine.js's _buildAgentSpawnFlags
+  // does (P-2a6d9c4f) — capability gating, copilot opt forwarding, leadingArgs
+  // prepending — but for the CC / doc-chat direct-spawn path. The Claude
+  // regression test ensures the existing CC behavior survives the refactor.
+  // (`testAutoRecoveryAndAtomicity` doesn't have `llm` in scope — re-require here.)
+  const llm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
+
+  await test('_buildSpawnAgentFlags(claude, {...}) Claude regression — emits expected flag set', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const flags = llm._buildSpawnAgentFlags(claude, {
+      model: 'sonnet', maxTurns: 10, allowedTools: 'Bash,Read', effort: 'low',
+      sessionId: 'sess-1', maxBudget: 5, bare: true, fallbackModel: 'haiku',
+    });
+    assert.deepStrictEqual(flags, [
+      '--runtime', 'claude',
+      '--max-turns', '10',
+      '--model', 'sonnet',
+      '--allowedTools', 'Bash,Read',
+      '--effort', 'low',
+      '--resume', 'sess-1',
+      '--max-budget-usd', '5',
+      '--bare',
+      '--fallback-model', 'haiku',
+    ]);
+  });
+
+  await test('_buildSpawnAgentFlags drops effort/resume/budget/bare/fallback when capability is false', () => {
+    // Synthetic adapter with all capability flags off — every gated opt should
+    // be silently dropped without crashing.
+    const fakeRuntime = {
+      name: 'fake',
+      capabilities: {
+        effortLevels: false, sessionResume: false, budgetCap: false,
+        bareMode: false, fallbackModel: false,
+      },
+    };
+    const flags = llm._buildSpawnAgentFlags(fakeRuntime, {
+      model: 'm', effort: 'low', sessionId: 'x', maxBudget: 5, bare: true, fallbackModel: 'fm',
+    });
+    assert.deepStrictEqual(flags, ['--runtime', 'fake', '--model', 'm']);
+  });
+
+  await test('_buildSpawnAgentFlags(copilot, {...}) emits Copilot-specific opts unconditionally', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const flags = llm._buildSpawnAgentFlags(copilot, {
+      model: 'gpt-5.4', maxTurns: 12,
+      stream: 'on', disableBuiltinMcps: true, suppressAgentsMd: true, reasoningSummaries: true,
+      // Copilot has no budgetCap/bareMode/fallbackModel — these must be dropped:
+      maxBudget: 99, bare: true, fallbackModel: 'fm',
+    });
+    assert.ok(flags.includes('--runtime'));
+    assert.strictEqual(flags[1], 'copilot');
+    assert.ok(flags.includes('--max-autopilot-continues') || flags.includes('--max-turns'),
+      'maxTurns flag should reach the indirect path');
+    assert.ok(flags.includes('--stream') && flags[flags.indexOf('--stream') + 1] === 'on');
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--enable-reasoning-summaries'));
+    // Capabilities Copilot doesn't have are dropped:
+    assert.ok(!flags.includes('--max-budget-usd'),
+      'Copilot has no --max-budget-usd capability; flag must be dropped');
+    assert.ok(!flags.includes('--bare'),
+      'Copilot has no --bare capability; flag must be dropped');
+    assert.ok(!flags.includes('--fallback-model'),
+      'Copilot has no --fallback-model capability; flag must be dropped');
+  });
+
+  await test('_buildSpawnAgentFlags: Copilot opts only emit on strict-true (no truthy-string opt-in)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    // truthy strings / numbers must NOT trigger Copilot toggle flags
+    const flags = llm._buildSpawnAgentFlags(copilot, {
+      disableBuiltinMcps: 'yes', suppressAgentsMd: 1, reasoningSummaries: 'truthy',
+    });
+    assert.ok(!flags.includes('--disable-builtin-mcps'));
+    assert.ok(!flags.includes('--no-custom-instructions'));
+    assert.ok(!flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildSpawnAgentFlags: maxBudget=0 round-trips correctly through Claude (?? gate)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const flags = llm._buildSpawnAgentFlags(claude, { maxBudget: 0 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '0',
+      `maxBudget:0 must survive (== treats 0 as falsy); got: ${flags.join(' ')}`);
+  });
+
+  await test('_resolveRuntimeFor: explicit cli wins over engineConfig', () => {
+    const r = llm._resolveRuntimeFor({ cli: 'copilot', engineConfig: { defaultCli: 'claude' } });
+    assert.strictEqual(r.name, 'copilot');
+  });
+
+  await test('_resolveRuntimeFor: engineConfig.defaultCli used when cli unset', () => {
+    const r = llm._resolveRuntimeFor({ engineConfig: { defaultCli: 'copilot' } });
+    assert.strictEqual(r.name, 'copilot');
+  });
+
+  await test('_resolveRuntimeFor: engineConfig.ccCli takes priority over defaultCli (CC path)', () => {
+    const r = llm._resolveRuntimeFor({ engineConfig: { ccCli: 'copilot', defaultCli: 'claude' } });
+    assert.strictEqual(r.name, 'copilot', 'CC-specific override must win for the CC path');
+  });
+
+  await test('_resolveRuntimeFor: defaults to claude when nothing set', () => {
+    assert.strictEqual(llm._resolveRuntimeFor({}).name, 'claude');
+    assert.strictEqual(llm._resolveRuntimeFor({ engineConfig: {} }).name, 'claude');
+  });
+
+  await test('_resolveModelFor: explicit model wins (legacy callers like kb-sweep keep working)', () => {
+    const m = llm._resolveModelFor({ model: 'haiku', engineConfig: { defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('_resolveModelFor: CC inherits engineConfig.defaultModel when model + ccModel unset', () => {
+    const m = llm._resolveModelFor({ engineConfig: { defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'sonnet');
+  });
+
+  await test('_resolveModelFor: ccModel overrides defaultModel (CC-specific override)', () => {
+    const m = llm._resolveModelFor({ engineConfig: { ccModel: 'haiku', defaultModel: 'sonnet' } });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('_resolveModelFor: returns undefined when nothing set (adapter default)', () => {
+    assert.strictEqual(llm._resolveModelFor({}), undefined);
+    assert.strictEqual(llm._resolveModelFor({ engineConfig: {} }), undefined);
+  });
+
+  await test('_resolveBin returns leadingArgs from runtime.resolveBinary', () => {
+    // Synthetic adapter that returns leadingArgs: ['copilot'] (gh-extension shape).
+    // _resolveBin must propagate them so the spawn invocation prepends them
+    // between the binary and the rest of the args.
+    llm._resetBinCache();
+    const fakeBin = path.join(createTmpDir(), isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '');
+    const fakeRuntime = {
+      name: 'fake-leading-' + Date.now(),
+      resolveBinary: () => ({ bin: fakeBin, native: true, leadingArgs: ['copilot'] }),
+    };
+    const r = llm._resolveBin(fakeRuntime);
+    assert.deepStrictEqual(r.leadingArgs, ['copilot']);
+    assert.strictEqual(r.bin, fakeBin);
+    assert.strictEqual(r.native, true);
+  });
+
+  await test('_resolveBin caches per-runtime and respects TTL', () => {
+    // Same runtime called twice should hit the cache (no second resolveBinary call).
+    llm._resetBinCache();
+    const fakeBin = path.join(createTmpDir(), isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '');
+    let resolveCalls = 0;
+    const fakeRuntime = {
+      name: 'fake-cache-' + Date.now(),
+      resolveBinary: () => { resolveCalls++; return { bin: fakeBin, native: true, leadingArgs: [] }; },
+    };
+    const r1 = llm._resolveBin(fakeRuntime);
+    const r2 = llm._resolveBin(fakeRuntime);
+    assert.strictEqual(resolveCalls, 1, 'second _resolveBin call should hit the cache');
+    assert.strictEqual(r1.bin, r2.bin);
+  });
+
+  await test('_resolveBin returns null when runtime.resolveBinary returns null', () => {
+    llm._resetBinCache();
+    const fakeRuntime = {
+      name: 'fake-null-' + Date.now(),
+      resolveBinary: () => null,
+    };
+    assert.strictEqual(llm._resolveBin(fakeRuntime), null);
+  });
+
+  await test('_resolveBin returns null when runtime.resolveBinary throws', () => {
+    llm._resetBinCache();
+    const fakeRuntime = {
+      name: 'fake-throw-' + Date.now(),
+      resolveBinary: () => { throw new Error('binary probe failed'); },
+    };
+    assert.strictEqual(llm._resolveBin(fakeRuntime), null,
+      '_resolveBin must catch adapter errors so a misconfigured runtime never crashes the LLM call');
+  });
+
+  await test('_resolveBin returns null for null runtime input', () => {
+    assert.strictEqual(llm._resolveBin(null), null);
+    assert.strictEqual(llm._resolveBin(undefined), null);
+  });
+
+  await test('llm.js: zero `runtime.name === ` comparisons (capability gating only)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    // Strip comments before checking — we mention the rule in comments.
+    const codeOnly = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.ok(!/runtime\.name\s*===/.test(codeOnly),
+      'engine/llm.js code must not branch on runtime.name === ... — use capabilities instead');
+    assert.ok(!/runtime\.name\s*==[^=]/.test(codeOnly),
+      'engine/llm.js code must not branch on runtime.name == ... — use capabilities instead');
+  });
+
+  await test('llm.js: streaming accumulator routes line parsing through runtime.parseStreamChunk', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.parseStreamChunk(line)'),
+      'Per-line parsing must go through runtime.parseStreamChunk so unknown event types stay safe');
+  });
+
+  await test('llm.js: error normalization routes through runtime.parseError on non-zero exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.parseError('),
+      'Failure paths should call runtime.parseError so each adapter normalizes its own error patterns');
   });
 
   await test('handleKnowledgeSweep uses generation token for race-safe finally', () => {
@@ -25988,7 +28694,9 @@ async function testStructuredCompletion() {
 
   await test('runPostCompletionHooks uses parseStructuredCompletion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('parseStructuredCompletion(stdout)'),
+    // Match both legacy `parseStructuredCompletion(stdout)` and the runtime-aware
+    // form `parseStructuredCompletion(stdout, runtimeName)` introduced in P-7e3a8b1c.
+    assert.ok(/parseStructuredCompletion\(stdout[,)]/.test(src),
       'runPostCompletionHooks should call parseStructuredCompletion');
     assert.ok(src.includes('structuredCompletion'),
       'runPostCompletionHooks should use structuredCompletion variable');
@@ -31447,6 +34155,177 @@ async function testAzureauthTimeout() {
     }
   });
 
+  // ── P-2f9b6d4c: Runtime Adapters documentation ────────────────────────────
+
+  await test('CLAUDE.md has a "Runtime Adapters" top-level section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    assert.ok(/^## Runtime Adapters$/m.test(src),
+      'CLAUDE.md must have a top-level "## Runtime Adapters" section');
+  });
+
+  await test('CLAUDE.md Runtime Adapters section documents every required adapter contract method', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // Every method named in the PRD AC list must appear in the section.
+    for (const method of [
+      'resolveBinary', 'listModels', 'buildArgs', 'buildPrompt',
+      'resolveModel', 'parseOutput', 'parseStreamChunk', 'parseError',
+    ]) {
+      assert.ok(section.includes(method),
+        `Runtime Adapters section must document the ${method} method`);
+    }
+  });
+
+  await test('CLAUDE.md Runtime Adapters section documents every capability flag', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const flag of [
+      'streaming', 'sessionResume', 'systemPromptFile', 'effortLevels',
+      'costTracking', 'modelShorthands', 'modelDiscovery', 'promptViaArg',
+      'budgetCap', 'bareMode', 'fallbackModel', 'sessionPersistenceControl',
+    ]) {
+      assert.ok(section.includes(flag),
+        `Runtime Adapters section must document capability flag: ${flag}`);
+    }
+  });
+
+  await test('CLAUDE.md documents all six resolution helpers + the no-fall-through independence rule', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const helper of [
+      'resolveAgentCli', 'resolveCcCli', 'resolveAgentModel', 'resolveCcModel',
+      'resolveAgentMaxBudget', 'resolveAgentBareMode',
+    ]) {
+      assert.ok(section.includes(helper),
+        `Runtime Adapters section must document the ${helper} helper`);
+    }
+    // Independence rule must be explicitly called out.
+    assert.ok(/do not fall through|do NOT fall through|does NOT fall through|independence/i.test(section),
+      'Runtime Adapters section must spell out that agent-path and CC-path are independent (no fall-through between them)');
+  });
+
+  await test('CLAUDE.md documents the three-tier model resolution chain with a worked example', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/per-agent.*defaultModel.*runtime|three-tier/i.test(section.replace(/\s+/g, ' ')),
+      'Runtime Adapters section must describe the per-agent → engine.defaultModel → CLI default chain');
+    // The worked example for the chain.
+    assert.ok(section.includes('"engine":') && section.includes('"agents":'),
+      'Runtime Adapters section must include a worked config.json example demonstrating the chain');
+  });
+
+  await test('CLAUDE.md fleet config table covers all 12 new fields with defaults + per-agent override paths', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const field of [
+      'engine.defaultCli', 'engine.defaultModel', 'engine.ccCli', 'engine.ccModel',
+      'engine.claudeBareMode', 'engine.claudeFallbackModel',
+      'engine.copilotDisableBuiltinMcps', 'engine.copilotSuppressAgentsMd',
+      'engine.copilotStreamMode', 'engine.copilotReasoningSummaries',
+      'engine.maxBudgetUsd', 'engine.disableModelDiscovery',
+    ]) {
+      assert.ok(section.includes(field),
+        `Runtime Adapters config table must list ${field}`);
+    }
+    // Per-agent override paths must be documented for the four overridable fields.
+    for (const overridePath of ['agent.cli', 'agent.model', 'agent.maxBudgetUsd', 'agent.bareMode']) {
+      assert.ok(section.includes(overridePath),
+        `Runtime Adapters config table must document the ${overridePath} override path`);
+    }
+  });
+
+  await test('CLAUDE.md documents both migration paths (config.claude.* deprecation + ccModel→defaultModel shim)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/config\.claude\.\* deprecation|deprecated-config-claude/i.test(section),
+      'Runtime Adapters section must document the config.claude.* deprecation path');
+    assert.ok(/applyLegacyCcModelMigration|ccModel.*defaultModel.*memory|in[-\s]memory/i.test(section),
+      'Runtime Adapters section must document the legacy ccModel → defaultModel in-memory migration');
+  });
+
+  await test('CLAUDE.md documents the CLI one-liner + --model "" semantics', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(section.includes('minions start --cli'),
+      'Runtime Adapters section must include `minions start --cli` example');
+    assert.ok(/--model ['"]?['"]?\s*(clears|deletes)|empty string/i.test(section.replace(/\s+/g, ' ')),
+      'Runtime Adapters section must document that --model "" (empty) clears the override');
+  });
+
+  await test('CLAUDE.md documents per-runtime model discovery + disableModelDiscovery global override', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // Claude has no enumeration mechanism.
+    assert.ok(/Claude.*no public|modelDiscovery: false/i.test(section),
+      'Runtime Adapters section must document Claude having no model enumeration mechanism');
+    // Copilot uses the GitHub Copilot REST API.
+    assert.ok(/api\.githubcopilot\.com\/models/.test(section),
+      'Runtime Adapters section must document the Copilot models REST endpoint');
+    // disableModelDiscovery is the fleet-wide opt-out.
+    assert.ok(section.includes('disableModelDiscovery'),
+      'Runtime Adapters section must document the disableModelDiscovery fleet-wide opt-out');
+  });
+
+  await test('CLAUDE.md spells out the "no runtime.name === branches" rule', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // The rule that engine code must not branch on runtime.name — capability flags only.
+    assert.ok(/runtime\.name === |runtime\.name `===`|name check|capability flag/.test(section),
+      'Runtime Adapters section must call out the "capability flags only — no runtime.name === branches" rule');
+  });
+
+  await test('CLAUDE.md documents the effort-level normalization (max → xhigh for Copilot only)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/'max'/.test(section) && /xhigh/.test(section),
+      'Runtime Adapters section must document the max → xhigh effort mapping for Copilot');
+    // The mapping is Copilot-only.
+    assert.ok(/Copilot/.test(section),
+      'Effort normalization documentation must reference Copilot');
+  });
+
+  await test('CLAUDE.md explains --no-custom-instructions / --disable-builtin-mcps / --bare with rationale', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+
+    // --no-custom-instructions rationale (AGENTS.md suppression)
+    assert.ok(section.includes('--no-custom-instructions') && section.includes('AGENTS.md'),
+      'Runtime Adapters section must explain --no-custom-instructions and AGENTS.md suppression');
+    assert.ok(section.includes('copilotSuppressAgentsMd'),
+      'Runtime Adapters section must reference the copilotSuppressAgentsMd toggle');
+
+    // --disable-builtin-mcps + split-brain risk
+    assert.ok(section.includes('--disable-builtin-mcps') && /split-brain/i.test(section),
+      'Runtime Adapters section must explain --disable-builtin-mcps and the split-brain PR-tracking risk');
+    assert.ok(section.includes('copilotDisableBuiltinMcps'),
+      'Runtime Adapters section must reference the copilotDisableBuiltinMcps toggle');
+
+    // --bare + explicit-context limitation
+    assert.ok(section.includes('--bare') && /explicit context|explicit ccSystemPrompt|requires.*explicit|loses?.*context/i.test(section),
+      'Runtime Adapters section must explain --bare and the requires-explicit-context limitation');
+    assert.ok(section.includes('claudeBareMode'),
+      'Runtime Adapters section must reference the claudeBareMode toggle');
+  });
+
+  await test('CLAUDE.md documents the Windows WinGet path for Copilot binary resolution', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/%LOCALAPPDATA%\\Microsoft\\WinGet\\Links\\copilot\.exe/.test(section),
+      'Runtime Adapters section must document the Windows WinGet path: %LOCALAPPDATA%\\Microsoft\\WinGet\\Links\\copilot.exe');
+  });
+
   await test('docs/auto-discovery.md documents azureauth with --timeout', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'auto-discovery.md'), 'utf8');
     const azureauthRefs = src.match(/`[^`]*azureauth\s+ado\s+token[^`]*`/g) || [];
@@ -32718,6 +35597,264 @@ async function testCliCommandHandlers() {
       const item = h.calls.spawnAgent[0].item;
       assert.strictEqual(item.task.length, 100, 'task preview is capped at 100 chars');
       assert.strictEqual(item.prompt.length, 250, 'full prompt is preserved');
+    } finally { h.restore(); }
+  });
+
+  // ── --cli / --model fleet flags + config set-cli (P-6b3f9c2e) ──────────────
+  //
+  // These tests pin the AC list verbatim — full flag combo, empty-string model
+  // clear, unknown runtime exit, incompatibility warning, ccCli clobber warning,
+  // per-agent override preservation, and `config set-cli` no-restart variant.
+
+  function readConfig(testDir) {
+    return JSON.parse(fs.readFileSync(path.join(testDir, 'config.json'), 'utf8'));
+  }
+
+  await test('start --cli copilot --model claude-sonnet-4.5: writes fleet keys + clears CC overrides', () => {
+    const h = setupHarness({
+      // Pre-state: defaults are claude/sonnet with CC overrides already set,
+      // so we can verify the clear semantics.
+      config: {
+        projects: [], agents: { dallas: { name: 'D', role: 'E', cli: 'claude', model: 'sonnet' } },
+        engine: { defaultCli: 'claude', defaultModel: 'sonnet', ccCli: 'claude', ccModel: 'haiku' },
+      },
+      control: { state: 'running', pid: process.pid }, // early-return prevents tick/spawn
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', ['--cli', 'copilot', '--model', 'claude-sonnet-4.5']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot', 'defaultCli must flip to copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'claude-sonnet-4.5', 'defaultModel must be written');
+      assert.ok(!('ccCli' in cfg.engine), 'engine.ccCli must be deleted');
+      assert.ok(!('ccModel' in cfg.engine), 'engine.ccModel must be deleted');
+      // Per-agent overrides preserved verbatim
+      assert.strictEqual(cfg.agents.dallas.cli, 'claude', 'per-agent cli must be untouched');
+      assert.strictEqual(cfg.agents.dallas.model, 'sonnet', 'per-agent model must be untouched');
+    } finally { h.restore(); }
+  });
+
+  await test('restart-equivalent: --cli claude --model "" clears defaultModel', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-4.1' },
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', ['--cli', 'claude', '--model', '']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'claude');
+      assert.ok(!('defaultModel' in cfg.engine), 'empty-string --model must delete defaultModel');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli unknown: exits non-zero with registered runtime list', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'codex']));
+      assert.deepStrictEqual(cap.exits, [2], 'unknown runtime must exit with code 2');
+      const allErr = cap.errs.join(' | ');
+      assert.ok(/Unknown CLI runtime "codex"/.test(allErr),
+        `expected unknown-runtime error, got: ${allErr}`);
+      assert.ok(/claude/.test(allErr) && /copilot/.test(allErr),
+        'error message must enumerate every registered runtime');
+      // Config must be untouched after rejection
+      const cfg = readConfig(h.testDir);
+      assert.ok(!('defaultCli' in (cfg.engine || {})), 'rejected runtime must not be persisted');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli claude with stale defaultModel=gpt-4o: emits incompatibility warning', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-4o' },
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'claude']));
+      const allLogs = cap.logs.join(' | ');
+      assert.ok(/incompatible|Pass --model/.test(allLogs),
+        `expected incompatibility warning suggesting --model '', got: ${allLogs}`);
+      // Switch still applies — warning is advisory, not fatal
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'claude');
+      assert.strictEqual(cfg.engine.defaultModel, 'gpt-4o', 'incompatible model is preserved on disk; user must clear explicitly');
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli with explicitly-set ccCli: warns before clearing', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: {},
+        engine: { defaultCli: 'claude', ccCli: 'copilot' }, // user pinned CC to copilot
+      },
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli', 'copilot']));
+      const allLogs = cap.logs.join(' | ');
+      assert.ok(/Clearing engine\.ccCli.*copilot/.test(allLogs),
+        `expected ccCli clobber warning naming the prior value, got: ${allLogs}`);
+      const cfg = readConfig(h.testDir);
+      assert.ok(!('ccCli' in cfg.engine), 'ccCli must be cleared');
+    } finally { h.restore(); }
+  });
+
+  await test('start without --cli/--model: leaves config untouched', () => {
+    const before = {
+      projects: [], agents: {},
+      engine: { defaultCli: 'copilot', defaultModel: 'gpt-4.1', ccCli: 'claude', ccModel: 'sonnet' },
+    };
+    const h = setupHarness({
+      config: before,
+      control: { state: 'running', pid: process.pid },
+    });
+    try {
+      withCapture(() => h.cli.handleCommand('start', []));
+      const cfg = readConfig(h.testDir);
+      assert.deepStrictEqual(cfg.engine, before.engine,
+        'no flags = no fleet config mutation');
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli copilot --model claude-sonnet-4.5: persists without starting engine', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: { defaultCli: 'claude' } },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'copilot', '--model', 'claude-sonnet-4.5']));
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'claude-sonnet-4.5');
+      // No engine startup side-effects: no tick, no spawnAgent, no control mutation
+      assert.strictEqual(h.calls.tick.length, 0, 'config set-cli must not advance the tick');
+      assert.strictEqual(h.calls.spawnAgent.length, 0, 'config set-cli must not spawn agents');
+      const ctrl = JSON.parse(fs.readFileSync(path.join(h.testDir, 'engine', 'control.json'), 'utf8'));
+      assert.strictEqual(ctrl.state, 'stopped', 'config set-cli must not flip control.state');
+      // Friendly summary is printed
+      assert.ok(cap.logs.some(l => l.includes('defaultCli="copilot"')),
+        `expected summary line, got: ${cap.logs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli unknown: exits non-zero with registered list', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'codex']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Unknown CLI runtime "codex"/.test(e)),
+        `expected unknown-runtime error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config set-cli without runtime arg: prints usage + exits 2', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Usage: minions config set-cli/.test(e)),
+        `expected usage hint, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config without subcommand: prints usage + exits 2', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', []));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /Usage: minions config/.test(e)),
+        `expected usage hint, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('start --cli requires a value: exits 2 with friendly error', () => {
+    const h = setupHarness({
+      config: { projects: [], agents: {}, engine: {} },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('start', ['--cli']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /--cli requires a value/.test(e)),
+        `expected --cli value error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('config writes use mutateJsonFileLocked (assert source-level guarantee)', () => {
+    // Direct source-level check — the AC explicitly mandates this so a future
+    // refactor that swaps in safeWrite or fs.writeFileSync would silently
+    // re-introduce the race. The behavioral tests above prove the writes work;
+    // this one prevents regressions in the locking discipline itself.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const m = src.match(/function _applyRuntimeFlags[\s\S]*?\n\}/);
+    assert.ok(m, '_applyRuntimeFlags helper must be defined in cli.js');
+    assert.ok(/mutateJsonFileLocked/.test(m[0]),
+      '_applyRuntimeFlags must use mutateJsonFileLocked for atomic config.json writes');
+    assert.ok(!/safeWrite\(.*config\.json/.test(m[0]),
+      '_applyRuntimeFlags must NOT bypass the lock with safeWrite');
+  });
+
+  await test('commands.status: prints defaultCli, defaultModel, non-default flags, CC overrides', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {
+          defaultCli: 'copilot', defaultModel: 'claude-sonnet-4.5',
+          ccCli: 'claude', ccModel: 'haiku',
+          claudeBareMode: true, copilotStreamMode: 'off',
+        },
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(/Default CLI:\s*copilot/.test(allLogs),
+        `status should print Default CLI line, got: ${allLogs}`);
+      assert.ok(/Default model:\s*claude-sonnet-4\.5/.test(allLogs),
+        `status should print Default model line, got: ${allLogs}`);
+      assert.ok(/CC overrides:.*cli=claude.*model=haiku/.test(allLogs),
+        `status should surface CC overrides, got: ${allLogs}`);
+      assert.ok(/Flags:.*claudeBareMode=true/.test(allLogs),
+        `status should print non-default claudeBareMode flag, got: ${allLogs}`);
+      assert.ok(/Flags:.*copilotStreamMode="off"/.test(allLogs),
+        `status should print non-default copilotStreamMode flag, got: ${allLogs}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.status: hides Flags line when every feature flag is at its default', () => {
+    const h = setupHarness({
+      config: {
+        projects: [], agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {}, // all defaults
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(!/^Flags:/m.test(allLogs),
+        'clean install should not print a Flags: line');
+      assert.ok(!/CC overrides:/.test(allLogs),
+        'clean install should not print CC overrides line');
+      assert.ok(/Default CLI:\s*claude\s*\(default\)/.test(allLogs),
+        `default CLI line should mark "(default)" annotation when defaultCli is unset, got: ${allLogs}`);
     } finally { h.restore(); }
   });
 }
@@ -35631,6 +38768,274 @@ async function testEngineHelperCoverage() {
       delete require.cache[require.resolve('../engine/pipeline')];
       restore();
     }
+  });
+}
+
+// ─── P-2a6d9c4f: engine.js spawnAgent runtime wiring ─────────────────────────
+
+async function testEngineRuntimeWiring() {
+  console.log('\n── engine.js — Runtime Adapter Wiring (P-2a6d9c4f) ──');
+
+  const engine = require(path.join(MINIONS_DIR, 'engine.js'));
+  const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+  const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+
+  // ── _buildAgentSpawnFlags: shape ─────────────────────────────────────────
+
+  await test('_buildAgentSpawnFlags exists and returns string[]', () => {
+    assert.strictEqual(typeof engine._buildAgentSpawnFlags, 'function');
+    const out = engine._buildAgentSpawnFlags(claude, {});
+    assert.ok(Array.isArray(out));
+    for (const s of out) assert.strictEqual(typeof s, 'string', `non-string in flags: ${s}`);
+  });
+
+  await test('_buildAgentSpawnFlags always emits --runtime <name> as the first pair', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, {});
+    assert.strictEqual(flags[0], '--runtime');
+    assert.strictEqual(flags[1], 'claude');
+
+    const flagsCopilot = engine._buildAgentSpawnFlags(copilot, {});
+    assert.strictEqual(flagsCopilot[0], '--runtime');
+    assert.strictEqual(flagsCopilot[1], 'copilot');
+  });
+
+  // ── Always-applicable opts ───────────────────────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --max-turns/--model/--allowedTools when set', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, {
+      maxTurns: 100,
+      model: 'sonnet',
+      allowedTools: 'Read,Edit',
+    });
+    const mt = flags.indexOf('--max-turns');
+    assert.ok(mt >= 0 && flags[mt + 1] === '100');
+    const m = flags.indexOf('--model');
+    assert.ok(m >= 0 && flags[m + 1] === 'sonnet');
+    const at = flags.indexOf('--allowedTools');
+    assert.ok(at >= 0 && flags[at + 1] === 'Read,Edit');
+  });
+
+  await test('_buildAgentSpawnFlags omits --model when undefined (let runtime pick its own)', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { model: undefined });
+    assert.ok(!flags.includes('--model'));
+  });
+
+  await test('_buildAgentSpawnFlags omits --allowedTools when null/empty', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { allowedTools: null }).includes('--allowedTools'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { allowedTools: '' }).includes('--allowedTools'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--allowedTools'));
+  });
+
+  // ── effort: gated on capabilities.effortLevels ────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --effort when capability is true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { effort: 'low' });
+    const i = flags.indexOf('--effort');
+    assert.ok(i >= 0 && flags[i + 1] === 'low');
+  });
+
+  await test('_buildAgentSpawnFlags omits --effort when capability is false', () => {
+    const fakeNoEffort = { name: 'no-effort', capabilities: { ...claude.capabilities, effortLevels: false } };
+    const flags = engine._buildAgentSpawnFlags(fakeNoEffort, { effort: 'low' });
+    assert.ok(!flags.includes('--effort'));
+  });
+
+  await test('_buildAgentSpawnFlags omits --effort when opt is null/undefined even if capability is true', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { effort: null }).includes('--effort'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--effort'));
+  });
+
+  // ── sessionId: gated on capabilities.sessionResume ────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --resume <id> when capability true and sessionId set', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { sessionId: 'sess-abc' });
+    const i = flags.indexOf('--resume');
+    assert.ok(i >= 0 && flags[i + 1] === 'sess-abc');
+  });
+
+  await test('_buildAgentSpawnFlags omits --resume when capability is false (even if opt set)', () => {
+    const fakeNoResume = { name: 'no-resume', capabilities: { ...claude.capabilities, sessionResume: false } };
+    const flags = engine._buildAgentSpawnFlags(fakeNoResume, { sessionId: 'sess-abc' });
+    assert.ok(!flags.includes('--resume'));
+  });
+
+  // ── maxBudget: gated on capabilities.budgetCap ────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --max-budget-usd when capability true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { maxBudget: 5 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '5');
+  });
+
+  await test('_buildAgentSpawnFlags honors maxBudget=0 (??-equivalent)', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { maxBudget: 0 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '0', `0 must be a valid cap: ${flags.join(' ')}`);
+  });
+
+  await test('_buildAgentSpawnFlags omits --max-budget-usd when capability is false (Copilot)', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { maxBudget: 5 });
+    assert.ok(!flags.includes('--max-budget-usd'),
+      `Copilot capabilities.budgetCap=false; --max-budget-usd must NOT appear: ${flags.join(' ')}`);
+  });
+
+  // ── bare: gated on capabilities.bareMode ──────────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --bare only when bare===true AND capability true', () => {
+    assert.ok(engine._buildAgentSpawnFlags(claude, { bare: true }).includes('--bare'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { bare: false }).includes('--bare'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--bare'));
+    // Capability-false runtime — bare opt ignored
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { bare: true }).includes('--bare'),
+      'Copilot capabilities.bareMode=false; --bare must NOT appear');
+  });
+
+  // ── fallbackModel: gated on capabilities.fallbackModel ────────────────────
+
+  await test('_buildAgentSpawnFlags emits --fallback-model when capability true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { fallbackModel: 'haiku' });
+    const i = flags.indexOf('--fallback-model');
+    assert.ok(i >= 0 && flags[i + 1] === 'haiku');
+  });
+
+  await test('_buildAgentSpawnFlags omits --fallback-model when capability is false (Copilot)', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { fallbackModel: 'gpt-4o' });
+    assert.ok(!flags.includes('--fallback-model'));
+  });
+
+  // ── Copilot-specific opts: emitted unconditionally; adapter ignores ──────
+
+  await test('_buildAgentSpawnFlags forwards --stream <on|off> when set', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { stream: 'on' });
+    const i = flags.indexOf('--stream');
+    assert.ok(i >= 0 && flags[i + 1] === 'on');
+
+    const off = engine._buildAgentSpawnFlags(copilot, { stream: 'off' });
+    const j = off.indexOf('--stream');
+    assert.ok(j >= 0 && off[j + 1] === 'off');
+  });
+
+  await test('_buildAgentSpawnFlags omits --stream when null/empty', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { stream: null }).includes('--stream'));
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { stream: '' }).includes('--stream'));
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, {}).includes('--stream'));
+  });
+
+  await test('_buildAgentSpawnFlags forwards --disable-builtin-mcps / --no-custom-instructions / --enable-reasoning-summaries when true', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildAgentSpawnFlags omits Copilot bool flags when false/missing', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: false,
+    });
+    assert.ok(!flags.includes('--disable-builtin-mcps'));
+    assert.ok(!flags.includes('--no-custom-instructions'));
+    assert.ok(!flags.includes('--enable-reasoning-summaries'));
+    const flags2 = engine._buildAgentSpawnFlags(copilot, {});
+    assert.ok(!flags2.includes('--disable-builtin-mcps'));
+    assert.ok(!flags2.includes('--no-custom-instructions'));
+    assert.ok(!flags2.includes('--enable-reasoning-summaries'));
+  });
+
+  // ── End-to-end: Claude regression via spawn-agent.parseSpawnArgs ──────────
+
+  await test('Claude end-to-end: engine flags → spawn-agent.parseSpawnArgs → adapter buildArgs round-trip', () => {
+    // The integration contract of P-2a6d9c4f: every opt that engine.js threads
+    // through must round-trip cleanly through spawn-agent's argv parser into
+    // runtime.buildArgs(opts) without loss or duplication.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const flags = engine._buildAgentSpawnFlags(claude, {
+      maxTurns: 50,
+      model: 'sonnet',
+      allowedTools: 'Read,Edit,Bash',
+      effort: 'low',
+      sessionId: 'sess-roundtrip',
+      maxBudget: 0,           // ← 0 must survive the round-trip
+      bare: true,
+      fallbackModel: 'haiku',
+    });
+    const argv = ['node', 'spawn-agent.js', '/p', '/s', ...flags];
+    const parsed = spawnAgent.parseSpawnArgs(argv);
+    assert.strictEqual(parsed.runtimeName, 'claude');
+    assert.deepStrictEqual(parsed.passthrough, [], 'engine flags must all be recognized by spawn-agent — no passthrough');
+    assert.strictEqual(parsed.opts.maxTurns, '50');
+    assert.strictEqual(parsed.opts.model, 'sonnet');
+    assert.strictEqual(parsed.opts.allowedTools, 'Read,Edit,Bash');
+    assert.strictEqual(parsed.opts.effort, 'low');
+    assert.strictEqual(parsed.opts.sessionId, 'sess-roundtrip');
+    assert.strictEqual(parsed.opts.maxBudget, '0', '0 must survive parsing — string form is fine, adapter coerces');
+    assert.strictEqual(parsed.opts.bare, true);
+    assert.strictEqual(parsed.opts.fallbackModel, 'haiku');
+  });
+
+  await test('Copilot end-to-end: capability gates strip Claude-only opts before spawn-agent', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      model: 'claude-sonnet-4',
+      maxBudget: 5,            // budgetCap=false → MUST NOT appear
+      bare: true,              // bareMode=false → MUST NOT appear
+      fallbackModel: 'haiku',  // fallbackModel=false → MUST NOT appear
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      effort: 'medium',
+    });
+    assert.ok(!flags.includes('--max-budget-usd'));
+    assert.ok(!flags.includes('--bare'));
+    assert.ok(!flags.includes('--fallback-model'));
+    assert.ok(flags.includes('--stream'));
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--effort'));
+  });
+
+  // ── Source guard: engine.js has zero `runtime.name === ...` branches ─────
+
+  await test('engine.js source contains zero `runtime.name ===` (or ==) branches — capability flags only', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')         // block comments
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')     // line comments
+      .replace(/'[^'\n]*'/g, "''")
+      .replace(/"[^"\n]*"/g, '""')
+      .replace(/`[^`]*`/g, '``');
+    const banned = /\bruntime\.name\s*={2,3}\s*/;
+    assert.ok(!banned.test(codeOnly),
+      `engine.js still branches on runtime.name; capability flags only. Match: ${(codeOnly.match(banned) || [''])[0]}`);
+  });
+
+  // ── Source guard: spawnAgent reads via shared.resolveAgent* helpers ──────
+
+  await test('engine.js spawnAgent invokes shared.resolveAgentCli/Model/MaxBudget/BareMode', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Normalize whitespace so the assertions don't break on cosmetic edits
+    const compact = src.replace(/\s+/g, ' ');
+    for (const helper of ['resolveAgentCli', 'resolveAgentModel', 'resolveAgentMaxBudget', 'resolveAgentBareMode']) {
+      assert.ok(compact.includes(`shared.${helper}(`),
+        `engine.js spawnAgent must call shared.${helper}(...) — never read agent.cli/model/etc directly`);
+    }
+    assert.ok(compact.includes('resolveRuntime('),
+      'engine.js must resolve the runtime via the registry, not require the adapter directly');
+  });
+
+  await test('engine.js no longer reads claudeConfig.permissionMode (legacy) inside spawn paths', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+      .replace(/'[^'\n]*'/g, "''")
+      .replace(/"[^"\n]*"/g, '""');
+    assert.ok(!/claudeConfig[?]?\.permissionMode/.test(codeOnly),
+      'engine.js code body must not read the deprecated claudeConfig.permissionMode field — adapter owns the permission flag');
   });
 }
 

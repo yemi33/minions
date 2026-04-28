@@ -27,6 +27,7 @@ const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS,
   FAILURE_CLASS } = shared;
+const { resolveRuntime } = require('./engine/runtimes');
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -243,6 +244,54 @@ function _maxTurnsForType(type, engineConfig) {
   if (perType[type]) return perType[type];
   const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== ENGINE_DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
   return globalOverride || _MAX_TURNS_BY_TYPE[type] || ENGINE_DEFAULTS.maxTurns;
+}
+
+// ─── Runtime adapter integration (P-2a6d9c4f) ────────────────────────────────
+//
+// _buildAgentSpawnFlags translates a resolved opts bag into the named CLI
+// flags consumed by `engine/spawn-agent.js`. spawn-agent.js parses these back
+// into an opts object and calls `runtime.buildArgs(opts)` once — keeping the
+// adapter as the single source of truth for CLI-level flag formatting and
+// avoiding double-emission.
+//
+// Capability gating happens HERE (in engine.js), not in the adapter:
+//   - Runtimes that don't support a feature (Copilot has no budgetCap, no
+//     bareMode, no fallbackModel) never see the flag. The adapter doesn't
+//     have to silently drop opts it can't honor.
+//   - Truly cross-runtime opts (model, maxTurns, allowedTools, effort,
+//     sessionId) are emitted whenever set; capability flags filter the
+//     ones that are runtime-specific.
+//   - Copilot-specific opts (`stream`, `disableBuiltinMcps`,
+//     `suppressAgentsMd`, `reasoningSummaries`) are emitted unconditionally;
+//     the Claude adapter ignores them via the "tolerate unknown opts" rule.
+
+function _buildAgentSpawnFlags(runtime, opts = {}) {
+  const caps = (runtime && runtime.capabilities) || {};
+  const flags = ['--runtime', String(runtime?.name || 'claude')];
+
+  // Always-applicable: every runtime understands these.
+  if (opts.maxTurns != null) flags.push('--max-turns', String(opts.maxTurns));
+  if (opts.model) flags.push('--model', String(opts.model));
+  if (opts.allowedTools) flags.push('--allowedTools', String(opts.allowedTools));
+
+  // Capability-gated. The first three (effort/resume) gate on whether the
+  // runtime exposes the feature at all; the next three gate on whether the
+  // runtime's CLI surface actually accepts the flag.
+  if (caps.effortLevels && opts.effort) flags.push('--effort', String(opts.effort));
+  if (caps.sessionResume && opts.sessionId) flags.push('--resume', String(opts.sessionId));
+  if (caps.budgetCap && opts.maxBudget != null) flags.push('--max-budget-usd', String(opts.maxBudget));
+  if (caps.bareMode && opts.bare === true) flags.push('--bare');
+  if (caps.fallbackModel && opts.fallbackModel) flags.push('--fallback-model', String(opts.fallbackModel));
+
+  // Copilot-specific opts. Always emitted when set; the Claude adapter
+  // silently ignores them (per the "tolerate unknown opts" rule from
+  // P-7e3a8b1c). Engine code never branches on `runtime.name`.
+  if (opts.stream != null && opts.stream !== '') flags.push('--stream', String(opts.stream));
+  if (opts.disableBuiltinMcps === true) flags.push('--disable-builtin-mcps');
+  if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
+  if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
+
+  return flags;
 }
 
 // Resolve dependency plan item IDs to their PR branches
@@ -813,27 +862,27 @@ async function spawnAgent(dispatchItem, config) {
     log('warn', `Agent ${agentId} running ${type} task in main repo (no worktree) for ${id} — changes may land on master directly`);
   }
 
-  // Build claude CLI args
-  const args = [
-    '--output-format', claudeConfig.outputFormat || 'stream-json',
-    '--max-turns', String(_maxTurnsForType(type, engineConfig)),
-    '--verbose',
-    '--permission-mode', claudeConfig.permissionMode || 'bypassPermissions'
-  ];
+  // ── Runtime + opts resolution (P-2a6d9c4f) ────────────────────────────────
+  // Every CLI-specific knob flows through the runtime adapter resolved from
+  // resolveAgentCli(agent, engine). Engine code MUST NOT branch on
+  // `runtime.name === ...`; capability flags gate runtime-specific features.
+  const agentConfig = config.agents?.[agentId] || null;
+  const runtime = resolveRuntime(shared.resolveAgentCli(agentConfig, engineConfig));
+  const runtimeName = runtime.name;
+  const resolvedModel = runtime.resolveModel(shared.resolveAgentModel(agentConfig, engineConfig));
+  const resolvedMaxBudget = shared.resolveAgentMaxBudget(agentConfig, engineConfig);
+  const resolvedBare = shared.resolveAgentBareMode(agentConfig, engineConfig);
 
-  if (claudeConfig.allowedTools) {
-    args.push('--allowedTools', claudeConfig.allowedTools);
-  }
+  // Effort: use 'low' for fast work types unless configured otherwise.
+  // The capability gate happens inside _buildAgentSpawnFlags — runtimes
+  // without effortLevels never see the flag.
+  const requestedEffort = engineConfig.agentEffort || (_FAST_WORK_TYPES.has(type) ? 'low' : null);
 
-  // Effort level: use 'low' for fast work types unless configured otherwise
-  const effort = engineConfig.agentEffort || (_FAST_WORK_TYPES.has(type) ? 'low' : null);
-  if (effort) args.push('--effort', effort);
-
-  // Session resume: reuse last session if same branch and recent enough (< 2 hours)
+  // Session resume: gated on `runtime.capabilities.sessionResume`. Same branch
+  // means the agent is continuing work on the same PR/feature (e.g., author
+  // fixing their own build failure).
   let cachedSessionId = null;
-  // Only resume when the context is relevant — same branch means the agent is
-  // continuing work on the same PR/feature (e.g., author fixing their own build failure)
-  if (!agentId.startsWith('temp-')) {
+  if (runtime.capabilities.sessionResume && !agentId.startsWith('temp-')) {
     try {
       const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
       if (sessionFile?.sessionId && sessionFile.savedAt) {
@@ -841,12 +890,29 @@ async function spawnAgent(dispatchItem, config) {
         const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
         if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
           cachedSessionId = sessionFile.sessionId;
-          args.push('--resume', sessionFile.sessionId);
           log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
         }
       }
     } catch (e) { log('warn', 'session resume lookup: ' + e.message); }
   }
+
+  // Build the spawn-agent.js flag bag. spawn-agent parses the named flags
+  // back into an opts object and calls runtime.buildArgs(opts) — so the
+  // adapter is the single source of truth for the actual CLI args.
+  const args = _buildAgentSpawnFlags(runtime, {
+    model: resolvedModel,
+    maxTurns: _maxTurnsForType(type, engineConfig),
+    allowedTools: claudeConfig.allowedTools,
+    effort: requestedEffort,
+    sessionId: cachedSessionId,
+    maxBudget: resolvedMaxBudget,
+    bare: resolvedBare,
+    fallbackModel: engineConfig.claudeFallbackModel,
+    stream: engineConfig.copilotStreamMode,
+    disableBuiltinMcps: engineConfig.copilotDisableBuiltinMcps,
+    suppressAgentsMd: engineConfig.copilotSuppressAgentsMd,
+    reasoningSummaries: engineConfig.copilotReasoningSummaries,
+  });
 
   // MCP servers: agents inherit from ~/.claude.json directly as Claude Code processes.
   // No --mcp-config needed — avoids redundant config and ensures agents always have latest servers.
@@ -1060,15 +1126,32 @@ async function spawnAgent(dispatchItem, config) {
         return;
       }
 
-      // Build resume args
-      const resumeArgs = [
-        '--output-format', claudeConfig?.outputFormat || 'stream-json',
-        '--max-turns', String(engineConfig?.maxTurns || ENGINE_DEFAULTS.maxTurns),
-        '--verbose',
-        '--permission-mode', claudeConfig?.permissionMode || 'bypassPermissions',
-        '--resume', steerSessionId,
-      ];
-      if (claudeConfig?.allowedTools) resumeArgs.push('--allowedTools', claudeConfig.allowedTools);
+      // Steering resume — gated on `runtime.capabilities.sessionResume`. If the
+      // runtime can't resume sessions, fail fast: nothing to spawn here.
+      if (!runtime.capabilities.sessionResume) {
+        log('warn', `Steering: runtime ${runtime.name} does not support session resume — skipping for ${agentId}`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Runtime ${runtime.name} does not support session resume. Message was: ${steerMsg}\n`); } catch {}
+        try { fs.unlinkSync(steerPromptPath); } catch {}
+        activeProcesses.delete(id);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering not supported by runtime', '', { processWorkItemFailure: false });
+        return;
+      }
+
+      // Reuse the same flag-builder used by the main spawn so capability gates
+      // and runtime-specific opts stay consistent across the two paths.
+      const resumeArgs = _buildAgentSpawnFlags(runtime, {
+        model: resolvedModel,
+        maxTurns: engineConfig?.maxTurns || ENGINE_DEFAULTS.maxTurns,
+        allowedTools: claudeConfig?.allowedTools,
+        sessionId: steerSessionId,
+        maxBudget: resolvedMaxBudget,
+        bare: resolvedBare,
+        fallbackModel: engineConfig?.claudeFallbackModel,
+        stream: engineConfig?.copilotStreamMode,
+        disableBuiltinMcps: engineConfig?.copilotDisableBuiltinMcps,
+        suppressAgentsMd: engineConfig?.copilotSuppressAgentsMd,
+        reasoningSummaries: engineConfig?.copilotReasoningSummaries,
+      });
 
       const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
       const childEnv = shared.cleanChildEnv();
@@ -1354,6 +1437,10 @@ async function spawnAgent(dispatchItem, config) {
     if (idx < 0) return dispatch;
     const item = dispatch.pending.splice(idx, 1)[0];
     item.started_at = startedAt;
+    // Persist the resolved runtime so post-completion hooks (lifecycle.js) can
+    // route output parsing through the right adapter. Also surfaces the choice
+    // in dispatch.json for debugging multi-runtime fleets.
+    item.runtimeName = runtimeName;
     delete item.skipReason;
     delete item._agentBusySince;
     if (!dispatch.active.some(d => d.id === id)) {
@@ -3786,7 +3873,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
   isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
-  _maxTurnsForType, buildProjectContext, normalizeAc, // exported for testing
+  _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
