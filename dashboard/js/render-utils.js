@@ -52,6 +52,12 @@ function formatToolSummary(name, input) {
 /**
  * Internal helper: renders a single parsed JSON object into an HTML fragment.
  * @param {object} obj - Parsed JSON object from agent JSONL output
+ * @param {object} [state] - Mutable render state shared across calls in a single
+ *   renderAgentOutput pass. Persistent fields: copilotToolKeys (Set), copilotDeltaBuffer,
+ *   copilotReasoningPending. Per-line fields written by the caller before each call:
+ *   isFinalResult (true only for the LAST result line before [process-exit]; gates the
+ *   completion banner so ScheduleWakeup resume cycles don't repeatedly fire it),
+ *   exitInfo ({ code, success } parsed from [process-exit], or null).
  * @returns {string} HTML fragment
  */
 function _renderJsonObj(obj, state) {
@@ -161,7 +167,19 @@ function _renderJsonObj(obj, state) {
   }
 
   if (obj.type === 'result') {
-    parts.push('<div style="background:rgba(63,185,80,0.1);border:1px solid var(--green);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--green)">\u2713 Task complete</div>');
+    // Banner is gated on TWO conditions: (a) this is the LAST result line in the output,
+    // and (b) the [process-exit] sentinel has been seen. Intermediate result lines from
+    // ScheduleWakeup resume cycles fall through and render nothing.
+    if (state.isFinalResult) {
+      var subtype = typeof obj.subtype === 'string' ? obj.subtype : '';
+      var resultIsError = obj.is_error === true || subtype.startsWith('error');
+      var exitFailed = state.exitInfo && state.exitInfo.success === false;
+      if (resultIsError || exitFailed) {
+        parts.push('<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--red)">\u2717 Task ended with error</div>');
+      } else {
+        parts.push('<div style="background:rgba(63,185,80,0.1);border:1px solid var(--green);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--green)">\u2713 Task complete</div>');
+      }
+    }
   }
 
   return parts.join('');
@@ -197,12 +215,56 @@ function renderAgentOutput(text) {
     }
   }
 
+  // ── Pre-scan ──────────────────────────────────────────────────────────────
+  // ScheduleWakeup-based polling agents emit one `"type":"result"` JSONL line
+  // per resume cycle, followed by another resume — only the LAST result line
+  // before spawn-agent.js writes its `[process-exit]` sentinel is the true
+  // final result. Intermediate result lines must NOT trigger the banner.
+  //
+  // spawn-agent.js writes:
+  //   "\n[process-exit] code=N\n"        on normal close (engine/spawn-agent.js:202)
+  //   "\n[process-exit] spawn-failed\n"  on synchronous spawn() throw
+  //
+  // We pre-scan to find: (1) whether [process-exit] was emitted at all, (2) its
+  // exit code (success vs failure), and (3) the line index of the last result
+  // strictly before that sentinel.
+  var exitInfo = null; // null = process still running (no banner ever fires)
+  var exitLineIdx = -1;
+  var lastResultLineIdx = -1;
+  var exitRe = /^\[process-exit\]\s+(?:code=)?(-?\d+|spawn-failed)\s*$/;
+  for (var k = 0; k < lines.length; k++) {
+    var t = lines[k].trim();
+    if (!t) continue;
+    var em = exitRe.exec(t);
+    if (em) {
+      var token = em[1];
+      var code = token === 'spawn-failed' ? -1 : parseInt(token, 10);
+      exitInfo = { code: code, success: code === 0 };
+      exitLineIdx = k;
+    }
+  }
+
+  if (exitLineIdx !== -1) {
+    for (var r = 0; r < exitLineIdx; r++) {
+      var rt = lines[r].trim();
+      if (!rt || rt.charCodeAt(0) !== 123 /* '{' */) continue;
+      try {
+        var probe = JSON.parse(rt);
+        if (probe && probe.type === 'result') lastResultLineIdx = r;
+      } catch (e) { /* ignore parse errors during scan */ }
+    }
+  }
+  state.exitInfo = exitInfo;
+
   for (var i = 0; i < lines.length; i++) {
     var trimmed = lines[i].trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
     // Heartbeat — filter out
     if (trimmed.startsWith('[heartbeat]')) continue;
+
+    // Process-exit sentinel — internal signal, never displayed
+    if (trimmed.startsWith('[process-exit]')) continue;
 
     // Human steering
     if (trimmed.startsWith('[human-steering]')) {
@@ -220,24 +282,26 @@ function renderAgentOutput(text) {
       continue;
     }
 
-    // JSON array line
+    // JSON array line — never holds the canonical result, banner never fires here
     if (trimmed.startsWith('[')) {
       try {
         var arr = JSON.parse(trimmed);
         if (Array.isArray(arr)) {
+          state.isFinalResult = false;
           for (var j = 0; j < arr.length; j++) fragments.push(_renderJsonObj(arr[j], state));
           continue;
         }
       } catch (e) { /* fall through */ }
     }
 
-    // JSON object line
+    // JSON object line — banner fires only when this is the final result AND process exited
     if (trimmed.startsWith('{')) {
       try {
         var obj = JSON.parse(trimmed);
         if (obj.type !== 'assistant.message_delta' && obj.type !== 'assistant.reasoning' && obj.type !== 'assistant.reasoning_delta' && obj.type !== 'assistant.message') {
           flushCopilotPending();
         }
+        state.isFinalResult = (i === lastResultLineIdx) && (exitInfo !== null);
         fragments.push(_renderJsonObj(obj, state));
         continue;
       } catch (e) { /* fall through */ }
@@ -255,6 +319,14 @@ function renderAgentOutput(text) {
   }
 
   flushCopilotPending();
+
+  // Fallback error banner: process exited with non-zero code but never emitted
+  // a `"type":"result"` line (CLI crashed before producing one). Without this,
+  // the user would see only stderr noise with no terminal-state indicator.
+  if (exitInfo && !exitInfo.success && lastResultLineIdx === -1) {
+    fragments.push('<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--red)">✗ Task ended with error</div>');
+  }
+
   return fragments.join('');
 }
 
