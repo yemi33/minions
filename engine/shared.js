@@ -1099,8 +1099,8 @@ function trackReviewMetric(pr, newReviewStatus, config) {
   const authorId = (pr.agent || '').toLowerCase();
   if (!authorId || !config?.agents?.[authorId]) return;
   try {
-    mutateJsonFileLocked(path.join(__dirname, 'metrics.json'), (metrics) => {
-      if (!metrics[authorId]) metrics[authorId] = {};
+    mutateJsonFileLocked(path.join(MINIONS_DIR, 'engine', 'metrics.json'), (metrics) => {
+      if (!metrics[authorId]) metrics[authorId] = { ...DEFAULT_AGENT_METRICS };
       if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
       else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
       return metrics;
@@ -1110,7 +1110,10 @@ function trackReviewMetric(pr, newReviewStatus, config) {
 
 /** Queue a plan-to-prd work item with dedup check inside lock. Returns true if queued. */
 function queuePlanToPrd({ planFile, prdFile, title, description, project, createdBy, extra }) {
-  const centralWiPath = path.join(__dirname, '..', 'work-items.json');
+  // Use MINIONS_DIR (honors MINIONS_TEST_DIR override) instead of resolving from
+  // __dirname — otherwise tests that exercise this helper leak work items into
+  // the real package-root work-items.json even after createTestMinionsDir().
+  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
   let queued = false;
   mutateJsonFileLocked(centralWiPath, items => {
     if (!Array.isArray(items)) items = [];

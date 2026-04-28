@@ -487,13 +487,40 @@ async function submitBugReport() {
     if (!res.ok) throw new Error(d.error || 'Failed');
 
     // Show success inside the modal
-    document.getElementById('modal-body').innerHTML =
-      '<div style="padding:24px;text-align:center">' +
-        '<div style="font-size:32px;margin-bottom:12px">&#128027;</div>' +
-        '<div style="color:var(--green);font-weight:600;margin-bottom:8px">Bug filed!</div>' +
-        (d.url ? '<a href="' + escHtml(d.url) + '" target="_blank" style="color:var(--blue);font-size:13px">View issue on GitHub</a>' : '<span style="color:var(--muted);font-size:12px">Issue created on yemi33/minions</span>') +
-        '<div style="margin-top:16px"><button onclick="closeModal()" style="padding:6px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text)">Close</button></div>' +
-      '</div>';
+    var modalBody = document.getElementById('modal-body');
+    var container = document.createElement('div');
+    container.style.cssText = 'padding:24px;text-align:center';
+    var icon = document.createElement('div');
+    icon.style.cssText = 'font-size:32px;margin-bottom:12px';
+    icon.textContent = '\u{1F41B}';
+    var heading = document.createElement('div');
+    heading.style.cssText = 'color:var(--green);font-weight:600;margin-bottom:8px';
+    heading.textContent = 'Bug filed!';
+    container.appendChild(icon);
+    container.appendChild(heading);
+    if (d.url) {
+      var link = document.createElement('a');
+      link.href = safeUrl(d.url);
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.style.cssText = 'color:var(--blue);font-size:13px';
+      link.textContent = 'View issue on GitHub';
+      container.appendChild(link);
+    } else {
+      var msg = document.createElement('span');
+      msg.style.cssText = 'color:var(--muted);font-size:12px';
+      msg.textContent = 'Issue created on yemi33/minions';
+      container.appendChild(msg);
+    }
+    var actions = document.createElement('div');
+    actions.style.marginTop = '16px';
+    var closeBtn = document.createElement('button');
+    closeBtn.style.cssText = 'padding:6px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text)';
+    closeBtn.textContent = 'Close';
+    closeBtn.onclick = closeModal;
+    actions.appendChild(closeBtn);
+    container.appendChild(actions);
+    modalBody.replaceChildren(container);
   } catch (e) {
     // Show error inside the modal — let user retry
     if (btn) { btn.disabled = false; btn.textContent = 'File Bug'; }
