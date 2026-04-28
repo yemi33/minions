@@ -6,6 +6,11 @@ let _steerInFlight = false;
 let _lastRenderedText = '';
 let _runtimeTimer = null;
 
+function _currentAgentRuntime() {
+  var agent = (agentData || []).find(function(a) { return a.id === currentAgentId; });
+  return agent && agent.runtime ? agent.runtime : '';
+}
+
 function _updateRuntimeCounter() {
   var el = document.getElementById('live-runtime');
   if (!el) return;
@@ -75,8 +80,9 @@ async function refreshLiveOutput() {
     const el = document.getElementById('live-messages');
     if (el) {
       const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+      const incrementalSafe = _currentAgentRuntime() !== 'copilot';
       // Incremental render: only parse new content if text is an extension of previous
-      if (_lastRenderedText && text.length > _lastRenderedText.length && text.startsWith(_lastRenderedText.slice(0, 200))) {
+      if (incrementalSafe && _lastRenderedText && text.length > _lastRenderedText.length && text.startsWith(_lastRenderedText.slice(0, 200))) {
         renderLiveChatMessage(text.slice(_lastRenderedText.length));
       } else {
         el.innerHTML = '';
