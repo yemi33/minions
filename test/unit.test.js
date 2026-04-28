@@ -35362,8 +35362,13 @@ async function testCliCommandHandlers() {
       fs.writeFileSync(path.join(testDir, 'work-items.json'), JSON.stringify(workItems));
     }
     if (pidFiles) {
+      // PID files live in engine/tmp/ — that's where engine/spawn-agent.js writes
+      // them (see engine/spawn-agent.js:220). The harness mirrors that layout so
+      // the kill handler's readdirSync/safeReadDir(engine/tmp) actually finds them.
+      const pidDir = path.join(testDir, 'engine', 'tmp');
+      fs.mkdirSync(pidDir, { recursive: true });
       for (const [name, pid] of Object.entries(pidFiles)) {
-        fs.writeFileSync(path.join(testDir, 'engine', name), String(pid));
+        fs.writeFileSync(path.join(pidDir, name), String(pid));
       }
     }
 
@@ -35664,7 +35669,7 @@ async function testCliCommandHandlers() {
     } finally { h.restore(); }
   });
 
-  await test('commands.kill: deletes pid-* files from engine/', () => {
+  await test('commands.kill: deletes pid-* files from engine/tmp/', () => {
     const h = setupHarness({
       dispatch: { pending: [], active: [], completed: [] },
       pidFiles: {
@@ -35673,7 +35678,7 @@ async function testCliCommandHandlers() {
       },
     });
     try {
-      const pidPath = path.join(h.testDir, 'engine', 'pid-ghost.pid');
+      const pidPath = path.join(h.testDir, 'engine', 'tmp', 'pid-ghost.pid');
       assert.ok(fs.existsSync(pidPath), 'pre-check: pid file should exist before kill');
       withCapture(() => h.cli.handleCommand('kill', []));
       assert.ok(!fs.existsSync(pidPath),
@@ -38874,6 +38879,67 @@ async function testEngineHelperCoverage() {
       const dispatch = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
       assert.strictEqual(dispatch.active.length, 0);
     } finally { restore(); }
+  });
+
+  await test('cleanDispatchEntries unlinks PID file from engine/tmp/ (the path spawn-agent.js writes to)', () => {
+    // Regression guard: spawn-agent.js writes pid files to engine/tmp/pid-<id>.pid
+    // (see engine/spawn-agent.js:220, derived from the prompt-file path that
+    // engine.js builds in engine/tmp/). cleanDispatchEntries previously read
+    // the pid from engine/pid-<id>.pid — wrong directory — so on `minions remove`
+    // and plan delete the live pid file was never deleted and the tracked PID
+    // was never killed. Surviving agents kept writing to a worktree the engine
+    // had already torn down.
+    const restore = createTestMinionsDir();
+    const dir = process.env.MINIONS_TEST_DIR;
+    try {
+      const tmpDir = path.join(dir, 'engine', 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const dispatchId = 'd-cleantest';
+      const realPidPath = path.join(tmpDir, `pid-${dispatchId}.pid`);
+      fs.writeFileSync(realPidPath, '99999999'); // bogus PID — kill is a no-op, file deletion is what we assert
+
+      // Decoy at the BUGGY path so the test fails clearly when the function
+      // unlinks the wrong location instead of the right one.
+      const buggyPidPath = path.join(dir, 'engine', `pid-${dispatchId}.pid`);
+      fs.writeFileSync(buggyPidPath, '99999999');
+
+      fs.writeFileSync(path.join(dir, 'engine', 'dispatch.json'), JSON.stringify({
+        pending: [],
+        active: [{ id: dispatchId, agent: 'dallas' }],
+        completed: [],
+      }));
+
+      delete require.cache[require.resolve('../engine/dispatch')];
+      const { cleanDispatchEntries } = require('../engine/dispatch');
+      const removed = cleanDispatchEntries(d => d.id === dispatchId);
+
+      assert.strictEqual(removed, 1, 'cleanDispatchEntries should drain the matching active entry');
+      assert.ok(!fs.existsSync(realPidPath),
+        'pid file at engine/tmp/pid-<id>.pid must be unlinked — that is where spawn-agent.js writes it');
+    } finally { restore(); }
+  });
+
+  await test('minions kill scans engine/tmp/ for pid files (not engine/)', () => {
+    // Companion bug: the `minions kill` CLI handler also scanned the wrong
+    // directory, so on Windows/Linux alike the command cleared the dispatch
+    // queue but never reaped the agent processes. The PID files live in
+    // engine/tmp/ — same place spawn-agent.js writes them.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const killStart = src.indexOf('  kill()');
+    assert.ok(killStart > 0, 'kill handler must exist in engine/cli.js');
+    const killEnd = src.indexOf('\n  },', killStart);
+    const block = src.slice(killStart, killEnd > -1 ? killEnd : killStart + 4000);
+
+    assert.ok(/(?:readdirSync|safeReadDir)\([^)]*ENGINE_DIR\s*,\s*['"]tmp['"]/.test(block) ||
+              /(?:readdirSync|safeReadDir)\(\s*pidDir\s*\)/.test(block),
+      'kill must scan engine/tmp/ (extracted to a pidDir variable is fine, safeReadDir wrapper is also fine) — pid files live there per spawn-agent.js');
+
+    // Also: never call process.kill with a falsy / NaN pid. Empty pid files
+    // would resolve to Number('') === 0, and process.kill(0) on POSIX targets
+    // the entire caller process group. Guard before the kill.
+    assert.ok(/(?:Number\(pid\)|safePid|pidNum)\s*[>!]/.test(block) ||
+              /if\s*\(\s*!?(?:pid|pidNum|safePid)/.test(block),
+      'kill must guard against falsy/zero PIDs before calling process.kill');
   });
 
   await test('removeProject archives PRD JSONs whose project field matches', () => {

@@ -1142,12 +1142,27 @@ const commands = {
     const config = getConfig();
     const shared = require('./shared');
 
-    // Kill processes via PID files (expensive — outside dispatch lock)
-    const pidFiles = fs.readdirSync(ENGINE_DIR).filter(f => f.startsWith('pid-'));
+    // Kill processes via PID files (expensive — outside dispatch lock).
+    // PID files live in engine/tmp/ (see engine/spawn-agent.js:220 — derived from
+    // the prompt-<id>.md sidecar path that engine.js builds in engine/tmp/).
+    // Reading from ENGINE_DIR directly is a no-op: spawn-agent never writes there.
+    const pidDir = path.join(ENGINE_DIR, 'tmp');
+    const pidFiles = shared.safeReadDir(pidDir).filter(f => f.startsWith('pid-') && f.endsWith('.pid'));
     for (const f of pidFiles) {
-      const pid = safeRead(path.join(ENGINE_DIR, f)).trim();
-      try { process.kill(Number(pid)); console.log(`Killed process ${pid} (${f})`); } catch { console.log(`Process ${pid} already dead`); }
-      fs.unlinkSync(path.join(ENGINE_DIR, f));
+      const pidPath = path.join(pidDir, f);
+      const raw = safeRead(pidPath).trim();
+      // Guard against falsy/zero/NaN PIDs. Empty pid files would resolve to
+      // Number('') === 0, and process.kill(0) on POSIX targets the entire
+      // calling process group — which would kill the engine itself.
+      let pidNum = NaN;
+      try { pidNum = shared.validatePid(raw); } catch { /* invalid — skip */ }
+      if (pidNum > 0) {
+        try { process.kill(pidNum); console.log(`Killed process ${pidNum} (${f})`); }
+        catch { console.log(`Process ${pidNum} already dead`); }
+      } else {
+        console.log(`Skipping ${f}: invalid or empty PID`);
+      }
+      try { fs.unlinkSync(pidPath); } catch { /* may not exist */ }
     }
 
     // Atomically read and clear dispatch.active (locked read-modify-write)
