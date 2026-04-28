@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1583 (2026-04-28)
+
+### Other
+- Keep doc chat collapsed while streaming
+
 ## 0.1.1582 (2026-04-28)
 
 ### Fixes
