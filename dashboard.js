@@ -5756,6 +5756,44 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
 
+    // Runtimes (CLI fleet) — model discovery + capability surface
+    { method: 'GET', path: '/api/runtimes', desc: 'List registered CLI runtimes and their capability flags', handler: (req, res) => {
+      const md = require('./engine/model-discovery');
+      return jsonReply(res, 200, { runtimes: md.listAllRuntimes() }, req);
+    }},
+    { method: 'POST', path: /^\/api\/runtimes\/([\w-]+)\/models\/refresh$/, desc: 'Invalidate the models cache for a runtime and re-fetch', handler: async (req, res, match) => {
+      const md = require('./engine/model-discovery');
+      const name = match[1];
+      try {
+        md.invalidateRuntimeModelsCache(name);
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      let payload;
+      try {
+        reloadConfig();
+        payload = await md.getRuntimeModels(name, { force: true, config: CONFIG });
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      return jsonReply(res, 200, payload, req);
+    }},
+    { method: 'GET', path: /^\/api\/runtimes\/([\w-]+)\/models$/, desc: 'Get cached or fresh model list for a runtime', handler: async (req, res, match) => {
+      const md = require('./engine/model-discovery');
+      const name = match[1];
+      let payload;
+      try {
+        reloadConfig();
+        payload = await md.getRuntimeModels(name, { config: CONFIG });
+      } catch (e) {
+        if (/Unknown runtime/.test(e.message || '')) return jsonReply(res, 404, { error: e.message }, req);
+        return jsonReply(res, 500, { error: String(e.message || e) }, req);
+      }
+      return jsonReply(res, 200, payload, req);
+    }},
+
     // Settings
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent + teams + projects config', params: 'engine?, claude?, agents?, teams?, projects?', handler: handleSettingsUpdate },

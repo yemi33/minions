@@ -1861,6 +1861,330 @@ async function testCopilotAdapter() {
   });
 }
 
+async function testModelDiscovery() {
+  console.log('\n── engine/model-discovery.js — Runtime models cache + REST helpers (P-4c7d2b5a) ──');
+  const mdPath = path.join(MINIONS_DIR, 'engine', 'model-discovery');
+  const md = require(mdPath);
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { _registry, listRuntimes } = require(runtimesPath);
+
+  // Helper: register a fake runtime under a unique name so tests don't collide
+  // with the real claude/copilot adapters. Returns a `cleanup()` that removes it.
+  function registerFakeRuntime(name, overrides = {}) {
+    const cacheFile = path.join(createTmpDir(), `${name}-models.json`);
+    const adapter = Object.assign({
+      name,
+      capabilities: { modelDiscovery: true },
+      modelsCache: cacheFile,
+      listModels: async () => [{ id: 'm1', name: 'Model One', provider: 'fake' }],
+    }, overrides);
+    if (!adapter.capabilities) adapter.capabilities = {};
+    _registry.set(name, adapter);
+    return {
+      adapter,
+      cacheFile,
+      cleanup() {
+        _registry.delete(name);
+        try { fs.unlinkSync(cacheFile); } catch {}
+      },
+    };
+  }
+
+  // ── listAllRuntimes ───────────────────────────────────────────────────────
+
+  await test('listAllRuntimes returns every registered adapter with name + capabilities', () => {
+    const list = md.listAllRuntimes();
+    const names = list.map(r => r.name).sort();
+    assert.deepStrictEqual(names, listRuntimes(),
+      'listAllRuntimes must include exactly the runtimes registered in the registry');
+    for (const r of list) {
+      assert.strictEqual(typeof r.name, 'string');
+      assert.strictEqual(typeof r.capabilities, 'object');
+      assert.notStrictEqual(r.capabilities, null);
+      assert.strictEqual(typeof r.capabilities.modelDiscovery, 'boolean',
+        `${r.name}.capabilities.modelDiscovery must be a boolean — UI gates on it`);
+    }
+  });
+
+  await test('listAllRuntimes returns a defensive copy of capabilities (mutation isolation)', () => {
+    const list = md.listAllRuntimes();
+    const claude = list.find(r => r.name === 'claude');
+    assert.ok(claude, 'claude must be in the listing');
+    const realClaudeMd = claude.capabilities.modelDiscovery;
+    claude.capabilities.modelDiscovery = !realClaudeMd;
+    const list2 = md.listAllRuntimes();
+    const claude2 = list2.find(r => r.name === 'claude');
+    assert.strictEqual(claude2.capabilities.modelDiscovery, realClaudeMd,
+      'mutating the returned object must not bleed into the next listing');
+  });
+
+  // ── getRuntimeModels: unknown runtime ─────────────────────────────────────
+
+  await test('getRuntimeModels throws "Unknown runtime" for unregistered names (caller maps to 404)', async () => {
+    let thrown = null;
+    try { await md.getRuntimeModels('not-a-real-runtime'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw for unknown runtime');
+    assert.ok(/Unknown runtime/.test(thrown.message),
+      `message must signal unknown runtime, got: ${thrown.message}`);
+  });
+
+  // ── getRuntimeModels: disableModelDiscovery short-circuit ─────────────────
+
+  await test('getRuntimeModels returns models:null without calling adapter when config.engine.disableModelDiscovery=true', async () => {
+    let listModelsCalls = 0;
+    const fake = registerFakeRuntime('disco-disabled', {
+      listModels: async () => { listModelsCalls += 1; return [{ id: 'should-not-see', name: 'X', provider: 'y' }]; },
+    });
+    try {
+      const result = await md.getRuntimeModels('disco-disabled', { config: { engine: { disableModelDiscovery: true } } });
+      assert.deepStrictEqual(result, { runtime: 'disco-disabled', models: null, cachedAt: null });
+      assert.strictEqual(listModelsCalls, 0, 'adapter.listModels MUST NOT be called when discovery is disabled fleet-wide');
+      // Cache file must NOT be written either — flipping the flag back on
+      // should produce a fresh fetch, not a stale `null` cache hit.
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'no cache file should be written when discovery is disabled');
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: capability gate (Claude path) ───────────────────────
+
+  await test('getRuntimeModels returns models:null when capabilities.modelDiscovery is false (Claude path)', async () => {
+    let listModelsCalls = 0;
+    const fake = registerFakeRuntime('no-discovery', {
+      capabilities: { modelDiscovery: false },
+      listModels: async () => { listModelsCalls += 1; return null; },
+    });
+    try {
+      const result = await md.getRuntimeModels('no-discovery');
+      assert.deepStrictEqual(result, { runtime: 'no-discovery', models: null, cachedAt: null });
+      assert.strictEqual(listModelsCalls, 0,
+        'adapter without modelDiscovery capability must short-circuit before listModels()');
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'no cache file should be written for adapters without discovery');
+    } finally { fake.cleanup(); }
+  });
+
+  await test('claude.listModels integration: getRuntimeModels(claude) returns models:null (no API)', async () => {
+    // Sanity: the real Claude adapter should produce models:null because its
+    // capabilities.modelDiscovery is false. This locks in the Claude-specific
+    // contract end-to-end through model-discovery.
+    const result = await md.getRuntimeModels('claude');
+    assert.strictEqual(result.runtime, 'claude');
+    assert.strictEqual(result.models, null);
+    assert.strictEqual(result.cachedAt, null);
+  });
+
+  // ── getRuntimeModels: cache miss → write → hit ────────────────────────────
+
+  await test('getRuntimeModels cache miss path: calls listModels, writes cache, returns fresh data', async () => {
+    let calls = 0;
+    const sample = [
+      { id: 'gpt-5', name: 'GPT-5', provider: 'openai' },
+      { id: 'claude-sonnet-4.5', name: 'Claude Sonnet', provider: 'anthropic' },
+    ];
+    const fake = registerFakeRuntime('miss-test', {
+      listModels: async () => { calls += 1; return sample; },
+    });
+    try {
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false, 'precondition: cache absent');
+      const result = await md.getRuntimeModels('miss-test');
+      assert.strictEqual(result.runtime, 'miss-test');
+      assert.deepStrictEqual(result.models, sample);
+      assert.strictEqual(typeof result.cachedAt, 'string');
+      assert.ok(Date.parse(result.cachedAt) > 0, 'cachedAt must be a valid ISO timestamp');
+      assert.strictEqual(calls, 1);
+      assert.ok(fs.existsSync(fake.cacheFile), 'cache file must be written on miss');
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.deepStrictEqual(persisted.models, sample);
+      assert.strictEqual(persisted.runtime, 'miss-test');
+      assert.strictEqual(persisted.cachedAt, result.cachedAt);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels cache hit path: skips listModels when cache is fresh (< TTL)', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('hit-test', {
+      listModels: async () => { calls += 1; return [{ id: 'fresh', name: 'fresh', provider: 'x' }]; },
+    });
+    try {
+      // Seed cache directly with recent timestamp.
+      const cached = {
+        runtime: 'hit-test',
+        models: [{ id: 'cached-only', name: 'Cached', provider: 'z' }],
+        cachedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(fake.cacheFile, JSON.stringify(cached));
+      const result = await md.getRuntimeModels('hit-test');
+      assert.strictEqual(calls, 0, 'cache hit must NOT call listModels');
+      assert.deepStrictEqual(result.models, cached.models);
+      assert.strictEqual(result.cachedAt, cached.cachedAt);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels cache miss when cachedAt is older than TTL', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('expired-test', {
+      listModels: async () => { calls += 1; return [{ id: 'fresh', name: 'fresh', provider: 'x' }]; },
+    });
+    try {
+      const stale = {
+        runtime: 'expired-test',
+        models: [{ id: 'old', name: 'old', provider: 'x' }],
+        // 2 hours old — beyond default 1h TTL
+        cachedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      };
+      fs.writeFileSync(fake.cacheFile, JSON.stringify(stale));
+      const result = await md.getRuntimeModels('expired-test');
+      assert.strictEqual(calls, 1, 'expired cache must trigger fresh listModels call');
+      assert.deepStrictEqual(result.models, [{ id: 'fresh', name: 'fresh', provider: 'x' }]);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: error / null handling ───────────────────────────────
+
+  await test('getRuntimeModels returns models:null and writes null-cache when listModels resolves null', async () => {
+    const fake = registerFakeRuntime('null-test', {
+      listModels: async () => null,
+    });
+    try {
+      const result = await md.getRuntimeModels('null-test');
+      assert.strictEqual(result.models, null);
+      assert.strictEqual(typeof result.cachedAt, 'string');
+      assert.ok(fs.existsSync(fake.cacheFile),
+        'null result still writes a cache so we don\'t hammer the API on every refresh');
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.strictEqual(persisted.models, null);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels treats listModels throw as null (does not propagate)', async () => {
+    const fake = registerFakeRuntime('throw-test', {
+      listModels: async () => { throw new Error('network down'); },
+    });
+    try {
+      const result = await md.getRuntimeModels('throw-test');
+      assert.strictEqual(result.models, null,
+        'thrown error must collapse to models:null so the dashboard can still render');
+      assert.strictEqual(typeof result.cachedAt, 'string');
+    } finally { fake.cleanup(); }
+  });
+
+  await test('getRuntimeModels treats empty array as null (no actionable UI distinction)', async () => {
+    const fake = registerFakeRuntime('empty-test', {
+      listModels: async () => [],
+    });
+    try {
+      const result = await md.getRuntimeModels('empty-test');
+      assert.strictEqual(result.models, null,
+        'empty array must collapse to null so the UI falls back to free-text');
+    } finally { fake.cleanup(); }
+  });
+
+  // ── getRuntimeModels: force flag ──────────────────────────────────────────
+
+  await test('getRuntimeModels({ force: true }) bypasses cache hit and re-fetches', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('force-test', {
+      listModels: async () => { calls += 1; return [{ id: `m${calls}`, name: 'x', provider: 'y' }]; },
+    });
+    try {
+      // Seed fresh cache
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({
+        runtime: 'force-test',
+        models: [{ id: 'cached', name: 'cached', provider: 'z' }],
+        cachedAt: new Date().toISOString(),
+      }));
+      // force:true must skip the cache and call listModels
+      const result = await md.getRuntimeModels('force-test', { force: true });
+      assert.strictEqual(calls, 1);
+      assert.deepStrictEqual(result.models, [{ id: 'm1', name: 'x', provider: 'y' }]);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── invalidateRuntimeModelsCache ──────────────────────────────────────────
+
+  await test('invalidateRuntimeModelsCache deletes the cache file and returns true', () => {
+    const fake = registerFakeRuntime('inval-test');
+    try {
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({ runtime: 'inval-test', models: null, cachedAt: new Date().toISOString() }));
+      assert.strictEqual(md.invalidateRuntimeModelsCache('inval-test'), true);
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('invalidateRuntimeModelsCache returns false when cache file is already absent', () => {
+    const fake = registerFakeRuntime('inval-missing');
+    try {
+      // Ensure the file is absent.
+      try { fs.unlinkSync(fake.cacheFile); } catch {}
+      assert.strictEqual(md.invalidateRuntimeModelsCache('inval-missing'), false);
+    } finally { fake.cleanup(); }
+  });
+
+  await test('invalidateRuntimeModelsCache throws "Unknown runtime" for unregistered name', () => {
+    let thrown = null;
+    try { md.invalidateRuntimeModelsCache('totally-not-here'); } catch (e) { thrown = e; }
+    assert.ok(thrown, 'expected throw');
+    assert.ok(/Unknown runtime/.test(thrown.message));
+  });
+
+  // ── End-to-end refresh flow ───────────────────────────────────────────────
+
+  await test('refresh flow: invalidate + force-fetch produces a new cachedAt and overwrites stale models', async () => {
+    let calls = 0;
+    const fake = registerFakeRuntime('refresh-flow', {
+      listModels: async () => {
+        calls += 1;
+        return [{ id: `gen-${calls}`, name: `Gen ${calls}`, provider: 'rt' }];
+      },
+    });
+    try {
+      // Seed stale cache from a "prior generation".
+      const oldStamp = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      fs.writeFileSync(fake.cacheFile, JSON.stringify({
+        runtime: 'refresh-flow',
+        models: [{ id: 'old', name: 'old', provider: 'rt' }],
+        cachedAt: oldStamp,
+      }));
+      assert.strictEqual(md.invalidateRuntimeModelsCache('refresh-flow'), true);
+      assert.strictEqual(fs.existsSync(fake.cacheFile), false,
+        'refresh must remove the stale cache before re-fetch');
+
+      const fresh = await md.getRuntimeModels('refresh-flow', { force: true });
+      assert.strictEqual(calls, 1);
+      assert.deepStrictEqual(fresh.models, [{ id: 'gen-1', name: 'Gen 1', provider: 'rt' }]);
+      assert.notStrictEqual(fresh.cachedAt, oldStamp,
+        'cachedAt must update to a new timestamp after refresh');
+      // And the persisted file must reflect the fresh state.
+      const persisted = JSON.parse(fs.readFileSync(fake.cacheFile, 'utf8'));
+      assert.strictEqual(persisted.cachedAt, fresh.cachedAt);
+      assert.deepStrictEqual(persisted.models, fresh.models);
+    } finally { fake.cleanup(); }
+  });
+
+  // ── Dashboard route registration sanity ───────────────────────────────────
+
+  await test('dashboard.js registers /api/runtimes routes (list + per-runtime models + refresh)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Exact-string GET /api/runtimes
+    assert.ok(src.includes("path: '/api/runtimes'"),
+      "dashboard.js must register exact-string route '/api/runtimes'");
+    // Regex routes for the per-runtime endpoints. We match the literal regex
+    // body — robust against whitespace shifts but tied to the exact pattern
+    // shape so accidental typos fail loudly.
+    assert.ok(src.includes('/^\\/api\\/runtimes\\/([\\w-]+)\\/models$/'),
+      'dashboard.js must register regex route /^\\/api\\/runtimes\\/([\\w-]+)\\/models$/');
+    assert.ok(src.includes('/^\\/api\\/runtimes\\/([\\w-]+)\\/models\\/refresh$/'),
+      'dashboard.js must register regex route /^\\/api\\/runtimes\\/([\\w-]+)\\/models\\/refresh$/');
+  });
+
+  await test('engine/copilot-models.json + engine/claude-models.json are gitignored', () => {
+    const gi = fs.readFileSync(path.join(MINIONS_DIR, '.gitignore'), 'utf8');
+    assert.ok(/engine\/claude-models\.json/.test(gi), '.gitignore must list engine/claude-models.json');
+    assert.ok(/engine\/copilot-models\.json/.test(gi), '.gitignore must list engine/copilot-models.json');
+  });
+}
+
 async function testSpawnAgentHelpers() {
   console.log('\n── engine/spawn-agent.js — Runtime-Agnostic Wrapper (P-9c4f2d6a) ──');
   const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
@@ -18342,6 +18666,7 @@ async function main() {
     await testParseStreamJsonOutput();
     await testRuntimeAdapters();
     await testCopilotAdapter();
+    await testModelDiscovery();
     await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
