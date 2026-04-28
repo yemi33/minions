@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1594 (2026-04-28)
+
+### Features
+- match runtime tags to actual logos (pixel-crab Claude, mascot Copilot)
+- replace runtime text tag with inline SVG logos
+
 ## 0.1.1592 (2026-04-28)
 
 ### Features
