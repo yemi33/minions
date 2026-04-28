@@ -20143,7 +20143,17 @@ async function testSec03EscapeHtml() {
   // contains `${`, `+`, or a bare identifier. Static literal assignments
   // (`el.innerHTML = '<p class="empty">...</p>'`) are exempt because they
   // cannot carry user data.
-  const DYNAMIC_INNERHTML_BASELINE = 172;
+  //
+  // 2026-04-28: bumped 172 → 173. Source: db05264b ("feat: stream doc chat
+  // progress") added `loadingEl.innerHTML = _qaBuildLiveProgressHtml(...)` in
+  // dashboard/js/modal-qa.js:448. The new callsite is internally safe — `label`
+  // goes through `escHtml()` and `streamedText` goes through `renderMd()`, both
+  // dashboard XSS standards — but the gate counts callsites, not safety. The
+  // structure is multi-line nested HTML (dot-pulse spans, buttons, badges) that
+  // cannot reasonably be expressed via textContent. Claw back to 172 if/when
+  // _qaBuildLiveProgressHtml is refactored to update only text fields in place
+  // against a pre-built skeleton.
+  const DYNAMIC_INNERHTML_BASELINE = 173;
 
   await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
     const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
