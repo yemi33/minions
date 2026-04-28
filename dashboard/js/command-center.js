@@ -54,6 +54,22 @@ function _ccActiveTab() {
   return _ccTabs.find(function(t) { return t.id === _ccActiveTabId; }) || null;
 }
 
+function _ccMergeStreamText(prev, incoming) {
+  var current = prev || '';
+  var next = incoming || '';
+  if (!current) return next;
+  if (!next) return current;
+  if (next === current) return current;
+  if (next.startsWith(current)) return next;
+  if (current.startsWith(next)) return current;
+  for (var overlap = Math.min(current.length, next.length); overlap > 0; overlap--) {
+    if (current.slice(-overlap) === next.slice(0, overlap)) {
+      return current + next.slice(overlap);
+    }
+  }
+  return current + '\n\n' + next;
+}
+
 async function _ccDashboardHealth() {
   var controller = new AbortController();
   var timer = setTimeout(function() { controller.abort(); }, 3000);
@@ -580,7 +596,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
 
     async function _handleEvent(evt) {
       if (evt.type === 'chunk') {
-        streamedText = evt.text;
+        streamedText = _ccMergeStreamText(streamedText, evt.text || '');
         if (activeTab) activeTab._streamedText = streamedText;
         updateStreamDiv();
       } else if (evt.type === 'heartbeat') {

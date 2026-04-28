@@ -14454,6 +14454,42 @@ async function testHumanContributions() {
     assert.ok(homeSrc.includes('openQuickNoteModal'), 'Home page should have quick note button');
   });
 
+  await test('Home page command center power label is a dynamic placeholder, not hardcoded Sonnet text', () => {
+    const homeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'home.html'), 'utf8');
+    assert.ok(homeSrc.includes('id="cmd-powered-by"'),
+      'Home page should expose a dedicated command center power label slot');
+    assert.ok(!homeSrc.includes('powered by Sonnet'),
+      'Home page should not hardcode Sonnet in the command center hint');
+  });
+
+  await test('/api/status autoMode exposes resolved CC runtime and model for the home page label', () => {
+    assert.ok(dashSrc.includes('ccCli: shared.resolveCcCli(CONFIG.engine)'),
+      'Status autoMode should expose the resolved CC runtime');
+    assert.ok(dashSrc.includes('ccModel: shared.resolveCcModel(CONFIG.engine)'),
+      'Status autoMode should expose the resolved CC model, including defaultModel inheritance');
+  });
+
+  await test('refresh.js formats the command center power label from live autoMode status', () => {
+    const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+    assert.ok(refreshSrc.includes('function _formatCcPowerLabel(autoMode)'),
+      'refresh.js should define a formatter for the command center power label');
+    assert.ok(refreshSrc.includes("document.getElementById('cmd-powered-by')") || refreshSrc.includes('cmd-powered-by'),
+      'refresh.js should update the command center power label in the DOM');
+    assert.ok(refreshSrc.includes('autoMode.ccCli') && refreshSrc.includes('autoMode.ccModel'),
+      'The command center power label should read both runtime and model from status');
+  });
+
+  await test('CC drawer footer power label is dynamic, not hardcoded Sonnet text', () => {
+    const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+    assert.ok(layoutSrc.includes('id="cc-powered-by"'),
+      'The command center drawer should expose a dedicated footer power label slot');
+    assert.ok(!layoutSrc.includes('Sonnet-powered'),
+      'The command center drawer should not hardcode Sonnet in its footer');
+    assert.ok(refreshSrc.includes('function _formatCcDrawerLabel(autoMode)'),
+      'refresh.js should define a formatter for the command center drawer footer');
+  });
+
   // Work Item References
   await test('work-items API accepts references', () => {
     assert.ok(dashSrc.includes('references'),
@@ -22642,6 +22678,9 @@ async function testDashboardAuditXss() {
       'copilot entry needs a label (used as tooltip + aria-label)');
     assert.ok(map.includes('currentColor'),
       'SVG icons should use currentColor so the per-runtime color cascades from the parent span');
+    assert.ok(/claude:\s*\{[\s\S]*?width="13" height="13"/.test(map) &&
+      /copilot:\s*\{[\s\S]*?width="13" height="13"/.test(map),
+      'Claude and Copilot runtime icons should share the same rendered size');
   });
 
   await test('runtime tag falls back to text pill for unknown runtimes', () => {
@@ -32150,6 +32189,13 @@ async function testRenderUtils() {
     // The push should reference evt.input
     assert.ok(ccSrc.includes('evt.input'),
       'SSE tool handler should capture evt.input from the server event');
+  });
+
+  await test('CC stream chunks merge append-style instead of replacing prior streamed text', () => {
+    assert.ok(ccSrc.includes('function _ccMergeStreamText(prev, incoming)'),
+      'command-center.js should define a helper that merges streamed chunks');
+    assert.ok(ccSrc.includes("streamedText = _ccMergeStreamText(streamedText, evt.text || '');"),
+      'Chunk events should merge into the existing streamed text instead of overwriting it');
   });
 
   await test('live-stream.js re-renders full output for Copilot runtime instead of incremental append', () => {

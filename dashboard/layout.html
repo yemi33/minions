@@ -43,7 +43,7 @@
       <textarea id="cc-input" rows="2" placeholder="Ask anything or give a command..." style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;resize:none;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ccSend()}"></textarea>
       <button onclick="ccSend()" style="background:var(--blue);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-end">Send</button>
     </div>
-    <div style="font-size:9px;color:var(--muted);margin-top:4px">Sonnet-powered. Full minions context. Enter to send, Shift+Enter for newline.</div>
+    <div id="cc-powered-by" style="font-size:9px;color:var(--muted);margin-top:4px">Full minions context. Enter to send, Shift+Enter for newline.</div>
   </div>
 </div>
 
