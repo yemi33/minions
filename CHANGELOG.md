@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1601 (2026-04-28)
+
+### Features
+- match runtime tags to actual logos (pixel-crab Claude, mascot Copilot)
+- replace runtime text tag with inline SVG logos
+
+### Fixes
+- runtime-aware model picker + cross-runtime validation
+-  keep cc stream final text complete
+- switch Copilot icon to outline style for cleaner inline read
+- un-invert Copilot — purple silhouette + white cutouts
+- redraw Copilot icon to match actual mascot — vertical eye pills, not grill bars
+- invert Copilot icon colors for better dark-theme visibility
+
+### Other
+- Stream CC chunks incrementally
+
 ## 0.1.1592 (2026-04-28)
 
 ### Features
