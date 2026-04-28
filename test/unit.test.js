@@ -8708,8 +8708,65 @@ async function testCheckTimeouts() {
   });
 
   await test('checkTimeouts detects completion via output scan', () => {
-    assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
-      'Should scan live output for completion markers');
+    // Trigger must be the [process-exit] sentinel written by spawn-agent.js when the
+    // claude CLI closes — single source of truth for both "is the process gone" AND
+    // "what was the exit code". Substring-matching "subtype":"success" was unreliable
+    // because claude CLI can emit subtype:success after a --resume turn yet still
+    // exit non-zero, producing false-positive SUCCESS for resumed no-op sessions (#1792).
+    assert.ok(src.includes('[process-exit]'),
+      'Should scan live output for the [process-exit] sentinel as the completion trigger');
+  });
+
+  await test('output detection: requires [process-exit] sentinel — "type":"result" alone is not enough (#1792)', () => {
+    // The detection block must NOT trigger SOLELY on "type":"result" — that string
+    // appears as soon as claude CLI emits its result event, ~1s before the process
+    // actually exits and before the close handler in engine.js runs. Triggering on
+    // result alone races with the close handler. Use the [process-exit] sentinel as
+    // the authoritative gate so we only detect completion AFTER spawn-agent's close
+    // handler stamps the exit code.
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    assert.ok(detectionBlock.includes('[process-exit]'),
+      'Output completion detection must gate on [process-exit] sentinel');
+    // The OR-trigger on "type":"result" alone is the original bug — must be removed
+    // from the detection block (the "skip extension after completion" guard at line ~246
+    // legitimately mentions "type":"result", but the detection block at the top must not).
+    assert.ok(!/if\s*\(\s*liveLog\s*&&\s*\(\s*liveLog\.includes\(\s*'"type":"result"'\s*\)\s*\|\|/.test(detectionBlock),
+      'Output detection trigger must NOT include the OR on "type":"result" — that races with close handler');
+  });
+
+  await test('output detection: uses parsed exit code, not "subtype":"success" substring (#1792)', () => {
+    // The success determination inside the detection block must parse the exit code
+    // from the [process-exit] sentinel — `code=0` ⇒ success, anything else ⇒ error.
+    // Substring-matching `"subtype":"success"` was the false-positive vector: a resumed
+    // claude CLI turn emits subtype:success even when the agent did no real work and the
+    // OS later returned exit code 1, leading to the dispatch being marked SUCCESS.
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    assert.ok(/process-exit\][^]*?code=/.test(detectionBlock) || /code=([^]*?)\\d/.test(detectionBlock),
+      'Detection block must parse `code=N` from the [process-exit] sentinel for the exit code');
+    assert.ok(!/isSuccess\s*=\s*liveLog\.includes\(\s*'"subtype":"success"'\s*\)/.test(detectionBlock),
+      'isSuccess must NOT be derived from a "subtype":"success" substring match in the live log — that produces false positives on resumed --resume turns (#1792)');
+  });
+
+  await test('blocking detection: tool_use lookback covers long sessions, not just last 30 lines (#1792)', () => {
+    // Long Monitor / Bash sessions accumulate engine heartbeat lines (one every 30s).
+    // After 15+ minutes of silence the original tool_use line gets pushed past the
+    // 30-line lookback window — the detector then misses Monitor and the agent gets
+    // killed at heartbeatTimeout despite legitimately waiting on a background process.
+    // Lookback must be generous enough to span hours of pure heartbeat noise.
+    const blockingBlock = src.slice(src.indexOf('Find the last tool_use call'), src.indexOf('break; // only check the most recent tool_use'));
+    // Look for the lookback constant or a numeric literal substracted from lines.length
+    // that isn't `lines.length - 1` (the iteration start). Accept either an explicit
+    // named constant (e.g. `const TOOL_USE_LOOKBACK = 1000`) or a direct numeric
+    // subtraction `lines.length - 1000`.
+    const constMatch = blockingBlock.match(/(?:const\s+)?TOOL_USE_LOOKBACK\s*=\s*(\d+)/);
+    const inlineMatch = blockingBlock.match(/lines\.length\s*-\s*(\d{2,})/); // 2+ digits → skip the `- 1` iterator
+    const lookback = constMatch ? parseInt(constMatch[1], 10)
+      : inlineMatch ? parseInt(inlineMatch[1], 10)
+      : null;
+    assert.ok(lookback != null,
+      'Blocking detection must define a TOOL_USE_LOOKBACK constant or a numeric (>= 10) subtraction from lines.length');
+    assert.ok(lookback >= 500,
+      `Tool_use lookback must be >= 500 lines to handle long Monitor sessions with heartbeat noise (got ${lookback}). With heartbeats every 30s, 30-line lookback misses Monitor after ~15 min of silence.`);
   });
 
   await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
@@ -12976,11 +13033,13 @@ async function testTimeoutBehavioral() {
         }],
       });
       env.freshQueries.invalidateDispatchCache();
-      // Write a live-output.log containing the success result event.
+      // Write a live-output.log containing the result event AND the [process-exit]
+      // sentinel (the actual completion gate post-#1792). Detection only fires once
+      // spawn-agent has stamped the exit code — the result event alone is not enough.
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
       fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        '{"type":"result","subtype":"success","result":"ok"}\n');
+        '{"type":"result","subtype":"success","result":"ok"}\n[process-exit] code=0\n');
 
       env.timeout.checkTimeouts({});
 
@@ -12990,7 +13049,7 @@ async function testTimeoutBehavioral() {
       const completed = dp.completed.find(d => d.id === itemId);
       assert.ok(completed, 'Completed item should land in completed list');
       assert.strictEqual(completed.result, 'success',
-        'success subtype in live-output.log → SUCCESS result');
+        '[process-exit] code=0 in live-output.log → SUCCESS result');
     } finally { env.restore(); }
   });
 
@@ -13009,9 +13068,10 @@ async function testTimeoutBehavioral() {
       env.freshQueries.invalidateDispatchCache();
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
-      // No success subtype — detection treats it as ERROR.
+      // Non-zero exit code — detection treats it as ERROR. Post-#1792 the gate is the
+      // actual OS exit code from [process-exit], not a substring of the result event.
       fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        '{"type":"result","subtype":"error_during_execution"}\n');
+        '{"type":"result","subtype":"error_during_execution"}\n[process-exit] code=1\n');
 
       env.timeout.checkTimeouts({});
 
@@ -13019,7 +13079,7 @@ async function testTimeoutBehavioral() {
       const completed = dp.completed.find(d => d.id === itemId);
       assert.ok(completed, 'Errored item should still be moved to completed');
       assert.strictEqual(completed.result, 'error',
-        'Non-success subtype in result event → ERROR');
+        'Non-zero exit code in [process-exit] sentinel → ERROR');
     } finally { env.restore(); }
   });
 
@@ -13125,6 +13185,166 @@ async function testTimeoutBehavioral() {
         'Monitor tool must extend heartbeat — agent is legitimately waiting on a background process');
       const dp = readDispatch(env.testDir);
       assert.strictEqual(dp.active.length, 1, 'Item must remain active during Monitor wait');
+    } finally { env.restore(); }
+  });
+
+  // ── #1792: Long Monitor sessions with heartbeat noise — tool_use lookback gap ──
+  // After 15+ minutes of silence the engine heartbeat (every 30s) accumulates 30+
+  // log lines AFTER the Monitor tool_use. The original 30-line lookback window
+  // misses the tool_use entirely, the detector treats it as a non-blocking silence,
+  // and the agent gets killed at heartbeatTimeout — exactly the scenario the user
+  // hit on a cold Gradle build. Lookback must scan deep enough to find Monitor.
+  await test('checkTimeouts: Monitor tool_use buried under heartbeat lines still extends heartbeat (#1792)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'mon-deep';
+      // Silent for 15 min — well past the 5-min heartbeatTimeout default but well
+      // under Monitor's 30-min effective extended timeout. If the lookback finds
+      // Monitor, the agent stays alive; if it misses Monitor, the agent gets killed.
+      const silentMs = 900000; // 15 min
+      const startedAt = new Date(Date.now() - silentMs).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - silentMs);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // Monitor was called 15 min ago. Since then, 30 heartbeat lines have been
+      // appended (one every 30s). The Monitor tool_use is now line 0; everything
+      // after is heartbeat noise. With a 30-line lookback, Monitor is at or beyond
+      // the boundary — exactly the edge case from the user's Gradle build report.
+      const toolUseLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
+      });
+      const heartbeats = [];
+      for (let i = 1; i <= 30; i++) {
+        heartbeats.push(`[heartbeat] running — no output for ${i * 30}s`);
+      }
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
+        toolUseLine + '\n' + heartbeats.join('\n') + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Monitor tool_use buried under heartbeat lines must still extend heartbeat — the lookback must be deep enough to find it');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Item must remain active during long Monitor wait, not get killed because tool_use was outside the lookback window');
+    } finally { env.restore(); }
+  });
+
+  // ── #1792: False-positive SUCCESS from resumed --resume sessions ──
+  // After being killed at heartbeat, the engine re-dispatches with --resume. The
+  // resumed claude CLI may emit a result event with `subtype:"success"` even when
+  // the agent did NO real work (e.g. just said "Continuing to wait." and ended its
+  // turn) and the OS exit code is 1. The old detector substring-matched
+  // `"subtype":"success"` → marked dispatch SUCCESS → marked WI DONE. Wrong.
+  // The correct signal is the actual process exit code from the [process-exit]
+  // sentinel. exit=0 ⇒ SUCCESS, anything else ⇒ ERROR.
+  await test('checkTimeouts: live log with subtype:success but [process-exit] code=1 marks ERROR not SUCCESS (#1792)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resumed-noop';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // Orphan path — no tracked process. Force grace period to be expired so
+      // detection actually runs (the orphan branch only fires when grace expired).
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // Resumed claude CLI emitted a successful result event ("subtype":"success")
+      // because the API call succeeded — but the OS exit code was 1 (e.g. claude
+      // exits non-zero on certain --resume edge cases). The agent did no real work.
+      const fakeLog = [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Continuing to wait.' }] } }),
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'Continuing to wait.' }),
+        '[process-exit] code=1',
+      ].join('\n') + '\n';
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), fakeLog);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      const completed = (dp.completed || []).find(d => d.id === itemId);
+      assert.ok(completed, 'Item must move to completed after process-exit detection');
+      assert.strictEqual(completed.result, 'error',
+        'Resumed --resume sessions that emit subtype:"success" but exit code 1 must be marked ERROR, not SUCCESS — claude CLI success means "API call ran"; the OS exit code is what reflects "did the work succeed?" (#1792)');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: live log with [process-exit] code=0 marks SUCCESS (#1792)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'normal-success';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      const fakeLog = [
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'Done.' }),
+        '[process-exit] code=0',
+      ].join('\n') + '\n';
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), fakeLog);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      const completed = (dp.completed || []).find(d => d.id === itemId);
+      assert.ok(completed, 'Item must move to completed');
+      assert.strictEqual(completed.result, 'success',
+        'Clean exit (process-exit code=0) must mark dispatch SUCCESS');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: result event WITHOUT [process-exit] does NOT prematurely mark complete (#1792)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'mid-flight';
+      const startedAt = new Date(Date.now() - 60000).toISOString(); // 60s ago — well under heartbeat
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 1000); // recent activity
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      fs.mkdirSync(agentDir, { recursive: true });
+      // Result event written but spawn-agent has not yet stamped [process-exit].
+      // This is a real ~1s race window between claude CLI emitting result and
+      // proc.on('close') firing. Detection must wait for [process-exit] before
+      // marking complete — otherwise it races with the engine.js close handler.
+      const fakeLog = [
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'Done.' }),
+      ].join('\n') + '\n';
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), fakeLog);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Item must remain active when only "type":"result" is in the log (no [process-exit] yet) — close handler will fire shortly');
+      assert.strictEqual((dp.completed || []).length, 0,
+        'Must NOT prematurely complete on result event alone — that races with engine.js close handler');
     } finally { env.restore(); }
   });
 

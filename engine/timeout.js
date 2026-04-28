@@ -183,40 +183,74 @@ function checkTimeouts(config) {
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
 
-    // Check if the agent actually completed (result event in live output).
-    // Read the tail of the log (last 64KB) for efficiency — result JSON is always near the end.
-    // No time cap: a stuck dispatch that produced a result must always be detected (#716).
+    // Check if the agent actually completed by looking for the [process-exit] sentinel.
+    //
+    // The sentinel is written synchronously by spawn-agent.js's proc.on('close') handler
+    // BEFORE spawn-agent itself exits, in the form:
+    //   "\n[process-exit] code=<N>\n"        — normal exit (any exit code)
+    //   "\n[process-exit] spawn-failed\n"    — synchronous spawn() throw before runFile returned
+    //
+    // This sentinel is the single source of truth for "process is gone" + "what was the
+    // exit code". We rely on the actual exit code — NOT a "subtype":"success" substring
+    // match — to decide success/error. Substring-matching `subtype:"success"` was the
+    // false-positive vector for #1792: a resumed --resume turn emits subtype:"success"
+    // even when the agent did no real work, while the OS exit code can still be 1, so
+    // the dispatch was being marked SUCCESS for a no-op resumed session. Exit code from
+    // the [process-exit] sentinel reflects what the OS actually reported.
+    //
+    // We tail 64KB — process-exit is always the last non-empty line of the file.
+    // No time cap: a stuck dispatch whose process has exited must always be detected (#716).
     let completedViaOutput = false;
     try {
-      let liveLog;
+      let liveLogTail;
       try {
         const fd = fs.openSync(liveLogPath, 'r');
-        const stat = fs.fstatSync(fd);
-        const TAIL_SIZE = 65536; // 64KB
-        const tailSize = Math.min(stat.size, TAIL_SIZE);
-        const buf = Buffer.alloc(tailSize);
-        fs.readSync(fd, buf, 0, tailSize, Math.max(0, stat.size - tailSize));
-        fs.closeSync(fd);
-        liveLog = buf.toString('utf8');
-      } catch { /* ENOENT or read failure — liveLog stays undefined */ }
-      if (liveLog && (liveLog.includes('"type":"result"') || liveLog.includes('\n[process-exit]'))) {
+        try {
+          const stat = fs.fstatSync(fd);
+          const TAIL_SIZE = 65536; // 64KB
+          const tailSize = Math.min(stat.size, TAIL_SIZE);
+          const buf = Buffer.alloc(tailSize);
+          fs.readSync(fd, buf, 0, tailSize, Math.max(0, stat.size - tailSize));
+          liveLogTail = buf.toString('utf8');
+        } finally { fs.closeSync(fd); }
+      } catch { /* ENOENT or read failure — liveLogTail stays undefined */ }
+
+      // Parse the LAST [process-exit] sentinel — code=N or "spawn-failed".
+      // Use the global regex with a manual loop so we always pick up the latest occurrence,
+      // not the first (defends against logs that somehow contain stale sentinel lines).
+      let processExited = false;
+      let processExitCode = null;
+      if (liveLogTail) {
+        const exitPattern = /\n\[process-exit\]\s+(?:code=)?(-?\d+|spawn-failed)/g;
+        let lastMatch = null;
+        let m;
+        while ((m = exitPattern.exec(liveLogTail)) !== null) lastMatch = m;
+        if (lastMatch) {
+          processExited = true;
+          processExitCode = lastMatch[1] === 'spawn-failed' ? -1 : parseInt(lastMatch[1], 10);
+        }
+      }
+
+      if (processExited) {
         completedViaOutput = true;
-        const isSuccess = liveLog.includes('"subtype":"success"');
-        log('info', `Agent ${item.agent} (${item.id}) completed via output detection (${isSuccess ? 'success' : 'error'})`);
+        const isSuccess = processExitCode === 0;
+        log('info', `Agent ${item.agent} (${item.id}) completed via output detection (exit code ${processExitCode}, ${isSuccess ? 'success' : 'error'})`);
 
         // Extract output text for the output.log — read full file for complete parsing
         const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
         try {
-          const fullLog = safeRead(liveLogPath) || liveLog;
+          const fullLog = safeRead(liveLogPath) || liveLogTail;
           const { text } = shared.parseStreamJsonOutput(fullLog);
-          safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
+          safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${processExitCode}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
-        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, isSuccess ? 'Completed (detected from output)' : 'Exited with error (detected from output)');
+        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR,
+          isSuccess ? 'Completed (detected from output)' : `Exited with code ${processExitCode} (detected from output)`);
 
-        // Run post-completion hooks via shared helper (async — fire and forget in timeout context)
-        const fullLogForHooks = safeRead(liveLogPath) || liveLog;
-        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
+        // Run post-completion hooks via shared helper (async — fire and forget in timeout context).
+        // Pass the actual exit code so autoRecovery (PR-created-but-failed) still works correctly.
+        const fullLogForHooks = safeRead(liveLogPath) || liveLogTail;
+        runPostCompletionHooks(item, item.agent, processExitCode, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
 
         if (hasProcess) {
           shared.killImmediate(activeProcesses.get(item.id)?.proc);
@@ -224,6 +258,12 @@ function checkTimeouts(config) {
         }
         continue; // Skip orphan/hung detection — we handled it
       }
+      // Note: we DO NOT trigger on `"type":"result"` alone. There is a ~1s race between
+      // claude CLI emitting the result event and spawn-agent.js writing [process-exit] —
+      // engine.js's onAgentClose handler fires within that window for tracked processes
+      // and handles completion correctly. Triggering on result-event here would race the
+      // close handler and risk marking SUCCESS based on subtype before the actual exit
+      // code is known (#1792).
     } catch (e) { log('warn', 'output completion detection: ' + e.message); }
 
     // Resolve per-type heartbeat timeout: per-type map → base heartbeatTimeout fallback
@@ -247,9 +287,20 @@ function checkTimeouts(config) {
             // Agent completed but close event didn't fire — let orphan/hung detection handle it.
             // Don't set isBlocking — use base heartbeat timeout.
           } else {
-          // Find the last tool_use call in the output — check if it's a known blocking tool
+          // Find the last tool_use call in the output — check if it's a known blocking tool.
+          //
+          // Lookback depth (1000 lines) is sized for the heartbeat-noise scenario from #1792:
+          // a long-running Monitor / Bash / PowerShell call goes silent for 15+ minutes while
+          // a cold Gradle build runs. During that silence the ENGINE writes a heartbeat line
+          // every 30s (engine.js heartbeatTimer), so the live log accumulates ~120 heartbeat
+          // lines per hour AFTER the original tool_use line. A 30-line lookback misses the
+          // tool_use entirely, the detector treats the silence as non-blocking, and the
+          // agent gets killed at heartbeatTimeout despite legitimately waiting on a
+          // background process. 1000 lines covers ~8 hours of pure heartbeat noise — well
+          // beyond Monitor's 30 min effective timeout floor.
           const lines = liveLog.split('\n');
-          for (let i = lines.length - 1; i >= Math.max(0, lines.length - 30); i--) {
+          const TOOL_USE_LOOKBACK = 1000;
+          for (let i = lines.length - 1; i >= Math.max(0, lines.length - TOOL_USE_LOOKBACK); i--) {
             const line = lines[i];
             if (!line.includes('"tool_use"')) continue;
             try {
