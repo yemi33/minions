@@ -1,6 +1,25 @@
 // settings.js — Settings panel functions extracted from dashboard.html
 
 let _settingsData = null;
+// Async runtime/model discovery can resolve out of order when the operator
+// flips between runtimes quickly. Without a per-target token, a slower Copilot
+// response can repaint the Claude model field after the runtime already
+// changed, which then leaks a stale cross-runtime model into saveSettings().
+const _modelLoadEpochs = {
+  runtime: Object.create(null),
+  agent: Object.create(null),
+};
+
+function _nextModelLoadToken(scope, key) {
+  const bucket = _modelLoadEpochs[scope];
+  const next = (bucket[key] || 0) + 1;
+  bucket[key] = next;
+  return next;
+}
+
+function _isCurrentModelLoad(scope, key, token) {
+  return _modelLoadEpochs[scope][key] === token;
+}
 
 async function openSettings() {
   document.getElementById('modal-title').textContent = 'Settings';
@@ -400,6 +419,7 @@ async function initRuntimeFleetUI(engineCfg, agentsCfg) {
 async function loadModelsForRuntime(runtimeName, inputId, currentValue) {
   const wrap = document.getElementById(inputId)?.parentElement;
   if (!wrap) return;
+  const token = _nextModelLoadToken('runtime', inputId);
   if (!runtimeName) {
     wrap.innerHTML = '<input id="' + inputId + '" value="' + escHtml(currentValue || '') + '" placeholder="(no runtime selected)" disabled style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:12px">';
     return;
@@ -410,6 +430,7 @@ async function loadModelsForRuntime(runtimeName, inputId, currentValue) {
     if (res.ok) payload = await res.json();
   } catch { /* fall through to free-text */ }
 
+  if (!_isCurrentModelLoad('runtime', inputId, token)) return;
   const models = Array.isArray(payload.models) ? payload.models : null;
   if (!models || models.length === 0) {
     // Free-text fallback — let the user type anything (custom Anthropic /
@@ -445,6 +466,7 @@ async function loadModelsForAgent(agentId, runtimeName, currentValue) {
   if (!cell) return;
   const baseAttrs = 'data-agent="' + escHtml(agentId) + '" data-field="model"';
   const baseStyle = 'width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px';
+  const token = _nextModelLoadToken('agent', agentId);
   if (!runtimeName) {
     cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="(no runtime)" disabled style="' + baseStyle + ';color:var(--muted)">';
     return;
@@ -455,6 +477,7 @@ async function loadModelsForAgent(agentId, runtimeName, currentValue) {
     if (res.ok) payload = await res.json();
   } catch { /* fall through to free-text */ }
 
+  if (!_isCurrentModelLoad('agent', agentId, token)) return;
   const models = Array.isArray(payload.models) ? payload.models : null;
   if (!models || models.length === 0) {
     cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="' + escHtml(runtimeName) + ' default" style="' + baseStyle + '">';

@@ -3126,6 +3126,16 @@ async function testRuntimeFleetHelpers() {
       'Settings UI must fetch /api/runtimes to populate the defaultCli dropdown');
   });
 
+  await test('settings UI ignores stale async model responses when runtimes change quickly', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('const _modelLoadEpochs'),
+      'Settings UI must track per-target model load epochs so older async responses cannot repaint a newer runtime selection');
+    assert.ok(settingsSrc.includes("_nextModelLoadToken('runtime', inputId)") && settingsSrc.includes("_isCurrentModelLoad('runtime', inputId, token)"),
+      'loadModelsForRuntime must discard stale async responses for the default/CC model fields');
+    assert.ok(settingsSrc.includes("_nextModelLoadToken('agent', agentId)") && settingsSrc.includes("_isCurrentModelLoad('agent', agentId, token)"),
+      'loadModelsForAgent must discard stale async responses for per-agent model cells');
+  });
+
   await test('settings UI advanced runtime section hides the 8 advanced toggles behind a disclosure', () => {
     const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
     // Advanced disclosure exists.
