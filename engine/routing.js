@@ -116,10 +116,12 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function normalizeAgentHints(agentHints) {
-  if (!agentHints) return [];
-  const hints = Array.isArray(agentHints) ? agentHints : String(agentHints).split(',');
-  return hints.map(h => String(h).trim().toLowerCase()).filter(Boolean);
+function normalizeAgentHints(agentHints, authorAgent = null) {
+  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? String(agentHints).split(',') : []);
+  return raw
+    .map(id => String(id).trim().toLowerCase())
+    .map(id => id === '_author_' && authorAgent ? String(authorAgent).trim().toLowerCase() : id)
+    .filter(Boolean);
 }
 
 function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
@@ -151,13 +153,10 @@ function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
     return null;
   };
 
-  const hints = normalizeAgentHints(agentHints);
-  if (hints.length > 0) {
-    for (const id of hints) {
-      if (isAvailable(id)) {
-        _claimedAgents.add(id);
-        return id;
-      }
+  const hintedAgents = normalizeAgentHints(agentHints, authorAgent);
+  if (hintedAgents.length > 0) {
+    for (const id of hintedAgents) {
+      if (isAvailable(id)) { _claimedAgents.add(id); return id; }
     }
     return null;
   }
@@ -209,4 +208,5 @@ module.exports = {
   resolveAgent,
   setTempBudget,
   getTempBudget,
+  normalizeAgentHints,
 };

@@ -200,6 +200,14 @@ function getEngineLog() {
 function getMetrics() {
   const metrics = readJsonNoRestore(path.join(ENGINE_DIR, 'metrics.json')) || {};
 
+  for (const [agentId, m] of Object.entries(metrics)) {
+    if (agentId.startsWith('_')) continue;
+    metrics[agentId] = {
+      ...DEFAULT_AGENT_METRICS,
+      ...(m && typeof m === 'object' && !Array.isArray(m) ? m : {}),
+    };
+  }
+
   // Enrich agent PR counts from pull-requests.json (source of truth)
   const allPrs = getPullRequests();
   const prCountByAgent = {};

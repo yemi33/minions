@@ -466,6 +466,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   // Merge defaults — fills in new fields from upgrades while preserving user customizations
   if (!config.engine) config.engine = {};
   for (const [k, v] of Object.entries(ENGINE_DEFAULTS)) {
+    if (k === 'defaultCli') continue;
     if (config.engine[k] === undefined) config.engine[k] = v;
   }
   if (!config.claude) config.claude = {};

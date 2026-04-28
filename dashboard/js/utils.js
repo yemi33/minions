@@ -183,8 +183,8 @@ function copyLlmText(btn) {
   const clone = container.cloneNode(true);
   clone.querySelectorAll('.llm-copy-btn').forEach(b => b.remove());
   navigator.clipboard.writeText(clone.textContent.trim());
-  btn.innerHTML = '&#10003;';
-  setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
+  btn.textContent = '\u2713';
+  setTimeout(() => { btn.textContent = '\u2398'; }, 1500);
 }
 
 /**
@@ -454,18 +454,51 @@ function _renderMdChunked(fullText) {
 
 function openBugReport() {
   document.getElementById('modal-title').textContent = 'Report a Bug';
-  document.getElementById('modal-body').innerHTML =
-    '<div style="display:flex;flex-direction:column;gap:12px">' +
-      '<p style="color:var(--muted);font-size:12px;margin:0">File a bug on the Minions repo (yemi33/minions).</p>' +
-      '<label style="color:var(--text);font-size:var(--text-md)">Title' +
-        '<input id="bug-title" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)" placeholder="Short description of the bug"></label>' +
-      '<label style="color:var(--text);font-size:var(--text-md)">Description' +
-        '<textarea id="bug-desc" rows="6" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit" placeholder="Steps to reproduce, expected vs actual behavior..."></textarea></label>' +
-      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
-        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="submitBugReport()" style="padding:6px 16px;background:var(--red);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">File Bug</button>' +
-      '</div>' +
-    '</div>';
+  var modalBody = document.getElementById('modal-body');
+  var container = document.createElement('div');
+  container.style.cssText = 'display:flex;flex-direction:column;gap:12px';
+  var intro = document.createElement('p');
+  intro.style.cssText = 'color:var(--muted);font-size:12px;margin:0';
+  intro.textContent = 'File a bug on the Minions repo (yemi33/minions).';
+
+  var titleLabel = document.createElement('label');
+  titleLabel.style.cssText = 'color:var(--text);font-size:var(--text-md)';
+  titleLabel.appendChild(document.createTextNode('Title'));
+  var titleInput = document.createElement('input');
+  titleInput.id = 'bug-title';
+  titleInput.style.cssText = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)';
+  titleInput.placeholder = 'Short description of the bug';
+  titleLabel.appendChild(titleInput);
+
+  var descLabel = document.createElement('label');
+  descLabel.style.cssText = 'color:var(--text);font-size:var(--text-md)';
+  descLabel.appendChild(document.createTextNode('Description'));
+  var descInput = document.createElement('textarea');
+  descInput.id = 'bug-desc';
+  descInput.rows = 6;
+  descInput.style.cssText = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit';
+  descInput.placeholder = 'Steps to reproduce, expected vs actual behavior...';
+  descLabel.appendChild(descInput);
+
+  var actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.className = 'pr-pager-btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = closeModal;
+  var submitBtn = document.createElement('button');
+  submitBtn.id = 'bug-submit';
+  submitBtn.style.cssText = 'padding:6px 16px;background:var(--red);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer';
+  submitBtn.textContent = 'File Bug';
+  submitBtn.onclick = submitBugReport;
+  actions.appendChild(cancelBtn);
+  actions.appendChild(submitBtn);
+
+  container.appendChild(intro);
+  container.appendChild(titleLabel);
+  container.appendChild(descLabel);
+  container.appendChild(actions);
+  modalBody.replaceChildren(container);
   document.getElementById('modal').classList.add('open');
 }
 
@@ -475,7 +508,7 @@ async function submitBugReport() {
   if (!title) { alert('Title is required'); return; }
 
   // Show progress inside the modal
-  var btn = document.querySelector('#modal button[onclick="submitBugReport()"]');
+  var btn = document.getElementById('bug-submit') || document.querySelector('#modal button[onclick="submitBugReport()"]');
   if (btn) { btn.disabled = true; btn.textContent = 'Filing...'; }
 
   try {

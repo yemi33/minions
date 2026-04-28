@@ -20,6 +20,24 @@ const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function normalizeRootForCompare(root) {
+  const normalized = path.resolve(String(root || '')).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function assertDashboardRootMatchesLocal(health, localDir = MINIONS_DIR) {
+  const servedDir = health?.minionsDir;
+  if (!servedDir) {
+    throw new Error(`Dashboard at ${BASE} did not report minionsDir; refusing to run mutating integration tests`);
+  }
+  const served = normalizeRootForCompare(servedDir);
+  const local = normalizeRootForCompare(localDir);
+  if (served !== local) {
+    throw new Error(`Dashboard at ${BASE} is serving ${servedDir}, but this test checkout is ${localDir}; refusing to run mutating integration tests`);
+  }
+  return true;
+}
+
 function httpReq(method, urlPath, body, opts = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlPath, BASE);
@@ -634,9 +652,10 @@ async function main() {
   try {
     const r = await GET('/api/health');
     if (r.status !== 200) throw new Error('unhealthy');
+    assertDashboardRootMatchesLocal(r.json);
     console.log(`Dashboard status: ${r.json.status}`);
-  } catch {
-    console.error('ERROR: Dashboard not running on port 7331. Start it first.');
+  } catch (e) {
+    console.error(`ERROR: ${e.message}`);
     process.exit(1);
   }
 
@@ -663,4 +682,12 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
+
+module.exports = {
+  normalizeRootForCompare,
+  assertDashboardRootMatchesLocal,
+  main,
+};
