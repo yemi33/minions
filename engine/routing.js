@@ -116,7 +116,15 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function resolveAgent(workType, config, authorAgent = null) {
+function normalizeAgentHints(agentHints, authorAgent = null) {
+  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? [agentHints] : []);
+  return raw
+    .map(id => id === '_author_' ? authorAgent : id)
+    .map(id => typeof id === 'string' ? id.trim().toLowerCase() : '')
+    .filter(Boolean);
+}
+
+function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
   const routes = getRoutingTableCached();
   const route = routes[workType] || routes['implement'];
   const agents = config.agents || {};
@@ -144,6 +152,14 @@ function resolveAgent(workType, config, authorAgent = null) {
     if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
     return null;
   };
+
+  const hintedAgents = normalizeAgentHints(agentHints, authorAgent);
+  if (hintedAgents.length > 0) {
+    for (const id of hintedAgents) {
+      if (isAvailable(id)) { _claimedAgents.add(id); return id; }
+    }
+    return null;
+  }
 
   // Resolve _any_ token — pick any available agent (#480)
   if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
@@ -192,4 +208,5 @@ module.exports = {
   resolveAgent,
   setTempBudget,
   getTempBudget,
+  normalizeAgentHints,
 };

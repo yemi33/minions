@@ -183,8 +183,8 @@ function copyLlmText(btn) {
   const clone = container.cloneNode(true);
   clone.querySelectorAll('.llm-copy-btn').forEach(b => b.remove());
   navigator.clipboard.writeText(clone.textContent.trim());
-  btn.innerHTML = '&#10003;';
-  setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
+  btn.textContent = '\u2713';
+  setTimeout(() => { btn.textContent = '\u2398'; }, 1500);
 }
 
 /**
