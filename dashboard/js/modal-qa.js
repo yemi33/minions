@@ -28,6 +28,7 @@ let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
 const QA_QUEUE_CAP = 10; // max queued messages
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
+let _qaThreadCollapsed = false; // sticky while streaming so collapse doesn't bounce open on updates
 
 function _renderQaUserMessage(thread, message, selection) {
   let qHtml = '<div class="modal-qa-q">' + escHtml(message);
@@ -37,7 +38,7 @@ function _renderQaUserMessage(thread, message, selection) {
   qHtml += '</div>';
   thread.insertAdjacentHTML('beforeend', qHtml);
   thread.scrollTop = thread.scrollHeight;
-  _showThreadWrap();
+  _showThreadWrap(true);
 }
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
 const _qaRuntime = new Map(); // key → {history, processing, abortController, queue}
@@ -290,6 +291,7 @@ function _initQaSession() {
   if (!key || _qaSessionKey === key) return;
   if (_qaSessionKey && _qaSessionKey !== key) _qaSaveActiveSessionState();
   _qaSessionKey = key;
+  _qaThreadCollapsed = false;
   const card = findCardForFile(_modalFilePath);
   if (card) clearNotifBadge(card);
   var prior = _qaSessions.get(key);
@@ -305,7 +307,7 @@ function _initQaSession() {
       });
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
-    _showThreadWrap();
+    _showThreadWrap(true);
     requestAnimationFrame(function() {
       var thread = document.getElementById('modal-qa-thread');
       if (thread) thread.scrollTop = thread.scrollHeight;
@@ -331,6 +333,7 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   _qaAbortController = null;
+  _qaThreadCollapsed = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
@@ -671,15 +674,18 @@ function toggleDocChat() {
   var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
   var visible = wrap.style.display !== 'none';
-  wrap.style.display = visible ? 'none' : '';
-  if (expandBar) expandBar.style.display = visible ? '' : 'none';
+  var nextVisible = !visible;
+  _qaThreadCollapsed = !nextVisible;
+  wrap.style.display = nextVisible ? '' : 'none';
+  if (expandBar) expandBar.style.display = nextVisible ? 'none' : '';
 }
 
-function _showThreadWrap() {
+function _showThreadWrap(forceExpand) {
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = '';
-  if (expandBar) expandBar.style.display = 'none';
+  if (forceExpand) _qaThreadCollapsed = false;
+  if (wrap) wrap.style.display = _qaThreadCollapsed ? 'none' : '';
+  if (expandBar) expandBar.style.display = _qaThreadCollapsed ? '' : 'none';
 }
 
 // ── Drag-to-resize doc chat thread ──────────────────────────────────────────

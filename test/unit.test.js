@@ -22794,6 +22794,18 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
+  await test('doc-chat uses a shorter timeout than command center', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 180000'),
+      'Doc-chat should define a shorter dedicated timeout');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docCallFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
+      'Non-streaming doc-chat should use the shorter doc-chat timeout');
+    assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
+      'Streaming doc-chat should use the shorter doc-chat timeout');
+  });
+
   await test('doc-chat skips state preamble', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
@@ -22991,6 +23003,10 @@ async function testAutoRecoveryAndAtomicity() {
     const processFn = src.slice(src.indexOf('async function _processQaMessage'), src.indexOf('\nfunction qaAbort'));
     assert.ok(processFn.includes("evt.type === 'chunk'") && processFn.includes("evt.type === 'tool'"),
       'Doc chat should react to chunk and tool stream events while processing');
+    assert.ok(processFn.includes('QA_STREAM_STALL_MS') && processFn.includes('_resetQaStreamWatchdog()'),
+      'Doc chat should watchdog stalled streams even if heartbeats keep arriving');
+    assert.ok(processFn.includes("evt.type === 'heartbeat') return"),
+      'Doc chat stall watchdog should ignore heartbeat-only SSE events');
   });
 
   await test('frontend contentHash uses same fingerprint scheme as server', () => {
@@ -24266,6 +24282,19 @@ async function testDashboardResilience() {
       'doc-chat live progress should render partial markdown and tool summaries while the agent is working');
     assert.ok(modalQaSrc.includes('flex-direction:column'),
       'doc-chat live progress should stack CoT and progress status vertically');
+    assert.ok(modalQaSrc.includes('Doc chat stalled with no tool or text progress for 90s.'),
+      'doc-chat should show an explicit stall timeout message instead of spinning forever');
+  });
+
+  await test('doc-chat collapse stays collapsed while streaming updates rerender the thread', () => {
+    assert.ok(modalQaSrc.includes('let _qaThreadCollapsed = false'),
+      'modal-qa.js should track whether the thread was manually collapsed');
+    const toggleFn = modalQaSrc.slice(modalQaSrc.indexOf('function toggleDocChat'), modalQaSrc.indexOf('\nfunction _showThreadWrap'));
+    assert.ok(toggleFn.includes('_qaThreadCollapsed = !nextVisible'),
+      'toggleDocChat should persist collapsed state instead of only flipping DOM display styles');
+    const showFn = modalQaSrc.slice(modalQaSrc.indexOf('function _showThreadWrap'), modalQaSrc.indexOf('\n\n// ── Drag-to-resize'));
+    assert.ok(showFn.includes("wrap.style.display = _qaThreadCollapsed ? 'none' : ''"),
+      '_showThreadWrap should respect a user-collapsed thread during live rerenders');
   });
 
   await test('doc-chat clears processing badge when processing completes', () => {
