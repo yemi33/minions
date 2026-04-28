@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1578 (2026-04-28)
+
+### Features
+- hash-dedup, compress+normalize pass, dynamic stale-guard, rich result
+
 ## 0.1.1577 (2026-04-27)
 
 ### Fixes
