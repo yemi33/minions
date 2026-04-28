@@ -28,6 +28,45 @@ jobs:
 
       - name: Bump version, update changelog, and publish
         run: |
+          set -euo pipefail
+
+          PUBLISH_PR_NUMBER=""
+
+          close_publish_prs() {
+            exclude_number="${1:-}"
+            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr list --state open --limit 200 --json number,title,headRefName \
+              --jq '.[] | select(.title | startswith("chore: publish ")) | select(.headRefName | startswith("chore/publish-")) | .number' |
+              while read -r pr; do
+                if [ -n "$exclude_number" ] && [ "$pr" = "$exclude_number" ]; then
+                  continue
+                fi
+                echo "Closing stale publish PR #$pr"
+                GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch || echo "Failed to close publish PR #$pr"
+              done
+          }
+
+          cleanup_on_failure() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              set +e
+              echo "Publish workflow failed; cleaning up open publish PRs."
+              if [ -n "${GH_ADMIN_TOKEN:-}" ]; then
+                close_publish_prs ""
+              else
+                echo "PUBLISH_ADMIN_TOKEN is unavailable; cannot close stale publish PRs."
+              fi
+            fi
+            exit "$status"
+          }
+
+          trap cleanup_on_failure EXIT
+
+          if [ -z "${GH_ADMIN_TOKEN:-}" ]; then
+            echo "PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations."
+            exit 1
+          fi
+
           # Get the latest published version from npm (or default to 0.1.0)
           CURRENT=$(npm view @yemi33/minions version 2>/dev/null || echo "0.1.0")
           echo "Current npm version: $CURRENT"
@@ -112,12 +151,17 @@ jobs:
 
           node /tmp/update-changelog.js "$NEXT" "$TODAY" "$LAST_PUBLISH"
 
-          # Publish
+          # Validate the exact tree that will be published and committed before
+          # creating external side effects. If validation fails, the trap closes
+          # existing stale publish PRs and no new publish PR is created.
+          npm test
+
+          # Publish only after validation succeeds.
           npm publish --access public
 
           # Commit version bump + changelog via PR.
-          # GITHUB_TOKEN events don't trigger other workflows, so we run tests
-          # inline and post required status checks via the API to unblock auto-merge.
+          # GITHUB_TOKEN events don't trigger other workflows, so we post required
+          # status checks via the API for the already-tested branch commit.
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
@@ -128,25 +172,17 @@ jobs:
             git push origin "$BRANCH"
             SHA=$(git rev-parse HEAD)
             gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
+            PUBLISH_PR_NUMBER=$(GH_TOKEN="$GH_ADMIN_TOKEN" gh pr view "$BRANCH" --json number --jq .number)
 
-            # Run tests and post required check runs on the branch commit.
-            # GITHUB_TOKEN events don't trigger other workflows, so we satisfy
-            # required status checks by running tests here and posting check runs.
-            npm test
+            # Post required check runs on the branch commit. GITHUB_TOKEN events
+            # don't trigger other workflows, so these mirror the inline test run.
             for name in "Unit Tests (18)" "Unit Tests (20)" "Unit Tests (22)"; do
               gh api repos/${{ github.repository }}/check-runs \
                 -f name="$name" -f head_sha="$SHA" -f status=completed -f conclusion=success
             done
 
-            if [ -z "$GH_ADMIN_TOKEN" ]; then
-              echo "PUBLISH_ADMIN_TOKEN secret is required for publish PR close/merge operations."
-              exit 1
-            fi
-
             # Close any stale publish PRs left over from previous runs
-            GH_TOKEN="$GH_ADMIN_TOKEN" gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(GH_TOKEN="$GH_ADMIN_TOKEN" gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
-              GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch 2>/dev/null || true
-            done
+            close_publish_prs "$PUBLISH_PR_NUMBER"
 
             # Merge immediately with admin bypass after tests and required checks succeed
             GH_TOKEN="$GH_ADMIN_TOKEN" gh pr merge "$BRANCH" --squash --subject "chore: publish $NEXT [skip ci]" --body "" --delete-branch --admin
