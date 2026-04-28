@@ -23000,6 +23000,8 @@ async function testAutoRecoveryAndAtomicity() {
   await test('doc-chat frontend uses streaming endpoint and handles chunk/tool events', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
     assert.ok(src.includes("fetch('/api/doc-chat/stream'"), 'Doc chat should use the streaming endpoint');
+    assert.ok(src.includes('const QA_STREAM_STALL_MS = 6 * 60 * 1000'),
+      'Doc chat should keep the client stall watchdog aligned with the longer timeout window');
     const processFn = src.slice(src.indexOf('async function _processQaMessage'), src.indexOf('\nfunction qaAbort'));
     assert.ok(processFn.includes("evt.type === 'chunk'") && processFn.includes("evt.type === 'tool'"),
       'Doc chat should react to chunk and tool stream events while processing');
@@ -24282,7 +24284,7 @@ async function testDashboardResilience() {
       'doc-chat live progress should render partial markdown and tool summaries while the agent is working');
     assert.ok(modalQaSrc.includes('flex-direction:column'),
       'doc-chat live progress should stack CoT and progress status vertically');
-    assert.ok(modalQaSrc.includes('Doc chat stalled with no tool or text progress for 90s.'),
+    assert.ok(modalQaSrc.includes('Doc chat stalled with no tool or text progress for 6 minutes.'),
       'doc-chat should show an explicit stall timeout message instead of spinning forever');
   });
 

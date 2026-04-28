@@ -27,7 +27,7 @@ let _qaProcessing = false; // true while waiting for response
 let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
 const QA_QUEUE_CAP = 10; // max queued messages
-const QA_STREAM_STALL_MS = 90000; // abort doc-chat if heartbeats continue but no chunk/tool progress arrives
+const QA_STREAM_STALL_MS = 6 * 60 * 1000; // allow the full doc-chat timeout before treating heartbeat-only streams as stalled
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 
 function _renderQaUserMessage(thread, message, selection) {
@@ -614,7 +614,7 @@ async function _processQaMessage(message, selection, opts) {
     clearInterval(qaTimer);
     _clearQaStreamWatchdog();
     const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
-    const stallMessage = 'Doc chat stalled with no tool or text progress for 90s.';
+    const stallMessage = 'Doc chat stalled with no tool or text progress for 6 minutes.';
     const messageHtml = _qaStreamStalled
       ? (streamedText
           ? _qaBuildAssistantHtml(streamedText + '\n\nError: ' + stallMessage, { borderColor: 'var(--red)', elapsed: qaElapsedExc })
