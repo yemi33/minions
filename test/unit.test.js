@@ -1337,6 +1337,530 @@ async function testRuntimeAdapters() {
 
 function isWinPlatform() { return process.platform === 'win32'; }
 
+// ─── engine/runtimes/copilot.js — Copilot Adapter (P-1d4a8e7c) ──────────────
+
+async function testCopilotAdapter() {
+  console.log('\n── engine/runtimes — Copilot Adapter ──');
+  const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+  const { resolveRuntime, listRuntimes } = require(runtimesPath);
+  const copilot = require(path.join(runtimesPath, 'copilot'));
+
+  // ── Registry wiring ───────────────────────────────────────────────────────
+
+  await test('copilot adapter is registered and resolveRuntime("copilot") returns it', () => {
+    const r = resolveRuntime('copilot');
+    assert.strictEqual(r, copilot);
+    assert.strictEqual(r.name, 'copilot');
+    assert.ok(listRuntimes().includes('copilot'),
+      'listRuntimes() must include copilot so dashboard /api/runtimes surfaces it');
+  });
+
+  // ── Adapter contract surface ──────────────────────────────────────────────
+
+  await test('copilot adapter exports the full contract surface', () => {
+    const required = [
+      'name', 'capabilities', 'resolveBinary', 'capsFile',
+      'listModels', 'modelsCache', 'spawnScript',
+      'buildArgs', 'buildPrompt', 'resolveModel',
+      'parseOutput', 'parseStreamChunk', 'parseError',
+    ];
+    for (const k of required) {
+      assert.ok(k in copilot, `copilot adapter missing required field: ${k}`);
+    }
+    assert.strictEqual(typeof copilot.resolveBinary, 'function');
+    assert.strictEqual(typeof copilot.listModels, 'function');
+    assert.strictEqual(typeof copilot.buildArgs, 'function');
+    assert.strictEqual(typeof copilot.buildPrompt, 'function');
+    assert.strictEqual(typeof copilot.resolveModel, 'function');
+    assert.strictEqual(typeof copilot.parseOutput, 'function');
+    assert.strictEqual(typeof copilot.parseStreamChunk, 'function');
+    assert.strictEqual(typeof copilot.parseError, 'function');
+    assert.strictEqual(typeof copilot.capsFile, 'string');
+    assert.strictEqual(typeof copilot.modelsCache, 'string');
+    assert.strictEqual(typeof copilot.spawnScript, 'string');
+  });
+
+  await test('copilot.capsFile points at engine/copilot-caps.json', () => {
+    assert.ok(copilot.capsFile.endsWith('copilot-caps.json'));
+  });
+
+  await test('copilot.modelsCache points at engine/copilot-models.json', () => {
+    assert.ok(copilot.modelsCache.endsWith('copilot-models.json'));
+  });
+
+  await test('copilot.spawnScript reuses runtime-agnostic spawn-agent.js', () => {
+    assert.ok(copilot.spawnScript.endsWith('spawn-agent.js'),
+      'Copilot must use the same spawn wrapper as Claude — it became runtime-agnostic in P-9c4f2d6a');
+  });
+
+  // ── Capability flags (acceptance criterion #2) ────────────────────────────
+
+  await test('copilot.capabilities matches AC: budget/bare/fallback/cost/shorthands/sysprompt all FALSE', () => {
+    const c = copilot.capabilities;
+    assert.strictEqual(c.budgetCap, false, 'no --max-budget-usd flag exists');
+    assert.strictEqual(c.bareMode, false, 'no --bare flag exists (closest equivalent is --no-custom-instructions, gated separately)');
+    assert.strictEqual(c.fallbackModel, false, 'no --fallback-model flag exists');
+    assert.strictEqual(c.sessionPersistenceControl, false, 'Copilot manages session state internally');
+    assert.strictEqual(c.costTracking, false, 'usage carries premiumRequests count, not USD/tokens');
+    assert.strictEqual(c.modelShorthands, false, 'Copilot expects full model IDs');
+    assert.strictEqual(c.systemPromptFile, false, 'no --system-prompt-file flag — sysprompt merged into stdin');
+  });
+
+  await test('copilot.capabilities matches AC: streaming/sessionResume/effortLevels all TRUE', () => {
+    const c = copilot.capabilities;
+    assert.strictEqual(c.streaming, true);
+    assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.effortLevels, true);
+  });
+
+  await test('copilot.capabilities: modelDiscovery=true and promptViaArg=false (per spike)', () => {
+    // Decisions grounded in real CLI tests during P-8f2c4d9b — see
+    // docs/copilot-cli-schema.md §1, §2, §6.
+    assert.strictEqual(copilot.capabilities.modelDiscovery, true,
+      'GET https://api.githubcopilot.com/models works with gh-cli token (verified in spike)');
+    assert.strictEqual(copilot.capabilities.promptViaArg, false,
+      'stdin works; -p with >32KB hits Windows ARG_MAX (verified in spike)');
+  });
+
+  // ── buildArgs: always-on baseline ─────────────────────────────────────────
+
+  await test('copilot.buildArgs always emits the headless baseline', () => {
+    const args = copilot.buildArgs({});
+    const required = ['--output-format', 'json', '-s', '--no-color', '--plain-diff', '--autopilot', '--allow-all', '--no-ask-user', '--log-level', 'error'];
+    for (let i = 0; i < required.length; i++) {
+      assert.ok(args.includes(required[i]), `missing baseline flag: ${required[i]} (got: ${args.join(' ')})`);
+    }
+    // --output-format must immediately precede 'json' (paired flag)
+    const ofIdx = args.indexOf('--output-format');
+    assert.strictEqual(args[ofIdx + 1], 'json');
+    const llIdx = args.indexOf('--log-level');
+    assert.strictEqual(args[llIdx + 1], 'error');
+  });
+
+  await test('copilot.buildArgs NEVER emits --verbose (Copilot has no such flag)', () => {
+    const args = copilot.buildArgs({ verbose: true });
+    assert.ok(!args.includes('--verbose'), 'opts.verbose=true must NOT cause --verbose emission');
+  });
+
+  await test('copilot.buildArgs NEVER emits Claude-only flags (bare/maxBudget/fallbackModel/sysPromptFile)', () => {
+    // Tolerance check — engine code passes the same opts bag to every adapter.
+    // The Copilot adapter must silently ignore Claude-specific opts.
+    const args = copilot.buildArgs({
+      bare: true, maxBudget: 5, fallbackModel: 'haiku', sysPromptFile: '/tmp/sys',
+    });
+    for (const banned of ['--bare', '--max-budget-usd', '--fallback-model', '--system-prompt-file', '--dangerously-skip-permissions']) {
+      assert.ok(!args.includes(banned), `Claude-only flag leaked into Copilot args: ${banned}`);
+    }
+  });
+
+  // ── buildArgs: conditional flags ──────────────────────────────────────────
+
+  await test('copilot.buildArgs emits --model M when model set', () => {
+    const args = copilot.buildArgs({ model: 'claude-sonnet-4.5' });
+    const i = args.indexOf('--model');
+    assert.ok(i >= 0 && args[i + 1] === 'claude-sonnet-4.5');
+  });
+
+  await test('copilot.buildArgs omits --model when model unset', () => {
+    const args = copilot.buildArgs({});
+    assert.ok(!args.includes('--model'));
+  });
+
+  await test('copilot.buildArgs emits --max-autopilot-continues N (mapped from maxTurns)', () => {
+    const args = copilot.buildArgs({ maxTurns: 12 });
+    const i = args.indexOf('--max-autopilot-continues');
+    assert.ok(i >= 0 && args[i + 1] === '12',
+      `expected --max-autopilot-continues 12 mapped from maxTurns:12, got ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs uses --resume=<id> equals-form (not --resume <id>)', () => {
+    // Copilot help shows `--resume[=value]` — the [=value] syntax requires the
+    // equals-form. With `--resume <id>` (space), the next argv would be parsed
+    // as a positional arg, not the resume value.
+    const args = copilot.buildArgs({ sessionId: 'abc123' });
+    assert.ok(args.includes('--resume=abc123'), `expected --resume=abc123 in: ${args.join(' ')}`);
+    // And NOT the space form — verifying we don't emit both
+    const standaloneIdx = args.indexOf('--resume');
+    assert.strictEqual(standaloneIdx, -1, 'space form --resume <id> must not be emitted');
+  });
+
+  await test('copilot.buildArgs effort: low|medium|high|xhigh pass through verbatim', () => {
+    for (const lvl of ['low', 'medium', 'high', 'xhigh']) {
+      const args = copilot.buildArgs({ effort: lvl });
+      const i = args.indexOf('--effort');
+      assert.ok(i >= 0 && args[i + 1] === lvl, `expected --effort ${lvl}: ${args.join(' ')}`);
+    }
+  });
+
+  await test('copilot.buildArgs effort: "max" maps to "xhigh" (Claude-ism)', () => {
+    const args = copilot.buildArgs({ effort: 'max' });
+    const i = args.indexOf('--effort');
+    assert.ok(i >= 0 && args[i + 1] === 'xhigh',
+      `'max' must map to 'xhigh'; got: ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs effort: undefined/null/"" omit --effort entirely', () => {
+    for (const v of [undefined, null, '']) {
+      const args = copilot.buildArgs({ effort: v });
+      assert.ok(!args.includes('--effort'), `--effort should be absent for value: ${JSON.stringify(v)}`);
+    }
+  });
+
+  await test('copilot.buildArgs --add-dir injected per addDirs entry (skill discovery)', () => {
+    const args = copilot.buildArgs({ addDirs: ['/path/a', '/path/b'] });
+    // Expect TWO --add-dir <path> pairs
+    let count = 0;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--add-dir' && (args[i + 1] === '/path/a' || args[i + 1] === '/path/b')) count++;
+    }
+    assert.strictEqual(count, 2, `expected 2 --add-dir flags, got ${count}: ${args.join(' ')}`);
+  });
+
+  await test('copilot.buildArgs --add-dir absent when addDirs unset', () => {
+    assert.ok(!copilot.buildArgs({}).includes('--add-dir'));
+  });
+
+  // ── buildArgs: toggle flags (strict-true gating) ──────────────────────────
+
+  await test('copilot.buildArgs --disable-builtin-mcps only when disableBuiltinMcps === true', () => {
+    assert.ok(copilot.buildArgs({ disableBuiltinMcps: true }).includes('--disable-builtin-mcps'));
+    assert.ok(!copilot.buildArgs({ disableBuiltinMcps: false }).includes('--disable-builtin-mcps'));
+    assert.ok(!copilot.buildArgs({ disableBuiltinMcps: 'truthy' }).includes('--disable-builtin-mcps'),
+      'strict-true gating prevents accidental opt-in from truthy strings');
+    assert.ok(!copilot.buildArgs({}).includes('--disable-builtin-mcps'));
+  });
+
+  await test('copilot.buildArgs --no-custom-instructions only when suppressAgentsMd === true', () => {
+    assert.ok(copilot.buildArgs({ suppressAgentsMd: true }).includes('--no-custom-instructions'));
+    assert.ok(!copilot.buildArgs({ suppressAgentsMd: false }).includes('--no-custom-instructions'));
+    assert.ok(!copilot.buildArgs({}).includes('--no-custom-instructions'));
+  });
+
+  await test('copilot.buildArgs --enable-reasoning-summaries only when reasoningSummaries === true', () => {
+    assert.ok(copilot.buildArgs({ reasoningSummaries: true }).includes('--enable-reasoning-summaries'));
+    assert.ok(!copilot.buildArgs({ reasoningSummaries: false }).includes('--enable-reasoning-summaries'));
+    assert.ok(!copilot.buildArgs({}).includes('--enable-reasoning-summaries'));
+  });
+
+  await test('copilot.buildArgs --stream emitted only for "on" or "off"', () => {
+    const onArgs = copilot.buildArgs({ stream: 'on' });
+    const onIdx = onArgs.indexOf('--stream');
+    assert.ok(onIdx >= 0 && onArgs[onIdx + 1] === 'on');
+    const offArgs = copilot.buildArgs({ stream: 'off' });
+    const offIdx = offArgs.indexOf('--stream');
+    assert.ok(offIdx >= 0 && offArgs[offIdx + 1] === 'off');
+    assert.ok(!copilot.buildArgs({}).includes('--stream'));
+    assert.ok(!copilot.buildArgs({ stream: true }).includes('--stream'),
+      'stream:true is invalid — only "on" / "off" string values are valid');
+    assert.ok(!copilot.buildArgs({ stream: 'banana' }).includes('--stream'),
+      'unknown stream value should be omitted, not emitted with garbage');
+  });
+
+  // ── buildPrompt ───────────────────────────────────────────────────────────
+
+  await test('copilot.buildPrompt prepends <system> block when sysPromptText non-empty', () => {
+    const out = copilot.buildPrompt('do thing', 'You are an engineer.');
+    assert.strictEqual(out, '<system>\nYou are an engineer.\n</system>\n\ndo thing');
+  });
+
+  await test('copilot.buildPrompt is passthrough when sysPromptText empty/null/undefined', () => {
+    assert.strictEqual(copilot.buildPrompt('hello', ''), 'hello');
+    assert.strictEqual(copilot.buildPrompt('hello', null), 'hello');
+    assert.strictEqual(copilot.buildPrompt('hello'), 'hello');
+  });
+
+  await test('copilot.buildPrompt handles null/undefined user prompt defensively', () => {
+    assert.strictEqual(copilot.buildPrompt(null), '');
+    assert.strictEqual(copilot.buildPrompt(undefined), '');
+    // Sys-only with empty user: returns the wrapped sys block + empty user
+    const out = copilot.buildPrompt('', 'sys');
+    assert.strictEqual(out, '<system>\nsys\n</system>\n\n');
+  });
+
+  // ── resolveModel + Claude-shorthand warning ──────────────────────────────
+
+  await test('copilot.resolveModel passes full model IDs verbatim', () => {
+    assert.strictEqual(copilot.resolveModel('claude-sonnet-4.5'), 'claude-sonnet-4.5');
+    assert.strictEqual(copilot.resolveModel('gpt-5.4'), 'gpt-5.4');
+    assert.strictEqual(copilot.resolveModel('gpt-4.1'), 'gpt-4.1');
+  });
+
+  await test('copilot.resolveModel returns undefined for nullish/empty input (omit --model)', () => {
+    copilot._resetShorthandWarning();
+    assert.strictEqual(copilot.resolveModel(null), undefined);
+    assert.strictEqual(copilot.resolveModel(undefined), undefined);
+    assert.strictEqual(copilot.resolveModel(''), undefined);
+  });
+
+  await test('copilot.resolveModel logs ONE-TIME warning on Claude family shorthand', () => {
+    copilot._resetShorthandWarning();
+    const warnings = [];
+    const logger = { warn: (msg) => warnings.push(msg) };
+    // First shorthand call → emits warning AND passes value through verbatim
+    assert.strictEqual(copilot.resolveModel('sonnet', { logger }), 'sonnet');
+    assert.strictEqual(warnings.length, 1, 'expected 1 warning on first shorthand');
+    assert.ok(/sonnet/.test(warnings[0]));
+    // Subsequent calls: no additional warnings
+    copilot.resolveModel('opus', { logger });
+    copilot.resolveModel('haiku', { logger });
+    copilot.resolveModel('claude-opus-4.5', { logger });
+    assert.strictEqual(warnings.length, 1, 'shorthand warning must be one-time per process');
+  });
+
+  // ── _mapEffort (private helper, exposed for testing) ─────────────────────
+
+  await test('copilot._mapEffort: "max" → "xhigh", others verbatim', () => {
+    assert.strictEqual(copilot._mapEffort('max'), 'xhigh');
+    assert.strictEqual(copilot._mapEffort('low'), 'low');
+    assert.strictEqual(copilot._mapEffort('medium'), 'medium');
+    assert.strictEqual(copilot._mapEffort('high'), 'high');
+    assert.strictEqual(copilot._mapEffort('xhigh'), 'xhigh');
+    assert.strictEqual(copilot._mapEffort(null), undefined);
+    assert.strictEqual(copilot._mapEffort(''), undefined);
+  });
+
+  // ── parseStreamChunk: defensive against schema drift ─────────────────────
+
+  await test('copilot.parseStreamChunk parses known event types verbatim', () => {
+    const ev = copilot.parseStreamChunk('{"type":"assistant.message","data":{"content":"hi"}}');
+    assert.strictEqual(ev.type, 'assistant.message');
+    assert.strictEqual(ev.data.content, 'hi');
+  });
+
+  await test('copilot.parseStreamChunk wraps unknown event types as type:"ignore"', () => {
+    const ev = copilot.parseStreamChunk('{"type":"future.new.event","data":{"x":1}}');
+    assert.strictEqual(ev.type, 'ignore');
+    assert.strictEqual(ev.original, 'future.new.event',
+      'must preserve the original type for telemetry / debugging');
+    assert.deepStrictEqual(ev.raw, { type: 'future.new.event', data: { x: 1 } });
+  });
+
+  await test('copilot.parseStreamChunk returns null for empty/whitespace/non-JSON', () => {
+    assert.strictEqual(copilot.parseStreamChunk(''), null);
+    assert.strictEqual(copilot.parseStreamChunk('   '), null);
+    assert.strictEqual(copilot.parseStreamChunk('not json'), null);
+    assert.strictEqual(copilot.parseStreamChunk(null), null);
+    assert.strictEqual(copilot.parseStreamChunk(undefined), null);
+  });
+
+  await test('copilot.parseStreamChunk returns null for malformed JSON (does not throw)', () => {
+    assert.strictEqual(copilot.parseStreamChunk('{"type":"result"'), null);
+  });
+
+  // ── parseOutput against real spike sample shapes ─────────────────────────
+
+  await test('copilot.parseOutput extracts text via assistant.message.data.content concatenation', () => {
+    const raw = [
+      '{"type":"assistant.turn_start","data":{}}',
+      '{"type":"assistant.message","data":{"content":"hello ","outputTokens":5}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"assistant.turn_start","data":{}}',
+      '{"type":"assistant.message","data":{"content":"world","outputTokens":3}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"result","sessionId":"sess-9","exitCode":0,"usage":{"premiumRequests":2,"totalApiDurationMs":5000,"sessionDurationMs":7000}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'hello world', 'should concatenate per-turn assistant.message content');
+    assert.strictEqual(r.sessionId, 'sess-9', 'sessionId should come from result event (camelCase, not session_id)');
+    assert.strictEqual(r.usage.premiumRequests, 2);
+    assert.strictEqual(r.usage.durationMs, 5000);
+    assert.strictEqual(r.usage.sessionDurationMs, 7000);
+    assert.strictEqual(r.usage.numTurns, 2, 'numTurns should count assistant.turn_end events');
+    assert.strictEqual(r.usage.outputTokens, 8, 'outputTokens should be the SUM of per-turn outputTokens (recovered from assistant.message events)');
+    // Cost / token fields: NULL not 0
+    assert.strictEqual(r.usage.costUsd, null, 'costUsd must be null (not 0) — Copilot does not report USD');
+    assert.strictEqual(r.usage.inputTokens, null);
+    assert.strictEqual(r.usage.cacheRead, null);
+    assert.strictEqual(r.usage.cacheCreation, null);
+  });
+
+  await test('copilot.parseOutput: model captured from session.tools_updated event', () => {
+    const raw = [
+      '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
+      '{"type":"assistant.message","data":{"content":"pong","outputTokens":1}}',
+      '{"type":"result","sessionId":"s","usage":{"premiumRequests":1}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.model, 'gpt-5.4');
+  });
+
+  await test('copilot.parseOutput tail-slices when maxTextLength set', () => {
+    const body = 'PREAMBLE_' + 'y'.repeat(2000) + '_VERDICT: APPROVE';
+    const raw = '{"type":"assistant.message","data":{"content":"' + body + '"}}\n{"type":"result","sessionId":"s","usage":{}}';
+    const r = copilot.parseOutput(raw, { maxTextLength: 500 });
+    assert.strictEqual(r.text.length, 500);
+    assert.ok(r.text.includes('VERDICT: APPROVE'));
+    assert.ok(!r.text.startsWith('PREAMBLE_'));
+  });
+
+  await test('copilot.parseOutput handles empty/null input defensively', () => {
+    assert.deepStrictEqual(copilot.parseOutput(''), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(copilot.parseOutput(null), { text: '', usage: null, sessionId: null, model: null });
+    assert.deepStrictEqual(copilot.parseOutput(undefined), { text: '', usage: null, sessionId: null, model: null });
+  });
+
+  await test('copilot.parseOutput tolerates unknown event types in the stream', () => {
+    // Defensive: provider schema variation (Anthropic adds reasoning_delta;
+    // OpenAI adds encryptedContent/phase) must not crash the parser.
+    const raw = [
+      '{"type":"future.new.event","data":{"foo":"bar"}}',
+      '{"type":"assistant.message","data":{"content":"ok","outputTokens":2}}',
+      '{"type":"result","sessionId":"s","usage":{"premiumRequests":1,"totalApiDurationMs":100}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'ok');
+    assert.strictEqual(r.usage.premiumRequests, 1);
+  });
+
+  await test('copilot.parseOutput: missing premiumRequests/durations default to 0 (not null) — engine logs need a number)', () => {
+    const raw = '{"type":"assistant.message","data":{"content":"x"}}\n{"type":"result","sessionId":"s","usage":{}}';
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.usage.premiumRequests, 0);
+    assert.strictEqual(r.usage.durationMs, 0);
+    assert.strictEqual(r.usage.sessionDurationMs, 0);
+  });
+
+  // ── parseError: pattern match against expected Copilot error shapes ─────
+
+  await test('copilot.parseError empty input → benign default', () => {
+    assert.deepStrictEqual(copilot.parseError(''), { message: '', code: null, retriable: true });
+    assert.strictEqual(copilot.parseError(null).code, null);
+  });
+
+  await test('copilot.parseError detects auth-failure (non-retriable)', () => {
+    for (const c of ['Not authenticated. Run copilot login.', 'Please log in to GitHub', 'HTTP 401 Unauthorized', '403 Forbidden']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('copilot.parseError detects rate-limit (retriable)', () => {
+    for (const c of ['rate limit exceeded', 'too many requests', 'HTTP 429: throttled']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'rate-limit', `case "${c}" should map to rate-limit`);
+      assert.strictEqual(r.retriable, true, 'rate-limit should be retriable after backoff');
+    }
+  });
+
+  await test('copilot.parseError detects unknown-model (non-retriable)', () => {
+    for (const c of ['Unknown model: banana', 'model not found in catalog', 'invalid model id']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'unknown-model', `case "${c}" should map to unknown-model`);
+      assert.strictEqual(r.retriable, false);
+    }
+  });
+
+  await test('copilot.parseError detects budget-exceeded (non-retriable)', () => {
+    const r = copilot.parseError('premium request limit reached');
+    assert.strictEqual(r.code, 'budget-exceeded');
+    assert.strictEqual(r.retriable, false);
+  });
+
+  await test('copilot.parseError detects crash (retriable)', () => {
+    for (const c of ['internal error', 'panic: runtime', 'fatal: copilot died', 'uncaught exception']) {
+      const r = copilot.parseError(c);
+      assert.strictEqual(r.code, 'crash', `case "${c}" should map to crash`);
+      assert.strictEqual(r.retriable, true);
+    }
+  });
+
+  await test('copilot.parseError unknown patterns → benign retriable default', () => {
+    const r = copilot.parseError('something innocuous');
+    assert.strictEqual(r.code, null);
+    assert.strictEqual(r.retriable, true);
+  });
+
+  // ── listModels: graceful nulls + filtering ──────────────────────────────
+
+  await test('copilot.listModels returns null when no token resolvable (env empty + gh auth fails)', async () => {
+    // Run with all auth env vars cleared. `gh auth token` will be tried but
+    // will either succeed (when `gh` is installed and authed on this host)
+    // or fail. We accept either outcome — the contract is "returns null on
+    // any failure", and on a host with no gh auth the env-only path returns
+    // null. We don't probe networking here.
+    const env = {};
+    // We can't easily prevent the gh auth fallback in a test env where gh is
+    // installed and authed (CI) — but the function MUST short-circuit before
+    // hitting the network when no token at all is found. Set a tiny timeout
+    // so any network attempt fails fast in a worst case.
+    const result = await copilot.listModels({ env, timeoutMs: 1 });
+    // `null` is the only acceptable result with empty env + 1ms timeout
+    assert.strictEqual(result, null,
+      `expected null with empty env + 1ms timeout, got: ${JSON.stringify(result)}`);
+  });
+
+  // ── resolveBinary: structural shape ─────────────────────────────────────
+
+  await test('copilot.resolveBinary: never throws, returns null or { bin, native, leadingArgs }', () => {
+    // We don't know the host setup — the function may find a binary or not.
+    // Either way, the contract is: returns null OR a well-shaped object, and
+    // never throws.
+    const result = copilot.resolveBinary({ env: process.env });
+    if (result !== null) {
+      assert.strictEqual(typeof result.bin, 'string');
+      assert.strictEqual(typeof result.native, 'boolean');
+      assert.ok(Array.isArray(result.leadingArgs));
+      // leadingArgs is either [] (standalone) or ['copilot'] (gh extension)
+      assert.ok(result.leadingArgs.length === 0 ||
+        (result.leadingArgs.length === 1 && result.leadingArgs[0] === 'copilot'),
+        `unexpected leadingArgs: ${JSON.stringify(result.leadingArgs)}`);
+    }
+  });
+
+  await test('copilot.resolveBinary returns null when env makes both probes fail', () => {
+    // Empty PATH + no recognizable `gh` location → both probes fail.
+    // Use a tmp dir that has no copilot/gh binary as PATH.
+    const tmp = createTmpDir();
+    const stubEnv = { PATH: tmp, USERPROFILE: tmp, HOME: tmp };
+    // Also kill the cache file path so a stale hit doesn't pollute.
+    const stalePath = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot')).capsFile;
+    let backup = null;
+    try { backup = fs.readFileSync(stalePath); fs.unlinkSync(stalePath); } catch { /* may not exist */ }
+    try {
+      const result = copilot.resolveBinary({ env: stubEnv });
+      // On a host where neither `copilot` nor `gh copilot` is reachable from
+      // the empty PATH, this must be null. If the host has a system-wide
+      // location bypassing PATH (unusual), accept either null or a result —
+      // but the call must not throw.
+      if (result !== null) {
+        assert.strictEqual(typeof result.bin, 'string');
+      }
+    } finally {
+      if (backup !== null) {
+        try { fs.writeFileSync(stalePath, backup); } catch {}
+      }
+    }
+  });
+
+  // ── KNOWN_EVENT_TYPES whitelist (sanity) ────────────────────────────────
+
+  await test('copilot.KNOWN_EVENT_TYPES covers every event type captured during the spike', () => {
+    // Mirrors docs/copilot-cli-schema.md §5.1 inventory.
+    const expectedFromSpike = [
+      'session.mcp_server_status_changed',
+      'session.mcp_servers_loaded',
+      'session.skills_loaded',
+      'session.tools_updated',
+      'session.info',
+      'session.task_complete',
+      'user.message',
+      'assistant.turn_start',
+      'assistant.turn_end',
+      'assistant.reasoning',
+      'assistant.reasoning_delta',
+      'assistant.message_delta',
+      'assistant.message',
+      'tool.execution_start',
+      'tool.execution_complete',
+      'result',
+    ];
+    for (const t of expectedFromSpike) {
+      assert.ok(copilot.KNOWN_EVENT_TYPES.has(t), `KNOWN_EVENT_TYPES missing spike-confirmed type: ${t}`);
+    }
+  });
+}
+
 async function testSpawnAgentHelpers() {
   console.log('\n── engine/spawn-agent.js — Runtime-Agnostic Wrapper (P-9c4f2d6a) ──');
   const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
@@ -17862,6 +18386,7 @@ async function main() {
     await testValidateProjectPath();
     await testParseStreamJsonOutput();
     await testRuntimeAdapters();
+    await testCopilotAdapter();
     await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();

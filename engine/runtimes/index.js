@@ -17,6 +17,7 @@
 
 const registry = new Map();
 registry.set('claude', require('./claude'));
+registry.set('copilot', require('./copilot'));
 
 /**
  * Look up a runtime adapter by name. Throws when the name is unknown so
