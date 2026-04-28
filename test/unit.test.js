@@ -34867,6 +34867,38 @@ async function testAzureauthTimeout() {
     assert.ok(src.includes('azureauth') && src.includes('timeout'),
       'shared-rules.md should have explicit guidance about azureauth timeout');
   });
+
+  await test('README ADO guidance prefers az CLI with MCP as fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'README.md'), 'utf8');
+    const idx = src.indexOf('### Azure DevOps Users');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(idx >= 0, 'README should document Azure DevOps users');
+    assert.ok(/az CLI first|prefer(?:s)? the `az` CLI|use the `az` CLI first/i.test(section),
+      'README ADO guidance should explicitly prefer az CLI first');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(section),
+      'README ADO guidance should describe MCP as a fallback');
+  });
+
+  await test('shared-rules.md tells agents to use az CLI before ADO MCP', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(/Azure DevOps Tooling/i.test(src),
+      'shared-rules.md should have explicit Azure DevOps tooling guidance');
+    assert.ok(/az CLI first|use the `az` CLI first|prefer(?:s)? `az`/i.test(src),
+      'shared-rules.md should tell agents to prefer az CLI first');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(src),
+      'shared-rules.md should tell agents to use ADO MCP only as a fallback');
+  });
+
+  await test('CLAUDE.md ADO integration tells agents to use az CLI before ADO MCP', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## ADO Integration');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(idx >= 0, 'CLAUDE.md should document ADO integration');
+    assert.ok(/az` CLI first|use the `az` CLI first|prefer(?:s)? `az`/i.test(section),
+      'CLAUDE.md should tell agents to use az CLI first for ADO');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(section),
+      'CLAUDE.md should tell agents to use ADO MCP only as a fallback');
+  });
 }
 
 // ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
