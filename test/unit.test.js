@@ -29245,10 +29245,93 @@ async function testRenderUtils() {
     assert.ok(html.includes('please check the tests'), 'Steering message should be visible');
   });
 
-  await test('renderAgentOutput: result type shows completion indicator', () => {
-    const jsonl = JSON.stringify({ type: 'result' });
+  await test('renderAgentOutput: result type with [process-exit] shows completion indicator', () => {
+    // Banner is gated on [process-exit] sentinel — bare result lines (e.g. from ScheduleWakeup
+    // resume cycles) do NOT trigger the banner; only the final result before [process-exit] does.
+    const jsonl = JSON.stringify({ type: 'result' }) + '\n[process-exit] code=0';
     const html = renderAgentOutput(jsonl);
-    assert.ok(html.includes('✓') || html.includes('&#10003;') || html.includes('complete'), 'Result should show completion indicator');
+    assert.ok(html.includes('✓') || html.includes('&#10003;') || html.includes('complete'), 'Final result should show completion indicator');
+  });
+
+  await test('renderAgentOutput: result line WITHOUT [process-exit] shows NO banner (agent still running)', () => {
+    // ScheduleWakeup-style intermediate result — agent is sleeping between resume cycles.
+    // No banner should fire until process actually exits.
+    const jsonl = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(!html.includes('Task complete'), 'Intermediate result without [process-exit] must not show banner');
+    assert.ok(!html.includes('Task ended with error'), 'Intermediate result must not show error banner either');
+  });
+
+  await test('renderAgentOutput: multiple result lines + [process-exit] renders banner exactly once', () => {
+    // ScheduleWakeup emits one result line per resume cycle. With four resumes there are four
+    // result lines, but only the last one before [process-exit] is the true final result.
+    const r1 = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const r2 = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const r3 = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const r4 = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const text = [r1, r2, r3, r4, '[process-exit] code=0'].join('\n');
+    const html = renderAgentOutput(text);
+    // Count banner occurrences — must be exactly one
+    const matches = html.match(/Task complete/g) || [];
+    assert.strictEqual(matches.length, 1, 'Banner must render exactly once even with multiple result lines');
+  });
+
+  await test('renderAgentOutput: only results before [process-exit] can be final', () => {
+    const beforeExit = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const afterExit = JSON.stringify({ type: 'result', subtype: 'success', is_error: false });
+    const text = [beforeExit, '[process-exit] code=0', afterExit].join('\n');
+    const html = renderAgentOutput(text);
+    const matches = html.match(/Task complete/g) || [];
+    assert.strictEqual(matches.length, 1, 'Only the last result before [process-exit] should render the banner');
+  });
+
+  await test('renderAgentOutput: [process-exit] sentinel line is filtered from raw display', () => {
+    const text = JSON.stringify({ type: 'result' }) + '\n[process-exit] code=0';
+    const html = renderAgentOutput(text);
+    assert.ok(!html.includes('[process-exit]'), '[process-exit] line must not appear as raw text');
+    assert.ok(!html.includes('code=0'), 'process-exit code text must not leak into rendered output');
+  });
+
+  await test('renderAgentOutput: result with is_error:true shows red error banner', () => {
+    const text = JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_turns' }) + '\n[process-exit] code=1';
+    const html = renderAgentOutput(text);
+    assert.ok(!html.includes('Task complete'), 'Error result must not show green completion banner');
+    assert.ok(html.includes('Task ended with error') || html.includes('error'),
+      'Error result should show red error banner');
+    assert.ok(html.includes('var(--red)') || html.includes('red'), 'Error banner should use red styling');
+  });
+
+  await test('renderAgentOutput: result with error subtype shows red error banner', () => {
+    const text = JSON.stringify({ type: 'result', subtype: 'error_during_execution' }) + '\n[process-exit] code=0';
+    const html = renderAgentOutput(text);
+    assert.ok(!html.includes('Task complete'), 'Error subtype must not show green completion banner');
+    assert.ok(html.includes('Task ended with error') || html.includes('var(--red)'),
+      'Error subtype should show red error banner');
+  });
+
+  await test('renderAgentOutput: [process-exit] with non-zero code shows red error banner', () => {
+    // Even if the result line itself didn't set is_error (CLI crash mid-task), a non-zero
+    // exit code from spawn-agent.js should surface as an error banner.
+    const text = JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\n[process-exit] code=137';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('Task ended with error') || html.includes('var(--red)'),
+      'Non-zero exit code should surface as error banner');
+  });
+
+  await test('renderAgentOutput: [process-exit] spawn-failed shows red error banner', () => {
+    // spawn-failed sentinel — synchronous spawn() throw before runFile returned.
+    const text = JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\n[process-exit] spawn-failed';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('Task ended with error') || html.includes('var(--red)'),
+      'spawn-failed sentinel should surface as error banner');
+  });
+
+  await test('renderAgentOutput: [process-exit] without preceding result still shows error banner on non-zero exit', () => {
+    // CLI may crash before emitting any result line. Output ends with just [process-exit] code=1.
+    const text = '[stderr] something blew up\n[process-exit] code=1';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('Task ended with error') || html.includes('var(--red)'),
+      'Non-zero exit without result line should still surface error banner');
   });
 
   await test('renderAgentOutput: stderr lines shown in red', () => {
