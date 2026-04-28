@@ -18411,6 +18411,7 @@ async function main() {
     await testRoutingParser();
     await testDependencyCycleDetection();
     await testReconciliation();
+    await testEngineRuntimeWiring();
 
     // lifecycle.js tests
     await testLifecycleHelpers();
@@ -37357,6 +37358,274 @@ async function testEngineHelperCoverage() {
       delete require.cache[require.resolve('../engine/pipeline')];
       restore();
     }
+  });
+}
+
+// ─── P-2a6d9c4f: engine.js spawnAgent runtime wiring ─────────────────────────
+
+async function testEngineRuntimeWiring() {
+  console.log('\n── engine.js — Runtime Adapter Wiring (P-2a6d9c4f) ──');
+
+  const engine = require(path.join(MINIONS_DIR, 'engine.js'));
+  const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+  const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+
+  // ── _buildAgentSpawnFlags: shape ─────────────────────────────────────────
+
+  await test('_buildAgentSpawnFlags exists and returns string[]', () => {
+    assert.strictEqual(typeof engine._buildAgentSpawnFlags, 'function');
+    const out = engine._buildAgentSpawnFlags(claude, {});
+    assert.ok(Array.isArray(out));
+    for (const s of out) assert.strictEqual(typeof s, 'string', `non-string in flags: ${s}`);
+  });
+
+  await test('_buildAgentSpawnFlags always emits --runtime <name> as the first pair', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, {});
+    assert.strictEqual(flags[0], '--runtime');
+    assert.strictEqual(flags[1], 'claude');
+
+    const flagsCopilot = engine._buildAgentSpawnFlags(copilot, {});
+    assert.strictEqual(flagsCopilot[0], '--runtime');
+    assert.strictEqual(flagsCopilot[1], 'copilot');
+  });
+
+  // ── Always-applicable opts ───────────────────────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --max-turns/--model/--allowedTools when set', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, {
+      maxTurns: 100,
+      model: 'sonnet',
+      allowedTools: 'Read,Edit',
+    });
+    const mt = flags.indexOf('--max-turns');
+    assert.ok(mt >= 0 && flags[mt + 1] === '100');
+    const m = flags.indexOf('--model');
+    assert.ok(m >= 0 && flags[m + 1] === 'sonnet');
+    const at = flags.indexOf('--allowedTools');
+    assert.ok(at >= 0 && flags[at + 1] === 'Read,Edit');
+  });
+
+  await test('_buildAgentSpawnFlags omits --model when undefined (let runtime pick its own)', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { model: undefined });
+    assert.ok(!flags.includes('--model'));
+  });
+
+  await test('_buildAgentSpawnFlags omits --allowedTools when null/empty', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { allowedTools: null }).includes('--allowedTools'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { allowedTools: '' }).includes('--allowedTools'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--allowedTools'));
+  });
+
+  // ── effort: gated on capabilities.effortLevels ────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --effort when capability is true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { effort: 'low' });
+    const i = flags.indexOf('--effort');
+    assert.ok(i >= 0 && flags[i + 1] === 'low');
+  });
+
+  await test('_buildAgentSpawnFlags omits --effort when capability is false', () => {
+    const fakeNoEffort = { name: 'no-effort', capabilities: { ...claude.capabilities, effortLevels: false } };
+    const flags = engine._buildAgentSpawnFlags(fakeNoEffort, { effort: 'low' });
+    assert.ok(!flags.includes('--effort'));
+  });
+
+  await test('_buildAgentSpawnFlags omits --effort when opt is null/undefined even if capability is true', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { effort: null }).includes('--effort'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--effort'));
+  });
+
+  // ── sessionId: gated on capabilities.sessionResume ────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --resume <id> when capability true and sessionId set', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { sessionId: 'sess-abc' });
+    const i = flags.indexOf('--resume');
+    assert.ok(i >= 0 && flags[i + 1] === 'sess-abc');
+  });
+
+  await test('_buildAgentSpawnFlags omits --resume when capability is false (even if opt set)', () => {
+    const fakeNoResume = { name: 'no-resume', capabilities: { ...claude.capabilities, sessionResume: false } };
+    const flags = engine._buildAgentSpawnFlags(fakeNoResume, { sessionId: 'sess-abc' });
+    assert.ok(!flags.includes('--resume'));
+  });
+
+  // ── maxBudget: gated on capabilities.budgetCap ────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --max-budget-usd when capability true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { maxBudget: 5 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '5');
+  });
+
+  await test('_buildAgentSpawnFlags honors maxBudget=0 (??-equivalent)', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { maxBudget: 0 });
+    const i = flags.indexOf('--max-budget-usd');
+    assert.ok(i >= 0 && flags[i + 1] === '0', `0 must be a valid cap: ${flags.join(' ')}`);
+  });
+
+  await test('_buildAgentSpawnFlags omits --max-budget-usd when capability is false (Copilot)', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { maxBudget: 5 });
+    assert.ok(!flags.includes('--max-budget-usd'),
+      `Copilot capabilities.budgetCap=false; --max-budget-usd must NOT appear: ${flags.join(' ')}`);
+  });
+
+  // ── bare: gated on capabilities.bareMode ──────────────────────────────────
+
+  await test('_buildAgentSpawnFlags emits --bare only when bare===true AND capability true', () => {
+    assert.ok(engine._buildAgentSpawnFlags(claude, { bare: true }).includes('--bare'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, { bare: false }).includes('--bare'));
+    assert.ok(!engine._buildAgentSpawnFlags(claude, {}).includes('--bare'));
+    // Capability-false runtime — bare opt ignored
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { bare: true }).includes('--bare'),
+      'Copilot capabilities.bareMode=false; --bare must NOT appear');
+  });
+
+  // ── fallbackModel: gated on capabilities.fallbackModel ────────────────────
+
+  await test('_buildAgentSpawnFlags emits --fallback-model when capability true', () => {
+    const flags = engine._buildAgentSpawnFlags(claude, { fallbackModel: 'haiku' });
+    const i = flags.indexOf('--fallback-model');
+    assert.ok(i >= 0 && flags[i + 1] === 'haiku');
+  });
+
+  await test('_buildAgentSpawnFlags omits --fallback-model when capability is false (Copilot)', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { fallbackModel: 'gpt-4o' });
+    assert.ok(!flags.includes('--fallback-model'));
+  });
+
+  // ── Copilot-specific opts: emitted unconditionally; adapter ignores ──────
+
+  await test('_buildAgentSpawnFlags forwards --stream <on|off> when set', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, { stream: 'on' });
+    const i = flags.indexOf('--stream');
+    assert.ok(i >= 0 && flags[i + 1] === 'on');
+
+    const off = engine._buildAgentSpawnFlags(copilot, { stream: 'off' });
+    const j = off.indexOf('--stream');
+    assert.ok(j >= 0 && off[j + 1] === 'off');
+  });
+
+  await test('_buildAgentSpawnFlags omits --stream when null/empty', () => {
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { stream: null }).includes('--stream'));
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, { stream: '' }).includes('--stream'));
+    assert.ok(!engine._buildAgentSpawnFlags(copilot, {}).includes('--stream'));
+  });
+
+  await test('_buildAgentSpawnFlags forwards --disable-builtin-mcps / --no-custom-instructions / --enable-reasoning-summaries when true', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: true,
+    });
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildAgentSpawnFlags omits Copilot bool flags when false/missing', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: false,
+    });
+    assert.ok(!flags.includes('--disable-builtin-mcps'));
+    assert.ok(!flags.includes('--no-custom-instructions'));
+    assert.ok(!flags.includes('--enable-reasoning-summaries'));
+    const flags2 = engine._buildAgentSpawnFlags(copilot, {});
+    assert.ok(!flags2.includes('--disable-builtin-mcps'));
+    assert.ok(!flags2.includes('--no-custom-instructions'));
+    assert.ok(!flags2.includes('--enable-reasoning-summaries'));
+  });
+
+  // ── End-to-end: Claude regression via spawn-agent.parseSpawnArgs ──────────
+
+  await test('Claude end-to-end: engine flags → spawn-agent.parseSpawnArgs → adapter buildArgs round-trip', () => {
+    // The integration contract of P-2a6d9c4f: every opt that engine.js threads
+    // through must round-trip cleanly through spawn-agent's argv parser into
+    // runtime.buildArgs(opts) without loss or duplication.
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const flags = engine._buildAgentSpawnFlags(claude, {
+      maxTurns: 50,
+      model: 'sonnet',
+      allowedTools: 'Read,Edit,Bash',
+      effort: 'low',
+      sessionId: 'sess-roundtrip',
+      maxBudget: 0,           // ← 0 must survive the round-trip
+      bare: true,
+      fallbackModel: 'haiku',
+    });
+    const argv = ['node', 'spawn-agent.js', '/p', '/s', ...flags];
+    const parsed = spawnAgent.parseSpawnArgs(argv);
+    assert.strictEqual(parsed.runtimeName, 'claude');
+    assert.deepStrictEqual(parsed.passthrough, [], 'engine flags must all be recognized by spawn-agent — no passthrough');
+    assert.strictEqual(parsed.opts.maxTurns, '50');
+    assert.strictEqual(parsed.opts.model, 'sonnet');
+    assert.strictEqual(parsed.opts.allowedTools, 'Read,Edit,Bash');
+    assert.strictEqual(parsed.opts.effort, 'low');
+    assert.strictEqual(parsed.opts.sessionId, 'sess-roundtrip');
+    assert.strictEqual(parsed.opts.maxBudget, '0', '0 must survive parsing — string form is fine, adapter coerces');
+    assert.strictEqual(parsed.opts.bare, true);
+    assert.strictEqual(parsed.opts.fallbackModel, 'haiku');
+  });
+
+  await test('Copilot end-to-end: capability gates strip Claude-only opts before spawn-agent', () => {
+    const flags = engine._buildAgentSpawnFlags(copilot, {
+      model: 'claude-sonnet-4',
+      maxBudget: 5,            // budgetCap=false → MUST NOT appear
+      bare: true,              // bareMode=false → MUST NOT appear
+      fallbackModel: 'haiku',  // fallbackModel=false → MUST NOT appear
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      effort: 'medium',
+    });
+    assert.ok(!flags.includes('--max-budget-usd'));
+    assert.ok(!flags.includes('--bare'));
+    assert.ok(!flags.includes('--fallback-model'));
+    assert.ok(flags.includes('--stream'));
+    assert.ok(flags.includes('--disable-builtin-mcps'));
+    assert.ok(flags.includes('--no-custom-instructions'));
+    assert.ok(flags.includes('--effort'));
+  });
+
+  // ── Source guard: engine.js has zero `runtime.name === ...` branches ─────
+
+  await test('engine.js source contains zero `runtime.name ===` (or ==) branches — capability flags only', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')         // block comments
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')     // line comments
+      .replace(/'[^'\n]*'/g, "''")
+      .replace(/"[^"\n]*"/g, '""')
+      .replace(/`[^`]*`/g, '``');
+    const banned = /\bruntime\.name\s*={2,3}\s*/;
+    assert.ok(!banned.test(codeOnly),
+      `engine.js still branches on runtime.name; capability flags only. Match: ${(codeOnly.match(banned) || [''])[0]}`);
+  });
+
+  // ── Source guard: spawnAgent reads via shared.resolveAgent* helpers ──────
+
+  await test('engine.js spawnAgent invokes shared.resolveAgentCli/Model/MaxBudget/BareMode', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Normalize whitespace so the assertions don't break on cosmetic edits
+    const compact = src.replace(/\s+/g, ' ');
+    for (const helper of ['resolveAgentCli', 'resolveAgentModel', 'resolveAgentMaxBudget', 'resolveAgentBareMode']) {
+      assert.ok(compact.includes(`shared.${helper}(`),
+        `engine.js spawnAgent must call shared.${helper}(...) — never read agent.cli/model/etc directly`);
+    }
+    assert.ok(compact.includes('resolveRuntime('),
+      'engine.js must resolve the runtime via the registry, not require the adapter directly');
+  });
+
+  await test('engine.js no longer reads claudeConfig.permissionMode (legacy) inside spawn paths', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+      .replace(/'[^'\n]*'/g, "''")
+      .replace(/"[^"\n]*"/g, '""');
+    assert.ok(!/claudeConfig[?]?\.permissionMode/.test(codeOnly),
+      'engine.js code body must not read the deprecated claudeConfig.permissionMode field — adapter owns the permission flag');
   });
 }
 
