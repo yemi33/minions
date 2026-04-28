@@ -19370,6 +19370,46 @@ async function testSchedulerAdditionalCoverage() {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+async function testIntegrationHarnessRootGuard() {
+  console.log('\n── Integration Harness Root Guard ──');
+
+  await test('minions integration harness is import-safe', () => {
+    const { spawnSync } = require('child_process');
+    const result = spawnSync(process.execPath, ['-e', "require('./test/minions-tests.js'); console.log('import-ok')"], {
+      cwd: MINIONS_DIR,
+      env: { ...process.env, MINIONS_TEST_BASE: 'http://127.0.0.1:1' },
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0,
+      `requiring test/minions-tests.js should not start the live harness; stdout=${result.stdout} stderr=${result.stderr}`);
+    assert.ok(result.stdout.includes('import-ok'), 'import should complete after requiring minions-tests.js');
+  });
+
+  await test('integration harness root guard accepts the served checkout root', () => {
+    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+    assert.doesNotThrow(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: MINIONS_DIR }, MINIONS_DIR);
+    });
+  });
+
+  await test('integration harness root guard rejects a different served root', () => {
+    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+    const otherRoot = path.join(os.tmpdir(), 'different-minions-root');
+    assert.throws(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: otherRoot }, MINIONS_DIR);
+    }, /refusing to run/i);
+  });
+
+  await test('/api/health exposes minionsDir for harness root validation', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const healthFn = src.slice(src.indexOf('async function handleHealth'), src.indexOf('async function handleAgentDetail'));
+    assert.ok(healthFn.includes('minionsDir') && healthFn.includes('MINIONS_DIR'),
+      'health response must include the served Minions root so integration tests can refuse cross-root mutation');
+  });
+}
+
 async function main() {
   console.log('Minions Unit Tests');
   console.log('================');
@@ -19738,6 +19778,9 @@ async function main() {
 
     // W-moczd52c1icm: dashboard.js pure helpers
     await testDashboardPureHelpers();
+
+    // W-moj7zw0zfard: live integration harness root guard
+    await testIntegrationHarnessRootGuard();
 
     // W-moczcvjl338u: engine.js pure helper coverage
     await testEngineHelperCoverage();
