@@ -52,6 +52,28 @@ function httpReq(method, urlPath, body, opts = {}) {
 const GET = (p, opts) => httpReq('GET', p, null, opts);
 const POST = (p, b, opts) => httpReq('POST', p, b, opts);
 
+function normalizeFsPathForCompare(value) {
+  if (!value) return '';
+  let normalized = path.resolve(String(value)).replace(/[\\/]+$/, '');
+  if (process.platform === 'win32') normalized = normalized.toLowerCase();
+  return normalized;
+}
+
+async function assertDashboardRootMatchesLocalRoot(get = GET, localRoot = MINIONS_DIR) {
+  const r = await get('/api/health');
+  if (r.status !== 200) throw new Error('Dashboard health check failed with status ' + r.status);
+  const dashboardRoot = r.json && r.json.minionsDir;
+  if (!dashboardRoot) {
+    throw new Error('Dashboard /api/health is missing minionsDir; restart the dashboard with current code before running integration tests');
+  }
+  const expected = normalizeFsPathForCompare(localRoot);
+  const actual = normalizeFsPathForCompare(dashboardRoot);
+  if (actual !== expected) {
+    throw new Error(`Refusing to run integration tests against dashboard root ${dashboardRoot}; this checkout is ${localRoot}`);
+  }
+  return r;
+}
+
 function readJson(fp) {
   try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
 }
@@ -104,6 +126,7 @@ async function testApiEndpoints() {
     assert.strictEqual(r.status, 200);
     assert.ok(['healthy', 'degraded', 'stopped'].includes(r.json.status), 'invalid health status: ' + r.json.status);
     assert.ok(Array.isArray(r.json.agents));
+    assert.strictEqual(r.json.minionsDir, MINIONS_DIR);
     assert.ok(typeof r.json.uptime === 'number');
   });
 
@@ -630,13 +653,12 @@ async function main() {
   console.log(`Dashboard: ${BASE}`);
   console.log(`Minions dir: ${MINIONS_DIR}\n`);
 
-  // Verify dashboard is running
+  // Verify dashboard is running from this checkout before any mutating tests run.
   try {
-    const r = await GET('/api/health');
-    if (r.status !== 200) throw new Error('unhealthy');
+    const r = await assertDashboardRootMatchesLocalRoot();
     console.log(`Dashboard status: ${r.json.status}`);
-  } catch {
-    console.error('ERROR: Dashboard not running on port 7331. Start it first.');
+  } catch (e) {
+    console.error('ERROR: ' + e.message);
     process.exit(1);
   }
 
@@ -663,4 +685,11 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
+
+module.exports = {
+  normalizeFsPathForCompare,
+  assertDashboardRootMatchesLocalRoot,
+};
