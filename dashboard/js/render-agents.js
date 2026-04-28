@@ -1,12 +1,23 @@
 // dashboard/js/render-agents.js — Agent grid rendering extracted from dashboard.html
 
+// Per-runtime display labels and accent colors. Add a new entry here when a
+// new runtime is registered in engine/runtimes/index.js.
+const RUNTIME_TAGS = {
+  claude:  { label: 'Claude',  color: 'var(--blue)' },
+  copilot: { label: 'Copilot', color: 'var(--purple)' },
+};
+function _runtimeTagHtml(runtime) {
+  const meta = RUNTIME_TAGS[runtime] || { label: runtime || 'unknown', color: 'var(--muted)' };
+  return '<span class="agent-runtime-tag" title="Runtime: ' + escapeHtml(runtime || 'unknown') + '" style="font-size:9px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:1px 5px;margin-left:6px;border:1px solid ' + meta.color + ';border-radius:3px;color:' + meta.color + ';background:transparent">' + escapeHtml(meta.label) + '</span>';
+}
+
 function renderAgents(agents) {
   agentData = agents;
   const grid = document.getElementById('agents-grid');
   grid.innerHTML = agents.map(a => `
     <div class="agent-card ${statusColor(a.status)}" onclick="if(shouldIgnoreSelectionClick(event))return;openAgentDetail('${escapeHtml(a.id)}')">
       <div class="agent-card-header">
-        <span class="agent-name"><span class="agent-emoji">${escapeHtml(a.emoji)}</span>${escapeHtml(a.name)}</span>
+        <span class="agent-name"><span class="agent-emoji">${escapeHtml(a.emoji)}</span>${escapeHtml(a.name)}${_runtimeTagHtml(a.runtime)}</span>
         <span class="status-badge ${escapeHtml(a.status)}">${escapeHtml(a.status)}</span>
       </div>
       <div class="agent-role">${escapeHtml(a.role)}</div>
@@ -38,9 +49,17 @@ async function openAgentDetail(id) {
   const emojiSpan = document.createElement('span');
   emojiSpan.style.fontSize = '22px';
   emojiSpan.textContent = agent.emoji || '';
+  // Runtime tag rendered as a separate span so the textContent path keeps its
+  // SEC-03-Phase-A safety for the user-controlled name/role fields.
+  const runtimeMeta = RUNTIME_TAGS[agent.runtime] || { label: agent.runtime || 'unknown', color: 'var(--muted)' };
+  const runtimeSpan = document.createElement('span');
+  runtimeSpan.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:2px 6px;margin-left:10px;border:1px solid ' + runtimeMeta.color + ';border-radius:3px;color:' + runtimeMeta.color;
+  runtimeSpan.title = 'Runtime: ' + (agent.runtime || 'unknown');
+  runtimeSpan.textContent = runtimeMeta.label;
   nameEl.replaceChildren(
     emojiSpan,
-    document.createTextNode(' ' + (agent.name || '') + ' \u2014 ' + (agent.role || ''))
+    document.createTextNode(' ' + (agent.name || '') + ' \u2014 ' + (agent.role || '')),
+    runtimeSpan,
   );
 
   const badgeClass = agent.status;

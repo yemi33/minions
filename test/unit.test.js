@@ -3662,6 +3662,33 @@ async function testQueriesAgents() {
     }
   });
 
+  await test('getAgents returns a `runtime` field per agent (claude/copilot/etc.)', () => {
+    const agents = queries.getAgents();
+    for (const a of agents) {
+      assert.ok(typeof a.runtime === 'string' && a.runtime.length > 0,
+        `agent ${a.id} missing resolved runtime — needed for the dashboard runtime tag`);
+    }
+  });
+
+  await test('getAgents resolves per-agent cli override above engine.defaultCli', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer', skills: [], cli: 'copilot' },
+                  ripley: { name: 'Ripley', role: 'Lead', skills: [] } },
+        engine: { defaultCli: 'claude' },
+      }));
+      delete require.cache[require.resolve('../engine/queries')];
+      const freshQueries = require('../engine/queries');
+      const agents = freshQueries.getAgents();
+      const byId = Object.fromEntries(agents.map(a => [a.id, a]));
+      assert.strictEqual(byId.dallas.runtime, 'copilot', 'per-agent cli override should win');
+      assert.strictEqual(byId.ripley.runtime, 'claude', 'agent without override should fall back to engine.defaultCli');
+    } finally { restore(); }
+  });
+
   await test('getAgentDetail returns charter and history', () => {
     const config = queries.getConfig();
     const firstAgent = Object.keys(config.agents || {})[0];
@@ -22565,6 +22592,19 @@ async function testDashboardAuditXss() {
     assert.ok(hasEscape('a.role'), 'a.role must be escaped');
   });
 
+  await test('render-agents.js renders runtime tag next to agent name with safe escaping', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    assert.ok(src.includes('RUNTIME_TAGS'), 'runtime tag map must exist for known runtimes');
+    assert.ok(src.includes("claude:") && src.includes("copilot:"),
+      'should register at least the two current runtimes');
+    assert.ok(src.includes('_runtimeTagHtml(a.runtime)'),
+      'agent card must include the runtime tag inside agent-name span');
+    // The tag helper must escape its inputs — neither the runtime key (server-controlled
+    // but worth defending) nor the label should slip raw HTML in
+    const helper = src.slice(src.indexOf('function _runtimeTagHtml'), src.indexOf('function renderAgents'));
+    assert.ok(helper.includes('escapeHtml('), 'runtime tag helper must use escapeHtml on its output');
+  });
+
   await test('render-agents.js detail header renders agent fields safely', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
     // Post-SEC-03: the detail-agent-name header is built via DOM (`replaceChildren` +
@@ -31999,6 +32039,31 @@ async function testRenderUtils() {
     assert.ok(html.includes('Array item'), 'JSON array items should render');
   });
 
+  await test('renderAgentOutput: Copilot assistant.message renders as pretty assistant bubble', () => {
+    const jsonl = JSON.stringify({ type: 'assistant.message', data: { content: 'Copilot says hello' } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('Copilot says hello'), 'Copilot final assistant text should render');
+    assert.ok(html.includes('surface2'), 'Copilot assistant text should use the same bubble styling as Claude');
+  });
+
+  await test('renderAgentOutput: Copilot tool.execution_start renders formatted tool summary', () => {
+    const jsonl = JSON.stringify({ type: 'tool.execution_start', data: { toolName: 'Read', arguments: { file_path: '/copilot.js' } } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('Reading'), 'Copilot tool start should use formatted tool summaries');
+    assert.ok(html.includes('/copilot.js'), 'Copilot tool start should include the file path');
+  });
+
+  await test('renderAgentOutput: Copilot message deltas collapse into the final assistant.message text', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant.message_delta', data: { deltaContent: 'Hel' } }),
+      JSON.stringify({ type: 'assistant.message_delta', data: { deltaContent: 'lo' } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: 'Hello' } }),
+    ].join('\n');
+    const html = renderAgentOutput(jsonl);
+    const helloCount = (html.match(/Hello/g) || []).length;
+    assert.strictEqual(helloCount, 1, 'Copilot final message should replace buffered deltas instead of duplicating them');
+  });
+
   // ─── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──
   console.log('\n── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──');
 
@@ -32038,6 +32103,12 @@ async function testRenderUtils() {
     // The push should reference evt.input
     assert.ok(ccSrc.includes('evt.input'),
       'SSE tool handler should capture evt.input from the server event');
+  });
+
+  await test('live-stream.js re-renders full output for Copilot runtime instead of incremental append', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes("const incrementalSafe = _currentAgentRuntime() !== 'copilot';"),
+      'Copilot live output should bypass incremental append so final assistant.message can replace streamed deltas cleanly');
   });
 
   await test('Server SSE tool event sends input as object, not flat string', () => {
