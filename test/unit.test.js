@@ -23288,7 +23288,15 @@ async function testSec03EscapeHtml() {
   // skeletons and runtime-aware model-picker rerenders that are awkward to
   // express via createElement. Claw back to 177 once those UI paths are
   // migrated to replaceChildren()/document fragments.
-  const DYNAMIC_INNERHTML_BASELINE = 181;
+  //
+  // 2026-04-28 (latest): bumped 181 → 182 (+1). Drift from master commit
+  // 416e25de "fix(settings): wrap CC Model input so its label/hint survive
+  // runtime hydration" which added a new innerHTML site in
+  // dashboard/js/settings.js without bumping this baseline. Confirmed via
+  // direct count: master==182, this branch==182 (this PR did not touch
+  // dashboard/ JS innerHTML — see issue #1834 fix scope). Claw back to 181
+  // once the settings.js wrapper is migrated to replaceChildren().
+  const DYNAMIC_INNERHTML_BASELINE = 182;
 
   await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
     const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
