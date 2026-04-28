@@ -612,7 +612,8 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         if (evt.sessionReset) {
           addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
         }
-        var rendered = renderMd(evt.text || streamedText || '');
+        var finalText = _ccMergeStreamText(streamedText, evt.text || '');
+        var rendered = renderMd(finalText || streamedText || '');
         addMsg('assistant', rendered + _ccElapsedFooter('{seconds}s'));
         if (evt.sessionId !== undefined) {
           var originTab = _ccTabs.find(function(t) { return t.id === activeTabId; });
@@ -683,8 +684,9 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         break;
       }
       reconnectAttempts++;
+      streamedText = '';
       toolsUsed = [];
-      if (activeTab) activeTab._toolsUsed = [];
+      if (activeTab) { activeTab._streamedText = ''; activeTab._toolsUsed = []; }
       streamStatusNote = 'Connection interrupted — reattaching to the live response...';
       updateStreamDiv();
       await new Promise(function(r) { setTimeout(r, 1000 * reconnectAttempts); });

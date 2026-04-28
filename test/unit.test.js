@@ -17012,6 +17012,8 @@ async function testMeetings() {
       'CC client should issue reconnect stream requests for in-flight responses');
     assert.ok(ccSrc.includes('Connection interrupted — reattaching to the live response...'),
       'CC should show a reconnecting status instead of failing immediately on stream interruption');
+    assert.ok(ccSrc.includes("streamedText = '';") && ccSrc.includes("activeTab._streamedText = '';"),
+      'CC reconnect should clear stale streamed text before replayed chunk state arrives from the server');
   });
 
   await test('CC streaming endpoint sends heartbeat events to keep long responses alive', () => {
