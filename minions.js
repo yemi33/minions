@@ -125,6 +125,30 @@ function autoDiscover(targetDir) {
 
 // ─── Shared Helpers (used by both addProject and scanAndAdd) ─────────────────
 
+/**
+ * Probe each registered runtime adapter and return the names whose
+ * resolveBinary() returns a non-null result. Used by initMinions to set
+ * engine.defaultCli automatically. Adapter `resolveBinary()` returns `null`
+ * when the CLI binary isn't on PATH and otherwise returns `{ bin, ... }`.
+ * Errors (unregistered runtime, exec failures) are swallowed — the helper
+ * is best-effort and a missing CLI just means we don't pin defaultCli.
+ */
+function _detectAvailableRuntimes() {
+  const found = [];
+  let registry;
+  try { registry = require('./engine/runtimes'); }
+  catch { return found; }
+  for (const name of registry.listRuntimes()) {
+    try {
+      const adapter = registry.resolveRuntime(name);
+      if (typeof adapter.resolveBinary !== 'function') continue;
+      const result = adapter.resolveBinary({ env: process.env });
+      if (result && result.bin) found.push(name);
+    } catch { /* probe failed → treat as unavailable */ }
+  }
+  return found;
+}
+
 function buildPrUrlBase({ repoHost, org, project, repoName }) {
   if (repoHost === 'github') {
     return org && repoName ? `https://github.com/${org}/${repoName}/pull/` : '';
@@ -449,6 +473,22 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   }
   if (!config.agents || Object.keys(config.agents).length === 0) {
     config.agents = { ...DEFAULT_AGENTS };
+  }
+
+  // Auto-detect available runtime CLIs and pin engine.defaultCli to whichever
+  // is installed. Only set if the user hasn't already configured one — never
+  // overwrite an explicit choice on `init --force` upgrades.
+  if (!config.engine.defaultCli) {
+    const detected = _detectAvailableRuntimes();
+    if (detected.length === 1) {
+      config.engine.defaultCli = detected[0];
+      console.log(`\n  ✓ Detected ${detected[0]} CLI — set as fleet default runtime`);
+    } else if (detected.length > 1) {
+      // Both available — prefer claude (the historical default and broader skill coverage)
+      config.engine.defaultCli = detected.includes('claude') ? 'claude' : detected[0];
+      console.log(`\n  ✓ Detected ${detected.join(' + ')} — fleet default set to ${config.engine.defaultCli}`);
+    }
+    // If nothing detected, leave defaultCli unset (engine falls back to 'claude')
   }
   saveConfig(config);
   console.log(`\n  Minions initialized at ${MINIONS_HOME}`);

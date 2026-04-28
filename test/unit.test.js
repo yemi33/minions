@@ -6544,6 +6544,25 @@ async function testConfigAndPlaybooks() {
       'init should fail fast when MINIONS_HOME is inside PKG_ROOT');
   });
 
+  await test('minions init auto-detects available CLI and sets engine.defaultCli', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
+    assert.ok(src.includes('function _detectAvailableRuntimes'),
+      'minions.js should define a runtime auto-detection helper');
+    assert.ok(/registry\.listRuntimes\(\)/.test(src),
+      'detection should iterate the runtime registry rather than hardcoding names');
+    assert.ok(/resolveBinary\(/.test(src),
+      'detection should probe each adapter via resolveBinary()');
+    // initMinions calls the helper only when defaultCli is unset (preserves user choice on --force upgrades)
+    const initFn = src.slice(src.indexOf('async function initMinions'), src.indexOf('async function addProject'));
+    assert.ok(/if \(!config\.engine\.defaultCli\)/.test(initFn),
+      'init should only auto-set defaultCli when not already configured');
+    assert.ok(initFn.includes('_detectAvailableRuntimes()'),
+      'init should call the detection helper');
+    // When both runtimes are available, prefer claude as the historical default
+    assert.ok(initFn.includes("includes('claude') ? 'claude'"),
+      'when multiple CLIs detected, should prefer claude over copilot');
+  });
+
   await test('bin/minions force init restarts engine and dashboard automatically', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     assert.ok(src.includes('Upgrade complete (') && src.includes('Restarting engine and dashboard'),
@@ -10267,6 +10286,91 @@ async function testResolveAgent() {
   await test('resolveAgent uses pickAnyIdle to fall back to any idle agent', () => {
     assert.ok(src.includes('const anyIdle = pickAnyIdle([preferred, fallback])'),
       'Final fallback should use pickAnyIdle excluding preferred and fallback');
+  });
+
+  await test('resolveAgent honors explicit agent hints before routing defaults', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
+      fs.writeFileSync(routingPath, [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| verify | dallas | ralph |',
+        '| implement | dallas | ralph |',
+        ''
+      ].join('\n'));
+      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      routing.resetClaimedAgents();
+      const config = {
+        agents: {
+          dallas: { name: 'Dallas' },
+          ralph: { name: 'Ralph' },
+          lambert: { name: 'Lambert' },
+        },
+        engine: { allowTempAgents: false },
+      };
+      assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), 'lambert',
+        'Lambert hint must override verify routing default of Dallas');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent waits for hinted agents instead of falling back to route default', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
+      fs.writeFileSync(routingPath, [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| verify | dallas | ralph |',
+        '| implement | dallas | ralph |',
+        ''
+      ].join('\n'));
+      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      routing.resetClaimedAgents();
+      const freshShared = require('../engine/shared');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{ id: 'busy-lambert', agent: 'lambert' }],
+        completed: [],
+      });
+      const config = {
+        agents: {
+          dallas: { name: 'Dallas' },
+          ralph: { name: 'Ralph' },
+          lambert: { name: 'Lambert' },
+        },
+        engine: { allowTempAgents: false },
+      };
+      assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), null,
+        'Busy Lambert hint must block dispatch instead of rerouting to Dallas');
+    } finally { restore(); }
+  });
+
+  await test('engine work-item discovery passes preferred_agent/agents to resolveAgent', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('item.preferred_agent || item.agents || null'),
+      'Work-item discovery should derive agent hints from preferred_agent/agents');
+    assert.ok(engineSrc.includes('resolveAgent(workType, config, null, agentHints)'),
+      'Work-item discovery should pass hints into resolveAgent so routing defaults do not override them');
+    assert.ok(engineSrc.includes("item.meta?.item?.preferred_agent || item.meta?.item?.agents"),
+      'Pending dispatch fallback should preserve work-item agent hints when re-resolving missing agents');
+    assert.ok(engineSrc.includes("item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length"),
+      'Busy-agent reassignment should treat hinted work as explicit assignment');
+  });
+
+  await test('Command Center dispatch persists agents[] hint for engine routing', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashboardSrc.includes('preferred_agent: action.agents[0], agents: action.agents'),
+      'Command Center dispatch should persist both preferred_agent and agents so engine routing can honor the hint');
   });
 }
 
