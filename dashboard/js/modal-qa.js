@@ -27,8 +27,8 @@ let _qaProcessing = false; // true while waiting for response
 let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
 const QA_QUEUE_CAP = 10; // max queued messages
+const QA_STREAM_STALL_MS = 90000; // abort doc-chat if heartbeats continue but no chunk/tool progress arrives
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
-let _qaThreadCollapsed = false; // sticky while streaming so collapse doesn't bounce open on updates
 
 function _renderQaUserMessage(thread, message, selection) {
   let qHtml = '<div class="modal-qa-q">' + escHtml(message);
@@ -38,7 +38,7 @@ function _renderQaUserMessage(thread, message, selection) {
   qHtml += '</div>';
   thread.insertAdjacentHTML('beforeend', qHtml);
   thread.scrollTop = thread.scrollHeight;
-  _showThreadWrap(true);
+  _showThreadWrap();
 }
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
 const _qaRuntime = new Map(); // key → {history, processing, abortController, queue}
@@ -199,28 +199,29 @@ function _qaBuildAssistantHtml(text, opts) {
 
 function _qaBuildLiveProgressHtml(loadingId, label, elapsedSeconds, streamedText, toolsUsed, queueCount) {
   const qaQueueBadge = queueCount > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + queueCount + ' queued</span>' : '';
-  let html = '';
+  // Wrap in a column-flex container so chain-of-thought (tool calls) stack
+  // vertically on top and the progress block sits at the bottom. Overrides the
+  // parent .modal-qa-loading row-flex (which is right for the simple
+  // "Thinking..." initial state but wrong once tools/streamed text appear).
+  let html = '<div style="display:flex;flex-direction:column;align-items:stretch;gap:6px;width:100%">';
   if (toolsUsed && toolsUsed.length > 0) {
-    html += '<div style="margin-bottom:6px">';
+    html += '<div style="display:flex;flex-direction:column;gap:2px">';
     toolsUsed.forEach(function(t) {
       const name = typeof t === 'string' ? t : t.name;
       const input = typeof t === 'string' ? {} : (t.input || {});
-      html += '<div style="color:var(--muted);font-size:10px;font-family:monospace"><span style="flex-shrink:0">&#9679;</span> ' + formatToolSummary(name, input) + '</div>';
+      html += '<div style="color:var(--muted);font-size:10px;font-family:monospace;display:flex;align-items:flex-start;gap:6px"><span style="flex-shrink:0">&#9679;</span><span style="word-break:break-all">' + formatToolSummary(name, input) + '</span></div>';
     });
     html += '</div>';
   }
-  if (streamedText) html += '<div style="margin-bottom:6px">' + renderMd(streamedText) + '</div>';
-  html += '<div style="display:flex;flex-direction:column;align-items:flex-start;gap:6px">' +
-    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-      '<span class="dot-pulse"><span></span><span></span><span></span></span> ' +
-      '<span id="' + loadingId + '-text">' + escHtml(label) + '</span>' +
-    '</div>' +
-    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-      '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)">' + elapsedSeconds + 's</span>' +
-      '<button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
-      qaQueueBadge +
-    '</div>' +
-    '</div>';
+  if (streamedText) html += '<div>' + renderMd(streamedText) + '</div>';
+  html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+    '<span class="dot-pulse"><span></span><span></span><span></span></span>' +
+    '<span id="' + loadingId + '-text">' + escHtml(label) + '</span>' +
+    '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)">' + elapsedSeconds + 's</span>' +
+    '<button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
+    qaQueueBadge +
+  '</div>';
+  html += '</div>';
   return html;
 }
 
@@ -291,7 +292,6 @@ function _initQaSession() {
   if (!key || _qaSessionKey === key) return;
   if (_qaSessionKey && _qaSessionKey !== key) _qaSaveActiveSessionState();
   _qaSessionKey = key;
-  _qaThreadCollapsed = false;
   const card = findCardForFile(_modalFilePath);
   if (card) clearNotifBadge(card);
   var prior = _qaSessions.get(key);
@@ -307,7 +307,7 @@ function _initQaSession() {
       });
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
-    _showThreadWrap(true);
+    _showThreadWrap();
     requestAnimationFrame(function() {
       var thread = document.getElementById('modal-qa-thread');
       if (thread) thread.scrollTop = thread.scrollHeight;
@@ -333,7 +333,6 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   _qaAbortController = null;
-  _qaThreadCollapsed = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
@@ -433,6 +432,21 @@ async function _processQaMessage(message, selection, opts) {
     : [[0,'Thinking...'],[3000,'Reading document...'],[8000,'Analyzing...'],[20000,'Still working...'],[60000,'Taking a while...']];
   let streamedText = '';
   let toolsUsed = [];
+  let _qaStreamStalled = false;
+  let _qaStallTimer = null;
+  function _clearQaStreamWatchdog() {
+    if (_qaStallTimer) {
+      clearTimeout(_qaStallTimer);
+      _qaStallTimer = null;
+    }
+  }
+  function _resetQaStreamWatchdog() {
+    _clearQaStreamWatchdog();
+    _qaStallTimer = setTimeout(() => {
+      _qaStreamStalled = true;
+      try { abortController.abort(); } catch {}
+    }, QA_STREAM_STALL_MS);
+  }
   function _qaProgressLabel(elapsed) {
     let label = qaPhases[0][1];
     for (let i = qaPhases.length - 1; i >= 0; i--) {
@@ -471,6 +485,7 @@ async function _processQaMessage(message, selection, opts) {
     _qaRenderProgress(false);
   }, 500);
   _qaRenderProgress(false);
+  _resetQaStreamWatchdog();
 
   try {
     const res = await fetch('/api/doc-chat/stream', {
@@ -507,11 +522,13 @@ async function _processQaMessage(message, selection, opts) {
       if (!evt || !evt.type) return;
       if (evt.type === 'heartbeat') return;
       if (evt.type === 'chunk') {
+        _resetQaStreamWatchdog();
         streamedText = evt.text || '';
         _qaRenderProgress(true);
         return;
       }
       if (evt.type === 'tool') {
+        _resetQaStreamWatchdog();
         toolsUsed.push({ name: evt.name, input: evt.input || {} });
         _qaRenderProgress(true);
         return;
@@ -519,6 +536,7 @@ async function _processQaMessage(message, selection, opts) {
       if (evt.type === 'done') {
         terminalEventSeen = true;
         clearInterval(qaTimer);
+        _clearQaStreamWatchdog();
         const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
         const borderColor = evt.edited ? 'var(--green)' : 'var(--blue)';
         const suffix = evt.edited ? '\n\n\u2713 Document saved.' : '';
@@ -565,7 +583,10 @@ async function _processQaMessage(message, selection, opts) {
         });
         return;
       }
-      if (evt.type === 'error') throw new Error(evt.error || 'Failed');
+      if (evt.type === 'error') {
+        _clearQaStreamWatchdog();
+        throw new Error(evt.error || 'Failed');
+      }
     }
 
     while (true) {
@@ -591,8 +612,14 @@ async function _processQaMessage(message, selection, opts) {
     if (!terminalEventSeen) throw new Error('The response stream ended before completion.');
   } catch (e) {
     clearInterval(qaTimer);
+    _clearQaStreamWatchdog();
     const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
-    const messageHtml = e.name === 'AbortError'
+    const stallMessage = 'Doc chat stalled with no tool or text progress for 90s.';
+    const messageHtml = _qaStreamStalled
+      ? (streamedText
+          ? _qaBuildAssistantHtml(streamedText + '\n\nError: ' + stallMessage, { borderColor: 'var(--red)', elapsed: qaElapsedExc })
+          : _qaBuildAssistantHtml('Error: ' + stallMessage, { color: 'var(--red)', isError: true, elapsed: qaElapsedExc }))
+      : e.name === 'AbortError'
       ? (streamedText
           ? _qaBuildAssistantHtml(streamedText + '\n\n_Stopped._', { borderColor: 'var(--muted)', elapsed: qaElapsedExc })
           : _qaBuildAssistantHtml('Stopped', { color: 'var(--muted)', isError: true, elapsed: qaElapsedExc }))
@@ -674,18 +701,15 @@ function toggleDocChat() {
   var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
   var visible = wrap.style.display !== 'none';
-  var nextVisible = !visible;
-  _qaThreadCollapsed = !nextVisible;
-  wrap.style.display = nextVisible ? '' : 'none';
-  if (expandBar) expandBar.style.display = nextVisible ? 'none' : '';
+  wrap.style.display = visible ? 'none' : '';
+  if (expandBar) expandBar.style.display = visible ? '' : 'none';
 }
 
-function _showThreadWrap(forceExpand) {
+function _showThreadWrap() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
-  if (forceExpand) _qaThreadCollapsed = false;
-  if (wrap) wrap.style.display = _qaThreadCollapsed ? 'none' : '';
-  if (expandBar) expandBar.style.display = _qaThreadCollapsed ? '' : 'none';
+  if (wrap) wrap.style.display = '';
+  if (expandBar) expandBar.style.display = 'none';
 }
 
 // ── Drag-to-resize doc chat thread ──────────────────────────────────────────
