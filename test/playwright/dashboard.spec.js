@@ -1009,6 +1009,117 @@ test.describe('Settings', () => {
     expect(pageErrors.some(msg => msg.includes('data is not defined'))).toBeFalsy();
     expect(consoleErrors.some(msg => msg.includes('data is not defined'))).toBeFalsy();
   });
+
+  // ── P-7a5c1f8e: unified Runtime configuration UI ───────────────────────────
+
+  test('Runtime section: defaultCli dropdown is populated from /api/runtimes', async ({ page }) => {
+    await load(page);
+    const settingsBtn = page.locator('button[onclick*="openSettings"], button:has-text("Settings")').first();
+    await settingsBtn.click();
+    await page.waitForSelector('#modal-body:visible', { timeout: 3000 });
+    const cliSelect = page.locator('#set-defaultCli');
+    await expect(cliSelect).toBeVisible({ timeout: 3000 });
+    // Wait for /api/runtimes to populate the options (initial render shows "Loading…").
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#set-defaultCli');
+      if (!el) return false;
+      const opts = Array.from(el.options).map(o => o.value);
+      // At least 'claude' must be present once the registry resolves.
+      return opts.includes('claude');
+    }, { timeout: 5000 });
+    const opts = await cliSelect.locator('option').allTextContents();
+    expect(opts).toContain('claude');
+    await page.keyboard.press('Escape');
+  });
+
+  test('Runtime section: switching defaultCli refetches the model input — no stale list', async ({ page }) => {
+    await load(page);
+    const settingsBtn = page.locator('button[onclick*="openSettings"], button:has-text("Settings")').first();
+    await settingsBtn.click();
+    await page.waitForSelector('#modal-body:visible', { timeout: 3000 });
+
+    // Wait for initial population.
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#set-defaultCli');
+      return el && Array.from(el.options).some(o => o.value === 'claude');
+    }, { timeout: 5000 });
+
+    // Capture the available CLI options. If only 'claude' is registered (the
+    // legacy single-runtime install), this assertion is vacuously satisfied —
+    // the test gates on multi-runtime configs.
+    const cliOptions = await page.locator('#set-defaultCli option').evaluateAll(opts =>
+      opts.map(o => o.value).filter(Boolean)
+    );
+    if (cliOptions.length < 2) {
+      test.skip(true, 'Only one runtime registered — switching test requires ≥2 runtimes');
+    }
+
+    // Change the dropdown value to a non-current runtime and verify the model
+    // input reloads. We look for the input element to be REPLACED — that's the
+    // signal that loadModelsForRuntime ran without leaving the previous list.
+    const otherRuntime = cliOptions.find(c => c !== 'claude') || cliOptions[1];
+    await page.locator('#set-defaultCli').selectOption(otherRuntime);
+    // The model wrapper's child input should still exist (free-text) or change
+    // to a select. Either way, the value should reset to '' (empty placeholder).
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#set-defaultModel');
+      return el && el.value === '';
+    }, { timeout: 5000 });
+    await page.keyboard.press('Escape');
+  });
+
+  test('Runtime section: Advanced runtime settings disclosure hides + shows the 8 toggles', async ({ page }) => {
+    await load(page);
+    const settingsBtn = page.locator('button[onclick*="openSettings"], button:has-text("Settings")').first();
+    await settingsBtn.click();
+    await page.waitForSelector('#modal-body:visible', { timeout: 3000 });
+
+    const advanced = page.locator('#set-runtime-advanced-details');
+    await expect(advanced).toBeVisible();
+    // Collapsed by default — the toggles should be in the DOM but inside a
+    // closed <details>; not visible until we expand.
+    const isOpen = await advanced.evaluate(el => el.open);
+    expect(isOpen).toBe(false);
+
+    // Expand the disclosure and verify the 8 advanced controls are reachable.
+    await advanced.locator('summary').click();
+    await page.waitForFunction(() => document.querySelector('#set-runtime-advanced-details').open, { timeout: 1000 });
+    for (const id of [
+      'set-claudeBareMode', 'set-claudeFallbackModel',
+      'set-copilotDisableBuiltinMcps', 'set-copilotSuppressAgentsMd',
+      'set-copilotStreamMode', 'set-copilotReasoningSummaries',
+      'set-maxBudgetUsd', 'set-disableModelDiscovery',
+    ]) {
+      await expect(page.locator('#' + id)).toBeAttached();
+    }
+    await page.keyboard.press('Escape');
+  });
+
+  test('Runtime section: per-agent CLI cell shows fleet-default placeholder before runtime list loads', async ({ page }) => {
+    await load(page);
+    const settingsBtn = page.locator('button[onclick*="openSettings"], button:has-text("Settings")').first();
+    await settingsBtn.click();
+    await page.waitForSelector('#modal-body:visible', { timeout: 3000 });
+    // Per-agent CLI cells carry data-runtime-cli="<id>". The initial render
+    // is a disabled placeholder input showing "<fleet> (fleet)". Hydration
+    // replaces it with a <select> once /api/runtimes resolves.
+    const cells = page.locator('[data-runtime-cli]');
+    const count = await cells.count();
+    if (count === 0) test.skip(true, 'No agents in config — per-agent placeholder test requires ≥1 agent');
+
+    // After hydration the cell should contain a <select data-field="cli">.
+    await page.waitForFunction(() => {
+      const cell = document.querySelector('[data-runtime-cli]');
+      return cell && cell.querySelector('select[data-field="cli"]');
+    }, { timeout: 5000 });
+    const firstCell = cells.first();
+    const select = firstCell.locator('select[data-field="cli"]');
+    await expect(select).toBeAttached();
+    // The "(fleet default)" option must be present so users can clear the override.
+    const optionTexts = await select.locator('option').allTextContents();
+    expect(optionTexts.some(t => t.includes('fleet default'))).toBeTruthy();
+    await page.keyboard.press('Escape');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

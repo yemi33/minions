@@ -4883,10 +4883,57 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         delete config.engine.adoPollCommentsEvery;
         // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        // CC model/effort
+
+        // ── Runtime fleet (P-7a5c1f8e) ─────────────────────────────────────
+        // Empty string clears the override — the dashboard's "Default (CLI
+        // chooses)" option submits '' and we must persist that as "unset".
+        // Validate `defaultCli` and `ccCli` against the runtime registry so a
+        // typo in the dashboard can't pin the fleet to a non-existent runtime.
+        const _isClear = (v) => v === '' || v === null;
+        let _registeredCliNames = null;
+        const _validCli = (name) => {
+          if (_registeredCliNames == null) {
+            try { _registeredCliNames = require('./engine/runtimes').listRuntimes(); }
+            catch { _registeredCliNames = []; }
+          }
+          return _registeredCliNames.length === 0 || _registeredCliNames.includes(String(name));
+        };
+        if (e.defaultCli !== undefined) {
+          if (_isClear(e.defaultCli)) delete config.engine.defaultCli;
+          else if (_validCli(e.defaultCli)) config.engine.defaultCli = String(e.defaultCli);
+          else _clamped.push(`defaultCli: "${e.defaultCli}" not registered (kept previous value)`);
+        }
+        if (e.ccCli !== undefined) {
+          if (_isClear(e.ccCli)) delete config.engine.ccCli;
+          else if (_validCli(e.ccCli)) config.engine.ccCli = String(e.ccCli);
+          else _clamped.push(`ccCli: "${e.ccCli}" not registered (kept previous value)`);
+        }
+        if (e.defaultModel !== undefined) {
+          if (_isClear(e.defaultModel)) delete config.engine.defaultModel;
+          else config.engine.defaultModel = String(e.defaultModel);
+        }
         if (e.ccModel !== undefined) {
-          const valid = ['sonnet', 'haiku', 'opus'];
-          config.engine.ccModel = valid.includes(e.ccModel) ? e.ccModel : D.ccModel;
+          if (_isClear(e.ccModel)) delete config.engine.ccModel;
+          else config.engine.ccModel = String(e.ccModel);
+        }
+        if (e.claudeFallbackModel !== undefined) {
+          if (_isClear(e.claudeFallbackModel)) delete config.engine.claudeFallbackModel;
+          else config.engine.claudeFallbackModel = String(e.claudeFallbackModel);
+        }
+        if (e.copilotStreamMode !== undefined) {
+          const valid = ['on', 'off'];
+          if (_isClear(e.copilotStreamMode)) delete config.engine.copilotStreamMode;
+          else if (valid.includes(e.copilotStreamMode)) config.engine.copilotStreamMode = e.copilotStreamMode;
+          else _clamped.push(`copilotStreamMode: "${e.copilotStreamMode}" not in [on, off] (kept previous value)`);
+        }
+        // maxBudgetUsd uses ?? semantics — 0 is a valid cap (read-only / dry-run agents).
+        if (e.maxBudgetUsd !== undefined) {
+          if (_isClear(e.maxBudgetUsd)) delete config.engine.maxBudgetUsd;
+          else {
+            const n = Number(e.maxBudgetUsd);
+            if (Number.isFinite(n) && n >= 0) config.engine.maxBudgetUsd = n;
+            else _clamped.push(`maxBudgetUsd: "${e.maxBudgetUsd}" must be ≥ 0 (kept previous value)`);
+          }
         }
         if (e.ccEffort !== undefined) {
           const valid = [null, 'low', 'medium', 'high'];
@@ -4933,6 +4980,31 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
             if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
             else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+          }
+          // Per-agent runtime overrides (P-7a5c1f8e). Empty string clears
+          // the override so the agent inherits the fleet default; validated
+          // CLI values pin the agent to a specific runtime. `0` is a valid
+          // maxBudgetUsd (read-only / dry-run agents).
+          if (updates.cli !== undefined) {
+            if (updates.cli === '' || updates.cli === null) delete config.agents[id].cli;
+            else config.agents[id].cli = String(updates.cli);
+          }
+          if (updates.model !== undefined) {
+            if (updates.model === '' || updates.model === null) delete config.agents[id].model;
+            else config.agents[id].model = String(updates.model);
+          }
+          if (updates.maxBudgetUsd !== undefined) {
+            if (updates.maxBudgetUsd === '' || updates.maxBudgetUsd === null) delete config.agents[id].maxBudgetUsd;
+            else {
+              const n = Number(updates.maxBudgetUsd);
+              if (Number.isFinite(n) && n >= 0) config.agents[id].maxBudgetUsd = n;
+            }
+          }
+          if (updates.bareMode !== undefined) {
+            // Boolean override — explicit false should override engine.claudeBareMode=true,
+            // so we accept all three states (true, false, "unset" via empty/null).
+            if (updates.bareMode === '' || updates.bareMode === null) delete config.agents[id].bareMode;
+            else config.agents[id].bareMode = !!updates.bareMode;
           }
         }
       }

@@ -3028,6 +3028,145 @@ async function testRuntimeFleetHelpers() {
     assert.ok(src.includes('opts.config'),
       'runPreflight should accept opts.config so callers (cli/start, doctor) can pass it');
   });
+
+  // ── P-7a5c1f8e: dashboard settings persistence + UI source guards ─────────
+
+  await test('dashboard.js handleSettingsUpdate persists new runtime fleet fields', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // Each new fleet field must be readable on body.engine and written to config.engine
+    for (const field of [
+      'defaultCli', 'defaultModel', 'ccCli', 'ccModel',
+      'claudeFallbackModel', 'copilotStreamMode', 'maxBudgetUsd',
+    ]) {
+      assert.ok(new RegExp(`e\\.${field}`).test(handler),
+        `handleSettingsUpdate must read body.engine.${field} from the request payload`);
+    }
+  });
+
+  await test('dashboard.js handleSettingsUpdate validates defaultCli + ccCli against the runtime registry', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    assert.ok(/listRuntimes\(\)/.test(handler),
+      'CLI validation must consult engine/runtimes.listRuntimes() so a typo in the dashboard cannot pin the fleet to a non-existent runtime');
+  });
+
+  await test('dashboard.js handleSettingsUpdate clears overrides on empty string ("Default (CLI chooses)")', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // "Default (CLI chooses)" submits empty string. The handler must DELETE the
+    // key from config.engine — leaving the value as an empty string would
+    // override the runtime adapter's own default and crash --model "".
+    assert.ok(/delete config\.engine\.defaultModel/.test(handler),
+      'empty-string defaultModel must DELETE the key, not persist as ""');
+    assert.ok(/delete config\.engine\.defaultCli/.test(handler),
+      'empty-string defaultCli must DELETE the key so the runtime falls back to its built-in default');
+  });
+
+  await test('dashboard.js handleSettingsUpdate per-agent path accepts cli/model/maxBudgetUsd/bareMode overrides', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    const agentsBlock = handler.slice(handler.indexOf('if (body.agents)'));
+    for (const field of ['cli', 'model', 'maxBudgetUsd', 'bareMode']) {
+      assert.ok(new RegExp(`updates\\.${field}`).test(agentsBlock),
+        `handleSettingsUpdate agents block must read updates.${field}`);
+    }
+  });
+
+  await test('dashboard.js handleSettingsUpdate honors maxBudgetUsd=0 (??-equivalent)', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    // Number(value) >= 0 is the gate; using `Number.isFinite(n) && n >= 0`
+    // means 0 passes (read-only / dry-run agents). The team has specifically
+    // flagged the difference between `||` (drops 0) and `??` / explicit
+    // numeric-validity check (keeps 0) as a real bug class — see P-3b8e5f1d.
+    assert.ok(/n >= 0/.test(handler),
+      'maxBudgetUsd validation must allow 0 — `||` would silently drop a literal cap of $0');
+  });
+
+  await test('settings UI Runtime section includes the unified default CLI / Model controls (P-7a5c1f8e)', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    for (const id of ['set-defaultCli', 'set-defaultModel', 'set-ccCli', 'set-ccModel', 'set-ccEffort']) {
+      assert.ok(settingsSrc.includes(id),
+        `Settings UI must expose #${id} so saveSettings can collect the value`);
+    }
+    // The defaultCli dropdown is sourced from /api/runtimes — verify the wiring.
+    assert.ok(settingsSrc.includes('/api/runtimes'),
+      'Settings UI must fetch /api/runtimes to populate the defaultCli dropdown');
+  });
+
+  await test('settings UI advanced runtime section hides the 8 advanced toggles behind a disclosure', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // Advanced disclosure exists.
+    assert.ok(settingsSrc.includes('set-runtime-advanced-details'),
+      'Advanced runtime settings must live behind a <details> disclosure');
+    // All 8 advanced fields surface in the UI.
+    for (const id of [
+      'set-claudeBareMode', 'set-claudeFallbackModel',
+      'set-copilotDisableBuiltinMcps', 'set-copilotSuppressAgentsMd',
+      'set-copilotStreamMode', 'set-copilotReasoningSummaries',
+      'set-maxBudgetUsd', 'set-disableModelDiscovery',
+    ]) {
+      assert.ok(settingsSrc.includes(id),
+        `Advanced runtime settings must expose #${id}`);
+    }
+  });
+
+  await test('settings UI tooltip on copilotDisableBuiltinMcps warns about the split-brain PR-tracking risk', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // Find the copilotDisableBuiltinMcps toggle line; the third arg of
+    // settingsToggle is the hint.
+    const idx = settingsSrc.indexOf('set-copilotDisableBuiltinMcps');
+    assert.ok(idx > 0, 'set-copilotDisableBuiltinMcps toggle missing');
+    // Take a window of source around the toggle and check for the warning keywords
+    const window = settingsSrc.slice(idx, idx + 800);
+    assert.ok(/split-brain|bypass.*pull-requests\.json|github-mcp-server/.test(window),
+      'copilotDisableBuiltinMcps tooltip must explain the split-brain risk with PR tracking when disabled');
+  });
+
+  await test('settings UI per-agent CLI/Model columns surface fleet defaults as muted placeholders', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    // The per-agent CLI cell is hooked via data-runtime-cli="<id>" so
+    // initRuntimeFleetUI can hydrate it with a <select> populated from /api/runtimes.
+    assert.ok(settingsSrc.includes('data-runtime-cli'),
+      'Per-agent CLI cells must carry data-runtime-cli attribute for runtime hydration');
+    // The per-agent Model input must use placeholder text showing the fleet inheritance.
+    assert.ok(/placeholder="[^"]*\(fleet\)/.test(settingsSrc),
+      'Per-agent Model input must show the fleet default as muted placeholder');
+    // Per-agent Model field is wired into agentsPayload via data-field="model".
+    assert.ok(settingsSrc.includes('data-field="model"'),
+      'Per-agent Model input must carry data-field="model" so saveSettings collects it');
+  });
+
+  await test('settings UI saveSettings sends every new runtime field on the engine payload', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    const fn = settingsSrc.slice(settingsSrc.indexOf('async function saveSettings'));
+    for (const field of [
+      'defaultCli', 'defaultModel', 'ccCli', 'ccModel',
+      'claudeBareMode', 'claudeFallbackModel',
+      'copilotDisableBuiltinMcps', 'copilotSuppressAgentsMd',
+      'copilotStreamMode', 'copilotReasoningSummaries',
+      'maxBudgetUsd', 'disableModelDiscovery',
+    ]) {
+      assert.ok(fn.includes(field + ':'),
+        `saveSettings must send ${field} on the engine payload`);
+    }
+  });
 }
 
 async function testProjectHelpers() {
@@ -22704,7 +22843,18 @@ async function testSec03EscapeHtml() {
   // cannot reasonably be expressed via textContent. Claw back to 172 if/when
   // _qaBuildLiveProgressHtml is refactored to update only text fields in place
   // against a pre-built skeleton.
-  const DYNAMIC_INNERHTML_BASELINE = 173;
+  //
+  // 2026-04-28: bumped 173 → 177 (+4). Source: P-7a5c1f8e — the unified Runtime
+  // settings UI in dashboard/js/settings.js wholesale-replaces the contents of
+  // the defaultCli/ccCli <select>s, the per-agent CLI cell, and the
+  // defaultModel/ccModel input wrapper based on the registered runtimes and
+  // their model lists. Every interpolated value (runtime names, model ids,
+  // current config values) is wrapped in escHtml(); the structure is
+  // multi-option <select>/<input> markup that's tedious to express via
+  // createElement loops. Claw back to 173 if/when initRuntimeFleetUI +
+  // loadModelsForRuntime get refactored onto replaceChildren()/document
+  // fragments.
+  const DYNAMIC_INNERHTML_BASELINE = 177;
 
   await test(`dynamic innerHTML count does not exceed Phase A baseline (${DYNAMIC_INNERHTML_BASELINE})`, () => {
     const dashboardDir = path.join(MINIONS_DIR, 'dashboard');
@@ -24426,10 +24576,16 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(ccCallFn.includes('effort: ccEffort'), 'ccCall should pass effort to callLLM');
   });
 
-  await test('settings endpoint validates ccModel and ccEffort', () => {
+  await test('settings endpoint validates ccEffort and treats ccModel as free-text (P-7a5c1f8e)', () => {
+    // After P-7a5c1f8e, ccModel must accept any model ID (gpt-4o,
+    // claude-sonnet-4-5, custom Anthropic IDs, etc.) so the strict
+    // ['sonnet', 'haiku', 'opus'] validation was removed. ccEffort is still
+    // a closed enum because Claude/Copilot agree on those four values.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes("['sonnet', 'haiku', 'opus']"), 'Should validate ccModel against allowed values');
     assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
+    // Negative assertion: ccModel is no longer hardcoded to the Claude shorthands.
+    assert.ok(!/ccModel\s*=\s*valid\.includes\(e\.ccModel\)\s*\?\s*e\.ccModel\s*:\s*D\.ccModel/.test(src),
+      'ccModel must not be validated against a closed enum after P-7a5c1f8e — it is free-text to support multi-runtime fleets');
   });
 
   await test('ccCall maxTurns defaults from ENGINE_DEFAULTS.ccMaxTurns', () => {
