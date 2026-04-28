@@ -6552,8 +6552,12 @@ async function testConfigAndPlaybooks() {
       'detection should iterate the runtime registry rather than hardcoding names');
     assert.ok(/resolveBinary\(/.test(src),
       'detection should probe each adapter via resolveBinary()');
-    // initMinions calls the helper only when defaultCli is unset (preserves user choice on --force upgrades)
-    const initFn = src.slice(src.indexOf('async function initMinions'), src.indexOf('async function addProject'));
+    // initMinions calls the helper only when defaultCli is unset (preserves user choice on --force upgrades).
+    // Slice the function body using the const-commands-table sentinel that follows initMinions in the source —
+    // addProject is declared earlier in the file so its offset would precede initMinions and yield an empty slice.
+    const initStart = src.indexOf('async function initMinions');
+    const initEnd = src.indexOf('\nconst commands', initStart);
+    const initFn = src.slice(initStart, initEnd > 0 ? initEnd : undefined);
     assert.ok(/if \(!config\.engine\.defaultCli\)/.test(initFn),
       'init should only auto-set defaultCli when not already configured');
     assert.ok(initFn.includes('_detectAvailableRuntimes()'),

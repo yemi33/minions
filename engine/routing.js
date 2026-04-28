@@ -116,7 +116,7 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function resolveAgent(workType, config, authorAgent = null) {
+function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
   const routes = getRoutingTableCached();
   const route = routes[workType] || routes['implement'];
   const agents = config.agents || {};
@@ -144,6 +144,30 @@ function resolveAgent(workType, config, authorAgent = null) {
     if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
     return null;
   };
+
+  // ─── Hint short-circuit ─────────────────────────────────────────────
+  // Explicit agent hints (from item.preferred_agent / item.agents) restrict
+  // the candidate pool to just those agents — we never reroute past a hint
+  // to a routing-table default. If every hinted agent is busy/unavailable,
+  // return null so the work item waits for one to free up. Hints reflect
+  // user / CC intent; silently rerouting them lands work on the wrong agent.
+  // Hints that reference unknown agent IDs fall through to routing defaults.
+  if (agentHints) {
+    const hintList = (Array.isArray(agentHints) ? agentHints : [agentHints])
+      .filter(Boolean)
+      .map(h => String(h).toLowerCase());
+    const knownHints = hintList.filter(h => agents[h]);
+    if (knownHints.length > 0) {
+      for (const hint of knownHints) {
+        if (isAvailable(hint)) {
+          _claimedAgents.add(hint);
+          return hint;
+        }
+      }
+      // Configured hints exist but none are idle — wait, don't fall through.
+      return null;
+    }
+  }
 
   // Resolve _any_ token — pick any available agent (#480)
   if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
