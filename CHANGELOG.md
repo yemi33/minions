@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1586 (2026-04-28)
+
+### Fixes
+- stop URL regex at backslash to prevent JSONL escape leakage
+- optimistic UI for planApprove cascades to linked PRD
+- stack chain-of-thought above progress block (was side-by-side)
+
+### Other
+- Keep doc chat collapsed while streaming
+
 ## 0.1.1582 (2026-04-28)
 
 ### Fixes
