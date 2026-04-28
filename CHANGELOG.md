@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1589 (2026-04-28)
+
+### Features
+-  Pluggable CLI runtime adapters (Claude + GitHub Copilot) (#1804)
+
 ## 0.1.1588 (2026-04-28)
 
 ### Other
