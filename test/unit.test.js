@@ -21001,8 +21001,9 @@ async function testCcActionTypes() {
   await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
     const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(findBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
 
     const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
     const inlineResult = parseCCActions(inline);
@@ -21013,6 +21014,78 @@ async function testCcActionTypes() {
     const actionResult = parseCCActions(withActions);
     assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
     assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
+  });
+
+  // Issue #1834: Command Center actions silently dropped when JSON segment isn't a clean array.
+  // Non-Claude runtimes (Copilot/GPT) routinely wrap JSON in ```json fences or add trailing prose.
+  // Parser must extract the JSON array regardless of these common deviations.
+  await test('parseCCActions recovers JSON wrapped in ```json fences (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const fenced = 'I will file that bug.\n\n===ACTIONS===\n```json\n[{"type":"file-bug","title":"Repro bug","description":"x"}]\n```';
+    const result = parseCCActions(fenced);
+    assert.strictEqual(result.text, 'I will file that bug.', '```json fence must not block the action split');
+    assert.strictEqual(result.actions.length, 1, '```json fence must not swallow the action JSON');
+    assert.strictEqual(result.actions[0].type, 'file-bug', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions recovers JSON wrapped in plain ``` fences (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const fenced = 'Done.\n\n===ACTIONS===\n```\n[{"type":"note","title":"x","content":"y"}]\n```';
+    const result = parseCCActions(fenced);
+    assert.strictEqual(result.actions.length, 1, 'plain ``` fence must not swallow the action JSON');
+    assert.strictEqual(result.actions[0].type, 'note', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions tolerates trailing prose after JSON array (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const trailing = 'Filing now.\n\n===ACTIONS===\n[{"type":"file-bug","title":"x","description":"y"}]\n\nLet me know if anything is off.';
+    const result = parseCCActions(trailing);
+    assert.strictEqual(result.actions.length, 1, 'trailing prose after JSON array must not silently drop actions');
+    assert.strictEqual(result.actions[0].type, 'file-bug', 'action body parsed through the trailing prose');
+  });
+
+  await test('parseCCActions surfaces JSON parse failures via _actionParseError (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    // Truncated JSON — no recoverable balanced bracket.
+    const broken = 'Working on it.\n\n===ACTIONS===\n[{"type":"note","title":"x"';
+    const result = parseCCActions(broken);
+    assert.strictEqual(result.actions.length, 0, 'truncated JSON yields no actions');
+    assert.ok(result._actionParseError, 'parser must surface _actionParseError so callers can warn instead of silently dropping');
+  });
+
+  await test('_extractActionsJson finds balanced JSON inside fences and trailing prose', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const _extractActionsJson = new Function(extractBody + '\nreturn _extractActionsJson;')();
+
+    assert.strictEqual(_extractActionsJson('\n```json\n[{"a":1}]\n```'), '[{"a":1}]', 'strips ```json fence');
+    assert.strictEqual(_extractActionsJson('\n```\n[{"a":1}]\n```'), '[{"a":1}]', 'strips bare ``` fence');
+    assert.strictEqual(_extractActionsJson('\n[{"a":1}]\n\nFollow-up note.'), '[{"a":1}]', 'extracts balanced [ array ] from trailing prose');
+    assert.strictEqual(_extractActionsJson('\n{"type":"note","title":"x"}\n\nDone.'), '{"type":"note","title":"x"}', 'extracts balanced { object } from trailing prose');
+    // Strings containing brackets must not throw off the balance counter.
+    assert.strictEqual(_extractActionsJson('\n[{"content":"][}{"}]\n\nx'), '[{"content":"][}{"}]', 'string contents do not break bracket balance');
+    // Escaped quotes inside strings.
+    assert.strictEqual(_extractActionsJson('\n[{"content":"a\\"b"}]\n'), '[{"content":"a\\"b"}]', 'escaped quotes do not break string scan');
   });
 }
 

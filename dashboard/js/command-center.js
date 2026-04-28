@@ -623,6 +623,11 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         if (evt.actions && evt.actions.length > 0) {
           _tagServerExecuted(evt.actions, evt.actionResults);
           for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
+        } else if (evt.actionParseError) {
+          // Issue #1834: server saw ===ACTIONS=== but couldn't parse the JSON.
+          // Surface as an inline warning so the user knows actions were dropped
+          // (was previously silent — appeared as "actions failed" with no signal).
+          addMsg('system', '<div style="padding:6px 12px;font-size:11px;color:var(--red);background:var(--surface2);border-radius:6px;margin:4px 0">⚠️ Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>', false, activeTabId);
         }
       } else if (evt.type === 'error') {
         terminalEventSeen = true;

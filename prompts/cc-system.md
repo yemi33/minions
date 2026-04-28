@@ -52,6 +52,8 @@ When in doubt, delegate. You are the dispatcher, not the worker. Agents have iso
 ## Actions
 Append actions at the END of your response. Write your response first, then `===ACTIONS===` on its own line, then a JSON array. No text after the JSON. Omit entirely if no actions needed.
 
+**CRITICAL — emit RAW JSON only.** Do NOT wrap the JSON array in ```json fences, ``` fences, or any other markdown. Do NOT add commentary or "Let me know if that helps" lines after the JSON. The JSON array must start with `[` on the line immediately after `===ACTIONS===` and end with `]` as the very last character of the response. Anything else (fences, prose, trailing commas) breaks server-side action parsing and your actions will be silently dropped.
+
 Example:
 I'll dispatch dallas to fix that bug.
 

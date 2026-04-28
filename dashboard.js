@@ -758,16 +758,68 @@ function findCCActionsDelimiter(text) {
   return match.index + match[0].indexOf('===ACTIONS===');
 }
 
+// Issue #1834: non-Claude runtimes (Copilot/GPT) routinely wrap the action JSON
+// in ```json fences or append trailing prose ("Let me know if that helps!").
+// JSON.parse on the raw segment fails silently → actions dropped, user sees
+// inert text. This extractor pulls out the balanced JSON value (array or
+// object) regardless of fences, leading whitespace, or trailing junk so the
+// downstream parse can succeed. Returns null if no plausible JSON value is
+// present (caller surfaces the failure via _actionParseError).
+function _extractActionsJson(segment) {
+  if (!segment) return null;
+  let body = segment.trim();
+  // Strip ```json / ``` fences (open + close). The model sometimes only emits
+  // an opening fence (truncation), so handle both halves independently.
+  body = body.replace(/^```[a-zA-Z0-9_-]*\s*\r?\n?/, '').replace(/\r?\n?```\s*$/, '').trim();
+  if (!body) return null;
+  const first = body.indexOf('[');
+  const firstObj = body.indexOf('{');
+  let start = -1;
+  let openCh = '';
+  let closeCh = '';
+  if (first >= 0 && (firstObj < 0 || first <= firstObj)) {
+    start = first; openCh = '['; closeCh = ']';
+  } else if (firstObj >= 0) {
+    start = firstObj; openCh = '{'; closeCh = '}';
+  }
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return body.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function parseCCActions(text) {
   let actions = [];
   let displayText = text;
+  let parseError = null;
   const delimIdx = findCCActionsDelimiter(text);
   if (delimIdx >= 0) {
     displayText = text.slice(0, delimIdx).trim();
-    try {
-      const parsed = JSON.parse(text.slice(delimIdx + '===ACTIONS==='.length).trim());
-      actions = Array.isArray(parsed) ? parsed : [parsed];
-    } catch {}
+    const segment = text.slice(delimIdx + '===ACTIONS==='.length);
+    const jsonStr = _extractActionsJson(segment);
+    if (jsonStr) {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        actions = Array.isArray(parsed) ? parsed : [parsed];
+      } catch (e) {
+        parseError = e.message || 'invalid JSON';
+      }
+    } else if (segment.trim()) {
+      parseError = 'no JSON value found after ===ACTIONS=== delimiter';
+    }
   }
   if (actions.length === 0) {
     const actionRegex = /`{3,}\s*action\s*\r?\n([\s\S]*?)`{3,}/g;
@@ -775,9 +827,24 @@ function parseCCActions(text) {
     while ((match = actionRegex.exec(displayText)) !== null) {
       try { actions.push(JSON.parse(match[1].trim())); } catch {}
     }
-    if (actions.length > 0) displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
+    if (actions.length > 0) {
+      displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
+      parseError = null; // legacy fallback recovered actions
+    }
   }
-  return { text: displayText, actions };
+  const result = { text: displayText, actions };
+  if (parseError && actions.length === 0) {
+    result._actionParseError = parseError;
+    // Visibility for the engine log — silent failure here previously masked issue #1834.
+    try {
+      const snippet = (text.slice(delimIdx + '===ACTIONS==='.length).trim() || '').slice(0, 200);
+      console.warn(`[CC] action JSON parse failed (${parseError}); raw segment: ${snippet}`);
+      if (typeof shared !== 'undefined' && shared && typeof shared.log === 'function') {
+        shared.log('warn', `CC action JSON parse failed: ${parseError} — segment: ${snippet}`);
+      }
+    } catch { /* logging is best-effort */ }
+  }
+  return result;
 }
 
 // ── /loop → create-watch safety net ──────────────────────────────────────────
@@ -4382,7 +4449,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (parsed.actions.length > 0) {
           parsed.actionResults = await executeCCActions(parsed.actions);
         }
-        const reply = { ...parsed, sessionId: ccSession.sessionId, newSession: !wasResume };
+        // Issue #1834: rename _actionParseError → actionParseError (public field)
+        // so the client can surface a warning when the model emitted ===ACTIONS===
+        // but the JSON couldn't be recovered.
+        const { _actionParseError, ...parsedReply } = parsed;
+        const reply = { ...parsedReply, sessionId: ccSession.sessionId, newSession: !wasResume };
+        if (_actionParseError) reply.actionParseError = _actionParseError;
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
@@ -4639,7 +4711,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
 
         // Send final result with actions — execute server-side first
-        const { text: displayText, actions } = parseCCActions(result.text);
+        const { text: displayText, actions, _actionParseError } = parseCCActions(result.text);
         // Safety net: detect /loop invocation and convert to create-watch
         const _loopWatch = _detectLoopInvocation(displayText, actions, toolUses);
         if (_loopWatch) {
@@ -4652,6 +4724,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           actionResults = await executeCCActions(actions);
         }
         const donePayload = { type: 'done', text: displayText, actions, actionResults, sessionId: responseSessionId, newSession: !wasResume };
+        // Issue #1834: surface action JSON parse failures so the UI can warn
+        // instead of silently dropping. Client renders this as a small notice.
+        if (_actionParseError) donePayload.actionParseError = _actionParseError;
         if (sessionReset) donePayload.sessionReset = true;
         liveState.donePayload = donePayload;
         if (liveState.writer) liveState.writer(donePayload);
