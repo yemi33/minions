@@ -4918,13 +4918,58 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           else if (_validCli(e.ccCli)) config.engine.ccCli = String(e.ccCli);
           else _clamped.push(`ccCli: "${e.ccCli}" not registered (kept previous value)`);
         }
+        // Validate fleet-level model assignments against the resolved runtime.
+        // This is where the bug bit: defaultCli=copilot + defaultModel=gpt-5.5
+        // (where gpt-5.5 doesn't actually exist) cascaded into every agent
+        // that didn't pin its own model. Reject when the model is known to
+        // belong to a different runtime than the one it'll spawn against.
+        const _engineModelDiscovery = require('./engine/model-discovery');
+        const _engineRuntimes = require('./engine/runtimes');
+        async function _validateFleetModel(modelStr, resolvedRuntime) {
+          if (!modelStr) return null;
+          let knownForResolved = null;
+          try {
+            const list = await _engineModelDiscovery.getRuntimeModels(resolvedRuntime, { config });
+            if (Array.isArray(list?.models) && list.models.length > 0) {
+              knownForResolved = new Set(list.models.map(m => m.id || m.name).filter(Boolean));
+            }
+          } catch { /* unknown runtime */ }
+          if (knownForResolved && !knownForResolved.has(modelStr)) {
+            return `not a valid model for runtime "${resolvedRuntime}" (known: ${[...knownForResolved].slice(0, 4).join(', ')}${knownForResolved.size > 4 ? '…' : ''})`;
+          }
+          if (!knownForResolved) {
+            // Free-text runtime (Claude). Reject only if model belongs to a different runtime's published list.
+            for (const rt of _engineRuntimes.listRuntimes()) {
+              if (rt === resolvedRuntime) continue;
+              try {
+                const otherList = await _engineModelDiscovery.getRuntimeModels(rt, { config });
+                if (Array.isArray(otherList?.models) && otherList.models.some(m => (m.id || m.name) === modelStr)) {
+                  return `belongs to runtime "${rt}" but resolved runtime is "${resolvedRuntime}" — incompatible combination`;
+                }
+              } catch { /* skip */ }
+            }
+          }
+          return null;
+        }
         if (e.defaultModel !== undefined) {
           if (_isClear(e.defaultModel)) delete config.engine.defaultModel;
-          else config.engine.defaultModel = String(e.defaultModel);
+          else {
+            const candidate = String(e.defaultModel);
+            const resolvedCli = config.engine.defaultCli || 'claude';
+            const rejection = await _validateFleetModel(candidate, resolvedCli);
+            if (rejection) _clamped.push(`engine.defaultModel: "${candidate}" ${rejection} — kept previous value`);
+            else config.engine.defaultModel = candidate;
+          }
         }
         if (e.ccModel !== undefined) {
           if (_isClear(e.ccModel)) delete config.engine.ccModel;
-          else config.engine.ccModel = String(e.ccModel);
+          else {
+            const candidate = String(e.ccModel);
+            const resolvedCli = config.engine.ccCli || config.engine.defaultCli || 'claude';
+            const rejection = await _validateFleetModel(candidate, resolvedCli);
+            if (rejection) _clamped.push(`engine.ccModel: "${candidate}" ${rejection} — kept previous value`);
+            else config.engine.ccModel = candidate;
+          }
         }
         if (e.claudeFallbackModel !== undefined) {
           if (_isClear(e.claudeFallbackModel)) delete config.engine.claudeFallbackModel;
@@ -4982,6 +5027,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       if (body.agents) {
+        // Cache cross-runtime model lists once per request so we can reject
+        // claude+gpt-* / copilot+claude-* combinations before they crash a
+        // dispatch (see #model-validation: a stray engine.defaultModel='gpt-5.5'
+        // pinned every Claude agent into a 404 spawn loop).
+        const _modelDiscovery = require('./engine/model-discovery');
+        const _runtimeModelsCache = new Map(); // runtimeName → Set<modelId> (or null when unknown / Claude)
+        async function _modelsFor(runtimeName) {
+          if (_runtimeModelsCache.has(runtimeName)) return _runtimeModelsCache.get(runtimeName);
+          let set = null;
+          try {
+            const list = await _modelDiscovery.getRuntimeModels(runtimeName, { config });
+            if (Array.isArray(list?.models) && list.models.length > 0) {
+              set = new Set(list.models.map(m => m.id || m.name).filter(Boolean));
+            }
+          } catch { /* unknown runtime → free-text */ }
+          _runtimeModelsCache.set(runtimeName, set);
+          return set;
+        }
+        // Returns the runtime that "owns" this model, or null if no other
+        // runtime claims it. Catches "claude + gpt-5.5" by spotting that
+        // gpt-5.5 belongs to copilot's list.
+        async function _ownerOfModel(modelId) {
+          for (const rt of require('./engine/runtimes').listRuntimes()) {
+            const set = await _modelsFor(rt);
+            if (set && set.has(modelId)) return rt;
+          }
+          return null;
+        }
         for (const [id, updates] of Object.entries(body.agents)) {
           if (!config.agents[id]) continue;
           if (updates.role !== undefined) config.agents[id].role = String(updates.role);
@@ -5001,7 +5074,30 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
           if (updates.model !== undefined) {
             if (updates.model === '' || updates.model === null) delete config.agents[id].model;
-            else config.agents[id].model = String(updates.model);
+            else {
+              const candidate = String(updates.model);
+              const resolvedCli = config.agents[id].cli || config.engine.defaultCli || 'claude';
+              const knownModels = await _modelsFor(resolvedCli);
+              // Two validation paths:
+              //   1. If the runtime publishes a model list, enforce membership.
+              //   2. If the runtime doesn't (Claude), still reject when the
+              //      model belongs to a DIFFERENT runtime's list — that's how
+              //      we catch claude+gpt-5.5 (gpt-5.5 is in Copilot's list).
+              let rejection = null;
+              if (knownModels && !knownModels.has(candidate)) {
+                rejection = `not a valid model for runtime "${resolvedCli}" (known: ${[...knownModels].slice(0, 4).join(', ')}${knownModels.size > 4 ? '…' : ''})`;
+              } else if (!knownModels) {
+                const owner = await _ownerOfModel(candidate);
+                if (owner && owner !== resolvedCli) {
+                  rejection = `belongs to runtime "${owner}" but agent uses "${resolvedCli}" — incompatible combination`;
+                }
+              }
+              if (rejection) {
+                _clamped.push(`agents.${id}.model: "${candidate}" ${rejection} — kept previous value`);
+              } else {
+                config.agents[id].model = candidate;
+              }
+            }
           }
           if (updates.maxBudgetUsd !== undefined) {
             if (updates.maxBudgetUsd === '' || updates.maxBudgetUsd === null) delete config.agents[id].maxBudgetUsd;

@@ -35,7 +35,11 @@ async function openSettings() {
         // <select> populated from /api/runtimes once the registry resolves.
         '<input value="' + escHtml(a.cli || '') + '" placeholder="' + escHtml(fleetCliLabel) + ' (fleet)" disabled style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:11px">' +
       '</td>' +
-      '<td><input data-agent="' + escHtml(id) + '" data-field="model" value="' + escHtml(a.model || '') + '" placeholder="' + escHtml(fleetModelLabel) + ' (fleet)" style="width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
+      '<td data-runtime-model="' + escHtml(id) + '" style="min-width:140px">' +
+        // Loading placeholder — initRuntimeFleetUI() replaces this with a
+        // <select> populated from /api/runtimes/<resolved-cli>/models.
+        '<input value="' + escHtml(a.model || '') + '" placeholder="' + escHtml(fleetModelLabel) + ' (fleet)" disabled style="width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:11px">' +
+      '</td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="monthlyBudgetUsd" value="' + escHtml(a.monthlyBudgetUsd != null ? String(a.monthlyBudgetUsd) : '') + '" placeholder="unlimited" style="width:70px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;text-align:right"></td>' +
     '</tr>';
   }).join('');
@@ -347,6 +351,26 @@ async function initRuntimeFleetUI(engineCfg, agentsCfg) {
         ).join('') +
       '</select>';
   }
+  // Hydrate per-agent model dropdowns. The model list is keyed off the
+  // agent's RESOLVED runtime: per-agent override → fleet default. Without
+  // this the input was free-text and a user could (and did) save an agent
+  // with cli=claude + model=<some gpt> — invalid combination that crashed
+  // dispatch. Refreshing on CLI change clears stale model values.
+  const fleetDefaultCli = engineCfg.defaultCli || 'claude';
+  for (const cell of cliCells) {
+    const agentId = cell.getAttribute('data-runtime-cli');
+    const agent = (agentsCfg || {})[agentId] || {};
+    const resolvedCli = agent.cli || fleetDefaultCli;
+    loadModelsForAgent(agentId, resolvedCli, agent.model || '');
+    // CLI dropdown change → refresh that agent's model dropdown to match.
+    const sel = cell.querySelector('select[data-field="cli"]');
+    if (sel) {
+      sel.addEventListener('change', () => {
+        const newCli = sel.value || fleetDefaultCli;
+        loadModelsForAgent(agentId, newCli, ''); // clear value: previous model may not exist for the new runtime
+      });
+    }
+  }
 
   // Models load for the resolved default + CC CLIs. ccCli falls back to
   // defaultCli when unset — same rule as resolveCcCli().
@@ -407,6 +431,47 @@ async function loadModelsForRuntime(runtimeName, inputId, currentValue) {
     opts += '<option value="' + escHtml(currentValue) + '" selected>' + escHtml(currentValue) + ' (custom)</option>';
   }
   wrap.innerHTML = '<select id="' + inputId + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' + opts + '</select>';
+}
+
+/**
+ * Per-agent model hydrator. Replaces the placeholder input in the cell
+ * `[data-runtime-model="<agentId>"]` with a <select> of valid models for the
+ * given runtime. Output element keeps `data-agent` + `data-field="model"` so
+ * the existing save flow picks it up unchanged. Free-text input fallback
+ * when the runtime returns no model list (Claude / discovery disabled).
+ */
+async function loadModelsForAgent(agentId, runtimeName, currentValue) {
+  const cell = document.querySelector('[data-runtime-model="' + agentId + '"]');
+  if (!cell) return;
+  const baseAttrs = 'data-agent="' + escHtml(agentId) + '" data-field="model"';
+  const baseStyle = 'width:120px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px';
+  if (!runtimeName) {
+    cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="(no runtime)" disabled style="' + baseStyle + ';color:var(--muted)">';
+    return;
+  }
+  let payload = { models: null };
+  try {
+    const res = await fetch('/api/runtimes/' + encodeURIComponent(runtimeName) + '/models');
+    if (res.ok) payload = await res.json();
+  } catch { /* fall through to free-text */ }
+
+  const models = Array.isArray(payload.models) ? payload.models : null;
+  if (!models || models.length === 0) {
+    cell.innerHTML = '<input ' + baseAttrs + ' value="' + escHtml(currentValue || '') + '" placeholder="' + escHtml(runtimeName) + ' default" style="' + baseStyle + '">';
+    return;
+  }
+  let opts = '<option value=""' + (!currentValue ? ' selected' : '') + '>(fleet/default)</option>';
+  for (const m of models) {
+    const id = m.id || m.name || '';
+    if (!id) continue;
+    const label = m.name && m.name !== id ? (id + ' — ' + m.name) : id;
+    opts += '<option value="' + escHtml(id) + '"' + (id === currentValue ? ' selected' : '') + '>' + escHtml(label) + '</option>';
+  }
+  // Preserve unknown saved values so a user-set custom ID survives the next save.
+  if (currentValue && !models.some(m => (m.id || m.name) === currentValue)) {
+    opts += '<option value="' + escHtml(currentValue) + '" selected>' + escHtml(currentValue) + ' (custom — invalid for ' + escHtml(runtimeName) + '?)</option>';
+  }
+  cell.innerHTML = '<select ' + baseAttrs + ' style="' + baseStyle + '">' + opts + '</select>';
 }
 
 function settingsToggle(label, id, checked, hint) {
