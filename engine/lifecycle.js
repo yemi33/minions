@@ -771,9 +771,11 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   // Extract PR URL directly from agent output — no manual construction
   function extractPrUrl(prId) {
-    const ghMatch = output.match(new RegExp(`https?://github\\.com/[^\\s"'\\)\\]]*?/pull/${prId}(?:[^\\s"'\\)\\]]*)`, 'i'));
+    // Stop at backslash in addition to whitespace/quotes — raw JSONL encodes newlines as \n (literal
+    // backslash-n), so without this the regex would capture e.g. "pull/1804\n/usr/bin/bash".
+    const ghMatch = output.match(new RegExp(`https?://github\\.com/[^\\s"'\\)\\]\\\\]*?/pull/${prId}(?:[^\\s"'\\)\\]\\\\]*)`, 'i'));
     if (ghMatch) return ghMatch[0].replace(/[.,;:]+$/, '');
-    const adoMatch = output.match(new RegExp(`https?://(?:dev\\.azure\\.com|[^/]+\\.visualstudio\\.com)[^\\s"'\\)\\]]*?pullrequest/${prId}(?:[^\\s"'\\)\\]]*)`, 'i'));
+    const adoMatch = output.match(new RegExp(`https?://(?:dev\\.azure\\.com|[^/]+\\.visualstudio\\.com)[^\\s"'\\)\\]\\\\]*?pullrequest/${prId}(?:[^\\s"'\\)\\]\\\\]*)`, 'i'));
     if (adoMatch) return adoMatch[0].replace(/[.,;:]+$/, '');
     return '';
   }
