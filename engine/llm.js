@@ -270,10 +270,19 @@ function _createStreamAccumulator({
   const toolUses = [];
 
   // Copilot streams `assistant.message_delta` with `data.deltaContent` chunks
-  // before emitting the final `assistant.message`. We accumulate the deltas
-  // for the live onChunk feed; the final `assistant.message.data.content`
-  // value is the authoritative text.
+  // before emitting `assistant.message`. Tool-request messages can include
+  // narration ("I'll inspect...") that is only progress text, so terminal text
+  // comes from non-tool assistant messages or trailing deltas.
   let copilotMessageBuffer = '';
+
+  function _streamText(value) {
+    return maxTextLength ? value.slice(-maxTextLength) : value;
+  }
+
+  function _copilotAssistantMessageHasTools(obj) {
+    const requests = obj?.data?.toolRequests;
+    return Array.isArray(requests) && requests.length > 0;
+  }
 
   function captureEvent(obj) {
     if (!obj || typeof obj !== 'object') return;
@@ -322,12 +331,12 @@ function _createStreamAccumulator({
       }
     }
     if (obj.type === 'assistant.message' && typeof obj.data?.content === 'string') {
-      // Authoritative final assistant text for this turn.
+      // Tool-request narration ("I'll look into this...") is progress text, not
+      // the final answer. Keep streaming it live, but don't let it become the
+      // terminal result if the process exits before a final answer message.
       const content = obj.data.content;
-      if (content) {
-        text = maxTextLength ? content.slice(-maxTextLength) : content;
-        copilotMessageBuffer = '';
-      }
+      if (content && !_copilotAssistantMessageHasTools(obj)) text = _streamText(content);
+      copilotMessageBuffer = '';
       if (Array.isArray(obj.data.toolRequests)) {
         for (const tr of obj.data.toolRequests) {
           if (tr && tr.name) {
@@ -371,6 +380,9 @@ function _createStreamAccumulator({
     if (trimmed) {
       const ev = runtime.parseStreamChunk(trimmed);
       if (ev) captureEvent(ev);
+    }
+    if (copilotMessageBuffer) {
+      text = _streamText(copilotMessageBuffer);
     }
     // Reconciliation: if any field is still missing, ask the runtime adapter
     // to re-parse the whole stdout. parseOutput() may catch a result event

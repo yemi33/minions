@@ -300,8 +300,10 @@ const KNOWN_EVENT_TYPES = new Set([
  * Returns { text, usage, sessionId, model } — same shape as the Claude adapter
  * so engine/lifecycle.js can consume both transparently.
  *
- *   - text:      concatenation of every `assistant.message.data.content` value
- *                across turns (multi-turn autopilot loops emit one per turn)
+ *   - text:      concatenation of answer `assistant.message.data.content`
+ *                values, plus trailing deltas if the CLI exits before a final
+ *                `assistant.message`. Narration attached to tool requests is
+ *                progress text and is excluded from the final answer.
  *   - usage:     mapped from the terminal `result` event. Copilot doesn't
  *                report cost/tokens — those fields are NULL, not 0, so the
  *                dashboard can distinguish "Copilot didn't tell us" from
@@ -322,6 +324,7 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
   let model = null;
   let outputTokensTotal = 0;
   let turnEndCount = 0;
+  let pendingDeltaContent = '';
 
   for (const rawLine of safeRaw.split('\n')) {
     const line = rawLine.trim();
@@ -331,9 +334,17 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
     if (!obj || typeof obj !== 'object') continue;
 
     const type = obj.type;
-    if (type === 'assistant.message') {
+    if (type === 'assistant.message_delta') {
+      const delta = obj.data?.deltaContent;
+      if (typeof delta === 'string') pendingDeltaContent += delta;
+    } else if (type === 'assistant.message') {
       const content = obj.data?.content;
-      if (typeof content === 'string' && content) messageContents.push(content);
+      const toolRequests = obj.data?.toolRequests;
+      const hasToolRequests = Array.isArray(toolRequests) && toolRequests.length > 0;
+      if (typeof content === 'string') {
+        if (content && !hasToolRequests) messageContents.push(content);
+        pendingDeltaContent = '';
+      }
       const ot = obj.data?.outputTokens;
       if (typeof ot === 'number') outputTokensTotal += ot;
     } else if (type === 'assistant.turn_end') {
@@ -366,7 +377,7 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
     }
   }
 
-  let text = messageContents.join('');
+  let text = messageContents.join('') + pendingDeltaContent;
   if (maxTextLength && text.length > maxTextLength) {
     text = text.slice(-maxTextLength);
   }

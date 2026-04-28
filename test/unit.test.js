@@ -1674,6 +1674,22 @@ async function testCopilotAdapter() {
     assert.strictEqual(r.usage.cacheCreation, null);
   });
 
+  await test('copilot.parseOutput ignores tool-request narration and preserves trailing final deltas', () => {
+    const raw = [
+      '{"type":"assistant.message_delta","data":{"deltaContent":"I will inspect "}}',
+      '{"type":"assistant.message","data":{"content":"I will inspect the repo.","toolRequests":[{"name":"Read","arguments":{"file_path":"dashboard.js"}}],"outputTokens":4}}',
+      '{"type":"tool.execution_start","data":{"toolName":"Read","arguments":{"file_path":"dashboard.js"}}}',
+      '{"type":"tool.execution_complete","data":{"success":true,"result":{"content":"ok"}}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"assistant.message_delta","data":{"deltaContent":"The stream "}}',
+      '{"type":"assistant.message_delta","data":{"deltaContent":"now finishes."}}',
+      '{"type":"result","sessionId":"sess-10","exitCode":0,"usage":{"premiumRequests":1}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'The stream now finishes.',
+      'tool-use preambles must not replace a later final answer that only arrived as deltas');
+  });
+
   await test('copilot.parseOutput: model captured from session.tools_updated event', () => {
     const raw = [
       '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
@@ -5917,6 +5933,16 @@ async function testLlmModule() {
     assert.ok(src.includes('appendTextTail(stderr'), 'Should cap stderr tail');
     assert.ok(src.includes('maxLineBufferBytes'), 'Should cap the incremental line buffer');
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
+  });
+
+  await test('llm streaming accumulator does not finalize Copilot tool-request narration', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('function _copilotAssistantMessageHasTools('),
+      'stream accumulator should identify Copilot assistant messages that request tools');
+    assert.ok(src.includes('!_copilotAssistantMessageHasTools(obj)'),
+      'stream accumulator should not treat tool-request narration as terminal answer text');
+    assert.ok(src.includes('if (copilotMessageBuffer)') && src.includes('text = _streamText(copilotMessageBuffer)'),
+      'stream accumulator should preserve trailing Copilot deltas when no final assistant.message arrives');
   });
 
   // ── Export Shape ─────────────────────────────────────────────────────────
