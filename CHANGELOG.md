@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1588 (2026-04-28)
+
+### Other
+- Refresh quick notes immediately
+
 ## 0.1.1587 (2026-04-28)
 
 ### Fixes
