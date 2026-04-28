@@ -34118,6 +34118,177 @@ async function testAzureauthTimeout() {
     }
   });
 
+  // ── P-2f9b6d4c: Runtime Adapters documentation ────────────────────────────
+
+  await test('CLAUDE.md has a "Runtime Adapters" top-level section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    assert.ok(/^## Runtime Adapters$/m.test(src),
+      'CLAUDE.md must have a top-level "## Runtime Adapters" section');
+  });
+
+  await test('CLAUDE.md Runtime Adapters section documents every required adapter contract method', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // Every method named in the PRD AC list must appear in the section.
+    for (const method of [
+      'resolveBinary', 'listModels', 'buildArgs', 'buildPrompt',
+      'resolveModel', 'parseOutput', 'parseStreamChunk', 'parseError',
+    ]) {
+      assert.ok(section.includes(method),
+        `Runtime Adapters section must document the ${method} method`);
+    }
+  });
+
+  await test('CLAUDE.md Runtime Adapters section documents every capability flag', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const flag of [
+      'streaming', 'sessionResume', 'systemPromptFile', 'effortLevels',
+      'costTracking', 'modelShorthands', 'modelDiscovery', 'promptViaArg',
+      'budgetCap', 'bareMode', 'fallbackModel', 'sessionPersistenceControl',
+    ]) {
+      assert.ok(section.includes(flag),
+        `Runtime Adapters section must document capability flag: ${flag}`);
+    }
+  });
+
+  await test('CLAUDE.md documents all six resolution helpers + the no-fall-through independence rule', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const helper of [
+      'resolveAgentCli', 'resolveCcCli', 'resolveAgentModel', 'resolveCcModel',
+      'resolveAgentMaxBudget', 'resolveAgentBareMode',
+    ]) {
+      assert.ok(section.includes(helper),
+        `Runtime Adapters section must document the ${helper} helper`);
+    }
+    // Independence rule must be explicitly called out.
+    assert.ok(/do not fall through|do NOT fall through|does NOT fall through|independence/i.test(section),
+      'Runtime Adapters section must spell out that agent-path and CC-path are independent (no fall-through between them)');
+  });
+
+  await test('CLAUDE.md documents the three-tier model resolution chain with a worked example', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/per-agent.*defaultModel.*runtime|three-tier/i.test(section.replace(/\s+/g, ' ')),
+      'Runtime Adapters section must describe the per-agent → engine.defaultModel → CLI default chain');
+    // The worked example for the chain.
+    assert.ok(section.includes('"engine":') && section.includes('"agents":'),
+      'Runtime Adapters section must include a worked config.json example demonstrating the chain');
+  });
+
+  await test('CLAUDE.md fleet config table covers all 12 new fields with defaults + per-agent override paths', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    for (const field of [
+      'engine.defaultCli', 'engine.defaultModel', 'engine.ccCli', 'engine.ccModel',
+      'engine.claudeBareMode', 'engine.claudeFallbackModel',
+      'engine.copilotDisableBuiltinMcps', 'engine.copilotSuppressAgentsMd',
+      'engine.copilotStreamMode', 'engine.copilotReasoningSummaries',
+      'engine.maxBudgetUsd', 'engine.disableModelDiscovery',
+    ]) {
+      assert.ok(section.includes(field),
+        `Runtime Adapters config table must list ${field}`);
+    }
+    // Per-agent override paths must be documented for the four overridable fields.
+    for (const overridePath of ['agent.cli', 'agent.model', 'agent.maxBudgetUsd', 'agent.bareMode']) {
+      assert.ok(section.includes(overridePath),
+        `Runtime Adapters config table must document the ${overridePath} override path`);
+    }
+  });
+
+  await test('CLAUDE.md documents both migration paths (config.claude.* deprecation + ccModel→defaultModel shim)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/config\.claude\.\* deprecation|deprecated-config-claude/i.test(section),
+      'Runtime Adapters section must document the config.claude.* deprecation path');
+    assert.ok(/applyLegacyCcModelMigration|ccModel.*defaultModel.*memory|in[-\s]memory/i.test(section),
+      'Runtime Adapters section must document the legacy ccModel → defaultModel in-memory migration');
+  });
+
+  await test('CLAUDE.md documents the CLI one-liner + --model "" semantics', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(section.includes('minions start --cli'),
+      'Runtime Adapters section must include `minions start --cli` example');
+    assert.ok(/--model ['"]?['"]?\s*(clears|deletes)|empty string/i.test(section.replace(/\s+/g, ' ')),
+      'Runtime Adapters section must document that --model "" (empty) clears the override');
+  });
+
+  await test('CLAUDE.md documents per-runtime model discovery + disableModelDiscovery global override', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // Claude has no enumeration mechanism.
+    assert.ok(/Claude.*no public|modelDiscovery: false/i.test(section),
+      'Runtime Adapters section must document Claude having no model enumeration mechanism');
+    // Copilot uses the GitHub Copilot REST API.
+    assert.ok(/api\.githubcopilot\.com\/models/.test(section),
+      'Runtime Adapters section must document the Copilot models REST endpoint');
+    // disableModelDiscovery is the fleet-wide opt-out.
+    assert.ok(section.includes('disableModelDiscovery'),
+      'Runtime Adapters section must document the disableModelDiscovery fleet-wide opt-out');
+  });
+
+  await test('CLAUDE.md spells out the "no runtime.name === branches" rule', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    // The rule that engine code must not branch on runtime.name — capability flags only.
+    assert.ok(/runtime\.name === |runtime\.name `===`|name check|capability flag/.test(section),
+      'Runtime Adapters section must call out the "capability flags only — no runtime.name === branches" rule');
+  });
+
+  await test('CLAUDE.md documents the effort-level normalization (max → xhigh for Copilot only)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/'max'/.test(section) && /xhigh/.test(section),
+      'Runtime Adapters section must document the max → xhigh effort mapping for Copilot');
+    // The mapping is Copilot-only.
+    assert.ok(/Copilot/.test(section),
+      'Effort normalization documentation must reference Copilot');
+  });
+
+  await test('CLAUDE.md explains --no-custom-instructions / --disable-builtin-mcps / --bare with rationale', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+
+    // --no-custom-instructions rationale (AGENTS.md suppression)
+    assert.ok(section.includes('--no-custom-instructions') && section.includes('AGENTS.md'),
+      'Runtime Adapters section must explain --no-custom-instructions and AGENTS.md suppression');
+    assert.ok(section.includes('copilotSuppressAgentsMd'),
+      'Runtime Adapters section must reference the copilotSuppressAgentsMd toggle');
+
+    // --disable-builtin-mcps + split-brain risk
+    assert.ok(section.includes('--disable-builtin-mcps') && /split-brain/i.test(section),
+      'Runtime Adapters section must explain --disable-builtin-mcps and the split-brain PR-tracking risk');
+    assert.ok(section.includes('copilotDisableBuiltinMcps'),
+      'Runtime Adapters section must reference the copilotDisableBuiltinMcps toggle');
+
+    // --bare + explicit-context limitation
+    assert.ok(section.includes('--bare') && /explicit context|explicit ccSystemPrompt|requires.*explicit|loses?.*context/i.test(section),
+      'Runtime Adapters section must explain --bare and the requires-explicit-context limitation');
+    assert.ok(section.includes('claudeBareMode'),
+      'Runtime Adapters section must reference the claudeBareMode toggle');
+  });
+
+  await test('CLAUDE.md documents the Windows WinGet path for Copilot binary resolution', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## Runtime Adapters');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(/%LOCALAPPDATA%\\Microsoft\\WinGet\\Links\\copilot\.exe/.test(section),
+      'Runtime Adapters section must document the Windows WinGet path: %LOCALAPPDATA%\\Microsoft\\WinGet\\Links\\copilot.exe');
+  });
+
   await test('docs/auto-discovery.md documents azureauth with --timeout', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'auto-discovery.md'), 'utf8');
     const azureauthRefs = src.match(/`[^`]*azureauth\s+ado\s+token[^`]*`/g) || [];
