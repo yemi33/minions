@@ -123,9 +123,13 @@ function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, op
 
 // ─── Main script execution ──────────────────────────────────────────────────
 
-function _installHint(name) {
-  if (name === 'claude') return 'install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
-  if (name === 'copilot') return 'install via WinGet (winget install GitHub.cli && gh extension install github/gh-copilot) or download standalone';
+function _installHint(name, runtime) {
+  // Adapters expose `installHint` as the canonical message; fall back to a
+  // generic line when an adapter without one is registered (defensive — every
+  // bundled adapter sets it, but custom registrations may not).
+  if (runtime && typeof runtime.installHint === 'string' && runtime.installHint) {
+    return runtime.installHint;
+  }
   return `${name} CLI binary not found on PATH`;
 }
 
@@ -179,7 +183,7 @@ function main() {
     process.exit(78);
   }
   if (!resolved) {
-    console.error(`FATAL: Cannot find ${runtimeName} CLI — ${_installHint(runtimeName)}`);
+    console.error(`FATAL: Cannot find ${runtimeName} CLI — ${_installHint(runtimeName, runtime)}`);
     process.exit(78);
   }
 

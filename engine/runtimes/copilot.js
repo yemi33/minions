@@ -533,6 +533,14 @@ const capabilities = {
   sessionPersistenceControl: false,
 };
 
+// Install hint surfaced when `resolveBinary()` returns null. Covers all
+// supported install paths so users on any platform see one actionable line.
+// Standalone Copilot CLI (preferred path) is available via:
+//   - WinGet:    winget install --id GitHub.cli && gh extension install github/gh-copilot
+//   - Homebrew:  brew install gh && gh extension install github/gh-copilot
+//   - Direct:    download from https://github.com/github/copilot-cli/releases
+const INSTALL_HINT = 'install via WinGet (winget install --id GitHub.cli && gh extension install github/gh-copilot), Homebrew (brew install gh && gh extension install github/gh-copilot), or download standalone copilot from https://github.com/github/copilot-cli/releases';
+
 module.exports = {
   name: 'copilot',
   capabilities,
@@ -542,6 +550,7 @@ module.exports = {
   modelsCache: MODELS_CACHE,
   // Use the same wrapper as Claude — spawn-agent.js is runtime-agnostic per P-9c4f2d6a
   spawnScript: path.join(ENGINE_DIR, 'spawn-agent.js'),
+  installHint: INSTALL_HINT,
   buildArgs,
   buildPrompt,
   resolveModel,

@@ -7230,7 +7230,9 @@ async function testPreflightModule() {
     const { passed: p, results: r } = preflight.runPreflight();
     assert.ok(typeof p === 'boolean', 'passed should be boolean');
     assert.ok(Array.isArray(r), 'results should be array');
-    assert.strictEqual(r.length, 3, 'should have exactly 3 checks (Node, Git, Claude CLI)');
+    // Without a config: Node + Git + Runtime: claude (the legacy default).
+    // With config: more entries (one runtime check per distinct CLI in use).
+    assert.strictEqual(r.length, 3, 'no-config preflight should be 3 checks (Node, Git, Runtime: claude)');
   });
 
   await test('runPreflight includes Node.js check as passing', () => {
@@ -7246,10 +7248,10 @@ async function testPreflightModule() {
     assert.ok(gitCheck, 'Missing Git check');
   });
 
-  await test('runPreflight includes Claude Code CLI check', () => {
+  await test('runPreflight includes per-runtime claude binary check (replaces legacy Claude Code CLI entry)', () => {
     const { results: r } = preflight.runPreflight();
-    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
-    assert.ok(claudeCheck, 'Missing Claude Code CLI check');
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    assert.ok(claudeCheck, 'Missing "Runtime: claude" check — runPreflight must call adapter.resolveBinary()');
   });
 
   await test('runPreflight does not check Anthropic auth (handled by Claude Code)', () => {
@@ -7319,6 +7321,271 @@ async function testPreflightModule() {
       // Not allowed: any call interpolating 'which' or file path variables
       assert.ok(!call.includes('${which'), `Found unsafe shell interpolation of path variable: ${call}`);
     }
+  });
+
+  // ── P-9e8a3f1d: per-runtime binary + model discovery checks ──────────────
+
+  await test('_distinctRuntimes returns ["claude"] when no config supplied (legacy)', () => {
+    assert.deepStrictEqual(preflight._distinctRuntimes(null), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes(undefined), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes(), ['claude']);
+  });
+
+  await test('_distinctRuntimes unions defaultCli, ccCli, and per-agent cli; sorted; deduped', () => {
+    const runtimes = preflight._distinctRuntimes({
+      engine: { defaultCli: 'copilot', ccCli: 'claude' },
+      agents: {
+        dallas: { cli: 'claude' },
+        ralph: { cli: 'copilot' },     // dup
+        rebecca: { cli: 'codex' },     // unknown — preflight reports it; this helper just collects
+      },
+    });
+    assert.deepStrictEqual(runtimes, ['claude', 'codex', 'copilot'], 'expected sorted-unique list');
+  });
+
+  await test('_distinctRuntimes defaults defaultCli to "claude" when absent', () => {
+    const runtimes = preflight._distinctRuntimes({
+      engine: { ccCli: 'copilot' },
+      agents: {},
+    });
+    assert.deepStrictEqual(runtimes, ['claude', 'copilot']);
+  });
+
+  await test('_checkRuntimeBinary emits a warn-level entry with adapter.installHint when binary is missing', () => {
+    // Stub a fake adapter into the registry. We don't have to mock fs; we
+    // pass an explicit installHint and a resolveBinary that returns null.
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-missing',
+      capabilities: {},
+      resolveBinary: () => null,
+      installHint: 'install via the made-up package manager',
+    };
+    registry.registerRuntime('fake-missing', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-missing');
+      assert.strictEqual(r.name, 'Runtime: fake-missing');
+      assert.strictEqual(r.ok, false);
+      assert.ok(r.message.includes('not found'), `expected "not found" prefix: ${r.message}`);
+      assert.ok(r.message.includes('install via the made-up package manager'),
+        `installHint must be embedded in the message: ${r.message}`);
+    } finally {
+      registry._registry.delete('fake-missing');
+    }
+  });
+
+  await test('_checkRuntimeBinary surfaces resolveBinary success with bin + leadingArgs', () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-ok',
+      capabilities: {},
+      resolveBinary: () => ({ bin: '/usr/bin/gh', native: true, leadingArgs: ['copilot'] }),
+      installHint: 'unused',
+    };
+    registry.registerRuntime('fake-ok', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-ok');
+      assert.strictEqual(r.ok, true);
+      assert.ok(r.message.includes('/usr/bin/gh'));
+      assert.ok(r.message.includes('leadingArgs: copilot'),
+        'leadingArgs from gh-copilot path must surface in the message');
+    } finally {
+      registry._registry.delete('fake-ok');
+    }
+  });
+
+  await test('_checkRuntimeBinary marks node-shim cli.js (native:false) distinctly', () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const fake = {
+      name: 'fake-shim',
+      capabilities: {},
+      resolveBinary: () => ({ bin: '/x/cli.js', native: false, leadingArgs: [] }),
+      installHint: 'unused',
+    };
+    registry.registerRuntime('fake-shim', fake);
+    try {
+      const r = preflight._checkRuntimeBinary('fake-shim');
+      assert.strictEqual(r.ok, true);
+      assert.ok(r.message.includes('node shim'),
+        'native:false must surface as "(node shim)" so operators see they\'re running through node');
+    } finally {
+      registry._registry.delete('fake-shim');
+    }
+  });
+
+  await test('_checkRuntimeBinary returns warn-level fail (not throw) for unknown runtime', () => {
+    const r = preflight._checkRuntimeBinary('totally-fake-cli');
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.message.includes('unknown runtime'),
+      `unknown-runtime path should label the failure: ${r.message}`);
+  });
+
+  await test('runPreflight with a Copilot-fleet config emits both Runtime entries', () => {
+    const { results: r } = preflight.runPreflight({
+      config: {
+        engine: { defaultCli: 'copilot' },
+        agents: { dallas: { cli: 'claude' } },
+      },
+    });
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    const copilotCheck = r.find(c => c.name === 'Runtime: copilot');
+    assert.ok(claudeCheck, 'Claude runtime check missing for Claude-using agent');
+    assert.ok(copilotCheck, 'Copilot runtime check missing for fleet defaultCli=copilot');
+  });
+
+  await test('_fleetSummaryResults emits Fleet line for any config with engine section', () => {
+    const r = preflight._fleetSummaryResults({ engine: { defaultCli: 'copilot', defaultModel: 'gpt-5' } });
+    const fleet = r.find(x => x.name === 'Fleet');
+    assert.ok(fleet);
+    assert.ok(fleet.message.includes('defaultCli=copilot'));
+    assert.ok(fleet.message.includes('defaultModel=gpt-5'));
+  });
+
+  await test('_fleetSummaryResults reports defaultModel="(runtime default)" when unset', () => {
+    const r = preflight._fleetSummaryResults({ engine: {} });
+    const fleet = r.find(x => x.name === 'Fleet');
+    assert.ok(fleet.message.includes('defaultCli=claude'));
+    assert.ok(fleet.message.includes('defaultModel=(runtime default)'));
+  });
+
+  await test('_fleetSummaryResults adds CC overrides line only when ccCli or ccModel set', () => {
+    const none = preflight._fleetSummaryResults({ engine: {} });
+    assert.ok(!none.find(x => x.name === 'CC overrides'), 'no override line when CC inherits');
+
+    const both = preflight._fleetSummaryResults({ engine: { ccCli: 'copilot', ccModel: 'gpt-5' } });
+    const cc = both.find(x => x.name === 'CC overrides');
+    assert.ok(cc, 'must surface ccCli + ccModel');
+    assert.ok(cc.message.includes('ccCli=copilot'));
+    assert.ok(cc.message.includes('ccModel=gpt-5'));
+
+    const onlyModel = preflight._fleetSummaryResults({ engine: { ccModel: 'haiku' } });
+    const ccm = onlyModel.find(x => x.name === 'CC overrides');
+    assert.ok(ccm && !ccm.message.includes('ccCli='), 'lone ccModel must not emit ccCli=undefined');
+  });
+
+  await test('_fleetSummaryResults adds "Active fleet flags" line only for non-default values', () => {
+    // All defaults — nothing surfaced
+    const defaultsOnly = preflight._fleetSummaryResults({
+      engine: { claudeBareMode: false, copilotStreamMode: 'on', copilotDisableBuiltinMcps: true, disableModelDiscovery: false },
+    });
+    assert.ok(!defaultsOnly.find(x => x.name === 'Active fleet flags'),
+      'all-defaults config must not emit a flags line');
+
+    // Two non-defaults
+    const some = preflight._fleetSummaryResults({
+      engine: { claudeBareMode: true, copilotStreamMode: 'off', maxBudgetUsd: 5 },
+    });
+    const flags = some.find(x => x.name === 'Active fleet flags');
+    assert.ok(flags, 'non-default flags must surface');
+    assert.ok(flags.message.includes('claudeBareMode=true'));
+    assert.ok(flags.message.includes('copilotStreamMode="off"'));
+    assert.ok(flags.message.includes('maxBudgetUsd=5'));
+  });
+
+  await test('_fleetSummaryResults returns [] for null/undefined/empty config', () => {
+    assert.deepStrictEqual(preflight._fleetSummaryResults(null), []);
+    assert.deepStrictEqual(preflight._fleetSummaryResults(undefined), []);
+    // Empty object → still no `engine` section, no surface
+    const emptyResults = preflight._fleetSummaryResults({});
+    const fleet = emptyResults.find(x => x.name === 'Fleet');
+    // Spec: an empty engine section still emits the Fleet line (defaultCli=claude).
+    // Defensive: don't assume.
+    assert.ok(fleet === undefined || fleet.message.includes('defaultCli=claude'),
+      'empty config either skips or emits the runtime default');
+  });
+
+  await test('_modelDiscoveryResults reports "discovery disabled" when engine.disableModelDiscovery=true', async () => {
+    const r = await preflight._modelDiscoveryResults({
+      engine: { defaultCli: 'claude', disableModelDiscovery: true },
+    });
+    const claudeModels = r.find(x => x.name === 'Models: claude');
+    assert.ok(claudeModels);
+    assert.strictEqual(claudeModels.ok, 'warn');
+    assert.ok(claudeModels.message.includes('discovery disabled'));
+  });
+
+  await test('_modelDiscoveryResults reports "discovery unavailable" for runtime without enumeration mechanism (Claude)', async () => {
+    const r = await preflight._modelDiscoveryResults({
+      engine: { defaultCli: 'claude' },
+    });
+    const claudeModels = r.find(x => x.name === 'Models: claude');
+    assert.ok(claudeModels);
+    assert.strictEqual(claudeModels.ok, 'warn');
+    assert.ok(claudeModels.message.includes('discovery unavailable'));
+    assert.ok(claudeModels.message.includes('no enumeration'),
+      'message should explain Claude has no public model enumeration mechanism');
+  });
+
+  await test('_modelDiscoveryResults uses cached model count when adapter listModels returns array', async () => {
+    // Stub a runtime with modelDiscovery=true and a deterministic listModels.
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const tmpDir = createTmpDir();
+    const cachePath = path.join(tmpDir, 'fake-disc-models.json');
+    const fake = {
+      name: 'fake-disc',
+      capabilities: { modelDiscovery: true },
+      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
+      installHint: 'unused',
+      listModels: async () => [
+        { id: 'm-1', name: 'Model 1', provider: 'fake' },
+        { id: 'm-2', name: 'Model 2', provider: 'fake' },
+        { id: 'm-3', name: 'Model 3', provider: 'fake' },
+      ],
+      modelsCache: cachePath,
+    };
+    registry.registerRuntime('fake-disc', fake);
+    try {
+      // Bust model-discovery's cache for the fake runtime
+      try { fs.unlinkSync(cachePath); } catch {}
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'fake-disc' },
+      });
+      const m = r.find(x => x.name === 'Models: fake-disc');
+      assert.ok(m, 'Models: fake-disc entry missing');
+      assert.strictEqual(m.ok, true);
+      assert.ok(m.message.includes('3 models cached'),
+        `expected "3 models cached", got: ${m.message}`);
+    } finally {
+      registry._registry.delete('fake-disc');
+    }
+  });
+
+  await test('_modelDiscoveryResults reports "discovery unavailable (...)" when listModels resolves to null', async () => {
+    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const tmpDir = createTmpDir();
+    const cachePath = path.join(tmpDir, 'fake-empty-models.json');
+    const fake = {
+      name: 'fake-empty',
+      capabilities: { modelDiscovery: true },
+      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
+      installHint: 'unused',
+      listModels: async () => null,
+      modelsCache: cachePath,
+    };
+    registry.registerRuntime('fake-empty', fake);
+    try {
+      try { fs.unlinkSync(cachePath); } catch {}
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'fake-empty' },
+      });
+      const m = r.find(x => x.name === 'Models: fake-empty');
+      assert.ok(m);
+      assert.strictEqual(m.ok, 'warn');
+      assert.ok(m.message.includes('discovery unavailable'),
+        `null/empty result must surface as "discovery unavailable": ${m.message}`);
+    } finally {
+      registry._registry.delete('fake-empty');
+    }
+  });
+
+  await test('_warmModelCache returns synchronously without throwing (fire-and-forget)', () => {
+    // Make sure the helper never blocks runPreflight or throws on missing config.
+    const startedAt = Date.now();
+    preflight._warmModelCache('claude', { engine: {} });
+    preflight._warmModelCache('totally-unknown', null);
+    preflight._warmModelCache('', null);
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 50, `_warmModelCache must return synchronously fast — got ${elapsed}ms`);
   });
 }
 
@@ -7489,29 +7756,38 @@ async function testPreflightDeep() {
       'Should provide Git install URL on failure');
   });
 
-  await test('runPreflight Claude CLI check classifies native vs cli.js binary', () => {
+  await test('runPreflight runtime check classifies native vs cli.js binary', () => {
     const { results: r } = preflight.runPreflight();
-    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
-    assert.ok(claudeCheck, 'Claude CLI check should exist');
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    assert.ok(claudeCheck, 'Runtime: claude check should exist');
     if (claudeCheck.ok) {
-      // Message should be either 'native' or a package name like 'claude-code'
       assert.ok(typeof claudeCheck.message === 'string' && claudeCheck.message.length > 0,
-        'Claude CLI message should be non-empty');
+        'Runtime: claude message should be non-empty');
     }
   });
 
-  await test('runPreflight Claude CLI label uses "native" for non-cli.js binaries', () => {
-    assert.ok(preflightSrc.includes("const isNative = !claudeBin.endsWith('cli.js')"),
-      'Should detect native binary by checking if path ends with cli.js');
-    assert.ok(preflightSrc.includes("const label = isNative ? 'native'"),
-      'Should label native binaries as "native"');
+  await test('runPreflight delegates native-vs-shim labelling to the adapter (P-9e8a3f1d)', () => {
+    // After P-9e8a3f1d, preflight reads `resolved.native` from
+    // `adapter.resolveBinary()` and tags the message with "(node shim)" when
+    // native is false. The cli.js suffix check moved into the adapter.
+    assert.ok(preflightSrc.includes('resolved.native === false'),
+      'preflight should read native:false from adapter.resolveBinary() result');
+    assert.ok(preflightSrc.includes('node shim'),
+      'preflight should label non-native (cli.js shim) results so operators see they\'re running through node');
   });
 
-  await test('runPreflight Claude CLI failure provides install instructions', () => {
-    assert.ok(preflightSrc.includes('npm install -g @anthropic-ai/claude-code'),
-      'Should provide npm install command on failure');
-    assert.ok(preflightSrc.includes('https://claude.ai/download'),
-      'Should provide download URL on failure');
+  await test('runPreflight Claude install instructions live on the adapter, not preflight (P-9e8a3f1d)', () => {
+    // Source-of-truth assertion: install hints are adapter properties so each
+    // runtime owns its own message. preflight.js just emits adapter.installHint.
+    const claudeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
+    assert.ok(claudeSrc.includes('installHint'),
+      'claude adapter should export an installHint string');
+    assert.ok(claudeSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'claude adapter installHint should provide the npm install command');
+    assert.ok(claudeSrc.includes('https://claude.ai/download'),
+      'claude adapter installHint should provide the download URL');
+    assert.ok(preflightSrc.includes('adapter.installHint'),
+      'preflight should embed adapter.installHint into the failure message');
   });
 
   await test('runPreflight returns passed=true when all checks pass', () => {
@@ -7529,16 +7805,20 @@ async function testPreflightDeep() {
   });
 
   await test('runPreflight does not check auth (confirmed by source)', () => {
-    assert.ok(preflightSrc.includes('Auth is handled by Claude Code itself'),
-      'Source should explicitly note auth is not checked');
+    // Note updated in P-9e8a3f1d: now phrased as "each runtime CLI itself"
+    // because Copilot uses GH_TOKEN, not Claude credentials.
+    assert.ok(/Auth is handled by (Claude Code itself|each runtime CLI itself)/.test(preflightSrc),
+      'Source should explicitly note auth is delegated to the runtime');
   });
 
   // ── printPreflight: output formatting ──
 
   await test('printPreflight uses checkmark for ok, X for fail, ! for warn', () => {
-    assert.ok(preflightSrc.includes("r.ok === true ? '\\u2713'"), 'Should use checkmark for ok');
+    // After P-9e8a3f1d the source uses literal Unicode glyphs (✓ / ✗) instead
+    // of escape sequences. Match either form.
+    assert.ok(/r\.ok === true \? ('✓'|'\\u2713')/.test(preflightSrc), 'Should use checkmark for ok');
     assert.ok(preflightSrc.includes("r.ok === 'warn' ? '!'"), 'Should use ! for warn');
-    assert.ok(preflightSrc.includes("'\\u2717'"), 'Should use X mark for fail');
+    assert.ok(/'(✗|\\u2717)'/.test(preflightSrc), 'Should use X mark for fail');
   });
 
   await test('printPreflight handles empty results array', () => {
@@ -7702,11 +7982,13 @@ async function testPreflightDeep() {
 
   // ── runPreflight: result ordering ──
 
-  await test('runPreflight results are in order: Node.js, Git, Claude Code CLI', () => {
+  await test('runPreflight results are in order: Node.js, Git, Runtime: claude', () => {
     const { results: r } = preflight.runPreflight();
     assert.strictEqual(r[0].name, 'Node.js', 'First check should be Node.js');
     assert.strictEqual(r[1].name, 'Git', 'Second check should be Git');
-    assert.strictEqual(r[2].name, 'Claude Code CLI', 'Third check should be Claude Code CLI');
+    // P-9e8a3f1d: legacy "Claude Code CLI" replaced by the adapter-driven
+    // "Runtime: claude" entry. With no config, only claude is in use.
+    assert.strictEqual(r[2].name, 'Runtime: claude', 'Third check should be Runtime: claude');
   });
 
   // ── MINIONS_DEBUG logging ──
@@ -7934,15 +8216,17 @@ async function testPreflightBehavioral() {
     );
 
     try {
-      const claudeCheck = result.results.find(r => r.name === 'Claude Code CLI');
-      assert.ok(claudeCheck, 'Claude Code CLI check must exist');
+      // P-9e8a3f1d: legacy "Claude Code CLI" entry replaced by the
+      // adapter-driven "Runtime: claude" entry.
+      const claudeCheck = result.results.find(r => r.name === 'Runtime: claude');
+      assert.ok(claudeCheck, 'Runtime: claude check must exist');
       // If the test host has /usr/local/lib or similar actually containing claude-code,
       // we'd hit an early return. Guard that.
       if (claudeCheck.ok === false) {
         assert.ok(claudeCheck.message.includes('not found'),
           `message should mention not found, got: ${claudeCheck.message}`);
         assert.ok(claudeCheck.message.includes('claude.ai/download') || claudeCheck.message.includes('@anthropic-ai/claude-code'),
-          'message should include install instructions');
+          'message should include install instructions (sourced from claude adapter installHint)');
         assert.strictEqual(result.passed, false, 'passed=false when Claude CLI missing');
       }
     } finally {
@@ -13139,9 +13423,18 @@ async function testSpawnAgentScript() {
       'Should exit with code 78 (configuration error) when claudeBin is null');
   });
 
-  await test('spawn-agent.js prints error message to stderr when CLI not found', () => {
-    assert.ok(src.includes('console.error') && src.includes('npm install -g @anthropic-ai/claude-code'),
-      'Should print actionable error message before exiting with 78');
+  await test('spawn-agent.js prints error message via adapter.installHint when CLI not found', () => {
+    // After P-9e8a3f1d, the install hint string lives on the adapter rather
+    // than being hardcoded in spawn-agent.js. Verify the wrapper still prints
+    // an actionable error AND routes the hint through `runtime.installHint`.
+    assert.ok(src.includes('console.error'),
+      'Should print to stderr before exiting with 78');
+    assert.ok(/_installHint\(runtimeName,?\s*runtime\)?/.test(src),
+      'Should look up the install hint via the resolved adapter');
+    // Sanity-check the adapter actually supplies the npm install command for Claude:
+    const claudeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
+    assert.ok(claudeSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'claude adapter installHint should still reference the npm install command');
   });
 
   await test('spawn-agent.js writes PID file for engine reattachment', () => {

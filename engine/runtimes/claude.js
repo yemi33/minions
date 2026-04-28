@@ -388,6 +388,11 @@ const capabilities = {
   sessionPersistenceControl: true,
 };
 
+// Install hint surfaced when `resolveBinary()` returns null. Consumed by
+// `engine/preflight.js` (per-runtime binary check) and `engine/spawn-agent.js`
+// (fatal error message). Multi-line so all platforms see actionable guidance.
+const INSTALL_HINT = 'install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
+
 module.exports = {
   name: 'claude',
   capabilities,
@@ -396,6 +401,7 @@ module.exports = {
   listModels,
   modelsCache: MODELS_CACHE,
   spawnScript: path.join(ENGINE_DIR, 'spawn-agent.js'),
+  installHint: INSTALL_HINT,
   buildArgs,
   buildPrompt,
   resolveModel,

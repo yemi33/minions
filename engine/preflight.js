@@ -1,6 +1,11 @@
 /**
  * engine/preflight.js — Prerequisite and health checks for Minions.
  * Used by `minions init`, `minions start`, and `minions doctor`.
+ *
+ * Per-runtime binary + model-discovery checks (P-9e8a3f1d) — for every distinct
+ * CLI in use across `engine.defaultCli`, `engine.ccCli`, and `agents.<id>.cli`,
+ * we resolve the adapter from the registry and run its `resolveBinary()`. The
+ * cache is warmed via `listModels()` when the runtime supports discovery.
  */
 
 const fs = require('fs');
@@ -8,9 +13,12 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 /**
- * Resolve the Claude Code CLI binary path.
+ * Resolve the Claude Code CLI binary path. Legacy helper preserved for back-
+ * compat — the runtime registry's `resolveRuntime('claude').resolveBinary()`
+ * is now the canonical resolver. This wrapper only exists so external tooling
+ * that still calls `findClaudeBinary()` keeps working until cleanup ships.
+ *
  * Returns the path if found, null otherwise.
- * Reuses the same search logic as spawn-agent.js.
  */
 function findClaudeBinary() {
   const searchPaths = [
@@ -71,6 +79,91 @@ function findClaudeBinary() {
   return null;
 }
 
+// ─── Runtime fleet enumeration (P-9e8a3f1d) ─────────────────────────────────
+
+/**
+ * Collect the unique set of CLI runtimes that any part of the fleet would
+ * spawn given a config. Mirrors the union scanned by
+ * `shared.runtimeConfigWarnings` so unknown-CLI warnings and binary checks
+ * always cover the same surface.
+ *
+ * Without a config (legacy callers), returns just `['claude']` — the
+ * historical default.
+ */
+function _distinctRuntimes(config) {
+  const set = new Set();
+  if (!config || typeof config !== 'object') {
+    set.add('claude');
+    return Array.from(set);
+  }
+  const engine = config.engine || {};
+  set.add(engine.defaultCli ? String(engine.defaultCli) : 'claude');
+  if (engine.ccCli) set.add(String(engine.ccCli));
+  for (const agent of Object.values(config.agents || {})) {
+    if (agent && agent.cli) set.add(String(agent.cli));
+  }
+  return Array.from(set).sort();
+}
+
+/**
+ * Try to resolve a runtime's binary via the registry. Returns a preflight
+ * result entry — never throws. Unknown-runtime errors collapse to a single
+ * warn entry so the rest of the loop keeps running.
+ */
+function _checkRuntimeBinary(runtimeName) {
+  let adapter;
+  try {
+    adapter = require('./runtimes').resolveRuntime(runtimeName);
+  } catch (e) {
+    return {
+      name: `Runtime: ${runtimeName}`,
+      ok: false,
+      message: `unknown runtime — ${e.message}`,
+    };
+  }
+  let resolved = null;
+  try { resolved = adapter.resolveBinary({ env: process.env }); }
+  catch { /* defensive — treat any throw as "not found" so the loop keeps running */ }
+  if (resolved && resolved.bin) {
+    const shim = resolved.native === false ? ' (node shim)' : '';
+    const lead = Array.isArray(resolved.leadingArgs) && resolved.leadingArgs.length
+      ? ` (leadingArgs: ${resolved.leadingArgs.join(' ')})` : '';
+    return {
+      name: `Runtime: ${runtimeName}`,
+      ok: true,
+      message: `${resolved.bin}${shim}${lead}`,
+    };
+  }
+  const hint = (typeof adapter.installHint === 'string' && adapter.installHint)
+    ? adapter.installHint
+    : `${runtimeName} CLI binary not found on PATH`;
+  return {
+    name: `Runtime: ${runtimeName}`,
+    ok: false,
+    message: `not found — ${hint}`,
+  };
+}
+
+/**
+ * Fire-and-forget cache warm. We never await: cache warming is a side effect
+ * for the next dashboard / doctor read, not something runPreflight should
+ * block on. Errors are swallowed — discovery is best-effort.
+ *
+ * Silent no-op when the runtime can't enumerate models (Claude has no public
+ * mechanism, hence `capabilities.modelDiscovery: false`) or when the user
+ * explicitly disabled discovery via `engine.disableModelDiscovery`. Those
+ * branches live inside `model-discovery.getRuntimeModels`, so we just delegate.
+ */
+function _warmModelCache(runtimeName, config) {
+  if (!runtimeName) return;
+  let md;
+  try { md = require('./model-discovery'); }
+  catch { return; /* legacy installs may not have model-discovery yet */ }
+  Promise.resolve()
+    .then(() => md.getRuntimeModels(runtimeName, { config }))
+    .catch(() => { /* swallow — best effort */ });
+}
+
 /**
  * Run prerequisite checks. Returns { passed, results } where results is an
  * array of { name, ok, message } objects.
@@ -78,6 +171,7 @@ function findClaudeBinary() {
  * Options:
  *   - warnOnly: if true, missing items don't cause passed=false (for init)
  *   - verbose: include extra detail in messages
+ *   - config:  fleet config for runtime checks + runtime-config warnings
  */
 function runPreflight(opts = {}) {
   const results = [];
@@ -102,18 +196,21 @@ function runPreflight(opts = {}) {
     allOk = false;
   }
 
-  // 3. Claude Code CLI
-  const claudeBin = findClaudeBinary();
-  if (claudeBin) {
-    const isNative = !claudeBin.endsWith('cli.js');
-    const label = isNative ? 'native' : path.basename(path.dirname(path.dirname(claudeBin)));
-    results.push({ name: 'Claude Code CLI', ok: true, message: label });
-  } else {
-    results.push({ name: 'Claude Code CLI', ok: false, message: 'not found — install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code' });
-    allOk = false;
+  // 3. Per-runtime binary check (P-9e8a3f1d). Legacy single-runtime callers
+  //    (no config passed) still get exactly one entry — for `claude` — so the
+  //    historical "3 results" shape is preserved.
+  const runtimes = _distinctRuntimes(opts.config);
+  for (const runtimeName of runtimes) {
+    const r = _checkRuntimeBinary(runtimeName);
+    if (r.ok === false) allOk = false;
+    results.push(r);
+    // Warm the model cache in the background — silent no-op when the
+    // runtime can't enumerate or the user disabled discovery.
+    if (opts.config) _warmModelCache(runtimeName, opts.config);
   }
 
-  // Auth is handled by Claude Code itself (API key, Claude Max, etc.) — no check needed here.
+  // Auth is handled by each runtime CLI itself (Claude API key, GH_TOKEN for
+  // Copilot, etc.) — preflight doesn't probe credentials.
 
   // 4. Runtime fleet config warnings (P-3b8e5f1d) — only when the caller hands
   //    us the config. checkOrExit() / cli start() / doctor() pass it; legacy
@@ -141,7 +238,7 @@ function printPreflight(results, { label = 'Preflight checks' } = {}) {
   console.log(`\n  ${label}:\n`);
   let allOk = true;
   for (const r of results) {
-    const icon = r.ok === true ? '\u2713' : r.ok === 'warn' ? '!' : '\u2717';
+    const icon = r.ok === true ? '✓' : r.ok === 'warn' ? '!' : '✗';
     const prefix = r.ok === true ? '  ' : r.ok === 'warn' ? '  ' : '  ';
     console.log(`${prefix} ${icon} ${r.name}: ${r.message}`);
     if (r.ok === false) allOk = false;
@@ -164,8 +261,99 @@ function checkOrExit({ exitOnFail = false, label = 'Preflight checks' } = {}) {
   return ok;
 }
 
+// ─── Doctor extras (P-9e8a3f1d) ─────────────────────────────────────────────
+
+const _FEATURE_FLAG_DEFAULTS = {
+  claudeBareMode: false,
+  claudeFallbackModel: undefined,
+  copilotDisableBuiltinMcps: true,
+  copilotSuppressAgentsMd: true,
+  copilotStreamMode: 'on',
+  copilotReasoningSummaries: false,
+  maxBudgetUsd: undefined,
+  disableModelDiscovery: false,
+};
+
 /**
- * Run extended doctor checks (preflight + runtime health).
+ * Build the fleet-defaults summary entries surfaced by `minions doctor`.
+ * Three classes of output:
+ *   1. `Fleet` — `defaultCli` + `defaultModel`
+ *   2. `CC overrides` — only when `ccCli` or `ccModel` is set
+ *   3. `Active fleet flags` — only when any feature flag deviates from default
+ */
+function _fleetSummaryResults(config) {
+  const results = [];
+  if (!config || typeof config !== 'object') return results;
+  const engine = config.engine || {};
+  const defaultCli = engine.defaultCli ? String(engine.defaultCli) : 'claude';
+  const defaultModel = engine.defaultModel ? String(engine.defaultModel) : '(runtime default)';
+  results.push({ name: 'Fleet', ok: true, message: `defaultCli=${defaultCli}  defaultModel=${defaultModel}` });
+
+  const ccBits = [];
+  if (engine.ccCli) ccBits.push(`ccCli=${engine.ccCli}`);
+  if (engine.ccModel) ccBits.push(`ccModel=${engine.ccModel}`);
+  if (ccBits.length > 0) {
+    results.push({ name: 'CC overrides', ok: true, message: ccBits.join('  ') });
+  }
+
+  const nonDefault = [];
+  for (const [k, def] of Object.entries(_FEATURE_FLAG_DEFAULTS)) {
+    if (engine[k] === undefined) continue;
+    if (engine[k] !== def) nonDefault.push(`${k}=${JSON.stringify(engine[k])}`);
+  }
+  if (nonDefault.length > 0) {
+    results.push({ name: 'Active fleet flags', ok: true, message: nonDefault.join('  ') });
+  }
+  return results;
+}
+
+/**
+ * Build the per-runtime model-discovery entries surfaced by `minions doctor`.
+ * Emits one entry per distinct runtime in the fleet:
+ *   - "discovery disabled (engine.disableModelDiscovery)" — fleet-wide opt-out
+ *   - "discovery unavailable (no enumeration mechanism)" — adapter doesn't support it
+ *   - "<N> models cached" — listModels returned a non-empty array
+ *   - "discovery unavailable (...)" — listModels returned null/threw (no token, transient API error)
+ */
+async function _modelDiscoveryResults(config) {
+  const results = [];
+  if (!config || typeof config !== 'object') return results;
+  let md;
+  try { md = require('./model-discovery'); } catch { return results; }
+  let registry;
+  try { registry = require('./runtimes'); } catch { return results; }
+  const fleetDisabled = config.engine && config.engine.disableModelDiscovery === true;
+  const runtimes = _distinctRuntimes(config);
+  for (const runtimeName of runtimes) {
+    let adapter;
+    try { adapter = registry.resolveRuntime(runtimeName); }
+    catch { continue; /* unknown-cli warning was already emitted by runtimeConfigWarnings */ }
+
+    if (fleetDisabled) {
+      results.push({ name: `Models: ${runtimeName}`, ok: 'warn', message: 'discovery disabled (engine.disableModelDiscovery)' });
+      continue;
+    }
+    if (!adapter.capabilities || adapter.capabilities.modelDiscovery !== true) {
+      results.push({ name: `Models: ${runtimeName}`, ok: 'warn', message: 'discovery unavailable (no enumeration mechanism)' });
+      continue;
+    }
+    try {
+      const out = await md.getRuntimeModels(runtimeName, { config });
+      if (Array.isArray(out.models) && out.models.length > 0) {
+        results.push({ name: `Models: ${runtimeName}`, ok: true, message: `${out.models.length} models cached` });
+      } else {
+        results.push({ name: `Models: ${runtimeName}`, ok: 'warn', message: 'discovery unavailable (API returned no models — check token)' });
+      }
+    } catch (e) {
+      results.push({ name: `Models: ${runtimeName}`, ok: 'warn', message: `discovery error — ${e && e.message ? e.message : 'unknown'}` });
+    }
+  }
+  return results;
+}
+
+/**
+ * Run extended doctor checks (preflight + runtime health + fleet summary +
+ * per-runtime model discovery).
  * Requires minionsHome path for runtime checks.
  */
 function doctor(minionsHome) {
@@ -269,12 +457,11 @@ function doctor(minionsHome) {
     req.on('timeout', () => { req.destroy(); resolve({ name: 'Dashboard', ok: 'warn', message: 'not reachable on :7331 — run: minions dash' }); });
   });
 
-  return dashCheck.then(dashResult => {
+  return dashCheck.then(async dashResult => {
     runtimeResults.push(dashResult);
 
     // Check playbooks
     const playbooksDir = path.join(minionsHome, 'playbooks');
-    // Discover all .md playbooks in the directory — don't hardcode
     let playbooks = [];
     try { playbooks = fs.readdirSync(playbooksDir).filter(f => f.endsWith('.md')); } catch { /* dir may not exist */ }
     if (playbooks.length > 0) {
@@ -285,9 +472,16 @@ function doctor(minionsHome) {
 
     // Check port 7331 availability (only if dashboard isn't running)
     if (dashResult.ok !== true) {
-      // Dashboard isn't running, port should be free
       runtimeResults.push({ name: 'Port 7331', ok: 'warn', message: 'dashboard not running — port status unknown' });
     }
+
+    // Fleet defaults + per-runtime model discovery (P-9e8a3f1d). Both depend
+    // on the config that we already loaded above; re-using `preflightConfig`
+    // avoids a second JSON.parse round-trip.
+    const fleetSummary = _fleetSummaryResults(preflightConfig);
+    runtimeResults.push(...fleetSummary);
+    const modelResults = await _modelDiscoveryResults(preflightConfig);
+    runtimeResults.push(...modelResults);
 
     // Print all
     const allResults = [...results, ...runtimeResults];
@@ -307,4 +501,17 @@ function doctor(minionsHome) {
   });
 }
 
-module.exports = { findClaudeBinary, runPreflight, printPreflight, checkOrExit, doctor };
+module.exports = {
+  findClaudeBinary,
+  runPreflight,
+  printPreflight,
+  checkOrExit,
+  doctor,
+  // Exposed for unit tests (P-9e8a3f1d) — engine code MUST go through
+  // runPreflight/doctor, never these helpers directly.
+  _distinctRuntimes,
+  _checkRuntimeBinary,
+  _warmModelCache,
+  _fleetSummaryResults,
+  _modelDiscoveryResults,
+};
