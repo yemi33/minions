@@ -550,6 +550,10 @@ const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to r
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
 const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
+// Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
+// 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
+// edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
+const DOC_CHAT_TIMEOUT_MS = 360000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
@@ -1436,6 +1440,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     extraContext: docContext, label: 'doc-chat',
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
     maxTurns: canEdit ? 25 : 10,
+    timeout: DOC_CHAT_TIMEOUT_MS,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
     onAbortReady,
@@ -1484,6 +1489,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     extraContext: docContext, label: 'doc-chat',
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
     maxTurns: canEdit ? 25 : 10,
+    timeout: DOC_CHAT_TIMEOUT_MS,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
     onAbortReady,
