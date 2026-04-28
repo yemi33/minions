@@ -844,6 +844,77 @@ async function checkLiveReviewStatus(pr, project) {
   }
 }
 
+/**
+ * Cheap pre-dispatch freshness check for build status and merge-conflict state.
+ * Mirrors checkLiveReviewStatus — fetches PR data once, classifies builds for the
+ * current merge commit, and reports whether ADO still considers the PR conflicted.
+ *
+ * Returns null if the check can't run (no token, no PR number, network error) so
+ * callers can fall back to cached state. Otherwise returns:
+ *   {
+ *     buildStatus: 'failing' | 'passing' | 'running' | 'none' | null,
+ *     mergeConflict: boolean,
+ *   }
+ *
+ * `buildStatus` is null when ADO has builds on the merge ref but none target the
+ * current merge commit (target-branch advance with no source-side rebuild yet —
+ * matches pollPrStatus's "preserve previous buildStatus" semantics from issue
+ * #1233; the caller must trust the cached value).
+ */
+async function checkLiveBuildAndConflict(pr, project) {
+  try {
+    const token = await getAdoToken();
+    if (!token) return null;
+    const orgBase = shared.getAdoOrgBase(project);
+    const prNum = shared.getPrNumber(pr);
+    if (!prNum) return null;
+    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}`;
+    const prUrl = `${repoBase}/pullrequests/${prNum}?api-version=7.1`;
+    // 4s timeout — same budget as checkLiveReviewStatus. This is a pre-dispatch
+    // gate; we'd rather miss a freshness signal and fall back to cache than
+    // block dispatch on a slow ADO call.
+    const prData = await adoFetch(prUrl, token, { timeout: 4000 });
+    if (!prData) return null;
+
+    // Conflict signal — ADO reports `mergeStatus: 'conflicts'` when the merge
+    // would conflict; anything else means clean (or recomputing).
+    const mergeConflict = prData.mergeStatus === 'conflicts';
+
+    // Build signal — only meaningful when the PR is still open. We replicate
+    // pollPrStatus's narrowing logic so the live check and the cached poll
+    // agree on what 'failing' / 'passing' / 'running' / 'none' mean.
+    let buildStatus = null;
+    if (prData.status === 'active') {
+      const mergeCommitId = prData.lastMergeCommit?.commitId;
+      if (mergeCommitId) {
+        try {
+          const mergeRef = encodeURIComponent(`refs/pull/${prNum}/merge`);
+          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+          const buildsData = await adoFetch(buildsUrl, token, { timeout: 4000 });
+          const allBuilds = buildsData?.value || [];
+          const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
+          if (prBuilds.length > 0) {
+            buildStatus = classifyBuildStatus(prBuilds);
+          } else if (allBuilds.length === 0) {
+            buildStatus = 'none';
+          }
+          // else: merge-commit mismatch — leave buildStatus null so caller
+          // falls back to cached state (issue #1233).
+        } catch (e) { log('warn', `Live build check builds query for ${pr.id}: ${e.message}`); }
+      } else {
+        // No merge commit yet — likely conflict or fresh PR. Treat as 'none'
+        // so a stale 'failing' cache can be cleared by the caller.
+        buildStatus = 'none';
+      }
+    }
+
+    return { buildStatus, mergeConflict };
+  } catch (e) {
+    log('warn', `Live build/conflict check for ${pr.id}: ${e.message}`);
+    return null;
+  }
+}
+
 async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
   const token = await getAdoToken();
   if (!token) return null;
@@ -968,6 +1039,22 @@ function _setAdoThrottleForTest(state) {
   _adoThrottle._setForTest(state);
 }
 
+/** Inject a token into the cache — exported for testing only.
+ *  Lets tests exercise functions that call getAdoToken() without invoking azureauth.
+ *  Pass null to force getAdoToken() to return null synchronously (no exec). */
+function _setAdoTokenForTest(token) {
+  if (token == null) {
+    // Clear cache AND set a future failure backoff so getAdoToken short-circuits
+    // to null without spawning azureauth — otherwise tests would hang on the
+    // 15s execAsync timeout or open a real auth popup.
+    _adoTokenCache = { token: null, expiresAt: 0 };
+    _adoTokenFailedUntil = Date.now() + 60 * 60 * 1000;
+  } else {
+    _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
+    _adoTokenFailedUntil = 0;
+  }
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
@@ -975,6 +1062,7 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
   checkLiveReviewStatus,
+  checkLiveBuildAndConflict,
   needsAdoPollRetry,
   isAdoAuthError, // exported for testing
   isAdoThrottled,
@@ -984,4 +1072,5 @@ module.exports = {
   findOpenPrOnBranch,
   _resetAdoThrottle, // exported for testing
   _setAdoThrottleForTest, // exported for testing
+  _setAdoTokenForTest, // exported for testing
 };

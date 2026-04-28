@@ -11161,6 +11161,413 @@ async function testBuildFixRetryCap() {
   });
 }
 
+// ─── W-moj9t4puurzh: Pre-dispatch live freshness check for build & conflict ─
+//
+// Mirror of the review/re-review pre-dispatch live-vote guard for the build-fix
+// and conflict-fix paths. Audited gap from notes/inbox/lambert-explore-W-moj9kleil6z9
+// — a stale `buildStatus: 'failing'` or `_mergeConflict: true` could still
+// dispatch an automated fix even after the upstream state had recovered.
+
+async function testPreDispatchBuildAndConflictFreshness() {
+  console.log('\n── W-moj9t4puurzh: Pre-dispatch build/conflict freshness check ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+  const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+
+  // ── Module exports ────────────────────────────────────────────────────────
+
+  await test('ado.js exports checkLiveBuildAndConflict', () => {
+    const ado = require(path.join(MINIONS_DIR, 'engine', 'ado.js'));
+    assert.strictEqual(typeof ado.checkLiveBuildAndConflict, 'function',
+      'engine/ado.js should export checkLiveBuildAndConflict for pre-dispatch freshness checks');
+  });
+
+  await test('github.js exports checkLiveBuildAndConflict', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(typeof gh.checkLiveBuildAndConflict, 'function',
+      'engine/github.js should export checkLiveBuildAndConflict for pre-dispatch freshness checks');
+  });
+
+  // ── engine.js wiring ──────────────────────────────────────────────────────
+
+  await test('engine.js imports adoCheckLiveBuildAndConflict from ./engine/ado', () => {
+    const adoImport = engineSrc.match(/require\('\.\/engine\/ado'\)/g);
+    assert.ok(adoImport, 'engine.js must import from ./engine/ado');
+    const adoLineIdx = engineSrc.indexOf("require('./engine/ado')");
+    const lineStart = engineSrc.lastIndexOf('const', adoLineIdx);
+    const lineEnd = engineSrc.indexOf(';', adoLineIdx);
+    const importLine = engineSrc.slice(lineStart, lineEnd);
+    assert.ok(importLine.includes('checkLiveBuildAndConflict'),
+      'engine.js must destructure checkLiveBuildAndConflict from ./engine/ado');
+  });
+
+  await test('engine.js imports ghCheckLiveBuildAndConflict from ./engine/github', () => {
+    const ghLineIdx = engineSrc.indexOf("require('./engine/github')");
+    assert.ok(ghLineIdx !== -1, 'engine.js must import from ./engine/github');
+    const lineStart = engineSrc.lastIndexOf('const', ghLineIdx);
+    const lineEnd = engineSrc.indexOf(';', ghLineIdx);
+    const importLine = engineSrc.slice(lineStart, lineEnd);
+    assert.ok(importLine.includes('checkLiveBuildAndConflict'),
+      'engine.js must destructure checkLiveBuildAndConflict from ./engine/github');
+  });
+
+  // ── Build-fix block has pre-dispatch live check ──────────────────────────
+
+  await test('build-fix block calls live build/conflict check before resolveAgent', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const buildBlockStart = fnBody.indexOf('PRs with build failures');
+    const buildBlockEnd = fnBody.indexOf('PRs with merge conflicts');
+    assert.ok(buildBlockStart !== -1 && buildBlockEnd !== -1, 'Should locate build-fix block');
+    const buildBlock = fnBody.slice(buildBlockStart, buildBlockEnd);
+    const liveCheckIdx = buildBlock.indexOf('Pre-dispatch build check');
+    const resolveAgentIdx = buildBlock.indexOf("resolveAgent('fix'");
+    assert.ok(liveCheckIdx !== -1, 'Build-fix block must include a Pre-dispatch build check');
+    assert.ok(resolveAgentIdx !== -1, 'Build-fix block must call resolveAgent');
+    assert.ok(liveCheckIdx < resolveAgentIdx,
+      'Pre-dispatch build check must run before resolveAgent (otherwise we waste agent slots on stale fixes)');
+  });
+
+  await test('build-fix pre-dispatch check skips when liveStatus is not failing', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const buildBlockStart = fnBody.indexOf('PRs with build failures');
+    const buildBlockEnd = fnBody.indexOf('PRs with merge conflicts');
+    const buildBlock = fnBody.slice(buildBlockStart, buildBlockEnd);
+    assert.ok(buildBlock.includes("live.buildStatus !== 'failing'"),
+      'Build-fix pre-dispatch check must skip when live status is not failing');
+    assert.ok(/skipping build-fix/.test(buildBlock),
+      'Build-fix pre-dispatch check must log a "skipping build-fix" message on stale state');
+  });
+
+  await test('build-fix pre-dispatch check selects ado vs github helper by repoHost', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const buildBlockStart = fnBody.indexOf('PRs with build failures');
+    const buildBlockEnd = fnBody.indexOf('PRs with merge conflicts');
+    const buildBlock = fnBody.slice(buildBlockStart, buildBlockEnd);
+    assert.ok(buildBlock.includes("project.repoHost === 'github'"),
+      'Build-fix pre-dispatch check must dispatch on repoHost like the review check');
+    assert.ok(buildBlock.includes('ghCheckLiveBuildAndConflict') && buildBlock.includes('adoCheckLiveBuildAndConflict'),
+      'Build-fix pre-dispatch check must reference both provider helpers');
+  });
+
+  await test('build-fix pre-dispatch catch block skips dispatch (continue)', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const buildBlockStart = fnBody.indexOf('PRs with build failures');
+    const buildBlockEnd = fnBody.indexOf('PRs with merge conflicts');
+    const buildBlock = fnBody.slice(buildBlockStart, buildBlockEnd);
+    // The catch handler for the live build check should `continue` — same
+    // defensive posture as the review pre-dispatch path.
+    const catchIdx = buildBlock.indexOf('Pre-dispatch build check for ${pr.id}');
+    assert.ok(catchIdx !== -1, 'Build-fix pre-dispatch must log on error');
+    const after = buildBlock.slice(catchIdx, catchIdx + 200);
+    assert.ok(/continue/.test(after),
+      'Build-fix pre-dispatch catch block must continue (skip dispatch) on error');
+  });
+
+  await test('build-fix pre-dispatch persists stale-state recovery to pull-requests.json', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const buildBlockStart = fnBody.indexOf('PRs with build failures');
+    const buildBlockEnd = fnBody.indexOf('PRs with merge conflicts');
+    const buildBlock = fnBody.slice(buildBlockStart, buildBlockEnd);
+    // Should write the fresh status back so the next tick doesn't re-check
+    const liveCheckIdx = buildBlock.indexOf('Pre-dispatch build check');
+    const skipBlock = buildBlock.slice(liveCheckIdx, liveCheckIdx + 1500);
+    assert.ok(skipBlock.includes('mutatePullRequests('),
+      'Stale build state must be persisted via mutatePullRequests');
+    assert.ok(skipBlock.includes('target.buildStatus = live.buildStatus'),
+      'Persisted state must overwrite cached buildStatus with the live value');
+    assert.ok(skipBlock.includes('delete target.buildErrorLog') && skipBlock.includes('delete target.buildFixAttempts'),
+      'Recovery to passing must clear buildErrorLog and reset attempt counters');
+  });
+
+  // ── Conflict-fix block has pre-dispatch live check ───────────────────────
+
+  await test('conflict-fix block calls live conflict check before resolveAgent', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const conflictIdx = fnBody.indexOf('PRs with merge conflicts');
+    assert.ok(conflictIdx !== -1, 'Should locate conflict-fix block');
+    const conflictBlock = fnBody.slice(conflictIdx);
+    const liveCheckIdx = conflictBlock.indexOf('Pre-dispatch conflict check');
+    const resolveAgentIdx = conflictBlock.indexOf("resolveAgent('fix'");
+    assert.ok(liveCheckIdx !== -1, 'Conflict-fix block must include a Pre-dispatch conflict check');
+    assert.ok(resolveAgentIdx !== -1, 'Conflict-fix block must call resolveAgent');
+    assert.ok(liveCheckIdx < resolveAgentIdx,
+      'Pre-dispatch conflict check must run before resolveAgent');
+  });
+
+  await test('conflict-fix pre-dispatch check skips when mergeConflict === false', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const conflictIdx = fnBody.indexOf('PRs with merge conflicts');
+    const conflictBlock = fnBody.slice(conflictIdx);
+    assert.ok(conflictBlock.includes('live.mergeConflict === false'),
+      'Conflict-fix pre-dispatch must skip when ADO/GitHub reports a clean merge');
+    assert.ok(/skipping conflict-fix/.test(conflictBlock),
+      'Conflict-fix pre-dispatch must log a "skipping conflict-fix" message on stale state');
+  });
+
+  await test('conflict-fix pre-dispatch clears _mergeConflict and _conflictFixedAt on stale recovery', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const conflictIdx = fnBody.indexOf('PRs with merge conflicts');
+    const conflictBlock = fnBody.slice(conflictIdx);
+    const liveCheckIdx = conflictBlock.indexOf('Pre-dispatch conflict check');
+    const skipBlock = conflictBlock.slice(liveCheckIdx, liveCheckIdx + 1500);
+    assert.ok(skipBlock.includes('delete target._mergeConflict'),
+      'Stale conflict recovery must clear _mergeConflict');
+    assert.ok(skipBlock.includes('delete target._conflictFixedAt'),
+      'Stale conflict recovery must clear _conflictFixedAt');
+  });
+
+  await test('conflict-fix pre-dispatch catch block skips dispatch on error', () => {
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    const conflictIdx = fnBody.indexOf('PRs with merge conflicts');
+    const conflictBlock = fnBody.slice(conflictIdx);
+    const catchIdx = conflictBlock.indexOf('Pre-dispatch conflict check for ${pr.id}');
+    assert.ok(catchIdx !== -1, 'Conflict-fix pre-dispatch must log on error');
+    const after = conflictBlock.slice(catchIdx, catchIdx + 200);
+    assert.ok(/liveSkip\s*=\s*true/.test(after),
+      'Conflict-fix pre-dispatch catch block must set liveSkip=true so dispatch is suppressed');
+  });
+
+  // ── Helper signatures ─────────────────────────────────────────────────────
+
+  await test('ado.js checkLiveBuildAndConflict uses adoFetch with a 4s timeout (cheap pre-dispatch)', () => {
+    const fnStart = adoSrc.indexOf('async function checkLiveBuildAndConflict(');
+    assert.ok(fnStart !== -1, 'ado.js must define checkLiveBuildAndConflict');
+    const fnEnd = adoSrc.indexOf('\n}\n', fnStart);
+    const fn = adoSrc.slice(fnStart, fnEnd + 2);
+    assert.ok(fn.includes('adoFetch('),
+      'checkLiveBuildAndConflict must use the in-process adoFetch wrapper (no curl shell-out)');
+    assert.ok(/timeout:\s*4000/.test(fn),
+      'checkLiveBuildAndConflict must set a 4s timeout — same as checkLiveReviewStatus');
+    assert.ok(fn.includes("prData.mergeStatus === 'conflicts'"),
+      'checkLiveBuildAndConflict must read mergeStatus from PR data');
+    assert.ok(fn.includes('classifyBuildStatus('),
+      'checkLiveBuildAndConflict must reuse classifyBuildStatus to keep live and cached classification in sync');
+  });
+
+  await test('github.js checkLiveBuildAndConflict uses ghApi (no shell-out)', () => {
+    const fnStart = ghSrc.indexOf('async function checkLiveBuildAndConflict(');
+    assert.ok(fnStart !== -1, 'github.js must define checkLiveBuildAndConflict');
+    const fnEnd = ghSrc.indexOf('\n}\n', fnStart);
+    const fn = ghSrc.slice(fnStart, fnEnd + 2);
+    assert.ok(fn.includes('ghApi('),
+      'checkLiveBuildAndConflict must use the in-process ghApi wrapper');
+    assert.ok(fn.includes('prData.mergeable === false'),
+      'checkLiveBuildAndConflict must treat only mergeable === false as a conflict (null = computing)');
+    assert.ok(fn.includes('check-runs') || fn.includes('check_runs'),
+      'checkLiveBuildAndConflict must classify check-runs for the head SHA');
+  });
+
+  // ── Behavioral: ADO checkLiveBuildAndConflict against mocked fetch ────────
+
+  // Reload ado.js with a clean cache so the test hook (_setAdoTokenForTest)
+  // is available and other tests' state doesn't leak in.
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+  delete require.cache[require.resolve(adoPath)];
+  const ado = require(adoPath);
+
+  function mockAdoResponses(responses) {
+    // responses is a Map<urlSubstring, jsonBody> | (url => jsonBody)
+    const lookup = typeof responses === 'function' ? responses : (url) => {
+      for (const [match, body] of responses) {
+        if (url.includes(match)) return body;
+      }
+      return null;
+    };
+    return async (url) => {
+      const body = lookup(url);
+      if (body == null) return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(body),
+        headers: { get: () => null },
+      };
+    };
+  }
+
+  const fakeProject = {
+    name: 'test-project',
+    adoOrg: 'org',
+    adoProject: 'proj',
+    repositoryId: 'repo-guid',
+    repoHost: 'ado',
+  };
+  const fakePr = {
+    id: 'ado:org/proj/repo:42',
+    prNumber: 42,
+    url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/42',
+  };
+
+  await test('ADO checkLiveBuildAndConflict returns null without a token (skip dispatch path stays trusted)', async () => {
+    if (!ado._setAdoTokenForTest) {
+      assert.ok(false, 'ado.js must export _setAdoTokenForTest for behavioral tests');
+      return;
+    }
+    ado._setAdoTokenForTest(null); // clear cache; no token available
+    const origFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => { fetchCalls++; return { ok: true, status: 200, text: async () => '{}', headers: { get: () => null } }; };
+    try {
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.strictEqual(result, null,
+        'checkLiveBuildAndConflict must return null when no token is available');
+      assert.strictEqual(fetchCalls, 0,
+        'checkLiveBuildAndConflict must NOT make any HTTP calls without a token');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  await test('ADO checkLiveBuildAndConflict reports stale recovered build (failing → passing)', async () => {
+    ado._setAdoTokenForTest('eyJ-fake-test-token');
+    const origFetch = globalThis.fetch;
+    try {
+      // Mock PR data + builds API: PR is active, no conflict, and the builds for
+      // the current merge commit all succeeded — i.e. cached `failing` is stale.
+      const mergeCommitId = 'abc123';
+      globalThis.fetch = mockAdoResponses(new Map([
+        ['/pullrequests/42?', {
+          status: 'active',
+          mergeStatus: 'succeeded',
+          lastMergeCommit: { commitId: mergeCommitId },
+        }],
+        ['/_apis/build/builds?', {
+          value: [
+            { id: 1, sourceVersion: mergeCommitId, status: 'completed', result: 'succeeded' },
+          ],
+        }],
+      ]));
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.ok(result, 'checkLiveBuildAndConflict must return an object when ADO responds');
+      assert.strictEqual(result.buildStatus, 'passing',
+        'Live build classification must report passing when all builds for the current merge commit succeeded');
+      assert.strictEqual(result.mergeConflict, false,
+        'Live conflict classification must be false when ADO mergeStatus is not "conflicts"');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  await test('ADO checkLiveBuildAndConflict reports stale recovered conflict (mergeStatus !== conflicts)', async () => {
+    ado._setAdoTokenForTest('eyJ-fake-test-token');
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = mockAdoResponses(new Map([
+        ['/pullrequests/42?', {
+          status: 'active',
+          mergeStatus: 'succeeded', // ADO confirms clean merge
+          lastMergeCommit: { commitId: 'def456' },
+        }],
+        ['/_apis/build/builds?', { value: [] }],
+      ]));
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.ok(result, 'checkLiveBuildAndConflict must return an object when ADO responds');
+      assert.strictEqual(result.mergeConflict, false,
+        'Live conflict check must report false when ADO mergeStatus is not "conflicts" — caller should clear stale _mergeConflict');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  await test('ADO checkLiveBuildAndConflict still reports failing when build genuinely failed', async () => {
+    ado._setAdoTokenForTest('eyJ-fake-test-token');
+    const origFetch = globalThis.fetch;
+    try {
+      const mergeCommitId = 'fed789';
+      globalThis.fetch = mockAdoResponses(new Map([
+        ['/pullrequests/42?', {
+          status: 'active',
+          mergeStatus: 'succeeded',
+          lastMergeCommit: { commitId: mergeCommitId },
+        }],
+        ['/_apis/build/builds?', {
+          value: [
+            { id: 99, sourceVersion: mergeCommitId, status: 'completed', result: 'failed' },
+          ],
+        }],
+      ]));
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.strictEqual(result.buildStatus, 'failing',
+        'Live build check must still report failing when ADO confirms the build failed — fix dispatch should proceed');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  await test('ADO checkLiveBuildAndConflict leaves buildStatus null on merge-commit mismatch (preserve cached)', async () => {
+    // Issue #1233: when ADO recomputes the merge commit but no rebuild has run
+    // yet, builds API returns rows for the merge ref but none target the new
+    // mergeCommitId. The cached buildStatus is the safer source of truth, so
+    // checkLiveBuildAndConflict must leave buildStatus null and let the caller
+    // fall back to cache rather than spuriously flipping to 'none'.
+    ado._setAdoTokenForTest('eyJ-fake-test-token');
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = mockAdoResponses(new Map([
+        ['/pullrequests/42?', {
+          status: 'active',
+          mergeStatus: 'succeeded',
+          lastMergeCommit: { commitId: 'new-commit-id' },
+        }],
+        ['/_apis/build/builds?', {
+          value: [
+            // builds exist on this merge ref but target a stale sourceVersion
+            { id: 99, sourceVersion: 'old-commit-id', status: 'completed', result: 'failed' },
+          ],
+        }],
+      ]));
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.ok(result, 'Should return object even when build status indeterminate');
+      assert.strictEqual(result.buildStatus, null,
+        'buildStatus must be null on merge-commit mismatch so caller falls back to cached value');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  await test('ADO checkLiveBuildAndConflict returns null on fetch error (caller falls back to cache)', async () => {
+    ado._setAdoTokenForTest('eyJ-fake-test-token');
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => { throw new Error('network down'); };
+      const result = await ado.checkLiveBuildAndConflict(fakePr, fakeProject);
+      assert.strictEqual(result, null,
+        'checkLiveBuildAndConflict must return null on network errors — caller falls back to cached state');
+    } finally {
+      globalThis.fetch = origFetch;
+      ado._setAdoTokenForTest(null);
+    }
+  });
+
+  // Cleanup: drop the cached ado.js module so other test suites get a clean
+  // slate (the token cache & throttle state live as module-private singletons).
+  delete require.cache[require.resolve(adoPath)];
+}
+
 // ─── engine.js — discoverFromWorkItems Tests ────────────────────────────────
 
 async function testDiscoverFromWorkItems() {
@@ -19488,6 +19895,7 @@ async function main() {
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
+    await testPreDispatchBuildAndConflictFreshness();
     await testDiscoverFromWorkItems();
     await testBuildWorkItemDispatchVars();
     await testCheckTimeouts();
