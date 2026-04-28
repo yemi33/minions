@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1582 (2026-04-28)
+
+### Fixes
+- heartbeat kills agents on silent Monitor + false-positive success (#1792) (#1798)
+
 ## 0.1.1581 (2026-04-28)
 
 ### Features
