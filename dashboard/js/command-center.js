@@ -14,6 +14,14 @@ var _ccSending = false; // true if active tab is sending (UI indicator only)
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
+function ccHtmlToText(html) {
+  try {
+    return new DOMParser().parseFromString(String(html || ''), 'text/html').body.textContent || '';
+  } catch {
+    return String(html || '').replace(/<[^>]*>/g, '');
+  }
+}
+
 // ── Migration from legacy single-session format ─────────────────────────────
 (function _ccMigrateLegacy() {
   try {
@@ -32,9 +40,7 @@ try { localStorage.removeItem('cc-sending'); } catch {}
       if (legacyMessages.length > 0) {
         var firstUser = legacyMessages.find(function(m) { return m.role === 'user'; });
         if (firstUser) {
-          var tmp = document.createElement('div');
-          tmp.innerHTML = firstUser.html;
-          var txt = (tmp.textContent || tmp.innerText || '').trim();
+          var txt = ccHtmlToText(firstUser.html).trim();
           if (txt.length > 0) title = txt.slice(0, CC_TITLE_MAX_LENGTH);
         }
       }
@@ -372,9 +378,7 @@ function ccAddMessage(role, html, skipSave, targetTabId) {
       tab.messages.push({ role: role, html: html });
       // Auto-title from first user message
       if (role === 'user' && tab.title === 'New chat') {
-        var tmp = document.createElement('div');
-        tmp.innerHTML = html;
-        var txt = (tmp.textContent || tmp.innerText || '').trim();
+        var txt = ccHtmlToText(html).trim();
         if (txt.length > 0) {
           tab.title = txt.slice(0, CC_TITLE_MAX_LENGTH);
           ccRenderTabBar();
@@ -737,9 +741,7 @@ function ccRetryLast() {
   var last = tab.messages.filter(function(m) { return m.role === 'user'; }).pop();
   if (!last) return;
   // Extract text from the HTML (strip tags)
-  var tmp = document.createElement('div');
-  tmp.innerHTML = last.html;
-  var text = tmp.textContent || tmp.innerText || '';
+  var text = ccHtmlToText(last.html);
   if (!text.trim()) return;
   // Remove the error message (last assistant message)
   var el = document.getElementById('cc-messages');

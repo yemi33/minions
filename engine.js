@@ -2475,7 +2475,8 @@ function discoverFromWorkItems(config, project) {
       item._decomposing = true;
       needsWrite = true;
     }
-    const agentId = item.agent || resolveAgent(workType, config);
+    const agentHints = item.preferred_agent || item.agents || null;
+    const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
     if (!agentId) {
       // Check if reason is budget
       const cfgAgents = config.agents || {};
@@ -2994,7 +2995,8 @@ function discoverCentralWorkItems(config) {
 
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
-      const agentId = item.agent || resolveAgent(workType, config);
+      const agentHints = item.preferred_agent || item.agents || null;
+      const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
@@ -3636,7 +3638,8 @@ async function tickInner() {
     // be of type string. Received undefined` and re-queues — every tick. Try to
     // resolve a fallback via routing; if none is available, skip this tick.
     if (!item.agent || typeof item.agent !== 'string') {
-      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config);
+      const agentHints = item.meta?.item?.preferred_agent || item.meta?.item?.agents;
+      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, null, agentHints);
       if (!fallback) {
         log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
         continue;
@@ -3694,7 +3697,7 @@ async function tickInner() {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
       const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
-      const isExplicitReassign = !!item.meta?.item?.agent;
+      const isExplicitReassign = !!(item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length);
       if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();
         if (Date.now() - busySinceMs > reassignMs) {
@@ -3734,7 +3737,7 @@ async function tickInner() {
     const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
     if (itemBranch && lockedBranches.has(itemBranch)) continue;
     // Items explicitly assigned to an agent bypass concurrency cap — dispatch if agent is free
-    const isExplicitAssignment = !!item.meta?.item?.agent;
+    const isExplicitAssignment = !!(item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length);
     if (!isExplicitAssignment && generalSlots <= 0) continue;
     seenPendingIds.add(item.id);
     toDispatch.push(item);
