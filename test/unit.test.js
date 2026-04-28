@@ -22599,10 +22599,31 @@ async function testDashboardAuditXss() {
       'should register at least the two current runtimes');
     assert.ok(src.includes('_runtimeTagHtml(a.runtime)'),
       'agent card must include the runtime tag inside agent-name span');
-    // The tag helper must escape its inputs — neither the runtime key (server-controlled
-    // but worth defending) nor the label should slip raw HTML in
     const helper = src.slice(src.indexOf('function _runtimeTagHtml'), src.indexOf('function renderAgents'));
-    assert.ok(helper.includes('escapeHtml('), 'runtime tag helper must use escapeHtml on its output');
+    assert.ok(helper.includes('escapeHtml('), 'runtime tag helper must escape user-controlled fallback inputs');
+  });
+
+  await test('runtime tags render inline SVG logos for known runtimes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    const map = src.slice(src.indexOf('RUNTIME_TAGS'), src.indexOf('function _runtimeTagHtml'));
+    assert.ok(/claude:\s*\{[\s\S]*?svg:\s*'<svg/.test(map),
+      'claude entry must define an inline SVG logo (not a text label)');
+    assert.ok(/copilot:\s*\{[\s\S]*?svg:\s*'<svg/.test(map),
+      'copilot entry must define an inline SVG logo (not a text label)');
+    assert.ok(/claude:\s*\{[\s\S]*?label:\s*'Claude'/.test(map),
+      'claude entry needs a label (used as tooltip + aria-label)');
+    assert.ok(/copilot:\s*\{[\s\S]*?label:\s*'Copilot'/.test(map),
+      'copilot entry needs a label (used as tooltip + aria-label)');
+    assert.ok(map.includes('currentColor'),
+      'SVG icons should use currentColor so the per-runtime color cascades from the parent span');
+  });
+
+  await test('runtime tag falls back to text pill for unknown runtimes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    const helper = src.slice(src.indexOf('function _runtimeTagHtml'), src.indexOf('function renderAgents'));
+    assert.ok(/RUNTIME_TAGS\[runtime\]/.test(helper), 'helper should look up runtime in the map');
+    assert.ok(/runtime\s*\|\|\s*'unknown'/.test(helper),
+      'unknown runtime should fall back to "unknown" label rather than render nothing');
   });
 
   await test('render-agents.js detail header renders agent fields safely', () => {

@@ -1,14 +1,31 @@
 // dashboard/js/render-agents.js — Agent grid rendering extracted from dashboard.html
 
-// Per-runtime display labels and accent colors. Add a new entry here when a
-// new runtime is registered in engine/runtimes/index.js.
+// Per-runtime inline SVG logo + accent color. Each entry must define `label`
+// (used as title/tooltip + accessibility fallback) and `svg` (full inline
+// markup, currentColor-themed). Add a new entry here when a new runtime is
+// registered in engine/runtimes/index.js.
 const RUNTIME_TAGS = {
-  claude:  { label: 'Claude',  color: 'var(--blue)' },
-  copilot: { label: 'Copilot', color: 'var(--purple)' },
+  // Anthropic Claude — 8-pointed orange asterisk/burst
+  claude: {
+    label: 'Claude',
+    color: '#cc785c',
+    svg: '<svg viewBox="-12 -12 24 24" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px"><g fill="currentColor"><path d="M-1.6 -10 L1.6 -10 L1 -1 L10 -1.6 L10 1.6 L1 1 L1.6 10 L-1.6 10 L-1 1 L-10 1.6 L-10 -1.6 L-1 -1 Z"/><path d="M-1.6 -10 L1.6 -10 L1 -1 L10 -1.6 L10 1.6 L1 1 L1.6 10 L-1.6 10 L-1 1 L-10 1.6 L-10 -1.6 L-1 -1 Z" transform="rotate(45)"/></g></svg>',
+  },
+  // GitHub Copilot — rounded "pilot" face from the official Octicons set
+  copilot: {
+    label: 'Copilot',
+    color: '#8957e5',
+    svg: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false" style="display:inline-block;vertical-align:-2px;fill:currentColor"><path d="M7.998 15.035c-4.562 0-7.873-2.914-7.998-3.749V9.338c.085-.628.677-1.686 1.588-2.065.013-.07.024-.143.036-.218.029-.183.06-.384.126-.612-.201-.508-.254-1.084-.254-1.656 0-.87.128-1.71.354-2.434.13-.418.305-.808.516-1.142.218-.345.516-.648.886-.804.397-.167.832-.156 1.236-.014.404.142.858.396 1.342.762.227.171.487.367.733.557l.083.064c.16.124.305.236.434.337.265-.077.566-.142.879-.198a.877.877 0 0 1 .093-.013l.045-.005c.135-.018.273-.029.41-.034.137.005.275.016.41.034l.045.005a.877.877 0 0 1 .093.013c.313.056.614.121.879.198.129-.101.274-.213.434-.337l.083-.064c.246-.19.506-.386.733-.557.484-.366.938-.62 1.342-.762.404-.142.839-.153 1.236.014.37.156.668.459.886.804.21.334.385.724.516 1.142.226.724.354 1.564.354 2.434 0 .572-.053 1.148-.254 1.656.066.228.097.429.126.612.012.075.023.148.036.218.911.379 1.503 1.437 1.588 2.065v1.948c-.125.835-3.436 3.749-7.998 3.749ZM5.485 12.343a4.07 4.07 0 0 0 1.014-.214 1 1 0 0 1 .622-.001c.14.045.31.097.502.143.456.111.99.196 1.379.196.39 0 .923-.085 1.379-.196.192-.046.362-.098.502-.143a1 1 0 0 1 .622.001c.31.105.65.184 1.014.214.348.029.674-.027.927-.114a.535.535 0 0 0 .362-.51v-1.61a4.474 4.474 0 0 0-1.5-.339c-.456 0-.923.085-1.379.196-.192.046-.362.098-.502.143a1 1 0 0 1-.622-.001 11.91 11.91 0 0 1-1.014-.214 4.07 4.07 0 0 0-1.014.214 1 1 0 0 1-.622.001 13.92 13.92 0 0 0-.502-.143A6.474 6.474 0 0 0 4.5 9.769a4.474 4.474 0 0 0-1.5.339v1.611a.535.535 0 0 0 .362.51 1.95 1.95 0 0 0 .927.113Z"/></svg>',
+  },
 };
 function _runtimeTagHtml(runtime) {
-  const meta = RUNTIME_TAGS[runtime] || { label: runtime || 'unknown', color: 'var(--muted)' };
-  return '<span class="agent-runtime-tag" title="Runtime: ' + escapeHtml(runtime || 'unknown') + '" style="font-size:9px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:1px 5px;margin-left:6px;border:1px solid ' + meta.color + ';border-radius:3px;color:' + meta.color + ';background:transparent">' + escapeHtml(meta.label) + '</span>';
+  const meta = RUNTIME_TAGS[runtime];
+  if (meta && meta.svg) {
+    return '<span class="agent-runtime-tag" title="Runtime: ' + escapeHtml(meta.label) + '" style="display:inline-block;margin-left:6px;color:' + meta.color + '" aria-label="' + escapeHtml(meta.label) + ' runtime">' + meta.svg + '</span>';
+  }
+  // Unknown runtime — fall back to a small text pill so the user still sees something
+  const fallback = runtime || 'unknown';
+  return '<span class="agent-runtime-tag" title="Runtime: ' + escapeHtml(fallback) + '" style="font-size:9px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:1px 5px;margin-left:6px;border:1px solid var(--muted);border-radius:3px;color:var(--muted);background:transparent">' + escapeHtml(fallback) + '</span>';
 }
 
 function renderAgents(agents) {
@@ -49,13 +66,23 @@ async function openAgentDetail(id) {
   const emojiSpan = document.createElement('span');
   emojiSpan.style.fontSize = '22px';
   emojiSpan.textContent = agent.emoji || '';
-  // Runtime tag rendered as a separate span so the textContent path keeps its
-  // SEC-03-Phase-A safety for the user-controlled name/role fields.
-  const runtimeMeta = RUNTIME_TAGS[agent.runtime] || { label: agent.runtime || 'unknown', color: 'var(--muted)' };
+  // Runtime tag \u2014 uses the inline-SVG logo from the same RUNTIME_TAGS map the
+  // card uses, so the visual is consistent. The container's user-controlled
+  // text fields stay on the textContent path; the SVG is a hardcoded literal
+  // from RUNTIME_TAGS keyed by the runtime string (server-controlled, finite
+  // set), so injecting via innerHTML on the icon-only span is safe.
+  const runtimeMeta = RUNTIME_TAGS[agent.runtime];
   const runtimeSpan = document.createElement('span');
-  runtimeSpan.style.cssText = 'font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:2px 6px;margin-left:10px;border:1px solid ' + runtimeMeta.color + ';border-radius:3px;color:' + runtimeMeta.color;
-  runtimeSpan.title = 'Runtime: ' + (agent.runtime || 'unknown');
-  runtimeSpan.textContent = runtimeMeta.label;
+  runtimeSpan.title = 'Runtime: ' + (runtimeMeta?.label || agent.runtime || 'unknown');
+  runtimeSpan.style.cssText = 'display:inline-block;margin-left:10px';
+  if (runtimeMeta && runtimeMeta.svg) {
+    runtimeSpan.style.color = runtimeMeta.color;
+    runtimeSpan.innerHTML = runtimeMeta.svg.replace('width="13"', 'width="18"').replace('height="13"', 'height="18"');
+    runtimeSpan.setAttribute('aria-label', runtimeMeta.label + ' runtime');
+  } else {
+    runtimeSpan.style.cssText += ';font-size:10px;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;padding:2px 6px;border:1px solid var(--muted);border-radius:3px;color:var(--muted)';
+    runtimeSpan.textContent = agent.runtime || 'unknown';
+  }
   nameEl.replaceChildren(
     emojiSpan,
     document.createTextNode(' ' + (agent.name || '') + ' \u2014 ' + (agent.role || '')),
