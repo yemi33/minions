@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1593 (2026-04-28)
+
+### Features
+- replace runtime text tag with inline SVG logos
+
 ## 0.1.1592 (2026-04-28)
 
 ### Features
