@@ -22,6 +22,7 @@ const { resolveRuntime } = require('./runtimes');
 
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
+const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 
@@ -259,6 +260,7 @@ function _createStreamAccumulator({
   maxTextLength = 0,
   onChunk = null,
   onToolUse = null,
+  onTaskComplete = null,
 }) {
   let stdout = '';
   let stderr = '';
@@ -274,6 +276,8 @@ function _createStreamAccumulator({
   // narration ("I'll inspect...") that is only progress text, so terminal text
   // comes from non-tool assistant messages or trailing deltas.
   let copilotMessageBuffer = '';
+  let copilotTaskCompleteSeen = false;
+  let copilotTaskCompleteSummary = '';
 
   function _streamText(value) {
     return maxTextLength ? value.slice(-maxTextLength) : value;
@@ -282,6 +286,21 @@ function _createStreamAccumulator({
   function _copilotAssistantMessageHasTools(obj) {
     const requests = obj?.data?.toolRequests;
     return Array.isArray(requests) && requests.length > 0;
+  }
+
+  function _captureCopilotTaskComplete(summary, success = true) {
+    if (typeof summary !== 'string' || !summary) return;
+    const finalSummary = _streamText(summary);
+    const alreadySeen = copilotTaskCompleteSeen && copilotTaskCompleteSummary === finalSummary;
+    copilotTaskCompleteSeen = true;
+    copilotTaskCompleteSummary = finalSummary;
+    copilotMessageBuffer = '';
+    text = finalSummary;
+    if (onChunk && finalSummary !== lastTextSent) {
+      lastTextSent = finalSummary;
+      onChunk(finalSummary);
+    }
+    if (!alreadySeen && onTaskComplete) onTaskComplete({ summary: finalSummary, success: success !== false });
   }
 
   function captureEvent(obj) {
@@ -323,7 +342,11 @@ function _createStreamAccumulator({
 
     // ── Copilot shape ───────────────────────────────────────────────────────
     if (obj.type === 'result' && typeof obj.sessionId === 'string') sessionId = obj.sessionId;
+    if (obj.type === 'session.task_complete') {
+      _captureCopilotTaskComplete(obj.data?.summary, obj.data?.success);
+    }
     if (obj.type === 'assistant.message_delta' && typeof obj.data?.deltaContent === 'string') {
+      if (copilotTaskCompleteSeen) return;
       copilotMessageBuffer += obj.data.deltaContent;
       if (onChunk && copilotMessageBuffer !== lastTextSent) {
         lastTextSent = copilotMessageBuffer;
@@ -340,6 +363,10 @@ function _createStreamAccumulator({
       if (Array.isArray(obj.data.toolRequests)) {
         for (const tr of obj.data.toolRequests) {
           if (tr && tr.name) {
+            if (tr.name === 'task_complete') {
+              _captureCopilotTaskComplete(tr.arguments?.summary || tr.intentionSummary);
+              continue;
+            }
             const toolUse = { name: tr.name, input: tr.arguments || {} };
             toolUses.push(toolUse);
             if (onToolUse) onToolUse(toolUse.name, toolUse.input);
@@ -348,6 +375,10 @@ function _createStreamAccumulator({
       }
     }
     if (obj.type === 'tool.execution_start' && obj.data?.toolName) {
+      if (obj.data.toolName === 'task_complete') {
+        _captureCopilotTaskComplete(obj.data.arguments?.summary);
+        return;
+      }
       const toolUse = { name: obj.data.toolName, input: obj.data.arguments || {} };
       // Dedup: assistant.message.toolRequests already adds this — only push if
       // we haven't seen it yet (toolCallId would be the unique key, but we
@@ -381,7 +412,7 @@ function _createStreamAccumulator({
       const ev = runtime.parseStreamChunk(trimmed);
       if (ev) captureEvent(ev);
     }
-    if (copilotMessageBuffer) {
+    if (copilotMessageBuffer && !copilotTaskCompleteSeen) {
       text = _streamText(copilotMessageBuffer);
     }
     // Reconciliation: if any field is still missing, ask the runtime adapter
@@ -419,6 +450,18 @@ function _resolveModelFor(callOpts) {
   return undefined;
 }
 
+function _resolveRuntimeFeatureOpts({
+  stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
+} = {}) {
+  const engine = engineConfig || {};
+  return {
+    stream: stream ?? engine.copilotStreamMode,
+    disableBuiltinMcps: disableBuiltinMcps ?? engine.copilotDisableBuiltinMcps,
+    suppressAgentsMd: suppressAgentsMd ?? engine.copilotSuppressAgentsMd,
+    reasoningSummaries: reasoningSummaries ?? engine.copilotReasoningSummaries,
+  };
+}
+
 // ─── Core LLM Call ───────────────────────────────────────────────────────────
 
 function callLLM(promptText, sysPromptText, opts = {}) {
@@ -436,6 +479,9 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
   const model = _resolveModelFor({ model: modelOverride, engineConfig });
+  const runtimeFeatureOpts = _resolveRuntimeFeatureOpts({
+    stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
+  });
 
   let _abort = null;
   const promise = new Promise((resolve) => {
@@ -443,13 +489,25 @@ function callLLM(promptText, sysPromptText, opts = {}) {
     const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, {
       direct, label, runtime, model, maxTurns, allowedTools, effort, sessionId,
       maxBudget, bare, fallbackModel,
-      stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+      ...runtimeFeatureOpts,
     });
+    let taskCompleteTimer = null;
+    const scheduleTaskCompleteClose = () => {
+      if (taskCompleteTimer) return;
+      taskCompleteTimer = setTimeout(() => { try { shared.killImmediate(proc); } catch {} }, COPILOT_TASK_COMPLETE_GRACE_MS);
+    };
+    const clearTaskCompleteTimer = () => {
+      if (taskCompleteTimer) {
+        clearTimeout(taskCompleteTimer);
+        taskCompleteTimer = null;
+      }
+    };
     const acc = _createStreamAccumulator({
       runtime,
       maxRawBytes: ENGINE_DEFAULTS.maxLlmRawBytes,
       maxStderrBytes: ENGINE_DEFAULTS.maxLlmStderrBytes,
       maxLineBufferBytes: ENGINE_DEFAULTS.maxLlmLineBufferBytes,
+      onTaskComplete: scheduleTaskCompleteClose,
     });
 
     _abort = () => { shared.killImmediate(proc); };
@@ -461,6 +519,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
+      clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
@@ -486,6 +545,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM spawn error (${label}): ${err.message}`);
       resolve({
@@ -516,6 +576,9 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
   const model = _resolveModelFor({ model: modelOverride, engineConfig });
+  const runtimeFeatureOpts = _resolveRuntimeFeatureOpts({
+    stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
+  });
 
   let _abort = null;
   const promise = new Promise((resolve) => {
@@ -523,8 +586,19 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
     const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, {
       direct, label, runtime, model, maxTurns, allowedTools, effort, sessionId,
       maxBudget, bare, fallbackModel,
-      stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+      ...runtimeFeatureOpts,
     });
+    let taskCompleteTimer = null;
+    const scheduleTaskCompleteClose = () => {
+      if (taskCompleteTimer) return;
+      taskCompleteTimer = setTimeout(() => { try { shared.killImmediate(proc); } catch {} }, COPILOT_TASK_COMPLETE_GRACE_MS);
+    };
+    const clearTaskCompleteTimer = () => {
+      if (taskCompleteTimer) {
+        clearTimeout(taskCompleteTimer);
+        taskCompleteTimer = null;
+      }
+    };
     const acc = _createStreamAccumulator({
       runtime,
       maxRawBytes: ENGINE_DEFAULTS.maxLlmRawBytes,
@@ -532,6 +606,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       maxLineBufferBytes: ENGINE_DEFAULTS.maxLlmLineBufferBytes,
       onChunk,
       onToolUse,
+      onTaskComplete: scheduleTaskCompleteClose,
     });
 
     _abort = () => { shared.killImmediate(proc); };
@@ -543,6 +618,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
+      clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
@@ -565,6 +641,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM-stream spawn error (${label}): ${err.message}`);
       resolve({
@@ -588,4 +665,5 @@ module.exports = {
   _resetBinCache,
   _resolveRuntimeFor,
   _resolveModelFor,
+  _resolveRuntimeFeatureOpts,
 };

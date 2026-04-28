@@ -325,6 +325,7 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
   let outputTokensTotal = 0;
   let turnEndCount = 0;
   let pendingDeltaContent = '';
+  let taskCompleteSummary = '';
 
   for (const rawLine of safeRaw.split('\n')) {
     const line = rawLine.trim();
@@ -336,17 +337,29 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
     const type = obj.type;
     if (type === 'assistant.message_delta') {
       const delta = obj.data?.deltaContent;
-      if (typeof delta === 'string') pendingDeltaContent += delta;
+      if (typeof delta === 'string' && !taskCompleteSummary) pendingDeltaContent += delta;
     } else if (type === 'assistant.message') {
       const content = obj.data?.content;
       const toolRequests = obj.data?.toolRequests;
       const hasToolRequests = Array.isArray(toolRequests) && toolRequests.length > 0;
+      if (hasToolRequests) {
+        for (const tr of toolRequests) {
+          const summary = tr?.name === 'task_complete' ? tr.arguments?.summary || tr.intentionSummary : '';
+          if (typeof summary === 'string' && summary) taskCompleteSummary = summary;
+        }
+      }
       if (typeof content === 'string') {
         if (content && !hasToolRequests) messageContents.push(content);
         pendingDeltaContent = '';
       }
       const ot = obj.data?.outputTokens;
       if (typeof ot === 'number') outputTokensTotal += ot;
+    } else if (type === 'tool.execution_start') {
+      const summary = obj.data?.toolName === 'task_complete' ? obj.data?.arguments?.summary : '';
+      if (typeof summary === 'string' && summary) taskCompleteSummary = summary;
+    } else if (type === 'session.task_complete') {
+      const summary = obj.data?.summary;
+      if (typeof summary === 'string' && summary) taskCompleteSummary = summary;
     } else if (type === 'assistant.turn_end') {
       turnEndCount += 1;
     } else if (type === 'session.tools_updated' && model == null) {
@@ -377,7 +390,7 @@ function parseOutput(raw, { maxTextLength = 0 } = {}) {
     }
   }
 
-  let text = messageContents.join('') + pendingDeltaContent;
+  let text = taskCompleteSummary || (messageContents.join('') + pendingDeltaContent);
   if (maxTextLength && text.length > maxTextLength) {
     text = text.slice(-maxTextLength);
   }

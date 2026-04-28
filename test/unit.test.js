@@ -1690,6 +1690,21 @@ async function testCopilotAdapter() {
       'tool-use preambles must not replace a later final answer that only arrived as deltas');
   });
 
+  await test('copilot.parseOutput uses session.task_complete summary as autopilot final text', () => {
+    const raw = [
+      '{"type":"assistant.message","data":{"content":"","toolRequests":[{"name":"task_complete","arguments":{"summary":"Finished from tool request."}}],"outputTokens":4}}',
+      '{"type":"tool.execution_start","data":{"toolName":"task_complete","arguments":{"summary":"Finished from tool start."}}}',
+      '{"type":"tool.execution_complete","data":{"success":true,"result":{"content":"Finished from tool complete."}}}',
+      '{"type":"session.task_complete","data":{"summary":"Finished from terminal event.","success":true}}',
+      '{"type":"assistant.turn_end","data":{}}',
+      '{"type":"result","sessionId":"sess-11","exitCode":0,"usage":{"premiumRequests":1}}',
+    ].join('\n');
+    const r = copilot.parseOutput(raw);
+    assert.strictEqual(r.text, 'Finished from terminal event.',
+      'autopilot task_complete summary should be the final answer text');
+    assert.strictEqual(r.sessionId, 'sess-11');
+  });
+
   await test('copilot.parseOutput: model captured from session.tools_updated event', () => {
     const raw = [
       '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
@@ -5951,8 +5966,20 @@ async function testLlmModule() {
       'stream accumulator should identify Copilot assistant messages that request tools');
     assert.ok(src.includes('!_copilotAssistantMessageHasTools(obj)'),
       'stream accumulator should not treat tool-request narration as terminal answer text');
-    assert.ok(src.includes('if (copilotMessageBuffer)') && src.includes('text = _streamText(copilotMessageBuffer)'),
+    assert.ok(src.includes('if (copilotMessageBuffer && !copilotTaskCompleteSeen)') && src.includes('text = _streamText(copilotMessageBuffer)'),
       'stream accumulator should preserve trailing Copilot deltas when no final assistant.message arrives');
+  });
+
+  await test('llm streaming accumulator treats Copilot task_complete as terminal summary', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes("obj.type === 'session.task_complete'") && src.includes('_captureCopilotTaskComplete(obj.data?.summary'),
+      'stream accumulator should capture Copilot session.task_complete summary');
+    assert.ok(src.includes("tr.name === 'task_complete'") && src.includes('continue;'),
+      'task_complete tool requests should be captured as terminal summaries, not emitted as normal tools');
+    assert.ok(src.includes("obj.data.toolName === 'task_complete'") && src.includes('return;'),
+      'task_complete tool starts should not remain as progress-only tool events');
+    assert.ok(src.includes('COPILOT_TASK_COMPLETE_GRACE_MS') && src.includes('onTaskComplete: scheduleTaskCompleteClose'),
+      'streaming calls should close Copilot shortly after terminal task_complete so the UI stops spinning');
   });
 
   // ── Export Shape ─────────────────────────────────────────────────────────
@@ -5971,11 +5998,48 @@ async function testLlmModule() {
       '_resetBinCache',
       '_resolveBin',
       '_resolveModelFor',
+      '_resolveRuntimeFeatureOpts',
       '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
       'trackEngineUsage',
     ]);
+  });
+
+  await test('llm direct calls inherit Copilot stream/runtime flags from engineConfig', () => {
+    const opts = llm._resolveRuntimeFeatureOpts({
+      engineConfig: {
+        copilotStreamMode: 'on',
+        copilotDisableBuiltinMcps: true,
+        copilotSuppressAgentsMd: true,
+        copilotReasoningSummaries: false,
+      },
+    });
+    assert.deepStrictEqual(opts, {
+      stream: 'on',
+      disableBuiltinMcps: true,
+      suppressAgentsMd: true,
+      reasoningSummaries: false,
+    });
+
+    const explicit = llm._resolveRuntimeFeatureOpts({
+      stream: 'off',
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: true,
+      engineConfig: {
+        copilotStreamMode: 'on',
+        copilotDisableBuiltinMcps: true,
+        copilotSuppressAgentsMd: true,
+        copilotReasoningSummaries: false,
+      },
+    });
+    assert.deepStrictEqual(explicit, {
+      stream: 'off',
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: true,
+    }, 'explicit direct-call opts should override engineConfig defaults');
   });
 
   // ── trackEngineUsage — persistence, accumulation, guards ─────────────────
