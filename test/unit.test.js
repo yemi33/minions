@@ -20236,6 +20236,29 @@ async function testSchedulerAdditionalCoverage() {
 async function testIntegrationHarnessRootGuard() {
   console.log('\n── Integration Harness Root Guard ──');
 
+  function loadMinionsHarness(envOverrides = {}) {
+    const keys = ['MINIONS_TEST_DIR', 'MINIONS_TEST_ALLOW_REAL_ROOT'];
+    const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(envOverrides, key)) {
+        const value = envOverrides[key];
+        if (value === undefined || value === null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const harnessPath = path.join(MINIONS_DIR, 'test', 'minions-tests.js');
+    delete require.cache[require.resolve(harnessPath)];
+    try {
+      return require(harnessPath);
+    } finally {
+      delete require.cache[require.resolve(harnessPath)];
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  }
+
   await test('minions integration harness is import-safe', () => {
     const { spawnSync } = require('child_process');
     const result = spawnSync(process.execPath, ['-e', "require('./test/minions-tests.js'); console.log('import-ok')"], {
@@ -20250,18 +20273,46 @@ async function testIntegrationHarnessRootGuard() {
     assert.ok(result.stdout.includes('import-ok'), 'import should complete after requiring minions-tests.js');
   });
 
-  await test('integration harness root guard accepts the served checkout root', () => {
-    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+  await test('integration harness root guard accepts explicit isolated MINIONS_TEST_DIR', () => {
+    const isolatedRoot = createTmpDir();
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: isolatedRoot,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
+    assert.doesNotThrow(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: isolatedRoot }, isolatedRoot);
+    });
+  });
+
+  await test('integration harness root guard refuses repo root without explicit override', () => {
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: undefined,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
+    assert.throws(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: MINIONS_DIR }, MINIONS_DIR);
+    }, /MINIONS_TEST_DIR|Refusing to run/i);
+  });
+
+  await test('integration harness root guard allows repo root with explicit override', () => {
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: undefined,
+      MINIONS_TEST_ALLOW_REAL_ROOT: '1',
+    });
     assert.doesNotThrow(() => {
       assertDashboardRootMatchesLocal({ minionsDir: MINIONS_DIR }, MINIONS_DIR);
     });
   });
 
   await test('integration harness root guard rejects a different served root', () => {
-    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+    const isolatedRoot = createTmpDir();
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: isolatedRoot,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
     const otherRoot = path.join(os.tmpdir(), 'different-minions-root');
     assert.throws(() => {
-      assertDashboardRootMatchesLocal({ minionsDir: otherRoot }, MINIONS_DIR);
+      assertDashboardRootMatchesLocal({ minionsDir: otherRoot }, isolatedRoot);
     }, /refusing to run/i);
   });
 
