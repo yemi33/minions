@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1626 (2026-04-29)
+
+### Fixes
+-  harden ===ACTIONS=== delimiter parsing and stripping
+
 ## 0.1.1625 (2026-04-29)
 
 ### Fixes
