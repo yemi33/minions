@@ -1307,6 +1307,13 @@ async function testRuntimeAdapters() {
     assert.ok(i >= 0 && args[i + 1] === 'json');
   });
 
+  await test('claude.buildArgs enables partial messages for stream-json streaming', () => {
+    assert.ok(claude.buildArgs({ outputFormat: 'stream-json' }).includes('--include-partial-messages'),
+      'Claude stream-json should request partial message events for live streaming');
+    assert.ok(!claude.buildArgs({ outputFormat: 'json' }).includes('--include-partial-messages'),
+      'Claude JSON result mode must not emit stream-json-only partial-message flag');
+  });
+
   // ── resolveModel (AC #2 + shorthand expansion) ────────────────────────────
 
   await test('claude.resolveModel(undefined) returns undefined', () => {
@@ -6175,6 +6182,16 @@ async function testLlmModule() {
       'streaming calls should close Copilot shortly after terminal task_complete so the UI stops spinning');
   });
 
+  await test('llm streaming accumulator consumes Claude partial stream_event deltas', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes("obj.type === 'stream_event'") && src.includes('_captureClaudeStreamEvent(obj)'),
+      'stream accumulator should inspect Claude stream_event records');
+    assert.ok(src.includes("event.type === 'content_block_delta'") && src.includes("delta.type === 'text_delta'"),
+      'stream accumulator should turn Claude text_delta records into live chunks');
+    assert.ok(src.includes("event.type === 'message_start'") && src.includes('claudeStreamBlocks.clear()'),
+      'Claude partial stream state should reset between assistant messages');
+  });
+
   // ── Export Shape ─────────────────────────────────────────────────────────
   await test('llm module exports callLLMStreaming', () => {
     assert.ok(typeof llm.callLLMStreaming === 'function');
@@ -10634,14 +10651,21 @@ async function testResolveAgent() {
 
   await test('engine work-item discovery passes preferred_agent/agents to resolveAgent', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('item.preferred_agent || item.agents || null'),
-      'Work-item discovery should derive agent hints from preferred_agent/agents');
+    const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+    // Hint-extraction logic now lives in routing.extractAgentHints (single
+    // source of truth). Engine call sites delegate to it.
+    assert.ok(routingSrc.includes('function extractAgentHints(item)'),
+      'routing should expose extractAgentHints helper for hint derivation');
+    assert.ok(routingSrc.includes('item.preferred_agent || item.agents || null'),
+      'extractAgentHints should derive hints from preferred_agent/agents');
+    assert.ok(engineSrc.includes('routing.extractAgentHints(item)'),
+      'Work-item discovery should derive agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('resolveAgent(workType, config, null, agentHints)'),
       'Work-item discovery should pass hints into resolveAgent so routing defaults do not override them');
-    assert.ok(engineSrc.includes("item.meta?.item?.preferred_agent || item.meta?.item?.agents"),
-      'Pending dispatch fallback should preserve work-item agent hints when re-resolving missing agents');
-    assert.ok(engineSrc.includes("item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length"),
-      'Busy-agent reassignment should treat hinted work as explicit assignment');
+    assert.ok(engineSrc.includes('routing.extractAgentHints(item.meta?.item)'),
+      'Pending dispatch fallback should preserve work-item agent hints via routing.extractAgentHints');
+    assert.ok(engineSrc.includes('item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item)'),
+      'Busy-agent reassignment should treat hinted work as explicit assignment via the helper');
   });
 
   await test('Command Center dispatch persists agents[] hint for engine routing', () => {
@@ -21867,6 +21891,59 @@ async function testCcActionTypes() {
     const actionResult = parseCCActions(withActions);
     assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
     assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
+
+    const shortDelimiter = 'Answer first.\n\n===ACTIONS\n[{"type":"note","title":"x","content":"y"}]';
+    const shortResult = parseCCActions(shortDelimiter);
+    assert.strictEqual(shortResult.text, 'Answer first.', 'short action delimiter should still split display text');
+    assert.strictEqual(shortResult.actions.length, 1, 'short action delimiter should parse actions');
+
+    const malformedDelimiter = 'Answer first.\n\n===ACTIONS ->\n[{"type":"reopen-work-item","id":"W-moj69r5e3la3","project":"OfficeAgent"}]';
+    const malformedResult = parseCCActions(malformedDelimiter);
+    assert.strictEqual(malformedResult.text, 'Answer first.', 'malformed action delimiter line must not leak into display text');
+    assert.deepStrictEqual(malformedResult.actions, [], 'malformed action delimiter line must not execute actions');
+  });
+
+  await test('stripCCActionsForStream hides full and partial action blocks during live streaming', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
+    const partialBody = src.match(/function findCCActionsPartialDelimiter[\s\S]*?^}/m)[0];
+    const stripBody = src.match(/function stripCCActionsForStream[\s\S]*?^}/m)[0];
+    const stripCCActionsForStream = new Function(headerBody + '\n' + partialBody + '\n' + stripBody + '\nreturn stripCCActionsForStream;')();
+
+    const inline = '## Action System\nResponses can mention `===ACTIONS===` inline.';
+    assert.strictEqual(stripCCActionsForStream(inline), inline, 'inline delimiter mentions must keep rendering');
+    assert.strictEqual(stripCCActionsForStream('Answer first.\n\n===ACT'), 'Answer first.', 'partial delimiter at stream tail must be hidden');
+    assert.strictEqual(stripCCActionsForStream('Answer first.\n\n===ACTIONS'), 'Answer first.', 'short delimiter at stream tail must be hidden');
+    assert.strictEqual(stripCCActionsForStream('Answer first.\n\n===ACTIONS===\n[{"type":"note"}]'), 'Answer first.', 'full action block must be hidden from stream chunks');
+    assert.strictEqual(stripCCActionsForStream('Answer first.\n\n===ACTIONS ->\n[{"type":"reopen-work-item"}]'), 'Answer first.', 'malformed action blocks must be hidden from stream chunks');
+  });
+
+  await test('streaming command center sanitizes chunks before writing SSE events', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('const display = stripCCActionsForStream(text);'), 'streaming onChunk should strip full and partial action blocks before SSE output');
+  });
+
+  await test('browser stream merge strips action blocks from incoming chunks', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const stripBody = src.match(/function _ccStripActionBlockFromText[\s\S]*?^}/m)[0];
+    const mergeBody = src.match(/function _ccMergeStreamText[\s\S]*?^}/m)[0];
+    const mergeStreamText = new Function(stripBody + '\n' + mergeBody + '\nreturn _ccMergeStreamText;')();
+
+    // `prev` is treated as already-clean (server strips before SSE emission
+    // and prior _ccMergeStreamText calls sanitized incoming). Re-stripping
+    // `prev` every frame would be O(n²) over response length for nothing.
+    // The defensive strip is still applied to `incoming` against rolling
+    // deploys where a server build hasn't picked up the strip yet.
+    assert.strictEqual(mergeStreamText('Answer first.', 'Answer first.\n\n===ACTIONS===\n[{"type":"note"}]'), 'Answer first.', 'incoming full action block should be stripped in the browser fallback');
+    assert.strictEqual(mergeStreamText('Answer first.', 'Answer first.\n\n===ACTIONS ->\n[{"type":"reopen-work-item"}]'), 'Answer first.', 'incoming malformed action block should be stripped in the browser fallback');
+    // Server already strips before emission, so prev is treated as clean.
+    assert.ok(!mergeBody.includes('_ccStripActionBlockFromText(prev'), '_ccMergeStreamText should not re-strip prev — it is already clean from prior frames');
+  });
+
+  await test('command center mirrors sanitized text to Teams, not raw action blocks', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('teams.teamsPostCCResponse(body.message, parsed.text)'), 'non-streaming CC should mirror parsed display text');
+    assert.ok(src.includes('teams.teamsPostCCResponse(body.message, displayText)'), 'streaming CC should mirror parsed display text');
   });
 
   await test('parseCCActions rejects malformed ===ACTIONS -> delimiter without executing action JSON', () => {
@@ -33700,6 +33777,13 @@ async function testRenderUtils() {
     // The push should reference evt.input
     assert.ok(ccSrc.includes('evt.input'),
       'SSE tool handler should capture evt.input from the server event');
+  });
+
+  await test('CC SSE forwards and handles thinking events for streamed runtimes', () => {
+    assert.ok(dashSrc.includes("writer({ type: 'thinking'") && dashSrc.includes('onThinking: () =>'),
+      'dashboard stream handler should forward runtime thinking/progress events');
+    assert.ok(ccSrc.includes("evt.type === 'thinking'") && ccSrc.includes('streamStatusNote = evt.text'),
+      'command-center client should render thinking/progress SSE events');
   });
 
   await test('CC stream chunks and terminal text merge append-style instead of replacing prior streamed text', () => {

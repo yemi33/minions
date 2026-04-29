@@ -209,6 +209,7 @@ function buildArgs(opts = {}) {
   } = opts;
 
   const args = ['-p', '--output-format', outputFormat];
+  if (outputFormat === 'stream-json') args.push('--include-partial-messages');
   if (maxTurns != null) args.push('--max-turns', String(maxTurns));
   if (model) args.push('--model', String(model));
   if (verbose) args.push('--verbose');

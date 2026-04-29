@@ -584,6 +584,7 @@ function _ensureCcLiveStream(tabId) {
     tabId,
     text: '',
     tools: [],
+    thinking: false,
     donePayload: null,
     writer: null,
     endResponse: null,
@@ -766,34 +767,67 @@ For all state files, look under \`${MINIONS_DIR}\`.`;
 }
 
 function findCCActionsDelimiter(text) {
-  if (!text) return -1;
-  const match = /(?:^|\r?\n)===ACTIONS===[ \t]*(?=\r?\n|$)/m.exec(text);
-  if (!match) return -1;
-  return match.index + match[0].indexOf('===ACTIONS===');
+  const header = findCCActionsHeader(text);
+  return header && header.parseable ? header.index : -1;
 }
 
-function findCCActionsBlockStart(text) {
+// Single helper that handles both the strict (well-formed) and loose forms of
+// the ===ACTIONS=== delimiter. `parseable` is true only for the strict form
+// that parseCCActions can JSON.parse; loose matches still split display text
+// but are not parsed (they shouldn't reach the user as actions).
+function findCCActionsHeader(text) {
+  if (!text) return null;
+  // Strict: ===ACTIONS={0,3} on its own line, optional trailing whitespace.
+  const strict = /(?:^|\r?\n)===ACTIONS={0,3}[ \t]*(?=\r?\n|$)/m.exec(text);
+  if (strict) {
+    const headerStart = strict.index + strict[0].indexOf('===ACTIONS');
+    const headerMatch = text.slice(headerStart).match(/^===ACTIONS={0,3}[ \t]*/);
+    return {
+      index: headerStart,
+      headerLength: headerMatch ? headerMatch[0].length : '===ACTIONS==='.length,
+      parseable: true,
+    };
+  }
+  // Loose: sentinel-looking malformed delimiters such as ===ACTIONS -> should
+  // still be hidden, but prose like "===ACTIONS are documented" must render.
+  const loose = /(?:^|\r?\n)===ACTIONS(?:[ \t]*(?:[-=]>?|={1,}|$)|[^A-Za-z0-9_\s\r\n][^\r\n]*)(?=\r?\n|$)/m.exec(text);
+  if (loose) {
+    const headerStart = loose.index + loose[0].indexOf('===ACTIONS');
+    return { index: headerStart, headerLength: 0, parseable: false };
+  }
+  return null;
+}
+
+function findCCActionsPartialDelimiter(text) {
   if (!text) return -1;
-  const exactIdx = findCCActionsDelimiter(text);
-  if (exactIdx >= 0) return exactIdx;
-
-  // Sentinel-looking malformed delimiters are control-plane attempts: hide them
-  // from display, but only the exact delimiter above may execute actions.
-  const candidate = /(?:^|\r?\n)===ACTIONS(?:[ \t]*(?:[-=]>?|={1,}|$)|[^A-Za-z0-9_\s\r\n][^\r\n]*)(?=\r?\n|$)/m.exec(text);
-  if (candidate) return candidate.index + candidate[0].indexOf('===ACTIONS');
-
-  const lastLf = text.lastIndexOf('\n');
-  const lastCr = text.lastIndexOf('\r');
-  const lastLineStart = Math.max(lastLf, lastCr) + 1;
-  const trailingLine = text.slice(lastLineStart);
-  if (trailingLine.length >= 4 && '===ACTIONS==='.startsWith(trailingLine)) return lastLineStart;
-
+  const delimiter = '===ACTIONS===';
+  const lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1;
+  const trailingLine = text.slice(lineStart).trimEnd();
+  if (trailingLine.length >= 3 && trailingLine.length < delimiter.length && delimiter.startsWith(trailingLine)) {
+    return lineStart;
+  }
   return -1;
 }
 
+function stripCCActionsForStream(text) {
+  if (!text) return '';
+  // Fast path: 95% of streamed chunks contain no '=' before any actions block
+  // appears. Skip all regex work in that case.
+  if (text.indexOf('===') < 0) return text;
+  const header = findCCActionsHeader(text);
+  if (header) return text.slice(0, header.index).trim();
+  const partialIdx = findCCActionsPartialDelimiter(text);
+  if (partialIdx >= 0) return text.slice(0, partialIdx).trimEnd();
+  return text;
+}
+
 function stripCCActionsForDisplay(text) {
-  const blockIdx = findCCActionsBlockStart(text);
-  return blockIdx >= 0 ? text.slice(0, blockIdx).trim() : text;
+  if (!text) return '';
+  const header = findCCActionsHeader(text);
+  if (header) return text.slice(0, header.index).trim();
+  const partialIdx = findCCActionsPartialDelimiter(text);
+  if (partialIdx >= 0) return text.slice(0, partialIdx).trimEnd();
+  return text;
 }
 
 // Issue #1834: non-Claude runtimes (Copilot/GPT) routinely wrap the action JSON
@@ -843,20 +877,23 @@ function parseCCActions(text) {
   let actions = [];
   let displayText = stripCCActionsForDisplay(text);
   let parseError = null;
-  const delimIdx = findCCActionsDelimiter(text);
-  if (delimIdx >= 0) {
-    displayText = text.slice(0, delimIdx).trim();
-    const segment = text.slice(delimIdx + '===ACTIONS==='.length);
-    const jsonStr = _extractActionsJson(segment);
-    if (jsonStr) {
-      try {
-        const parsed = JSON.parse(jsonStr);
-        actions = Array.isArray(parsed) ? parsed : [parsed];
-      } catch (e) {
-        parseError = e.message || 'invalid JSON';
+  const header = findCCActionsHeader(text);
+  let segment = '';
+  if (header) {
+    displayText = text.slice(0, header.index).trim();
+    if (header.parseable) {
+      segment = text.slice(header.index + header.headerLength);
+      const jsonStr = _extractActionsJson(segment);
+      if (jsonStr) {
+        try {
+          const parsed = JSON.parse(jsonStr);
+          actions = Array.isArray(parsed) ? parsed : [parsed];
+        } catch (e) {
+          parseError = e.message || 'invalid JSON';
+        }
+      } else if (segment.trim()) {
+        parseError = 'no JSON value found after ===ACTIONS=== delimiter';
       }
-    } else if (segment.trim()) {
-      parseError = 'no JSON value found after ===ACTIONS=== delimiter';
     }
   }
   if (actions.length === 0) {
@@ -875,7 +912,7 @@ function parseCCActions(text) {
     result._actionParseError = parseError;
     // Visibility for the engine log — silent failure here previously masked issue #1834.
     try {
-      const snippet = (text.slice(delimIdx + '===ACTIONS==='.length).trim() || '').slice(0, 200);
+      const snippet = (segment.trim() || '').slice(0, 200);
       console.warn(`[CC] action JSON parse failed (${parseError}); raw segment: ${snippet}`);
       if (typeof shared !== 'undefined' && shared && typeof shared.log === 'function') {
         shared.log('warn', `CC action JSON parse failed: ${parseError} — segment: ${snippet}`);
@@ -888,8 +925,8 @@ function parseCCActions(text) {
 function stripCCActionSyntax(text) {
   if (!text) return '';
   let displayText = text;
-  const delimIdx = findCCActionsDelimiter(text);
-  if (delimIdx >= 0) displayText = text.slice(0, delimIdx).trim();
+  const header = findCCActionsHeader(text);
+  if (header) displayText = text.slice(0, header.index).trim();
   return displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
 }
 
@@ -4556,11 +4593,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
-        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
-        if (!tabId.startsWith('teams-')) {
-          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
-        }
-
         const parsed = parseCCActions(result.text);
         const toolUses = Array.isArray(result.toolUses) ? result.toolUses : _extractToolUsesFromRaw(result.raw);
         // Safety net: detect /loop invocation and convert to create-watch
@@ -4572,6 +4604,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         if (parsed.actions.length > 0) {
           parsed.actionResults = await executeCCActions(parsed.actions);
+        }
+        // Mirror only user-facing text to Teams; never send the internal action block.
+        if (!tabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, parsed.text).catch(() => {});
         }
         // Issue #1834: rename _actionParseError → actionParseError (public field)
         // so the client can surface a warning when the model emitted ===ACTIONS===
@@ -4666,6 +4702,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         for (const tool of live.tools || []) {
           writeCcEvent({ type: 'tool', name: tool.name, input: _lightToolInput(tool.input) });
         }
+        if (live.thinking && !live.text) writeCcEvent({ type: 'thinking', text: 'Thinking...' });
         if (live.text) writeCcEvent({ type: 'chunk', text: live.text });
         if (live.donePayload) {
           writeCcEvent(live.donePayload);
@@ -4747,14 +4784,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           sessionId, effort: streamEffort, direct: true,
           engineConfig: CONFIG.engine,
           onChunk: (text) => {
-            const display = stripCCActionsForDisplay(text);
+            const display = stripCCActionsForStream(text);
             liveState.text = display;
             if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
+            // Once text is flowing, the SSE-replay branch (live.thinking &&
+            // !live.text) shouldn't show stale "Thinking…" on reconnect.
+            if (liveState.thinking) liveState.thinking = false;
           },
           onToolUse: (name, input) => {
             toolUses.push({ name, input: input || {} });
             liveState.tools.push({ name, input: input || {} });
             if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
+          },
+          onThinking: () => {
+            liveState.thinking = true;
+            if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
           }
         });
         _ccStreamAbort = llmPromise.abort;
@@ -4772,19 +4816,26 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           toolUses = []; // discard stale metadata from the failed resume attempt
           const retryPromise = callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
             timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
-              allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-              effort: streamEffort, direct: true,
-              engineConfig: CONFIG.engine,
-              onChunk: (text) => {
-                const display = stripCCActionsForDisplay(text);
-                liveState.text = display;
-                if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
-              },
-              onToolUse: (name, input) => {
-                toolUses.push({ name, input: input || {} });
-                liveState.tools.push({ name, input: input || {} });
-                if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
-              }
+            allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+            effort: streamEffort, direct: true,
+            engineConfig: CONFIG.engine,
+            onChunk: (text) => {
+              const display = stripCCActionsForStream(text);
+              liveState.text = display;
+              if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
+              // Same reset as the initial path so resume-fail retries don't
+              // leave a stale "Thinking…" frame visible on SSE reconnect.
+              if (liveState.thinking) liveState.thinking = false;
+            },
+            onToolUse: (name, input) => {
+              toolUses.push({ name, input: input || {} });
+              liveState.tools.push({ name, input: input || {} });
+              if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
+            },
+            onThinking: () => {
+              liveState.thinking = true;
+              if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
+            }
             });
             _ccStreamAbort = retryPromise.abort;
             liveState.abortFn = _ccStreamAbort;
@@ -4856,7 +4907,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Mirror CC response to Teams (non-blocking, skip Teams-originated)
         const _streamTabId = body.tabId || 'default';
         if (!_streamTabId.startsWith('teams-')) {
-          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+          teams.teamsPostCCResponse(body.message, displayText).catch(() => {});
         }
 
         if (liveState.endResponse) liveState.endResponse();

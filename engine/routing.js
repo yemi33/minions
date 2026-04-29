@@ -28,7 +28,7 @@ let _routingCache = null;
 let _routingCacheMtime = 0;
 
 function parseRoutingTable() {
-  const content = getRouting();
+  const content = getRouting() || '';
   const routes = {};
   const lines = content.split('\n');
   let inTable = false;
@@ -116,12 +116,44 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function normalizeAgentHints(agentHints, authorAgent = null) {
-  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? String(agentHints).split(',') : []);
-  return raw
-    .map(id => String(id).trim().toLowerCase())
-    .map(id => id === '_author_' && authorAgent ? String(authorAgent).trim().toLowerCase() : id)
+// Centralizes the work-item shape used to derive routing hints. Engine code
+// previously inlined `item.preferred_agent || item.agents || null` at four
+// call sites; hoisting keeps the contract in one place.
+function extractAgentHints(item) {
+  if (!item || typeof item !== 'object') return null;
+  return item.preferred_agent || item.agents || null;
+}
+
+// Normalize a list of agent-hint inputs. Accepts:
+//   - Comma-separated string ("dallas,ripley")
+//   - Array of strings
+//   - Single string
+// Resolves the `_author_` token to authorAgent (when provided), validates
+// each hint against the configured agents map (case-insensitive lookup,
+// returning the canonical ID), dedups, and drops anything unknown.
+function normalizeAgentHints(agentHints, authorAgent = null, agents = null) {
+  const raw = Array.isArray(agentHints)
+    ? agentHints
+    : (agentHints ? String(agentHints).split(',') : []);
+  const expanded = raw
+    .map(id => String(id).trim())
+    .map(id => id.toLowerCase() === '_author_' && authorAgent ? String(authorAgent).trim() : id)
     .filter(Boolean);
+  // When no agents map is supplied, return lowercased IDs (legacy behaviour
+  // used by tests and pre-validation callers).
+  if (!agents || typeof agents !== 'object') {
+    return expanded.map(id => id.toLowerCase());
+  }
+  const byLower = new Map(Object.keys(agents).map(id => [id.toLowerCase(), id]));
+  const seen = new Set();
+  const normalized = [];
+  for (const hint of expanded) {
+    const id = byLower.get(hint.toLowerCase());
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push(id);
+  }
+  return normalized;
 }
 
 function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
@@ -153,7 +185,7 @@ function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
     return null;
   };
 
-  const hintedAgents = normalizeAgentHints(agentHints, authorAgent);
+  const hintedAgents = normalizeAgentHints(agentHints, authorAgent, agents);
   if (hintedAgents.length > 0) {
     for (const id of hintedAgents) {
       if (isAvailable(id)) { _claimedAgents.add(id); return id; }
@@ -203,10 +235,11 @@ module.exports = {
   getMonthlySpend,
   getAgentErrorRate,
   isAgentIdle,
+  normalizeAgentHints,
+  extractAgentHints,
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,
   setTempBudget,
   getTempBudget,
-  normalizeAgentHints,
 };

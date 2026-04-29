@@ -14,6 +14,22 @@ var _ccSending = false; // true if active tab is sending (UI indicator only)
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
+function _ccStripActionBlockFromText(value) {
+  var text = value || '';
+  if (!text) return text;
+  var full = /(?:^|\r?\n)===ACTIONS={0,3}[ \t]*(?=\r?\n|$)/m.exec(text);
+  if (full) return text.slice(0, full.index + full[0].indexOf('===ACTIONS')).trim();
+  var block = /(?:^|\r?\n)===ACTIONS\b[^\r\n]*(?=\r?\n|$)/m.exec(text);
+  if (block) return text.slice(0, block.index + block[0].indexOf('===ACTIONS')).trim();
+  var delimiter = '===ACTIONS===';
+  var lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1;
+  var trailingLine = text.slice(lineStart).trimEnd();
+  if (trailingLine.length >= 3 && trailingLine.length < delimiter.length && delimiter.indexOf(trailingLine) === 0) {
+    return text.slice(0, lineStart).trimEnd();
+  }
+  return text;
+}
+
 // ── Migration from legacy single-session format ─────────────────────────────
 (function _ccMigrateLegacy() {
   try {
@@ -55,8 +71,12 @@ function _ccActiveTab() {
 }
 
 function _ccMergeStreamText(prev, incoming) {
+  // `prev` is already merged-clean from prior frames (server strips actions
+  // before SSE emission, and any leaked partial was sanitized by the previous
+  // _ccMergeStreamText call). Only strip `incoming` defensively — re-stripping
+  // `prev` every frame is O(n²) over the response length for nothing.
   var current = prev || '';
-  var next = incoming || '';
+  var next = _ccStripActionBlockFromText(incoming || '');
   if (!current) return next;
   if (!next) return current;
   if (next === current) return current;
@@ -601,6 +621,10 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         updateStreamDiv();
       } else if (evt.type === 'heartbeat') {
         return;
+      } else if (evt.type === 'thinking') {
+        streamStatusNote = evt.text || 'Thinking...';
+        if (activeTab) activeTab._streamStatusNote = streamStatusNote;
+        updateStreamDiv();
       } else if (evt.type === 'tool') {
         toolsUsed.push({ name: evt.name, input: evt.input || {} });
         if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
