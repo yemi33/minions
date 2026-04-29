@@ -10,8 +10,10 @@ function prRow(pr) {
   // If PR is merged/abandoned, treat 'waiting' review as resolved
   const effectiveReviewStatus = (pr.status === 'merged' || pr.status === 'abandoned') && pr.reviewStatus === 'waiting' ? (pr.status === 'merged' ? 'approved' : 'pending') : pr.reviewStatus;
   const reviewSource = sq.status || effectiveReviewStatus || 'pending';
-  const reviewClass = reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'building' : 'draft';
-  const reviewLabel = sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (effectiveReviewStatus || 'pending');
+  const reviewEscalated = !!pr._evalEscalated;
+  const reviewClass = reviewEscalated ? 'review-escalated' : reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'building' : 'draft';
+  const reviewLabel = reviewEscalated ? 'review loop escalated (build/conflict may still run)' : sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (effectiveReviewStatus || 'pending');
+  const reviewTitle = reviewEscalated ? 'Review/re-review and review-fix automation stopped after evalMaxIterations; build-fix and conflict-fix automation may still run.' : '';
   const buildClass = pr.buildFixEscalated ? 'build-escalated' : pr._buildStatusStale ? 'build-stale' : pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
   const buildLabel = pr.buildFixEscalated ? 'escalated (' + (pr.buildFixAttempts || '?') + ' fixes)' : (pr.buildStatus || 'none') + (pr._buildStatusStale ? ' (stale)' : '');
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
@@ -23,7 +25,7 @@ function prRow(pr) {
     '<td><a class="pr-title" href="' + escapeHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escapeHtml(pr.title || 'Untitled') + '</a>' + (pr.description ? '<div class="pr-desc">' + escapeHtml(pr.description.length > 120 ? pr.description.slice(0, 120) + '...' : pr.description) + '</div>' : '') + '</td>' +
     '<td><span class="pr-agent">' + escapeHtml(pr.agent || '—') + '</span></td>' +
     '<td><span class="pr-branch">' + escapeHtml(pr.branch || '—') + '</span></td>' +
-    '<td><span class="pr-badge ' + reviewClass + '">' + escapeHtml(reviewLabel) + '</span></td>' +
+    '<td><span class="pr-badge ' + reviewClass + '"' + (reviewTitle ? ' title="' + escapeHtml(reviewTitle) + '"' : '') + '>' + escapeHtml(reviewLabel) + '</span></td>' +
     '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escapeHtml(sq.note || '') + '">' + escapeHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escapeHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escapeHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
     '<td><span class="pr-badge ' + buildClass + '">' + escapeHtml(buildLabel) + '</span></td>' +
     '<td><span class="pr-badge ' + statusClass + '">' + escapeHtml(statusLabel) + '</span></td>' +

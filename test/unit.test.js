@@ -31062,6 +31062,8 @@ async function testPrReviewFixFlows() {
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
   const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
   const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+  const prRenderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+  const cssSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
 
   // ── Review dispatch ──
 
@@ -31145,6 +31147,105 @@ async function testPrReviewFixFlows() {
 
   await test('eval escalation uses evalMaxIterations from config', () => {
     assert.ok(engineSrc.includes('evalMaxIterations'), 'Should read evalMaxIterations from config');
+  });
+
+  // Helper that loads render-prs.js as an isolated module exposing window.MinionsPrs
+  function loadPrApi() {
+    return new Function('window', 'escapeHtml', 'safeUrl', prRenderSrc + '\nreturn window.MinionsPrs;')(
+      {},
+      value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'),
+      value => value || '#'
+    );
+  }
+
+  await test('dashboard PR rendering surfaces eval escalation as review-loop-only', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-7',
+      title: 'Needs human review',
+      url: 'https://example.test/pr/7',
+      agent: 'dallas',
+      branch: 'work/pr-7',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      buildStatus: 'failing',
+      _evalEscalated: true
+    });
+
+    assert.ok(html.includes('pr-badge review-escalated'), 'Review badge should have a distinct review-escalated class');
+    assert.ok(html.includes('review loop escalated (build/conflict may still run)'),
+      'Review badge must not imply all automation stopped');
+    assert.ok(html.includes('Review/re-review and review-fix automation stopped'),
+      'Review badge tooltip should identify which automation stopped');
+    assert.ok(html.includes('class="pr-badge build-fail"') && html.includes('>failing<'),
+      'Build status should remain visible as active/failing automation state');
+    assert.ok(!/review-escalated[^"]*build-fail/.test(html),
+      'Review and build badges should be in separate spans (no shared class string)');
+  });
+
+  await test('dashboard PR rendering: no eval escalation does not show review-escalated class', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-8',
+      title: 'Normal PR',
+      url: 'https://example.test/pr/8',
+      agent: 'dallas',
+      branch: 'work/pr-8',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      buildStatus: 'passing'
+    });
+    assert.ok(!html.includes('review-escalated'),
+      'Non-escalated PRs should not show the review-escalated badge class');
+    assert.ok(!html.includes('review loop escalated'),
+      'Non-escalated PRs should not show the review-loop-escalated label');
+  });
+
+  await test('dashboard PR rendering: build-fix and review-loop escalation render as independent badges', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-9',
+      title: 'Both escalated',
+      url: 'https://example.test/pr/9',
+      agent: 'dallas',
+      branch: 'work/pr-9',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      buildStatus: 'failing',
+      _evalEscalated: true,
+      buildFixEscalated: true,
+      buildFixAttempts: 3
+    });
+    assert.ok(html.includes('pr-badge review-escalated'),
+      'Review badge should be review-escalated');
+    assert.ok(html.includes('pr-badge build-escalated'),
+      'Build badge should be build-escalated independently');
+    assert.ok(html.includes('escalated (3 fixes)'),
+      'Build badge should show its own escalation label with attempt count');
+    // The two escalation states must surface in distinct <td> cells, not collapsed into one.
+    const reviewIdx = html.indexOf('review-escalated');
+    const buildIdx = html.indexOf('build-escalated');
+    assert.ok(reviewIdx > 0 && buildIdx > 0 && reviewIdx !== buildIdx,
+      'Review and build escalation must surface as separate badges in separate cells');
+  });
+
+  await test('dashboard CSS includes review-escalated style distinct from build-escalated', () => {
+    assert.ok(cssSrc.includes('.pr-badge.review-escalated'),
+      'CSS should have a .pr-badge.review-escalated rule for partial eval escalation indicator');
+    // Make sure it isn't accidentally aliased to .build-escalated (would defeat the partial-state distinction).
+    const reviewLine = cssSrc.split('\n').find(l => l.includes('.pr-badge.review-escalated'));
+    assert.ok(reviewLine && !/\.build-escalated/.test(reviewLine),
+      'review-escalated CSS rule should not be an alias of build-escalated');
+  });
+
+  await test('eval escalation log message does not imply all automation stopped', () => {
+    const startIdx = engineSrc.indexOf('cycle cap');
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
+    const escalBlock = engineSrc.slice(startIdx, endIdx);
+    assert.ok(!escalBlock.includes('suspending auto-dispatch'),
+      'Eval escalation log should not imply build/conflict automation was stopped');
+    assert.ok(escalBlock.includes('build/conflict fixes may continue'),
+      'Eval escalation log should state build/conflict auto-fixes may continue');
   });
 
   // ── Review vote protection ──
