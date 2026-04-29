@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1630 (2026-04-29)
+
+### Features
+- isolate live integration tests
+
+### Other
+- test(cli): add unit tests for runtime-flag helpers
+
 ## 0.1.1627 (2026-04-29)
 
 ### Fixes
