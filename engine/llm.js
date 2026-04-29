@@ -24,6 +24,10 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 
+// Claude content blocks come in two thinking variants; hoisted to module scope
+// so the streaming accumulator's hot path doesn't recreate the set per event.
+const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
+
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 
 function trackEngineUsage(category, usage) {
@@ -261,6 +265,7 @@ function _createStreamAccumulator({
   onChunk = null,
   onToolUse = null,
   onTaskComplete = null,
+  onThinking = null,
 }) {
   let stdout = '';
   let stderr = '';
@@ -278,14 +283,93 @@ function _createStreamAccumulator({
   let copilotMessageBuffer = '';
   let copilotTaskCompleteSeen = false;
   let copilotTaskCompleteSummary = '';
+  const claudeStreamBlocks = new Map();
+  // Maintained accumulator of Claude text — incrementally appended on each
+  // text_delta so the hot path doesn't rebuild from the Map every chunk
+  // (rebuild was O(n) per delta → O(n²) over the response).
+  let claudeJoinedText = '';
+  let thinkingSent = false;
 
   function _streamText(value) {
-    return maxTextLength ? value.slice(-maxTextLength) : value;
+    return (maxTextLength && value.length > maxTextLength) ? value.slice(-maxTextLength) : value;
   }
 
   function _copilotAssistantMessageHasTools(obj) {
     const requests = obj?.data?.toolRequests;
     return Array.isArray(requests) && requests.length > 0;
+  }
+
+  function _notifyThinking() {
+    if (!onThinking || thinkingSent) return;
+    thinkingSent = true;
+    onThinking();
+  }
+
+  // Rebuild the joined text from the Map. Only used as a safety net when
+  // content blocks arrive out of order (a non-trailing index lands after a
+  // later one — rare but possible if events get reordered upstream).
+  function _rebuildClaudeJoinedText() {
+    claudeJoinedText = Array.from(claudeStreamBlocks.keys()).sort((a, b) => a - b)
+      .map(index => claudeStreamBlocks.get(index))
+      .filter(block => block && block.type === 'text' && block.text)
+      .map(block => block.text)
+      .join('');
+  }
+
+  function _captureClaudeText(value) {
+    if (typeof value !== 'string' || !value) return;
+    const nextText = _streamText(value);
+    text = nextText;
+    if (onChunk && nextText !== lastTextSent) {
+      lastTextSent = nextText;
+      onChunk(nextText);
+    }
+  }
+
+  function _captureClaudeStreamEvent(obj) {
+    const event = obj?.event;
+    if (!event || typeof event !== 'object') return false;
+    if (event.type === 'message_start') {
+      claudeStreamBlocks.clear();
+      claudeJoinedText = '';
+      thinkingSent = false;
+      return true;
+    }
+    if (event.type === 'content_block_start') {
+      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
+      const block = event.content_block || {};
+      claudeStreamBlocks.set(index, { type: block.type || '', text: block.text || '' });
+      if (THINKING_BLOCK_TYPES.has(block.type)) _notifyThinking();
+      // If a block lands at a non-trailing index (out-of-order delivery), the
+      // monotonic-append path can't reconstruct the joined text — rebuild as
+      // a safety net. The common case is in-order arrival; rebuild is rare.
+      const indices = Array.from(claudeStreamBlocks.keys());
+      const isTrailing = indices.every(i => i <= index);
+      if (!isTrailing) {
+        _rebuildClaudeJoinedText();
+      } else if (block.type === 'text' && block.text) {
+        claudeJoinedText += block.text;
+      }
+      if (claudeJoinedText) _captureClaudeText(claudeJoinedText);
+      return true;
+    }
+    if (event.type === 'content_block_delta') {
+      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
+      const delta = event.delta || {};
+      if (delta.type === 'thinking_delta' || typeof delta.thinking === 'string') _notifyThinking();
+      if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text) {
+        const block = claudeStreamBlocks.get(index) || { type: 'text', text: '' };
+        block.type = 'text';
+        block.text = (block.text || '') + delta.text;
+        claudeStreamBlocks.set(index, block);
+        // Common case: deltas arrive monotonically per index, so appending to
+        // the joined accumulator directly is correct.
+        claudeJoinedText += delta.text;
+        _captureClaudeText(claudeJoinedText);
+      }
+      return true;
+    }
+    return event.type === 'content_block_stop' || event.type === 'message_delta' || event.type === 'message_stop';
   }
 
   function _captureCopilotTaskComplete(summary, success = true) {
@@ -311,6 +395,9 @@ function _createStreamAccumulator({
 
     // ── Claude shape ────────────────────────────────────────────────────────
     if (obj.session_id) sessionId = obj.session_id;
+    if (obj.type === 'stream_event') {
+      _captureClaudeStreamEvent(obj);
+    }
     if (obj.type === 'result' && typeof obj.result === 'string') {
       // Claude result event: terminal text + usage.
       text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
@@ -328,25 +415,31 @@ function _createStreamAccumulator({
     }
     if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
       // Claude assistant turn: content blocks (text + tool_use).
+      // Multi-text-block messages (common with --include-partial-messages) need
+      // their text joined before _captureClaudeText, otherwise each block
+      // overwrites the prior one.
+      let assistantText = '';
       for (const block of obj.message.content) {
         if (block?.type === 'text' && block.text) {
-          text = maxTextLength ? block.text.slice(-maxTextLength) : block.text;
-          if (onChunk && block.text !== lastTextSent) {
-            lastTextSent = block.text;
-            onChunk(block.text);
-          }
+          assistantText += block.text;
+        } else if (THINKING_BLOCK_TYPES.has(block?.type)) {
+          _notifyThinking();
         } else if (block?.type === 'tool_use' && block.name) {
           const toolUse = { name: block.name, input: block.input || {} };
           toolUses.push(toolUse);
           if (onToolUse) onToolUse(toolUse.name, toolUse.input);
         }
       }
+      if (assistantText) _captureClaudeText(assistantText);
     }
 
     // ── Copilot shape ───────────────────────────────────────────────────────
     if (obj.type === 'result' && typeof obj.sessionId === 'string') sessionId = obj.sessionId;
     if (obj.type === 'session.task_complete') {
       _captureCopilotTaskComplete(obj.data?.summary, obj.data?.success);
+    }
+    if (obj.type === 'assistant.reasoning' || obj.type === 'assistant.reasoning_delta') {
+      _notifyThinking();
     }
     if (obj.type === 'assistant.message_delta' && typeof obj.data?.deltaContent === 'string') {
       if (copilotTaskCompleteSeen) return;
@@ -611,6 +704,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       onChunk,
       onToolUse,
       onTaskComplete: scheduleTaskCompleteClose,
+      onThinking: opts.onThinking || null,
     });
 
     _abort = () => { shared.killImmediate(proc); };

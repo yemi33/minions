@@ -121,9 +121,10 @@ const { getConfig, getControl, getDispatch, getNotes,
 
 // ─── Routing (extracted to engine/routing.js) ───────────────────────────────
 
+const routing = require('./engine/routing');
 const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
   getAgentErrorRate, isAgentIdle, resolveAgent, resetClaimedAgents,
-  setTempBudget, tempAgents } = require('./engine/routing');
+  setTempBudget, tempAgents } = routing;
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
@@ -2500,7 +2501,7 @@ function discoverFromWorkItems(config, project) {
       item._decomposing = true;
       needsWrite = true;
     }
-    const agentHints = item.preferred_agent || item.agents || null;
+    const agentHints = routing.extractAgentHints(item);
     const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
     if (!agentId) {
       // Check if reason is budget
@@ -3020,7 +3021,7 @@ function discoverCentralWorkItems(config) {
 
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
-      const agentHints = item.preferred_agent || item.agents || null;
+      const agentHints = routing.extractAgentHints(item);
       const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
       if (!agentId) continue;
 
@@ -3663,8 +3664,7 @@ async function tickInner() {
     // be of type string. Received undefined` and re-queues — every tick. Try to
     // resolve a fallback via routing; if none is available, skip this tick.
     if (!item.agent || typeof item.agent !== 'string') {
-      const agentHints = item.meta?.item?.preferred_agent || item.meta?.item?.agents || null;
-      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, null, agentHints);
+      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, null, routing.extractAgentHints(item.meta?.item));
       if (!fallback) {
         log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
         continue;
@@ -3722,7 +3722,7 @@ async function tickInner() {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
       const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
-      const isExplicitReassign = !!(item.meta?.item?.agent || item.meta?.item?.preferred_agent || item.meta?.item?.agents?.length);
+      const isExplicitReassign = !!(item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item));
       if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();
         if (Date.now() - busySinceMs > reassignMs) {
