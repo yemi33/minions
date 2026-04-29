@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1620 (2026-04-29)
+
+### Features
+- progressive Claude token streaming + simplify-pass cleanup
+
 ## 0.1.1619 (2026-04-29)
 
 ### Features
