@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1616 (2026-04-29)
+
+### Features
+- harden prompt injection surfaces (#1843)
+
 ## 0.1.1614 (2026-04-29)
 
 ### Fixes
