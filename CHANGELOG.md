@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1617 (2026-04-29)
+
+### Fixes
+- guard stale build & conflict auto-fixes with live pre-dispatch check (#1851)
+
 ## 0.1.1616 (2026-04-29)
 
 ### Features
