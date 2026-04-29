@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1623 (2026-04-29)
+
+### Features
+- resilient file-bug label preflight (#1840) (#1867)
+
 ## 0.1.1621 (2026-04-29)
 
 ### Features
