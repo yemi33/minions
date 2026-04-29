@@ -2080,7 +2080,7 @@ async function discoverFromPrs(config, project) {
           if (target) target._evalEscalated = true;
         });
       } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
-      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
+      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending review/re-review and review-fix dispatch; build/conflict fixes may continue`);
     }
 
     // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh

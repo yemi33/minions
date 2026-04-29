@@ -25,10 +25,11 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 
 ### A. Review feedback (`changes-requested`)
 
-- Gate: `reviewStatus === 'changes-requested'` + `!awaitingReReview` + not dispatched + not on cooldown
+- Gate: `reviewStatus === 'changes-requested'` + `!awaitingReReview` + `!evalEscalated` + not dispatched + not on cooldown
 - Routes to PR author via `_author_` routing token
 - `review_note` = reviewer's feedback
 - Sets `fixDispatched = true` — prevents trigger B from also firing this tick
+- **Review-loop escalation**: after `evalMaxIterations` review→fix cycles (default 3), `_evalEscalated` is set on the PR and *only this trigger plus review/re-review* stop. Triggers B (human comments), C (build failures), and the merge-conflict fix path keep running. The dashboard PR row distinguishes the two states with separate badges (review badge `review-escalated` vs. build badge `build-escalated`).
 
 ### B. Human comments (`humanFeedback.pendingFix`)
 
@@ -36,13 +37,15 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 - Agent comments filtered out via `/\bMinions\s*\(/i` regex on comment body
 - Coalesces multiple comments arriving during cooldown into single fix
 - Routes to author
+- Not gated by `_evalEscalated` — humans can always force more fixes via PR comments even after the review loop escalates.
 
 ### C. Build failures (`buildStatus === 'failing'`)
 
 - Gate: `buildFixAttempts < maxBuildFixAttempts` (default 3) + grace period expired
 - **Grace period** (`_buildFixPushedAt`): after fix dispatches, waits `buildFixGracePeriod` (default 10min, configurable in `ENGINE_DEFAULTS`) for CI to run before re-dispatching. Cleared when poller detects build status transition (CI actually ran).
 - **Error logs**: GitHub fetches annotations (failures only, not warnings) + Actions job log (always). ADO queries builds API directly (not status checks), fetches build timeline → failed task logs (up to 10 per build, up to 10 failing pipelines).
-- **Escalation**: after 3 failed attempts, writes inbox alert, sets `buildFixEscalated = true`, stops auto-dispatch. Counter resets when build recovers.
+- **Build-fix escalation**: after 3 failed attempts, sets `buildFixEscalated = true` and stops *only this trigger* (auto-dispatch for build fixes). The counter resets when the build recovers. Independent of `_evalEscalated`.
+- Not gated by `_evalEscalated` — build-fix is mechanical and runs even if the review loop has escalated.
 
 ## 5. Fix completes
 
@@ -100,8 +103,10 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 | `reviewStatus` | Poller + post-completion | `pending` / `approved` / `changes-requested` / `waiting` |
 | `buildStatus` | Poller | `none` / `passing` / `failing` / `running` |
 | `buildErrorLog` | Poller | Actual CI error output for fix agents |
-| `buildFixAttempts` | Discovery (on dispatch) | Counter for escalation cap |
-| `buildFixEscalated` | Discovery (on cap) | Stops auto-dispatch |
+| `buildFixAttempts` | Discovery (on dispatch) | Counter for build-fix escalation cap |
+| `buildFixEscalated` | Discovery (on cap) | Stops *build-fix* auto-dispatch only (review/re-review and other fix triggers continue) |
+| `_reviewFixCycles` | Discovery (on dispatch) | Counter for review→fix cycle cap (`evalMaxIterations`) |
+| `_evalEscalated` | Discovery (on cap) | Stops *review/re-review and review-feedback fix* auto-dispatch only (build-fix, conflict-fix, and human-feedback fix continue). Cleared when reviewer eventually approves the PR. |
 | `_buildFixPushedAt` | Discovery (on dispatch) | Grace period timestamp |
 | `_buildFailNotified` | Discovery | Dedup for inbox alert |
 | `lastPushedAt` | Poller (new commit) | Tracks latest push for re-review logic |
