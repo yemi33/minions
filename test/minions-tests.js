@@ -14,14 +14,19 @@ const path = require('path');
 const assert = require('assert');
 
 const BASE = process.env.MINIONS_TEST_BASE || 'http://localhost:7331';
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(__dirname, '..');
+const REQUESTED_MINIONS_DIR = process.env.MINIONS_TEST_DIR ? path.resolve(process.env.MINIONS_TEST_DIR) : null;
+const ALLOW_REAL_ROOT = process.env.MINIONS_TEST_ALLOW_REAL_ROOT === '1';
+const MINIONS_DIR = REQUESTED_MINIONS_DIR || REPO_ROOT;
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
+const PRD_DIR = path.join(MINIONS_DIR, 'prd');
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function normalizeRootForCompare(root) {
-  const normalized = path.resolve(String(root || '')).replace(/[\\/]+$/, '');
+  const resolved = path.resolve(String(root || '')).replace(/[\\/]+$/, '');
+  const normalized = fs.existsSync(resolved) ? fs.realpathSync.native(resolved) : resolved;
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
@@ -32,8 +37,22 @@ function assertDashboardRootMatchesLocal(health, localDir = MINIONS_DIR) {
   }
   const served = normalizeRootForCompare(servedDir);
   const local = normalizeRootForCompare(localDir);
-  if (served !== local) {
-    throw new Error(`Dashboard at ${BASE} is serving ${servedDir}, but this test checkout is ${localDir}; refusing to run mutating integration tests`);
+  const requested = REQUESTED_MINIONS_DIR ? normalizeRootForCompare(REQUESTED_MINIONS_DIR) : null;
+  const repoRoot = normalizeRootForCompare(REPO_ROOT);
+
+  if (requested) {
+    if (served !== requested || local !== requested) {
+      throw new Error(`Dashboard at ${BASE} is serving ${servedDir}, but MINIONS_TEST_DIR is ${REQUESTED_MINIONS_DIR}; refusing to run mutating integration tests`);
+    }
+    return true;
+  }
+
+  if (!ALLOW_REAL_ROOT) {
+    throw new Error(`Refusing to run mutating integration tests without MINIONS_TEST_DIR pointing at an isolated test root`);
+  }
+
+  if (served !== repoRoot || local !== repoRoot) {
+    throw new Error(`Dashboard at ${BASE} is serving ${servedDir}, but the explicit real-root override expects ${REPO_ROOT}; refusing to run mutating integration tests`);
   }
   return true;
 }
@@ -123,6 +142,7 @@ async function testApiEndpoints() {
     assert.ok(['healthy', 'degraded', 'stopped'].includes(r.json.status), 'invalid health status: ' + r.json.status);
     assert.ok(Array.isArray(r.json.agents));
     assert.ok(typeof r.json.uptime === 'number');
+    assert.strictEqual(normalizeRootForCompare(r.json.minionsDir), normalizeRootForCompare(MINIONS_DIR));
   });
 
   await test('GET /api/plans returns array', async () => {
@@ -235,14 +255,13 @@ async function testWorkItemCrud() {
 async function testPlanFlow() {
   console.log('\n── Plan Flow ──');
 
-  await test('POST /api/plan creates plan work item with chain', async () => {
+  await test('POST /api/plan creates plan work item', async () => {
     const r = await POST('/api/plan', { title: 'Test plan', priority: 'medium' });
     assert.strictEqual(r.status, 200);
     assert.ok(r.json.id);
     const items = readJson(path.join(MINIONS_DIR, 'work-items.json'));
     const item = items.find(i => i.id === r.json.id);
     assert.strictEqual(item.type, 'plan');
-    assert.strictEqual(item.chain, 'plan-to-prd');
     // Clean up
     await POST('/api/work-items/delete', { id: r.json.id, source: 'central' });
   });
@@ -254,13 +273,13 @@ async function testPlanFlow() {
     try {
       const r = await POST('/api/plans/execute', { file: 'test-execute.md' });
       assert.strictEqual(r.status, 200);
-      assert.ok(r.json.id);
       const items = readJson(path.join(MINIONS_DIR, 'work-items.json'));
-      const item = items.find(i => i.id === r.json.id);
+      const item = items.find(i => i.type === 'plan-to-prd' && i.planFile === 'test-execute.md');
+      assert.ok(item, 'plan-to-prd work item not queued');
       assert.strictEqual(item.type, 'plan-to-prd');
       assert.strictEqual(item.planFile, 'test-execute.md');
       // Clean up
-      await POST('/api/work-items/delete', { id: r.json.id, source: 'central' });
+      await POST('/api/work-items/delete', { id: item.id, source: 'central' });
     } finally {
       try { fs.unlinkSync(testPlan); } catch {}
     }
@@ -276,31 +295,38 @@ async function testPlanFlow() {
     fs.writeFileSync(testPlan, '# Dedup Test');
     try {
       const r1 = await POST('/api/plans/execute', { file: 'test-dedup.md' });
+      assert.strictEqual(r1.status, 200);
+      const firstItems = readJson(path.join(MINIONS_DIR, 'work-items.json'));
+      const firstQueued = firstItems.find(i => i.type === 'plan-to-prd' && i.planFile === 'test-dedup.md');
+      assert.ok(firstQueued, 'first plan-to-prd work item not queued');
       const r2 = await POST('/api/plans/execute', { file: 'test-dedup.md' });
       assert.strictEqual(r2.json.alreadyQueued, true);
-      assert.strictEqual(r1.json.id, r2.json.id);
-      await POST('/api/work-items/delete', { id: r1.json.id, source: 'central' });
+      const secondItems = readJson(path.join(MINIONS_DIR, 'work-items.json'));
+      const queued = secondItems.filter(i => i.type === 'plan-to-prd' && i.planFile === 'test-dedup.md');
+      assert.strictEqual(queued.length, 1, 'duplicate plan-to-prd work item queued');
+      assert.strictEqual(queued[0].id, firstQueued.id);
+      await POST('/api/work-items/delete', { id: firstQueued.id, source: 'central' });
     } finally {
       try { fs.unlinkSync(testPlan); } catch {}
     }
   });
 
-  await test('POST /api/plans/pause sets awaiting-approval', async () => {
+  await test('POST /api/plans/pause sets paused', async () => {
     const testFile = 'test-pause.json';
-    writeJson(path.join(PLANS_DIR, testFile), { status: 'approved', missing_features: [] });
+    writeJson(path.join(PRD_DIR, testFile), { status: 'approved', missing_features: [] });
     try {
       const r = await POST('/api/plans/pause', { file: testFile });
       assert.strictEqual(r.status, 200);
-      const plan = readJson(path.join(PLANS_DIR, testFile));
-      assert.strictEqual(plan.status, 'awaiting-approval');
+      const plan = readJson(path.join(PRD_DIR, testFile));
+      assert.strictEqual(plan.status, 'paused');
     } finally {
-      try { fs.unlinkSync(path.join(PLANS_DIR, testFile)); } catch {}
+      try { fs.unlinkSync(path.join(PRD_DIR, testFile)); } catch {}
     }
   });
 
   await test('POST /api/plans/delete cascades to work items', async () => {
     const testFile = 'test-cascade.json';
-    writeJson(path.join(PLANS_DIR, testFile), {
+    writeJson(path.join(PRD_DIR, testFile), {
       status: 'approved', project: 'OfficeAgent',
       missing_features: [{ id: 'T001', name: 'Test', status: 'missing', priority: 'medium' }]
     });
@@ -312,9 +338,9 @@ async function testPlanFlow() {
 
     const r = await POST('/api/plans/delete', { file: testFile });
     assert.strictEqual(r.status, 200);
-    assert.ok(!fs.existsSync(path.join(PLANS_DIR, testFile)), 'plan file still exists');
+    assert.ok(!fs.existsSync(path.join(PRD_DIR, testFile)), 'plan file still exists');
     const afterItems = readJson(wiPath);
-    assert.ok(!afterItems.find(i => i.id === 'TEST-W001'), 'work item still exists');
+    assert.ok(!afterItems.find(i => i.id === 'T001'), 'work item still exists');
   });
 }
 
@@ -353,7 +379,7 @@ async function testPrdFlow() {
 
   await test('POST /api/prd-items/update modifies plan JSON', async () => {
     const testFile = 'test-edit.json';
-    writeJson(path.join(PLANS_DIR, testFile), {
+    writeJson(path.join(PRD_DIR, testFile), {
       status: 'approved',
       missing_features: [{ id: 'E001', name: 'Original', description: '', priority: 'low', status: 'missing' }]
     });
@@ -362,17 +388,17 @@ async function testPrdFlow() {
         source: testFile, itemId: 'E001', name: 'Updated', priority: 'high'
       });
       assert.strictEqual(r.status, 200);
-      const plan = readJson(path.join(PLANS_DIR, testFile));
+      const plan = readJson(path.join(PRD_DIR, testFile));
       assert.strictEqual(plan.missing_features[0].name, 'Updated');
       assert.strictEqual(plan.missing_features[0].priority, 'high');
     } finally {
-      try { fs.unlinkSync(path.join(PLANS_DIR, testFile)); } catch {}
+      try { fs.unlinkSync(path.join(PRD_DIR, testFile)); } catch {}
     }
   });
 
   await test('POST /api/prd-items/remove deletes item from plan', async () => {
     const testFile = 'test-remove.json';
-    writeJson(path.join(PLANS_DIR, testFile), {
+    writeJson(path.join(PRD_DIR, testFile), {
       status: 'approved',
       missing_features: [
         { id: 'R001', name: 'Keep', status: 'missing' },
@@ -382,11 +408,11 @@ async function testPrdFlow() {
     try {
       const r = await POST('/api/prd-items/remove', { source: testFile, itemId: 'R002' });
       assert.strictEqual(r.status, 200);
-      const plan = readJson(path.join(PLANS_DIR, testFile));
+      const plan = readJson(path.join(PRD_DIR, testFile));
       assert.strictEqual(plan.missing_features.length, 1);
       assert.strictEqual(plan.missing_features[0].id, 'R001');
     } finally {
-      try { fs.unlinkSync(path.join(PLANS_DIR, testFile)); } catch {}
+      try { fs.unlinkSync(path.join(PRD_DIR, testFile)); } catch {}
     }
   });
 }
@@ -588,13 +614,16 @@ async function testSecurityHeaders() {
   });
 
   // 6. Content-Type: application/json → allowed (not 415, gate not triggered)
-  await test('POST /api/command-center with application/json Content-Type is not blocked by 415 gate', async () => {
-    const r = await POST('/api/command-center',
-      { message: 'hi', tabId: 'sec-test-good-ct' },
+  await test('POST /api/work-items with application/json Content-Type is not blocked by 415 gate', async () => {
+    const r = await POST('/api/work-items',
+      { title: 'Content-Type allow test item (safe to delete)', type: 'implement', priority: 'low' },
       { headers: { Origin: 'http://localhost:7331' } });
-    // Might be 200, 400 (empty CC response), 429 (rate limit), 500 (LLM) — just NOT 415
     assert.notStrictEqual(r.status, 415, 'application/json must not trigger 415');
     assert.notStrictEqual(r.status, 403, 'valid origin must not trigger 403');
+    assert.ok(r.status === 200 || r.status === 201, `unexpected status ${r.status} body=${r.body}`);
+    if (r.json && r.json.id) {
+      try { await POST('/api/work-items/delete', { id: r.json.id }); } catch {}
+    }
   });
 
   // 7. Second mutating endpoint: POST /api/work-items with evil Origin → 403
