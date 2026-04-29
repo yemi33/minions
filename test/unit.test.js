@@ -6631,6 +6631,38 @@ async function testConfigAndPlaybooks() {
       'publish workflow should not use invalid --auto + --admin combination');
   });
 
+  await test('publish workflow validates before publishing or opening publish PRs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    const testIndex = src.indexOf('npm test');
+    const publishIndex = src.indexOf('npm publish --access public');
+    const prCreateIndex = src.indexOf('gh pr create');
+    assert.ok(testIndex !== -1, 'publish workflow should run unit tests inline');
+    assert.ok(publishIndex !== -1, 'publish workflow should publish to npm');
+    assert.ok(prCreateIndex !== -1, 'publish workflow should create the publish PR');
+    assert.ok(testIndex < publishIndex,
+      'publish workflow should run tests before npm publish so failed validation does not publish a bad version');
+    assert.ok(testIndex < prCreateIndex,
+      'publish workflow should run tests before creating the publish PR so failed validation does not leave a fresh stale PR');
+  });
+
+  await test('publish workflow closes only publish PRs during failure cleanup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    assert.ok(src.includes('trap cleanup_on_failure EXIT'),
+      'publish workflow should install a failure trap so later step failures clean up publish PRs');
+    assert.ok(src.includes('close_publish_prs ""'),
+      'failure cleanup should include the current publish PR instead of only old stale PRs');
+    assert.ok(src.includes('close_publish_prs "$PUBLISH_PR_NUMBER"'),
+      'success path should close stale publish PRs while preserving the current PR for merge');
+    assert.ok(src.includes('--limit 200'),
+      'stale publish cleanup should scan more than the default 30 open PRs');
+    assert.ok(src.includes('select(.title | startswith("chore: publish "))'),
+      'stale cleanup should filter by the publish PR title prefix');
+    assert.ok(src.includes('select(.headRefName | startswith("chore/publish-"))'),
+      'stale cleanup should filter by the publish branch prefix to avoid non-publish PRs');
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch'),
+      'stale cleanup should use the admin token when closing publish PRs');
+  });
+
   await test('publish workflow guards recursive skip-ci publishes and serializes runs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
     assert.ok(src.includes("if: \"!contains(github.event.head_commit.message, '[skip ci]')\""),
