@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1619 (2026-04-29)
+
+### Features
+- surface partial PR escalation state (#1856)
+
 ## 0.1.1617 (2026-04-29)
 
 ### Fixes
