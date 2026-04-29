@@ -33,6 +33,7 @@ const ISOLATED_MODULES = [
   '../engine/scheduler',
   '../engine/playbook',
   '../engine/routing',
+  '../engine/issues',
 ];
 
 function createTmpDir() {
@@ -2413,6 +2414,94 @@ async function testModelDiscovery() {
     const gi = fs.readFileSync(path.join(MINIONS_DIR, '.gitignore'), 'utf8');
     assert.ok(/engine\/claude-models\.json/.test(gi), '.gitignore must list engine/claude-models.json');
     assert.ok(/engine\/copilot-models\.json/.test(gi), '.gitignore must list engine/copilot-models.json');
+  });
+}
+
+async function testGitHubIssueCreation() {
+  console.log('\n── engine/issues.js — resilient GitHub issue creation ──');
+  const issues = require(path.join(MINIONS_DIR, 'engine', 'issues'));
+
+  function fakeGh(fixtures) {
+    const calls = [];
+    const execFileSync = (file, args) => {
+      calls.push({ file, args: args.slice() });
+      const key = args.slice(0, 2).join(' ');
+      if (key === '--version') return 'gh version 2.0.0\n';
+      if (key === 'label list') return fixtures.labelsJson;
+      if (key === 'issue create') {
+        const createCalls = calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'create').length;
+        if (fixtures.throwOnCreateCall === createCalls) {
+          const err = new Error(fixtures.createError || 'could not add label: "missing" not found');
+          err.stdout = '';
+          err.stderr = fixtures.createError || '';
+          throw err;
+        }
+        return fixtures.issueOutput || 'https://github.com/yemi33/minions/issues/1840\n';
+      }
+      throw new Error(`unexpected gh call: ${args.join(' ')}`);
+    };
+    return { calls, execFileSync };
+  }
+
+  await test('createGitHubIssue preserves valid labels', () => {
+    const gh = fakeGh({ labelsJson: '[{"name":"bug"},{"name":"triage"}]' });
+    const result = issues.createGitHubIssue({
+      title: 'Valid labels',
+      description: 'Repro',
+      labels: ['bug', 'triage'],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const create = gh.calls.find(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    assert.ok(create, 'issue create should be called');
+    assert.deepStrictEqual(create.args.slice(create.args.indexOf('--label'), create.args.indexOf('--label') + 2),
+      ['--label', 'bug,triage'], 'valid labels must be passed to gh issue create');
+    assert.deepStrictEqual(result.labelsApplied, ['bug', 'triage']);
+    assert.deepStrictEqual(result.labelsSkipped, []);
+    assert.strictEqual(result.warning, undefined);
+  });
+
+  await test('createGitHubIssue skips invalid labels while preserving valid ones', () => {
+    const gh = fakeGh({ labelsJson: '[{"name":"bug"}]' });
+    const result = issues.createGitHubIssue({
+      title: 'Mixed labels',
+      labels: ['bug', 'does-not-exist'],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const create = gh.calls.find(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    assert.ok(create.args.includes('--label'), 'valid remaining labels should still be sent');
+    assert.strictEqual(create.args[create.args.indexOf('--label') + 1], 'bug');
+    assert.ok(!create.args.join('\n').includes('does-not-exist'), 'invalid labels must not be passed to gh');
+    assert.deepStrictEqual(result.labelsApplied, ['bug']);
+    assert.deepStrictEqual(result.labelsSkipped, ['does-not-exist']);
+    assert.ok(/does-not-exist/.test(result.warning), 'response should clearly report skipped labels');
+  });
+
+  await test('createGitHubIssue retries without labels when gh rejects a label', () => {
+    const gh = fakeGh({
+      labelsJson: '[{"name":"bug"}]',
+      throwOnCreateCall: 1,
+      createError: 'could not add label: "bug" not found',
+    });
+    const result = issues.createGitHubIssue({
+      title: 'Race deleted label',
+      labels: ['bug'],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const creates = gh.calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    assert.strictEqual(creates.length, 2, 'label rejection should retry issue creation once');
+    assert.ok(creates[0].args.includes('--label'), 'first attempt should preserve requested valid label');
+    assert.ok(!creates[1].args.includes('--label'), 'fallback attempt should omit labels');
+    assert.strictEqual(result.url, 'https://github.com/yemi33/minions/issues/1840');
+    assert.deepStrictEqual(result.labelsApplied, []);
+    assert.deepStrictEqual(result.labelsSkipped, ['bug']);
+    assert.ok(/filed without labels/i.test(result.warning), 'fallback warning should be user-friendly, not raw gh stderr');
+    assert.ok(!/could not add label/i.test(result.warning), 'raw gh label failure must not be the final UX');
   });
 }
 
@@ -20295,6 +20384,7 @@ async function main() {
     await testRuntimeAdapters();
     await testCopilotAdapter();
     await testModelDiscovery();
+    await testGitHubIssueCreation();
     await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
