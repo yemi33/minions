@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1618 (2026-04-29)
+
+### Features
+- fix protected-file guard (#1858)
+- fix canonical active PR gate (#1857)
+- document PR auto-fix trigger precedence (#1855)
+
+### Fixes
+- guard stale build & conflict auto-fixes with live pre-dispatch check (#1851)
+
 ## 0.1.1616 (2026-04-29)
 
 ### Features
