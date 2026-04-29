@@ -563,6 +563,166 @@ async function testSanitizePath() {
   });
 }
 
+// W-moja4a5qp9pj — root-aware protected-file guard for the Command Center.
+//
+// The CC system prompt forbids writes to a small set of files in the LIVE
+// Minions checkout (engine.js, dashboard.js, engine/control.json, …). The
+// previous rule named those files by basename only, which an LLM can easily
+// over-apply: a worktree copy of dashboard.js shares the basename but is
+// safe to edit because git keeps the change inside the worktree until an
+// agent pushes a branch. shared.isLiveCommandCenterPath is the canonical
+// helper that distinguishes "live root" from "isolated worktree".
+async function testIsLiveCommandCenterPath() {
+  console.log('\n── shared.js — Live CC path guard ──');
+
+  await test('isLiveCommandCenterPath: blocks live dashboard.js under MINIONS_DIR', () => {
+    const tmp = createTmpDir();
+    const target = path.join(tmp, 'dashboard.js');
+    assert.strictEqual(shared.isLiveCommandCenterPath(target, { liveRoot: tmp }), true,
+      'dashboard.js inside the live root is protected');
+  });
+
+  await test('isLiveCommandCenterPath: exact task paths distinguish live root from worktree', () => {
+    const live = 'D:\\squad';
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\dashboard.js', { liveRoot: live }), true,
+      'live D:\\squad\\dashboard.js must remain protected');
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\worktrees\\minions-work\\W-moj8dbdmgkk2-moj8h9xquycp\\dashboard.js', { liveRoot: live }), false,
+      'isolated W-moj8dbdmgkk2 worktree dashboard.js must be editable');
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\engine\\control.json', { liveRoot: live }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\engine\\dispatch.json', { liveRoot: live }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\config.json', { liveRoot: live }), true);
+  });
+
+  await test('isLiveCommandCenterPath: allows worktree copy of dashboard.js', () => {
+    const tmp = createTmpDir();         // pretend live root
+    const wtRoot = createTmpDir();      // pretend worktree root (sibling tree)
+    const wtCopy = path.join(wtRoot, 'W-mojxxxx-aaaa', 'dashboard.js');
+    assert.strictEqual(shared.isLiveCommandCenterPath(wtCopy, { liveRoot: tmp }), false,
+      'dashboard.js inside an isolated worktree must NOT be protected');
+  });
+
+  await test('isLiveCommandCenterPath: blocks live engine/control.json and engine/dispatch.json', () => {
+    const tmp = createTmpDir();
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'control.json'), { liveRoot: tmp }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'dispatch.json'), { liveRoot: tmp }), true);
+  });
+
+  await test('isLiveCommandCenterPath: blocks live config.json', () => {
+    const tmp = createTmpDir();
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'config.json'), { liveRoot: tmp }), true);
+  });
+
+  await test('isLiveCommandCenterPath: blocks live engine/*.js, dashboard/**, and bin/*.js', () => {
+    const tmp = createTmpDir();
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'shared.js'), { liveRoot: tmp }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'lifecycle.js'), { liveRoot: tmp }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'dashboard', 'js', 'utils.js'), { liveRoot: tmp }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'bin', 'minions.js'), { liveRoot: tmp }), true);
+  });
+
+  await test('isLiveCommandCenterPath: allows non-protected live files', () => {
+    const tmp = createTmpDir();
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'notes.md'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'knowledge', 'foo.md'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'plans', 'plan.md'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'projects', 'p', 'work-items.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'metrics.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'bin', 'README.md'), { liveRoot: tmp }), false);
+  });
+
+  await test('isLiveCommandCenterPath: allows worktree copies of every protected name', () => {
+    const tmp = createTmpDir();
+    const wtRoot = createTmpDir();
+    const wtSlot = path.join(wtRoot, 'W-mojxxxx');
+    // Same basenames / same subtrees, but in a different root → must be allowed.
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'engine.js'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'dashboard.js'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'minions.js'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'config.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'engine', 'shared.js'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'engine', 'control.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'engine', 'dispatch.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'dashboard', 'js', 'utils.js'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(wtSlot, 'bin', 'minions.js'), { liveRoot: tmp }), false);
+  });
+
+  await test('isLiveCommandCenterPath: rejects sibling-prefix collisions (path-A vs path-A-old)', () => {
+    // Regression: a naive `startsWith(liveRoot)` would treat "C:/squad-old/dashboard.js"
+    // as inside "C:/squad". The helper compares with a trailing separator to
+    // prevent that.
+    const live = createTmpDir();          // e.g. /tmp/xyz/squad
+    const sibling = live + '-old';        // /tmp/xyz/squad-old
+    fs.mkdirSync(sibling, { recursive: true });
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(sibling, 'dashboard.js'), { liveRoot: live }), false,
+      'sibling-prefix path must not be treated as inside the live root');
+  });
+
+  await test('isLiveCommandCenterPath: Windows root comparison is case-insensitive', () => {
+    assert.strictEqual(shared.isLiveCommandCenterPath('d:\\squad\\DASHBOARD.JS', { liveRoot: 'D:\\squad' }), true,
+      'Windows live-root and basename matching must not be bypassed by path casing');
+  });
+
+  await test('isLiveCommandCenterPath: rejects invalid input safely', () => {
+    const tmp = createTmpDir();
+    assert.strictEqual(shared.isLiveCommandCenterPath(null, { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(undefined, { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath('', { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(123, { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath({}, { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath('foo\0bar', { liveRoot: tmp }), false);
+  });
+
+  await test('isLiveCommandCenterPath: defaults liveRoot to MINIONS_DIR when not provided', () => {
+    // Path under the helper's default root must still resolve correctly without
+    // an explicit opts.liveRoot — the CC code path doesn't pass one.
+    const liveRoot = shared.MINIONS_DIR;
+    const target = path.join(liveRoot, 'dashboard.js');
+    assert.strictEqual(shared.isLiveCommandCenterPath(target), true,
+      'no opts → default liveRoot should be MINIONS_DIR');
+  });
+
+  await test('describeCcProtectedPaths: explicit live root + worktree carve-out', () => {
+    const text = shared.describeCcProtectedPaths('/some/live/root');
+    assert.ok(text.includes('/some/live/root'), 'must mention the live root path');
+    for (const name of shared._CC_PROTECTED_BASENAMES) {
+      assert.ok(text.includes('`' + name + '`'),
+        `description must list protected basename ${name}`);
+    }
+    for (const glob of shared._CC_PROTECTED_FILE_GLOBS) {
+      assert.ok(text.includes('`' + glob + '`'),
+        `description must list protected glob ${glob}`);
+    }
+    for (const prefix of shared._CC_PROTECTED_PREFIXES) {
+      assert.ok(text.includes('`' + prefix + '**`'),
+        `description must list protected prefix ${prefix}**`);
+    }
+    assert.ok(/path-scoped, not basename-scoped/i.test(text),
+      'must explicitly declare the rule is path-scoped, not basename-scoped');
+    assert.ok(/worktree/i.test(text), 'must explain the worktree carve-out');
+    assert.ok(/NOT protected/.test(text), 'must explicitly state worktrees are NOT protected');
+  });
+
+  await test('renderCcSystemPrompt expands path-scoped guardrail with worktree carve-out', () => {
+    const promptPath = path.join(shared.MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.readFileSync(promptPath, 'utf8');
+    const rendered = shared.renderCcSystemPrompt(src, { liveRoot: 'D:\\squad' });
+    assert.ok(rendered.includes('D:/squad'),
+      'rendered prompt must anchor the rule to the live checkout path');
+    assert.ok(/path-scoped, not basename-scoped/i.test(rendered),
+      'CC prompt must explicitly declare the rule is path-scoped, not basename-scoped');
+    assert.ok(/worktree/i.test(rendered) && /not\s+protected/i.test(rendered),
+      'CC prompt must call out that worktree copies are NOT protected');
+    assert.ok(src.includes('{{cc_protected_paths}}'),
+      'CC prompt source must delegate the protected-path rule to the shared renderer');
+  });
+
+  await test('dashboard renders CC protected-path prompt from shared helper', () => {
+    const src = fs.readFileSync(path.join(shared.MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('shared.renderCcSystemPrompt(raw, { liveRoot: MINIONS_DIR })'),
+      'dashboard.js must use shared.renderCcSystemPrompt so prompt and path helper cannot drift');
+  });
+}
+
 async function testValidatePid() {
   console.log('\n── shared.js — PID Validation ──');
 
@@ -20053,6 +20213,7 @@ async function main() {
     await testIsAllowedOrigin();
     await testBuildSecurityHeaders();
     await testSanitizePath();
+    await testIsLiveCommandCenterPath();
     await testValidatePid();
     await testHasDangerousKey();
     await testValidateProjectName();
@@ -29387,6 +29548,56 @@ async function testFailureClassEnum() {
       shared.FAILURE_CLASS.PERMISSION_BLOCKED);
     assert.strictEqual(lifecycle.classifyFailure(1, 'access denied for resource', ''),
       shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+  });
+
+  // W-moja4a5qp9pj — the previous regex `auth.*fail` and `trust.*blocked` was
+  // greedy and matched across thousands of unrelated characters in JSONL agent
+  // init dumps (slash-command names like `check-self-authored-review-comment`
+  // and `diagnose-build-fail-branch-behind` collide). Healthy agents that hit
+  // any non-zero exit (e.g. exit 1 from npm test) were misclassified as
+  // PERMISSION_BLOCKED → marked non-retryable → work item failed permanently.
+  await test('classifyFailure: agent JSONL init dump must not trigger PERMISSION_BLOCKED', () => {
+    // Reproduces the exact pattern from W-moj8dbdmgkk2: skill / slash-command
+    // names that contain the substrings `auth` and `fail` on the SAME LINE,
+    // separated by ~3KB of unrelated JSON. The old greedy regex matched.
+    const jsonlInit = '{"type":"system","subtype":"init","slash_commands":["check-self-authored-review-comment","clean-backup-sidecars-before-worktree-tests","daily-pr-automerge","dashboard-csrf-origin-gate","detect-concurrent-conflict-fix-agent","diagnose-build-fail-branch-behind"],"skills":["update-config","fewer-permission-prompts"]}';
+    assert.notStrictEqual(lifecycle.classifyFailure(1, jsonlInit, ''),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED,
+      'auth-substring inside `authored` and fail-substring inside `build-fail` must not match');
+    // Same input via stderr — combined regex sees stdout + stderr, so test both.
+    assert.notStrictEqual(lifecycle.classifyFailure(1, '', jsonlInit),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED,
+      'auth/fail substrings on stderr must also not match');
+    // And `trust.*blocked` previously matched 80KB+ when "trust" and "blocked"
+    // happened to appear in the same line — verify the new anchored pattern.
+    const trustBlockedNoise = 'we trust this dependency. ' + 'x'.repeat(5000) + ' the network was blocked by firewall';
+    assert.notStrictEqual(lifecycle.classifyFailure(1, trustBlockedNoise, ''),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED,
+      'trust...blocked across 5KB of unrelated text must not match');
+  });
+
+  await test('classifyFailure: real authentication / trust failures still classify as PERMISSION_BLOCKED', () => {
+    // Regression: the tightened regex must still catch the failure modes the
+    // original pattern was designed for.
+    const realCases = [
+      'Error: Authentication failed',
+      'Authentication error: invalid credentials',
+      'auth failed: token expired',
+      'auth failure on Azure DevOps',
+      'authentication fails after 3 retries',
+      'AUTH DENIED for service principal',
+      'trust gate is blocked',
+      'trust gate blocked by org policy',
+      'trust policy blocked',
+      'credentials rejected',
+      'token expired',
+      'token rejected by server',
+    ];
+    for (const stderr of realCases) {
+      assert.strictEqual(lifecycle.classifyFailure(1, '', stderr),
+        shared.FAILURE_CLASS.PERMISSION_BLOCKED,
+        `expected "${stderr}" to classify as PERMISSION_BLOCKED`);
+    }
   });
 
   await test('classifyFailure: merge conflict → MERGE_CONFLICT', () => {

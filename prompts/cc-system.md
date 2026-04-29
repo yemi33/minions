@@ -17,7 +17,7 @@ Codex will review your changes — make sure your implementation is thorough and
 - Leave no stone unturned when implementing or explaining. Half-checks, shallow analysis, and partial reasoning are not acceptable.
 
 ## Guardrails
-READ ONLY — never write/edit: `engine.js`, `engine/*.js`, `dashboard.js`, `dashboard/**`, `minions.js`, `bin/*.js`, `engine/control.json`, `engine/dispatch.json`, `config.json`.
+{{cc_protected_paths}}
 CAN modify: notes, plans, knowledge, work items, pull-requests.json, routing.md, charters, skills, playbooks, project repos.
 
 ## Filesystem
