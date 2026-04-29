@@ -23,9 +23,9 @@ function dispatchModule() { if (!_dispatchModule) _dispatchModule = require('./d
 
 function handleCommand(cmd, args) {
   if (!cmd) {
-    commands.start();
+    return commands.start();
   } else if (commands[cmd]) {
-    commands[cmd](...args);
+    return commands[cmd](...args);
   } else {
     console.log(`Unknown command: ${cmd}`);
     console.log('Commands:');
@@ -50,7 +50,7 @@ function handleCommand(cmd, args) {
   }
 }
 
-// ─── Runtime fleet flags (--cli / --model) ───────────────────────────────────
+// ─── Runtime fleet flags (--cli / --model / --effort) ────────────────────────
 //
 // Shared by `start`, `restart`, and `config set-cli`. Single source of truth
 // for: flag parsing, runtime validation, incompatibility heuristics, and the
@@ -58,27 +58,52 @@ function handleCommand(cmd, args) {
 // config.json" — the helper below is the only caller that mutates fleet keys.
 
 /**
- * Strip `--cli <name>` / `--model <value>` from `args` (in-place). Returns
- * `{ cli, model, modelExplicit, errors }`. `modelExplicit` distinguishes
+ * Strip `--cli <name>` / `--model <value>` / `--effort <level>` from `args`
+ * (in-place), including `--flag=value` forms. Returns
+ * `{ cli, model, effort, modelExplicit, errors }`. `modelExplicit` distinguishes
  * "user passed --model with empty string" (clear) from "no flag" (no-op).
  *
  * Errors (e.g. `--cli` with no follow-up token) are collected for the caller
  * to print + exit-non-zero, instead of throwing — matches existing CLI flow.
  */
 function _parseRuntimeFlags(args) {
-  const out = { cli: undefined, model: undefined, modelExplicit: false, errors: [] };
+  const out = { cli: undefined, model: undefined, effort: undefined, modelExplicit: false, errors: [] };
   let i = 0;
   while (i < args.length) {
     const a = args[i];
-    if (a === '--cli') {
-      if (i + 1 >= args.length) { out.errors.push('--cli requires a value'); args.splice(i, 1); break; }
-      out.cli = String(args[i + 1]);
+    const eq = typeof a === 'string' ? a.indexOf('=') : -1;
+    const flag = eq > 0 ? a.slice(0, eq) : a;
+    const inlineValue = eq > 0 ? a.slice(eq + 1) : undefined;
+    const readValue = (name, { allowEmpty = false, hint = '' } = {}) => {
+      if (inlineValue !== undefined) {
+        if (!allowEmpty && inlineValue === '') {
+          out.errors.push(`${name} requires a value${hint}`);
+          args.splice(i, 1);
+          return { ok: false };
+        }
+        args.splice(i, 1);
+        return { ok: true, value: inlineValue };
+      }
+      if (i + 1 >= args.length || String(args[i + 1]).startsWith('--')) {
+        out.errors.push(`${name} requires a value${hint}`);
+        args.splice(i, 1);
+        return { ok: false };
+      }
+      const value = String(args[i + 1]);
       args.splice(i, 2);
-    } else if (a === '--model') {
-      if (i + 1 >= args.length) { out.errors.push('--model requires a value (use --model "" to clear)'); args.splice(i, 1); break; }
-      out.model = String(args[i + 1]);
+      return { ok: true, value };
+    };
+    if (flag === '--cli') {
+      const parsed = readValue('--cli');
+      if (parsed.ok) out.cli = parsed.value;
+    } else if (flag === '--model') {
+      const parsed = readValue('--model', { allowEmpty: true, hint: ' (use --model "" to clear)' });
+      if (!parsed.ok) continue;
+      out.model = parsed.value;
       out.modelExplicit = true;
-      args.splice(i, 2);
+    } else if (flag === '--effort') {
+      const parsed = readValue('--effort');
+      if (parsed.ok) out.effort = parsed.value;
     } else {
       i++;
     }
@@ -1222,7 +1247,7 @@ const commands = {
 
   doctor() {
     const { doctor } = require('./preflight');
-    doctor(MINIONS_DIR).then(ok => {
+    return doctor(MINIONS_DIR).then(ok => {
       if (!ok) process.exit(1);
     });
   },
@@ -1298,5 +1323,10 @@ const commands = {
   }
 };
 
-module.exports = { handleCommand };
-
+module.exports = {
+  handleCommand,
+  // exported for testing
+  _parseRuntimeFlags,
+  _modelLooksIncompatible,
+  _applyRuntimeFlags,
+};

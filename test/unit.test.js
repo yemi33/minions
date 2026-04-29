@@ -38093,6 +38093,28 @@ async function testCliCommandHandlers() {
     return { logs, errs, exits };
   }
 
+  async function withCaptureAsync(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    try { await fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    if (threw) throw threw;
+    return { logs, errs, exits };
+  }
+
   // ── handleCommand routing ────────────────────────────────────────────────
 
   await test('handleCommand: unknown command prints error and exits 1', () => {
@@ -38445,6 +38467,121 @@ async function testCliCommandHandlers() {
     return JSON.parse(fs.readFileSync(path.join(testDir, 'config.json'), 'utf8'));
   }
 
+  await test('_parseRuntimeFlags: extracts space/equal forms, effort, and preserves remaining args', () => {
+    const h = setupHarness();
+    try {
+      const args = [
+        'work',
+        '--cli=copilot',
+        '--model', 'claude-sonnet-4.5',
+        '--unknown', 'value',
+        '--effort=high',
+      ];
+      const parsed = h.cli._parseRuntimeFlags(args);
+      assert.deepStrictEqual(parsed, {
+        cli: 'copilot',
+        model: 'claude-sonnet-4.5',
+        effort: 'high',
+        modelExplicit: true,
+        errors: [],
+      });
+      assert.deepStrictEqual(args, ['work', '--unknown', 'value'],
+        'recognized runtime flags should be removed in-place while unknown args remain');
+    } finally { h.restore(); }
+  });
+
+  await test('_parseRuntimeFlags: reports missing values without swallowing later valid flags', () => {
+    const h = setupHarness();
+    try {
+      const args = ['--cli', '--model=', 'tail', '--effort'];
+      const parsed = h.cli._parseRuntimeFlags(args);
+      assert.strictEqual(parsed.cli, undefined);
+      assert.strictEqual(parsed.model, '');
+      assert.strictEqual(parsed.effort, undefined);
+      assert.strictEqual(parsed.modelExplicit, true,
+        'empty --model= is explicit so callers can clear engine.defaultModel');
+      assert.ok(parsed.errors.some(e => /--cli requires a value/.test(e)),
+        `expected --cli missing-value error, got: ${parsed.errors.join(' | ')}`);
+      assert.ok(parsed.errors.some(e => /--effort requires a value/.test(e)),
+        `expected --effort missing-value error, got: ${parsed.errors.join(' | ')}`);
+      assert.deepStrictEqual(args, ['tail'],
+        'bad flags should be removed, unrelated positional args should remain');
+    } finally { h.restore(); }
+  });
+
+  await test('_modelLooksIncompatible: detects Claude shorthand only for Copilot defaults', () => {
+    const h = setupHarness();
+    try {
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'sonnet'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'Opus'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'haiku'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'gpt-5.4'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'claude-sonnet-4.5'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'sonnet'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'claude-sonnet-4.5'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('future-runtime', 'sonnet'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', null), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', undefined), false);
+    } finally { h.restore(); }
+  });
+
+  await test('_applyRuntimeFlags: uses locked config write and ignores model when not explicit', () => {
+    const h = setupHarness({
+      config: {
+        projects: [{ name: 'minions', localPath: 'D:\\repo' }],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer', model: 'sonnet' } },
+        customTopLevel: { keep: true },
+        engine: { defaultCli: 'claude', defaultModel: 'sonnet', keepFlag: true },
+      },
+    });
+    const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const originalMutate = testShared.mutateJsonFileLocked;
+    let lockedPath = null;
+    try {
+      testShared.mutateJsonFileLocked = (filePath, mutateFn, opts) => {
+        lockedPath = filePath;
+        return originalMutate(filePath, mutateFn, opts);
+      };
+      const result = h.cli._applyRuntimeFlags({
+        cli: 'copilot',
+        model: 'gpt-5.4',
+        modelExplicit: false,
+      });
+      assert.strictEqual(result.applied, true);
+      assert.strictEqual(path.basename(lockedPath), 'config.json',
+        'config updates must go through mutateJsonFileLocked(config.json)');
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'sonnet',
+        'model value must be ignored unless modelExplicit=true');
+      assert.strictEqual(cfg.engine.keepFlag, true, 'unrelated engine config should be preserved');
+      assert.deepStrictEqual(cfg.customTopLevel, { keep: true }, 'unrelated top-level config should be preserved');
+      assert.strictEqual(cfg.agents.dallas.model, 'sonnet', 'per-agent overrides should be preserved');
+    } finally {
+      testShared.mutateJsonFileLocked = originalMutate;
+      h.restore();
+    }
+  });
+
+  await test('_applyRuntimeFlags: explicit empty model deletes defaultModel and clears ccModel', () => {
+    const h = setupHarness({
+      config: {
+        projects: [],
+        agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-5.4', ccModel: 'haiku', keepFlag: true },
+      },
+    });
+    try {
+      const result = h.cli._applyRuntimeFlags({ cli: undefined, model: '', modelExplicit: true });
+      assert.deepStrictEqual(result, { warnings: [], applied: true });
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot', 'defaultCli should be unchanged');
+      assert.ok(!('defaultModel' in cfg.engine), '--model "" should delete engine.defaultModel');
+      assert.ok(!('ccModel' in cfg.engine), 'explicit model changes should clear engine.ccModel');
+      assert.strictEqual(cfg.engine.keepFlag, true, 'unrelated engine config should be preserved');
+    } finally { h.restore(); }
+  });
+
   await test('start --cli copilot --model claude-sonnet-4.5: writes fleet keys + clears CC overrides', () => {
     const h = setupHarness({
       // Pre-state: defaults are claude/sonnet with CC overrides already set,
@@ -38617,6 +38754,22 @@ async function testCliCommandHandlers() {
     } finally { h.restore(); }
   });
 
+  await test('config set-cli rejects unexpected extra args without mutating config', () => {
+    const before = { projects: [], agents: {}, engine: { defaultCli: 'claude', defaultModel: 'sonnet' } };
+    const h = setupHarness({
+      config: before,
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'copilot', 'surprise']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /unexpected arguments after set-cli: surprise/.test(e)),
+        `expected unexpected-arg error, got: ${cap.errs.join(' | ')}`);
+      assert.deepStrictEqual(readConfig(h.testDir).engine, before.engine,
+        'invalid config set-cli invocation must not mutate config');
+    } finally { h.restore(); }
+  });
+
   await test('start --cli requires a value: exits 2 with friendly error', () => {
     const h = setupHarness({
       config: { projects: [], agents: {}, engine: {} },
@@ -38626,6 +38779,27 @@ async function testCliCommandHandlers() {
       assert.deepStrictEqual(cap.exits, [2]);
       assert.ok(cap.errs.some(e => /--cli requires a value/.test(e)),
         `expected --cli value error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.doctor: invokes preflight doctor with test minions dir and exits on failure', async () => {
+    const doctorCalls = [];
+    const h = setupHarness({
+      preflight: {
+        runPreflight: () => ({ results: [] }),
+        printPreflight: () => {},
+        doctor: async (dir) => {
+          doctorCalls.push(dir);
+          return false;
+        },
+      },
+    });
+    try {
+      const cap = await withCaptureAsync(async () => {
+        await h.cli.handleCommand('doctor', []);
+      });
+      assert.deepStrictEqual(doctorCalls, [h.testDir]);
+      assert.deepStrictEqual(cap.exits, [1], 'doctor failure should exit non-zero');
     } finally { h.restore(); }
   });
 
@@ -38690,6 +38864,24 @@ async function testCliCommandHandlers() {
         'clean install should not print CC overrides line');
       assert.ok(/Default CLI:\s*claude\s*\(default\)/.test(allLogs),
         `default CLI line should mark "(default)" annotation when defaultCli is unset, got: ${allLogs}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.status: reports missing project paths in project summary', () => {
+    const h = setupHarness({
+      config: {
+        projects: [{ name: 'missing', localPath: path.join(os.tmpdir(), 'minions-definitely-missing-project') }],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {},
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(/Projects:\s*0 linked \(1 path missing\)/.test(allLogs),
+        `status should summarize missing project paths, got: ${allLogs}`);
     } finally { h.restore(); }
   });
 }
