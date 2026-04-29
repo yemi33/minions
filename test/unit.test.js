@@ -562,6 +562,17 @@ async function testIsLiveCommandCenterPath() {
       'dashboard.js inside the live root is protected');
   });
 
+  await test('isLiveCommandCenterPath: exact task paths distinguish live root from worktree', () => {
+    const live = 'D:\\squad';
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\dashboard.js', { liveRoot: live }), true,
+      'live D:\\squad\\dashboard.js must remain protected');
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\worktrees\\minions-work\\W-moj8dbdmgkk2-moj8h9xquycp\\dashboard.js', { liveRoot: live }), false,
+      'isolated W-moj8dbdmgkk2 worktree dashboard.js must be editable');
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\engine\\control.json', { liveRoot: live }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\engine\\dispatch.json', { liveRoot: live }), true);
+    assert.strictEqual(shared.isLiveCommandCenterPath('D:\\squad\\config.json', { liveRoot: live }), true);
+  });
+
   await test('isLiveCommandCenterPath: allows worktree copy of dashboard.js', () => {
     const tmp = createTmpDir();         // pretend live root
     const wtRoot = createTmpDir();      // pretend worktree root (sibling tree)
@@ -581,7 +592,7 @@ async function testIsLiveCommandCenterPath() {
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'config.json'), { liveRoot: tmp }), true);
   });
 
-  await test('isLiveCommandCenterPath: blocks every file under live engine/, dashboard/, bin/', () => {
+  await test('isLiveCommandCenterPath: blocks live engine/*.js, dashboard/**, and bin/*.js', () => {
     const tmp = createTmpDir();
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'shared.js'), { liveRoot: tmp }), true);
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'lifecycle.js'), { liveRoot: tmp }), true);
@@ -595,6 +606,8 @@ async function testIsLiveCommandCenterPath() {
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'knowledge', 'foo.md'), { liveRoot: tmp }), false);
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'plans', 'plan.md'), { liveRoot: tmp }), false);
     assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'projects', 'p', 'work-items.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'engine', 'metrics.json'), { liveRoot: tmp }), false);
+    assert.strictEqual(shared.isLiveCommandCenterPath(path.join(tmp, 'bin', 'README.md'), { liveRoot: tmp }), false);
   });
 
   await test('isLiveCommandCenterPath: allows worktree copies of every protected name', () => {
@@ -624,6 +637,11 @@ async function testIsLiveCommandCenterPath() {
       'sibling-prefix path must not be treated as inside the live root');
   });
 
+  await test('isLiveCommandCenterPath: Windows root comparison is case-insensitive', () => {
+    assert.strictEqual(shared.isLiveCommandCenterPath('d:\\squad\\DASHBOARD.JS', { liveRoot: 'D:\\squad' }), true,
+      'Windows live-root and basename matching must not be bypassed by path casing');
+  });
+
   await test('isLiveCommandCenterPath: rejects invalid input safely', () => {
     const tmp = createTmpDir();
     assert.strictEqual(shared.isLiveCommandCenterPath(null, { liveRoot: tmp }), false);
@@ -650,23 +668,38 @@ async function testIsLiveCommandCenterPath() {
       assert.ok(text.includes('`' + name + '`'),
         `description must list protected basename ${name}`);
     }
+    for (const glob of shared._CC_PROTECTED_FILE_GLOBS) {
+      assert.ok(text.includes('`' + glob + '`'),
+        `description must list protected glob ${glob}`);
+    }
     for (const prefix of shared._CC_PROTECTED_PREFIXES) {
       assert.ok(text.includes('`' + prefix + '**`'),
         `description must list protected prefix ${prefix}**`);
     }
+    assert.ok(/path-scoped, not basename-scoped/i.test(text),
+      'must explicitly declare the rule is path-scoped, not basename-scoped');
     assert.ok(/worktree/i.test(text), 'must explain the worktree carve-out');
     assert.ok(/NOT protected/.test(text), 'must explicitly state worktrees are NOT protected');
   });
 
-  await test('CC system prompt declares path-scoped guardrail with worktree carve-out', () => {
+  await test('renderCcSystemPrompt expands path-scoped guardrail with worktree carve-out', () => {
     const promptPath = path.join(shared.MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.readFileSync(promptPath, 'utf8');
-    assert.ok(/path-scoped, not basename-scoped/i.test(src),
+    const rendered = shared.renderCcSystemPrompt(src, { liveRoot: 'D:\\squad' });
+    assert.ok(rendered.includes('D:/squad'),
+      'rendered prompt must anchor the rule to the live checkout path');
+    assert.ok(/path-scoped, not basename-scoped/i.test(rendered),
       'CC prompt must explicitly declare the rule is path-scoped, not basename-scoped');
-    assert.ok(/worktree/i.test(src) && /not\s+protected/i.test(src),
+    assert.ok(/worktree/i.test(rendered) && /not\s+protected/i.test(rendered),
       'CC prompt must call out that worktree copies are NOT protected');
-    assert.ok(src.includes('{{minions_dir}}'),
-      'CC prompt must anchor the rule to {{minions_dir}} (the live checkout)');
+    assert.ok(src.includes('{{cc_protected_paths}}'),
+      'CC prompt source must delegate the protected-path rule to the shared renderer');
+  });
+
+  await test('dashboard renders CC protected-path prompt from shared helper', () => {
+    const src = fs.readFileSync(path.join(shared.MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('shared.renderCcSystemPrompt(raw, { liveRoot: MINIONS_DIR })'),
+      'dashboard.js must use shared.renderCcSystemPrompt so prompt and path helper cannot drift');
   });
 }
 

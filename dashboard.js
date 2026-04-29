@@ -667,7 +667,7 @@ function ccSessionValid() {
 const CC_STATIC_SYSTEM_PROMPT = (() => {
   try {
     const raw = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
-    return raw.replace(/\{\{minions_dir\}\}/g, MINIONS_DIR);
+    return shared.renderCcSystemPrompt(raw, { liveRoot: MINIONS_DIR });
   } catch (e) {
     console.error('Failed to load prompts/cc-system.md:', e.message);
     return 'You are the Command Center AI for Minions. Delegate work to agents.';

@@ -1271,18 +1271,19 @@ function getAdoOrgBase(project) {
 
 /**
  * Files in the LIVE Minions checkout (MINIONS_DIR) that the Command Center
- * must never edit directly. Two flavours:
+ * must never edit directly. Three flavours:
  *
  *   - "basenames": exact relative paths under the live root (engine.js, dashboard.js,
  *     minions.js, config.json — and the runtime state files engine/control.json
  *     and engine/dispatch.json).
+ *   - "globs":     direct-child JS files under protected live directories
+ *     (engine/*.js, bin/*.js).
  *   - "prefixes":  relative directory prefixes whose entire subtree is read-only
- *     when it lives in the live root (engine/, dashboard/, bin/).
+ *     when it lives in the live root (dashboard/**).
  *
  * The list is intentionally small and explicit. It mirrors the textual rule in
- * `prompts/cc-system.md` ("READ ONLY — never write/edit ..."). Source of truth
- * lives here; the system prompt is rendered from this list at startup so the
- * two cannot drift.
+ * `prompts/cc-system.md`. Source of truth lives here; the system prompt renders
+ * `{{cc_protected_paths}}` from this list at startup so the two cannot drift.
  *
  * The guard is ROOT-AWARE: a path only counts as protected when its absolute
  * resolution sits inside MINIONS_DIR. The same basename inside an isolated
@@ -1298,10 +1299,12 @@ const _CC_PROTECTED_BASENAMES = Object.freeze([
   'engine/control.json',
   'engine/dispatch.json',
 ]);
+const _CC_PROTECTED_FILE_GLOBS = Object.freeze([
+  'engine/*.js',
+  'bin/*.js',
+]);
 const _CC_PROTECTED_PREFIXES = Object.freeze([
-  'engine/',
   'dashboard/',
-  'bin/',
 ]);
 
 /**
@@ -1316,8 +1319,16 @@ function describeCcProtectedPaths(liveRoot) {
   const root = (liveRoot && typeof liveRoot === 'string') ? liveRoot : MINIONS_DIR;
   const norm = root.replace(/\\/g, '/');
   const basenames = _CC_PROTECTED_BASENAMES.map(b => '`' + b + '`').join(', ');
+  const globs = _CC_PROTECTED_FILE_GLOBS.map(g => '`' + g + '`').join(', ');
   const prefixes = _CC_PROTECTED_PREFIXES.map(p => '`' + p + '**`').join(', ');
-  return `READ ONLY in the live checkout at \`${norm}\` — never write/edit: ${basenames}, ${prefixes}. Files with the same basename inside an isolated agent worktree (e.g. \`{worktreeRoot}/W-<id>/dashboard.js\`) are NOT protected — agents working in their own worktrees may edit any repository source the work item requires.`;
+  return `READ ONLY in the live checkout at \`${norm}\` — never write/edit: ${basenames}, ${globs}, ${prefixes}. This rule is path-scoped, not basename-scoped. Files with the same basename inside an isolated agent worktree (e.g. \`{worktreeRoot}/W-<id>/dashboard.js\`) are NOT protected — agents working in their own worktrees may edit any repository source the work item requires.`;
+}
+
+function renderCcSystemPrompt(raw, opts) {
+  const liveRoot = (opts && typeof opts.liveRoot === 'string') ? opts.liveRoot : MINIONS_DIR;
+  return String(raw || '')
+    .replace(/\{\{minions_dir\}\}/g, liveRoot)
+    .replace(/\{\{cc_protected_paths\}\}/g, describeCcProtectedPaths(liveRoot));
 }
 
 /**
@@ -1326,8 +1337,8 @@ function describeCcProtectedPaths(liveRoot) {
  * Returns true ONLY if all three hold:
  *   1. `absPath` resolves to something inside `liveRoot` (default: MINIONS_DIR).
  *   2. Its relative path matches a protected basename (e.g. `dashboard.js`)
- *      OR sits under a protected directory prefix (`engine/`, `dashboard/`,
- *      `bin/`).
+ *      OR matches a protected direct-child glob (`engine/*.js`, `bin/*.js`)
+ *      OR sits under a protected directory prefix (`dashboard/`).
  *   3. The input is a real string (no nullish, no non-string values).
  *
  * Returns false for:
@@ -1346,23 +1357,30 @@ function isLiveCommandCenterPath(absPath, opts) {
   if (typeof absPath !== 'string' || absPath.length === 0) return false;
   if (absPath.includes('\0')) return false;
   const liveRoot = (opts && typeof opts.liveRoot === 'string') ? opts.liveRoot : MINIONS_DIR;
+  const pathApi = /^[a-zA-Z]:[\\/]/.test(absPath) || /^[a-zA-Z]:[\\/]/.test(liveRoot) ? path.win32 : path;
   let resolved;
   let resolvedRoot;
   try {
-    resolved = path.resolve(absPath);
-    resolvedRoot = path.resolve(liveRoot);
+    resolved = pathApi.resolve(absPath);
+    resolvedRoot = pathApi.resolve(liveRoot);
   } catch { return false; }
   // Must be inside liveRoot. Compare with trailing separator to avoid the
   // sibling-prefix bug ("D:/squad-old" startsWith "D:/squad").
-  const rootWithSep = resolvedRoot.endsWith(path.sep) ? resolvedRoot : (resolvedRoot + path.sep);
-  if (resolved !== resolvedRoot && !resolved.startsWith(rootWithSep)) return false;
+  const rootWithSep = resolvedRoot.endsWith(pathApi.sep) ? resolvedRoot : (resolvedRoot + pathApi.sep);
+  const caseInsensitive = pathApi === path.win32 || process.platform === 'win32';
+  const cmpResolved = caseInsensitive ? resolved.toLowerCase() : resolved;
+  const cmpResolvedRoot = caseInsensitive ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const cmpRootWithSep = caseInsensitive ? rootWithSep.toLowerCase() : rootWithSep;
+  if (cmpResolved !== cmpResolvedRoot && !cmpResolved.startsWith(cmpRootWithSep)) return false;
   // Compute the path relative to the live root and normalize separators so
   // the basename / prefix checks are platform-independent.
-  const rel = path.relative(resolvedRoot, resolved).replace(/\\/g, '/');
+  const rel = pathApi.relative(resolvedRoot, resolved).replace(/\\/g, '/');
   if (rel === '' || rel === '.') return false; // root itself is not a "file"
-  if (_CC_PROTECTED_BASENAMES.includes(rel)) return true;
+  const relForMatch = rel.toLowerCase();
+  if (_CC_PROTECTED_BASENAMES.includes(relForMatch)) return true;
+  if (/^(?:engine|bin)\/[^/]+\.js$/.test(relForMatch)) return true;
   for (const prefix of _CC_PROTECTED_PREFIXES) {
-    if (rel === prefix.slice(0, -1) /* exact dir */ || rel.startsWith(prefix)) return true;
+    if (relForMatch === prefix.slice(0, -1) /* exact dir */ || relForMatch.startsWith(prefix)) return true;
   }
   return false;
 }
@@ -2196,7 +2214,9 @@ module.exports = {
   sanitizeBranch,
   isLiveCommandCenterPath,
   describeCcProtectedPaths,
+  renderCcSystemPrompt,
   _CC_PROTECTED_BASENAMES, // exported for testing
+  _CC_PROTECTED_FILE_GLOBS, // exported for testing
   _CC_PROTECTED_PREFIXES,  // exported for testing
   isAllowedOrigin,
   buildSecurityHeaders,

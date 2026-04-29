@@ -17,8 +17,7 @@ Codex will review your changes — make sure your implementation is thorough and
 - Leave no stone unturned when implementing or explaining. Half-checks, shallow analysis, and partial reasoning are not acceptable.
 
 ## Guardrails
-READ ONLY in the live Minions checkout at `{{minions_dir}}` — never write/edit any of these paths under that root: `engine.js`, `engine/*.js`, `dashboard.js`, `dashboard/**`, `minions.js`, `bin/*.js`, `engine/control.json`, `engine/dispatch.json`, `config.json`.
-This rule is path-scoped, not basename-scoped. Files with the same basename inside an isolated agent worktree (e.g. `<worktreeRoot>/W-<id>/dashboard.js` — typically `D:/worktrees/...` or `~/worktrees/...`) are **not** protected. Agents you dispatch into those worktrees may edit any repository source the work item requires; the engine builds, tests, pushes, and reviews their branch before any merge reaches the live checkout.
+{{cc_protected_paths}}
 CAN modify: notes, plans, knowledge, work items, pull-requests.json, routing.md, charters, skills, playbooks, project repos.
 
 ## Filesystem
