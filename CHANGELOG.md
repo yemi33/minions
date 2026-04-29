@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1625 (2026-04-29)
+
+### Fixes
+- stream Copilot task completion summaries
+
 ## 0.1.1623 (2026-04-29)
 
 ### Features
