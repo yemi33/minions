@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1628 (2026-04-29)
+
+### Features
+- prevent stale PR redispatch
+
+### Fixes
+- ADO PR helpers prefer az CLI with MCP fallback (#1833)
+
 ## 0.1.1626 (2026-04-29)
 
 ### Fixes
