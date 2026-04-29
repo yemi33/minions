@@ -11,7 +11,7 @@ const queries = require('./queries');
 const { safeJson, safeRead, log, ts } = shared;
 const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = shared.MINIONS_DIR;
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
 
 // ─── Temp Agents ─────────────────────────────────────────────────────────────
@@ -117,16 +117,16 @@ function setTempBudget(n) {
 function getTempBudget() { return _tempBudget; }
 
 function normalizeAgentHints(agentHints, authorAgent = null) {
-  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? [agentHints] : []);
+  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? String(agentHints).split(',') : []);
   return raw
-    .map(id => id === '_author_' ? authorAgent : id)
-    .map(id => typeof id === 'string' ? id.trim().toLowerCase() : '')
+    .map(id => String(id).trim().toLowerCase())
+    .map(id => id === '_author_' && authorAgent ? String(authorAgent).trim().toLowerCase() : id)
     .filter(Boolean);
 }
 
 function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
   const routes = getRoutingTableCached();
-  const route = routes[workType] || routes['implement'];
+  const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
   const agents = config.agents || {};
 
   // Resolve _author_ token
