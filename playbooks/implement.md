@@ -38,32 +38,35 @@ Before starting work, run `git status` and verify the worktree is clean and on t
 
 Use subagents only for genuinely parallel, independent tasks (e.g., editing files in unrelated modules simultaneously). For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
 
-## Instructions
+## Delivery Contract
 
-1. Read relevant source code and reference implementations before writing anything
-2. Follow existing patterns exactly — check `agents/create-agent/` or the closest comparable agent
-3. Follow the project's logging and coding conventions (check CLAUDE.md)
+Deliver this as if the user asked you directly in a CLI:
+
+- Understand the requested behavior and relevant acceptance criteria before editing.
+- Read the smallest useful set of source, tests, docs, and comparable implementations needed to make the change correctly.
+- Follow existing project conventions, including logging, typing, error handling, and test structure.
+- Make the complete change required by the task; do not add unrelated cleanups or speculative improvements.
+- Keep working through failures you introduced until the implementation is either correct or honestly blocked with concrete evidence.
 
 ## Git Workflow
 
 You are already running in a git worktree on branch `{{branch_name}}`. Do NOT create additional worktrees — the engine pre-created one for you.
 Do NOT remove the worktree — the engine handles cleanup automatically.
 
-## Build & Test (MANDATORY before pushing)
+## Validation
 
-Build and test before pushing:
+Before publishing, prove the change with the repo's own documented checks:
 
-1. **Build** the project using its build system (check CLAUDE.md, package.json, README, or Makefile). Retry up to 3 times; if it still fails, report the errors and stop.
-2. **Run the full test suite** using the command the project defines. Fix regressions you introduced and re-run until your changes are green.
-3. If tests were already failing before your changes, note that in the PR description but do not block on pre-existing failures.
-4. **Run any other checks** the repo defines (linting, type checking, formatting).
-5. Do NOT push code with a broken build or failing tests that you introduced.
+- Use the project's source of truth for commands: `CLAUDE.md`, README, package scripts, Makefile, or equivalent build config.
+- Run the checks that are relevant to this task, including tests that cover the changed behavior. Prefer the full suite when practical.
+- Fix regressions you introduced. If failures are pre-existing or outside the task, capture the evidence and make that explicit in the PR.
+- Do not publish changes with a broken build or failing tests that you introduced.
 
 > ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
 
-## Push & Create PR
+## Publish
 
-Only after build and tests pass:
+After the change is validated or any unavoidable limitation is clearly documented, commit only the relevant files and push this branch:
 
 ```bash
 git add <specific files>
@@ -73,10 +76,12 @@ git push -u origin {{branch_name}}
 
 {{pr_section}}
 
+PR creation is MANDATORY for implement tasks because the engine tracks review and completion from the PR.
+
 Include build/test status and run instructions in the PR description. If the project has a runnable app, include the localhost URL.
 
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Your final message MUST include the PR URL so the engine can track it. Stop immediately after.
+Your task is complete when the requested implementation is delivered, the validation story is truthful and sufficient for review, the branch is pushed, and the PR exists. Your final message MUST include the PR URL so the engine can track it.
 
 Do NOT run `gh pr merge` or any other merge command on your own PR. The engine reviews and merges PRs through a separate review cycle. Self-merging is prohibited.

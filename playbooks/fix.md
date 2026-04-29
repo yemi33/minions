@@ -25,33 +25,31 @@ Before starting work, run `git status` and verify the worktree is clean and on t
 
 Use subagents only for genuinely parallel, independent tasks. For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
 
-## How to Fix
+## Delivery Contract
 
-1. You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.
+Handle this like the PR author responding directly from a CLI:
 
-2. For each issue listed above, use your judgment:
-   - **Fix it** if the feedback is valid and improves the code
-   - **Explain your rationale** if you believe the current approach is correct — reply on the review thread explaining why, with specific reasoning (e.g., performance, consistency with codebase patterns, intentional design choice). Do NOT silently ignore feedback — always respond.
+- You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.
+- For each review finding, use engineering judgment:
+  - Fix it if the feedback is valid and improves correctness, safety, maintainability, or test coverage.
+  - If the current approach is intentionally correct, reply with specific rationale instead of silently changing code or ignoring the thread.
+- Handle merge conflicts when needed, preserving the PR's intended changes while keeping the branch reviewable.
+- Do not add unrelated cleanups or broaden the PR beyond the review feedback unless that is necessary to make the fix correct.
 
-3. Handle merge conflicts if any:
-   - If `git pull` or the PR shows conflicts, resolve them in the worktree
-   - Prefer the PR branch changes, commit the resolution
+## Validation
 
-## Build & Test (MANDATORY before pushing)
+Before pushing, prove the review fix did not break the branch:
 
-Before pushing, verify the fix doesn't break anything:
-
-1. **Build** the project using its build system (check CLAUDE.md, README, package.json, Makefile). If the build fails, fix it before proceeding.
-2. **Run the full test suite** using whatever command the project specifies (check CLAUDE.md, agent.md, README, or package.json scripts).
-3. If any tests fail due to your changes, fix them before pushing.
-4. If the build fails 3 times, report the errors in your PR comment and stop.
-5. Do NOT push code that breaks existing tests or the build.
+- Use the project's source of truth for commands: `CLAUDE.md`, README, package scripts, Makefile, or equivalent build config.
+- Run checks that are relevant to the addressed findings. Prefer the full suite when practical.
+- Fix regressions you introduced. If failures are pre-existing or unrelated, capture the evidence and include it in the PR comment.
+- Do not push code that breaks existing tests or the build because of your changes.
 
 > ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
 
-## Push & Comment on PR
+## Publish & Comment on PR
 
-Only after build and tests pass:
+After the fix is validated or any unavoidable limitation is clearly documented, commit only relevant files and push:
 
 ```bash
 git add <specific files>
@@ -76,7 +74,7 @@ After pushing, respond to each review comment/thread:
 
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, (3) commented on the PR, and (4) resolved addressed review threads. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
+Your task is complete when each review finding has either been fixed or answered with rationale, the validation story is truthful and sufficient for review, the fix is pushed if code changed, the PR is commented, and addressed threads are resolved. Do NOT continue into unrelated improvements.
 
 **NEVER run `gh pr merge` or any merge command on this PR.** The engine handles merging after review approval. Self-merging bypasses the review cycle and is prohibited.
 

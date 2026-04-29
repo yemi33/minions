@@ -20,28 +20,31 @@ Team root: {{team_root}}
 Branch format: `feat/{{item_id}}-<short-description>`
 Keep branch names lowercase, use hyphens, max 60 chars.
 
-## Steps
+## Delivery Contract
 
-1. **Understand the task** — read the description carefully, explore relevant code
-2. **Navigate** to the correct project directory: `{{project_path}}`
-3. You are already in a worktree on branch `{{branch_name}}`. Do NOT create additional worktrees.
-4. **Implement** the changes
-5. **Build** — using the repo's build system (check CLAUDE.md, package.json, README, Makefile). If it fails, fix and retry (up to 3 times).
-6. **Run the full test suite** — find the test command from project docs. Fix any regressions you introduced. Do NOT push with failing tests.
-7. **Run any other checks** the repo defines (linting, type checking, formatting)
-8. **Commit and push** (only after build and tests pass):
-   ```bash
-   git add <specific files>
-   git commit -m "feat({{item_id}}): <description>"
-   git push -u origin {{branch_name}}
-   ```
-9. **Create a PR:**
-   {{pr_create_instructions}}
-   - sourceRefName: `refs/heads/feat/{{item_id}}-<short-desc>`
-   - targetRefName: `refs/heads/{{main_branch}}`
-   - title: `feat({{item_id}}): <description>`
-10. **Post implementation notes** as a PR thread comment:
-    {{pr_comment_instructions}}
+Treat this like the user typed the task directly into a CLI agent:
+
+- Work in the correct project directory: `{{project_path}}`.
+- You are already in a worktree on branch `{{branch_name}}`. Do NOT create additional worktrees.
+- Understand the requested outcome, inspect the relevant source/tests/docs, and make the complete change needed.
+- Follow existing repo conventions and avoid unrelated cleanups.
+- Validate with the repo's documented build/test/check commands. Fix regressions you introduced; if failures are pre-existing or outside the task, document the evidence.
+- Do NOT publish code with a broken build or failing tests that you introduced.
+
+After the change is ready for review, commit only relevant files, push `{{branch_name}}`, create the PR, and post implementation notes with the validation result:
+
+```bash
+git add <specific files>
+git commit -m "feat({{item_id}}): <description>"
+git push -u origin {{branch_name}}
+```
+
+{{pr_create_instructions}}
+- sourceRefName: `refs/heads/feat/{{item_id}}-<short-desc>`
+- targetRefName: `refs/heads/{{main_branch}}`
+- title: `feat({{item_id}}): <description>`
+
+{{pr_comment_instructions}}
 
 Do NOT remove the worktree — the engine handles cleanup automatically.
 
@@ -59,6 +62,6 @@ If you encounter merge conflicts during push or PR creation:
 
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Do NOT continue beyond the task description. Stop immediately.
+Your task is complete when the requested work item is delivered, the validation story is truthful and sufficient for review, the branch is pushed, and the PR exists. Do NOT continue into unrelated improvements.
 
 Do NOT run `gh pr merge` or any other merge command on your own PR. The engine reviews and merges PRs through a separate review cycle. Self-merging is prohibited.

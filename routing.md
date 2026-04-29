@@ -25,6 +25,7 @@ Notes:
 - `_any_` means route to any available idle agent (lowest error rate first)
 - `implement:large` is for items with `estimated_complexity: "large"`
 - Engine falls back to any idle agent if both preferred and fallback are busy
+- Routing selects an owner; it should not narrow the user's task contract. The assigned agent should behave like the user typed the same task directly into a CLI, with Minions adding only safety, status, and review guardrails.
 
 ## Rules
 
