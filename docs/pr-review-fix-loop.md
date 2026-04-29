@@ -71,7 +71,7 @@ When multiple problems coexist, earlier triggers get the first chance to enqueue
 
 ## 6. Re-review cycle
 
-- Poller (every `prPollStatusEvery` ticks, default ~12min): detects new commit (`head.sha` changed) → sets `lastPushedAt`
+- Poller (wall-clock cadence from `prPollStatusEvery × tickInterval`, default ~12min): detects new commit (`head.sha` changed) → sets `lastPushedAt`
 - Platform review state drives next action:
   - Reviewer approves → `approved` → done
   - Reviewer re-requests changes → `changes-requested` → triggers another fix

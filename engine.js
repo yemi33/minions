@@ -3337,10 +3337,29 @@ let tickCount = 0;
 // In-memory cache of plan filenames confirmed completed — avoids redundant
 // checkPlanCompletion calls.  Cleared automatically on engine restart.
 const completedPlanCache = new Set();
+let lastWatchCheckAt = 0;
+let lastPrStatusPollAt = 0;
+let lastPrCommentsPollAt = 0;
 
 let tickRunning = false;
 let _tickStartedAt = 0;
 const TICK_TIMEOUT_MS = 300000; // 5 min — force-release tick lock if stuck
+
+function _pollIntervalMsFromTicks(ticks, tickIntervalMs) {
+  const normalizedTicks = Math.max(1, Number(ticks) || 1);
+  const normalizedTickInterval = Math.max(1, Number(tickIntervalMs) || ENGINE_DEFAULTS.tickInterval);
+  return normalizedTicks * normalizedTickInterval;
+}
+
+function _shouldRunPeriodicPhase(now, lastRunAt, intervalMs) {
+  const current = Number(now);
+  const previous = Number(lastRunAt) || 0;
+  const interval = Math.max(1, Number(intervalMs) || 1);
+  if (!Number.isFinite(current)) return false;
+  if (!previous || !Number.isFinite(previous)) return true;
+  if (current < previous) return true;
+  return current - previous >= interval;
+}
 
 async function tick() {
   if (tickRunning) {
@@ -3375,6 +3394,8 @@ async function tickInner() {
 
   const config = getConfig();
   tickCount++;
+  const now = Date.now();
+  const tickIntervalMs = Math.max(1, Number(config.engine?.tickInterval) || ENGINE_DEFAULTS.tickInterval);
   _failedRefCache.clear(); // Reset per-tick failed-ref cache
 
   // Helper: run a phase, log + continue on error
@@ -3402,8 +3423,10 @@ async function tickInner() {
     safe('runCleanup', () => runCleanup(config));
   }
 
-  // 2.55. Check persistent watches (every 3 ticks = ~3 minutes)
-  if (tickCount % 3 === 0) {
+  // 2.55. Check persistent watches (3 tick-equivalents, default ~3 minutes)
+  const watchPollIntervalMs = _pollIntervalMsFromTicks(3, tickIntervalMs);
+  if (_shouldRunPeriodicPhase(now, lastWatchCheckAt, watchPollIntervalMs)) {
+    lastWatchCheckAt = now;
     safe('checkWatches', () => {
       const { checkWatches } = require('./engine/watches');
       const projects = getProjects(config);
@@ -3432,10 +3455,14 @@ async function tickInner() {
     Number(config.engine?.prPollCommentsEvery ?? config.engine?.adoPollCommentsEvery) || ENGINE_DEFAULTS.prPollCommentsEvery
   );
 
-  // 2.6. Poll PR status: build, review, merge (every prPollStatusEvery ticks, default ~12 minutes)
+  // 2.6. Poll PR status: build, review, merge (every prPollStatusEvery tick-equivalents, default ~12 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
   // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
-  if (tickCount % prPollStatusEvery === 0 || needsAdoPollRetry()) {
+  const prPollStatusIntervalMs = _pollIntervalMsFromTicks(prPollStatusEvery, tickIntervalMs);
+  const prStatusPollDue = _shouldRunPeriodicPhase(now, lastPrStatusPollAt, prPollStatusIntervalMs);
+  const adoPollRetryDue = needsAdoPollRetry();
+  if (prStatusPollDue || adoPollRetryDue) {
+    lastPrStatusPollAt = now;
     // Build promise array — enabled+unthrottled polls run concurrently via Promise.allSettled
     const statusPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
@@ -3475,8 +3502,11 @@ async function tickInner() {
     } catch (err) { log('warn', `Plan completion check error: ${err?.message || err}`); }
   }
 
-  // 2.7. Poll PR threads for human comments (every prPollCommentsEvery ticks, default ~12 minutes)
-  if (tickCount % prPollCommentsEvery === 0) {
+  const prPollCommentsIntervalMs = _pollIntervalMsFromTicks(prPollCommentsEvery, tickIntervalMs);
+
+  // 2.7. Poll PR threads for human comments (every prPollCommentsEvery tick-equivalents, default ~12 minutes)
+  if (_shouldRunPeriodicPhase(now, lastPrCommentsPollAt, prPollCommentsIntervalMs)) {
+    lastPrCommentsPollAt = now;
     // Build promise array — enabled+unthrottled comment polls run concurrently via Promise.allSettled
     const commentPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
@@ -3923,6 +3953,7 @@ module.exports = {
 
   // Tick
   tick,
+  _pollIntervalMsFromTicks, _shouldRunPeriodicPhase, // exported for testing
 };
 
 // ─── Entrypoint ─────────────────────────────────────────────────────────────
