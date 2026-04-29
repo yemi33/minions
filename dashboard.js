@@ -758,9 +758,33 @@ function findCCActionsDelimiter(text) {
   return match.index + match[0].indexOf('===ACTIONS===');
 }
 
+function findCCActionsBlockStart(text) {
+  if (!text) return -1;
+  const exactIdx = findCCActionsDelimiter(text);
+  if (exactIdx >= 0) return exactIdx;
+
+  // Sentinel-looking malformed delimiters are control-plane attempts: hide them
+  // from display, but only the exact delimiter above may execute actions.
+  const candidate = /(?:^|\r?\n)===ACTIONS(?:[ \t]*(?:[-=]>?|={1,}|$)|[^A-Za-z0-9_\s\r\n][^\r\n]*)(?=\r?\n|$)/m.exec(text);
+  if (candidate) return candidate.index + candidate[0].indexOf('===ACTIONS');
+
+  const lastLf = text.lastIndexOf('\n');
+  const lastCr = text.lastIndexOf('\r');
+  const lastLineStart = Math.max(lastLf, lastCr) + 1;
+  const trailingLine = text.slice(lastLineStart);
+  if (trailingLine.length >= 4 && '===ACTIONS==='.startsWith(trailingLine)) return lastLineStart;
+
+  return -1;
+}
+
+function stripCCActionsForDisplay(text) {
+  const blockIdx = findCCActionsBlockStart(text);
+  return blockIdx >= 0 ? text.slice(0, blockIdx).trim() : text;
+}
+
 function parseCCActions(text) {
   let actions = [];
-  let displayText = text;
+  let displayText = stripCCActionsForDisplay(text);
   const delimIdx = findCCActionsDelimiter(text);
   if (delimIdx >= 0) {
     displayText = text.slice(0, delimIdx).trim();
@@ -4551,8 +4575,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           sessionId, effort: streamEffort, direct: true,
           engineConfig: CONFIG.engine,
           onChunk: (text) => {
-            const actIdx = findCCActionsDelimiter(text);
-            const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
+            const display = stripCCActionsForDisplay(text);
             liveState.text = display;
             if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
           },
@@ -4581,8 +4604,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               effort: streamEffort, direct: true,
               engineConfig: CONFIG.engine,
               onChunk: (text) => {
-                const actIdx = findCCActionsDelimiter(text);
-                const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
+                const display = stripCCActionsForDisplay(text);
                 liveState.text = display;
                 if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
               },

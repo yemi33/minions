@@ -21002,19 +21002,83 @@ async function testCcActionTypes() {
 
   await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(findBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const actionsBlock = src.slice(src.indexOf('function findCCActionsDelimiter'), src.indexOf('// ── /loop'));
+    const parseCCActions = new Function(actionsBlock + '\nreturn parseCCActions;')();
 
     const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
     const inlineResult = parseCCActions(inline);
     assert.strictEqual(inlineResult.text, inline, 'inline mentions of ===ACTIONS=== must not truncate CC output');
     assert.deepStrictEqual(inlineResult.actions, [], 'inline mentions of ===ACTIONS=== must not be parsed as actions');
 
+    const prose = '## Action System\n===ACTIONS are documented here, not emitted as a delimiter.';
+    const proseResult = parseCCActions(prose);
+    assert.strictEqual(proseResult.text, prose, 'prose lines beginning with ===ACTIONS must remain visible');
+    assert.deepStrictEqual(proseResult.actions, [], 'prose lines beginning with ===ACTIONS must not be parsed as actions');
+
     const withActions = 'Answer first.\n\n===ACTIONS===\n[{\"type\":\"note\",\"title\":\"x\",\"content\":\"y\"}]';
     const actionResult = parseCCActions(withActions);
     assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
     assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
+  });
+
+  await test('parseCCActions rejects malformed ===ACTIONS -> delimiter without executing action JSON', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const actionsBlock = src.slice(src.indexOf('function findCCActionsDelimiter'), src.indexOf('// ── /loop'));
+    const parseCCActions = new Function(actionsBlock + '\nreturn parseCCActions;')();
+
+    const malformed = [
+      'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      '',
+      '===ACTIONS ->',
+      '[{"type":"reopen-work-item","id":"W-moj69r5e3la3","project":"OfficeAgent"}]'
+    ].join('\n');
+    const result = parseCCActions(malformed);
+    assert.strictEqual(result.text, 'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      'malformed action blocks should be removed from visible response text');
+    assert.deepStrictEqual(result.actions, [],
+      'malformed action delimiter must not parse or execute action JSON');
+  });
+
+  await test('parseCCActions does not fall back to fenced action parsing after malformed delimiter', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const actionsBlock = src.slice(src.indexOf('function findCCActionsDelimiter'), src.indexOf('// ── /loop'));
+    const parseCCActions = new Function(actionsBlock + '\nreturn parseCCActions;')();
+
+    const malformedWithFence = [
+      'I can reopen that.',
+      '',
+      '===ACTIONS ->',
+      '```action',
+      '{"type":"reopen-work-item","id":"W-moj69r5e3la3","project":"OfficeAgent"}',
+      '```'
+    ].join('\n');
+    const result = parseCCActions(malformedWithFence);
+    assert.strictEqual(result.text, 'I can reopen that.',
+      'rejected malformed action blocks should not leak fenced action payloads');
+    assert.deepStrictEqual(result.actions, [],
+      'fallback fenced action parser must not interpret payloads after a malformed delimiter');
+  });
+
+  await test('stripCCActionsForDisplay prevents streaming chunks from leaking action blocks', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const actionsBlock = src.slice(src.indexOf('function findCCActionsDelimiter'), src.indexOf('// ── /loop'));
+    const stripCCActionsForDisplay = new Function(actionsBlock + '\nreturn stripCCActionsForDisplay;')();
+
+    assert.strictEqual(
+      stripCCActionsForDisplay('Answer first.\n\n===ACTIONS===\n[{"type":"note","title":"x","content":"y"}]'),
+      'Answer first.',
+      'valid action blocks should be hidden from streamed display text'
+    );
+    assert.strictEqual(
+      stripCCActionsForDisplay('Reopening W-moj69r5e3la3 in OfficeAgent.\n\n===ACTIONS ->\n[{"type":"reopen-work-item","id":"W-moj69r5e3la3"}]'),
+      'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      'malformed action block candidates should be hidden from streamed display text'
+    );
+    assert.strictEqual(
+      stripCCActionsForDisplay('Answer first.\n\n===ACT'),
+      'Answer first.',
+      'partial action delimiter prefixes should be hidden before the full delimiter arrives'
+    );
   });
 }
 
