@@ -25750,9 +25750,10 @@ async function testPrDuplicateRaceFix() {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');
     assert.ok(engineSrc.includes('needsAdoPollRetry()'), 'engine.js must call needsAdoPollRetry() in tick loop');
-    // Should be used alongside the configurable cadence check
-    assert.ok(engineSrc.includes('tickCount % prPollStatusEvery === 0 || needsAdoPollRetry()'),
-      'engine.js must bypass prPollStatusEvery cadence when needsAdoPollRetry() is true');
+    assert.ok(engineSrc.includes('const adoPollRetryDue = needsAdoPollRetry()'),
+      'engine.js must evaluate needsAdoPollRetry() separately from the normal PR poll cadence');
+    assert.ok(engineSrc.includes('if (prStatusPollDue || adoPollRetryDue)'),
+      'engine.js must bypass the normal PR status cadence when needsAdoPollRetry() is true');
   });
 
   await test('dashboard render-prs.js shows stale build status indicator', () => {
@@ -39383,6 +39384,37 @@ async function testParallelPrPolling() {
   console.log('\n── P-e1c8b4a6: Parallel PR polling via Promise.allSettled ──');
 
   const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('PR and watch poll cadence uses wall-clock elapsed time', () => {
+    const engine = require(path.join(MINIONS_DIR, 'engine'));
+    const intervalMs = engine._pollIntervalMsFromTicks(12, 60000);
+    assert.strictEqual(intervalMs, 720000, '12 default ticks should convert to 12 minutes');
+    assert.strictEqual(engine._shouldRunPeriodicPhase(1000, 0, intervalMs), true,
+      'never-run phases should run immediately on boot instead of waiting for 12 ticks');
+    assert.strictEqual(engine._shouldRunPeriodicPhase(1000 + intervalMs - 1, 1000, intervalMs), false,
+      'phase should not run before the elapsed wall-clock interval');
+    assert.strictEqual(engine._shouldRunPeriodicPhase(1000 + intervalMs, 1000, intervalMs), true,
+      'phase should run once the elapsed wall-clock interval arrives without any file events');
+  });
+
+  await test('engine PR/watch cadence gates are wall-clock based, not tickCount modulo based', () => {
+    const watchIdx = engineSrc.indexOf('2.55');
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(watchIdx > -1 && section26Idx > -1, 'Watch and PR status sections must exist');
+    const watchBlock = engineSrc.slice(watchIdx, section26Idx);
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const section29Idx = engineSrc.indexOf('2.9', section27Idx);
+    const section27Block = engineSrc.slice(section27Idx, section29Idx);
+    assert.ok(watchBlock.includes('_shouldRunPeriodicPhase'),
+      'watch checks must use the wall-clock cadence helper');
+    assert.ok(section26Block.includes('_shouldRunPeriodicPhase'),
+      'PR status polls must use the wall-clock cadence helper');
+    assert.ok(section27Block.includes('_shouldRunPeriodicPhase'),
+      'PR comment polls must use the wall-clock cadence helper');
+    assert.ok(!/tickCount\s*%/.test(watchBlock + section26Block + section27Block),
+      'watch, PR status, and PR comment poll gates must not depend on tickCount modulo');
+  });
 
   // ── Section 2.6: status polls use Promise.allSettled ──
 

@@ -11,8 +11,8 @@ tick()
   1. checkTimeouts()            Kill stale/hung agents (>heartbeatTimeout)
   2. consolidateInbox()         Merge learnings into notes.md (Haiku-powered)
   2.5 runCleanup()              Periodic cleanup (every 10 ticks ≈ 10min)
-  2.6 pollPrStatus()            Poll ADO + GitHub for build, review, merge status (every prPollStatusEvery ticks, default 12 ≈ 12min)
-  2.7 pollPrHumanComments()     Poll PR threads for human @minions comments (every prPollCommentsEvery ticks, default 12 ≈ 12min)
+  2.6 pollPrStatus()            Poll ADO + GitHub for build, review, merge status (wall-clock cadence from prPollStatusEvery × tickInterval, default ≈ 12min)
+  2.7 pollPrHumanComments()     Poll PR threads for human @minions comments (wall-clock cadence from prPollCommentsEvery × tickInterval, default ≈ 12min)
   3. discoverWork()             Scan ALL linked projects for new tasks
   4. updateSnapshot()           Write identity/now.md
   5. dispatch                   Spawn agents for pending items (up to maxConcurrent)
@@ -124,7 +124,7 @@ Both write to `work-items.json` and are picked up by Source 3 on the same or nex
 
 ## PR Status Polling (`pollPrStatus`)
 
-**Runs:** Every `prPollStatusEvery` ticks (default 12, ≈ 12 minutes), independently of work discovery. ADO polling lives in `engine/ado.js`; GitHub polling lives in `engine/github.js` — both run in parallel each cycle (`Promise.allSettled`) and write to the same per-project `pull-requests.json` schema. Replaces the retired agent-based `pr-sync`.
+**Runs:** On a wall-clock cadence derived from `prPollStatusEvery × engine.tickInterval` (default 12 × 60s, ≈ 12 minutes), independently of work discovery or file-change wakeups. ADO polling lives in `engine/ado.js`; GitHub polling lives in `engine/github.js` — both run in parallel each cycle (`Promise.allSettled`) and write to the same per-project `pull-requests.json` schema. Replaces the retired agent-based `pr-sync`.
 
 The engine directly polls the host REST API for **all** PR metadata: build/CI status, human review votes, and completion state. Two API calls per PR — no agent dispatch needed.
 
