@@ -1270,6 +1270,104 @@ function getAdoOrgBase(project) {
 // ── Path Sanitization ───────────────────────────────────────────────────────
 
 /**
+ * Files in the LIVE Minions checkout (MINIONS_DIR) that the Command Center
+ * must never edit directly. Two flavours:
+ *
+ *   - "basenames": exact relative paths under the live root (engine.js, dashboard.js,
+ *     minions.js, config.json — and the runtime state files engine/control.json
+ *     and engine/dispatch.json).
+ *   - "prefixes":  relative directory prefixes whose entire subtree is read-only
+ *     when it lives in the live root (engine/, dashboard/, bin/).
+ *
+ * The list is intentionally small and explicit. It mirrors the textual rule in
+ * `prompts/cc-system.md` ("READ ONLY — never write/edit ..."). Source of truth
+ * lives here; the system prompt is rendered from this list at startup so the
+ * two cannot drift.
+ *
+ * The guard is ROOT-AWARE: a path only counts as protected when its absolute
+ * resolution sits inside MINIONS_DIR. The same basename inside an isolated
+ * task worktree (e.g. `D:/worktrees/minions-work/W-xxx/dashboard.js`) is NOT
+ * protected — agents working in those copies are free to edit them, since
+ * git keeps changes inside the worktree until the agent pushes a branch.
+ */
+const _CC_PROTECTED_BASENAMES = Object.freeze([
+  'engine.js',
+  'dashboard.js',
+  'minions.js',
+  'config.json',
+  'engine/control.json',
+  'engine/dispatch.json',
+]);
+const _CC_PROTECTED_PREFIXES = Object.freeze([
+  'engine/',
+  'dashboard/',
+  'bin/',
+]);
+
+/**
+ * Returns the literal text used by the CC system prompt for the protected-file
+ * rule. Combines the basenames + prefixes above into a single sentence so the
+ * authored rule and the helper that enforces it can never disagree.
+ *
+ * The result is anchored to a specific live root so the LLM can't conflate
+ * "edits to dashboard.js" with "edits to a worktree copy of dashboard.js".
+ */
+function describeCcProtectedPaths(liveRoot) {
+  const root = (liveRoot && typeof liveRoot === 'string') ? liveRoot : MINIONS_DIR;
+  const norm = root.replace(/\\/g, '/');
+  const basenames = _CC_PROTECTED_BASENAMES.map(b => '`' + b + '`').join(', ');
+  const prefixes = _CC_PROTECTED_PREFIXES.map(p => '`' + p + '**`').join(', ');
+  return `READ ONLY in the live checkout at \`${norm}\` — never write/edit: ${basenames}, ${prefixes}. Files with the same basename inside an isolated agent worktree (e.g. \`{worktreeRoot}/W-<id>/dashboard.js\`) are NOT protected — agents working in their own worktrees may edit any repository source the work item requires.`;
+}
+
+/**
+ * Is this absolute path a CC-protected file in the LIVE Minions checkout?
+ *
+ * Returns true ONLY if all three hold:
+ *   1. `absPath` resolves to something inside `liveRoot` (default: MINIONS_DIR).
+ *   2. Its relative path matches a protected basename (e.g. `dashboard.js`)
+ *      OR sits under a protected directory prefix (`engine/`, `dashboard/`,
+ *      `bin/`).
+ *   3. The input is a real string (no nullish, no non-string values).
+ *
+ * Returns false for:
+ *   - Paths outside `liveRoot` (worktrees, sibling repos, scratch dirs, etc.)
+ *   - Non-protected files inside `liveRoot` (notes.md, knowledge/foo.md, …)
+ *   - Invalid inputs (null/undefined/empty/non-string)
+ *
+ * Why this exists: PR W-moja4a5qp9pj. The CC system prompt previously named
+ * protected files by basename only ("never write/edit dashboard.js"). Agents
+ * dispatched into isolated worktrees inherited the same prose verbatim and
+ * occasionally interpreted it as banning their own worktree copy of those
+ * files, blocking otherwise legitimate fixes. The guard now distinguishes
+ * "same path, live tree" from "same basename, worktree copy".
+ */
+function isLiveCommandCenterPath(absPath, opts) {
+  if (typeof absPath !== 'string' || absPath.length === 0) return false;
+  if (absPath.includes('\0')) return false;
+  const liveRoot = (opts && typeof opts.liveRoot === 'string') ? opts.liveRoot : MINIONS_DIR;
+  let resolved;
+  let resolvedRoot;
+  try {
+    resolved = path.resolve(absPath);
+    resolvedRoot = path.resolve(liveRoot);
+  } catch { return false; }
+  // Must be inside liveRoot. Compare with trailing separator to avoid the
+  // sibling-prefix bug ("D:/squad-old" startsWith "D:/squad").
+  const rootWithSep = resolvedRoot.endsWith(path.sep) ? resolvedRoot : (resolvedRoot + path.sep);
+  if (resolved !== resolvedRoot && !resolved.startsWith(rootWithSep)) return false;
+  // Compute the path relative to the live root and normalize separators so
+  // the basename / prefix checks are platform-independent.
+  const rel = path.relative(resolvedRoot, resolved).replace(/\\/g, '/');
+  if (rel === '' || rel === '.') return false; // root itself is not a "file"
+  if (_CC_PROTECTED_BASENAMES.includes(rel)) return true;
+  for (const prefix of _CC_PROTECTED_PREFIXES) {
+    if (rel === prefix.slice(0, -1) /* exact dir */ || rel.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
  * Validate that a user-supplied filename stays within the given base directory.
  * Rejects path traversal (../, encoded variants), null bytes, and absolute paths.
  * Returns the resolved absolute path or throws with a descriptive message.
@@ -2096,6 +2194,10 @@ module.exports = {
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
+  isLiveCommandCenterPath,
+  describeCcProtectedPaths,
+  _CC_PROTECTED_BASENAMES, // exported for testing
+  _CC_PROTECTED_PREFIXES,  // exported for testing
   isAllowedOrigin,
   buildSecurityHeaders,
   hasDangerousKey,
