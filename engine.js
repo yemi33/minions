@@ -1581,8 +1581,8 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 // ─── Inbox Consolidation (extracted to engine/consolidation.js) ──────────────
 
 const { consolidateInbox } = require('./engine/consolidation');
-const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry, getAdoToken, isAdoThrottled } = require('./engine/ado');
-const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview, isGhThrottled } = require('./engine/github');
+const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, checkLiveBuildAndConflict: adoCheckLiveBuildAndConflict, needsAdoPollRetry, getAdoToken, isAdoThrottled } = require('./engine/ado');
+const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview, checkLiveBuildAndConflict: ghCheckLiveBuildAndConflict, isGhThrottled } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
 
@@ -2049,7 +2049,8 @@ async function discoverFromPrs(config, project) {
   for (const pr of prs) {
     if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
     const prDisplayId = shared.getPrDisplayId(pr);
-    if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
+    const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
+    if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
       log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);
@@ -2255,6 +2256,39 @@ async function discoverFromPrs(config, project) {
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+
+      // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
+      // recompute the merge commit when master moves and pollPrStatus deliberately
+      // preserves the previous 'failing' value (issue #1233); GitHub check-runs
+      // may have flipped to 'passing' minutes before the next 12-tick poll. Mirror
+      // the review/re-review live-vote guard so we don't dispatch a fix for a
+      // build that has already recovered.
+      try {
+        const checkBcFn = project.repoHost === 'github' ? ghCheckLiveBuildAndConflict : adoCheckLiveBuildAndConflict;
+        const live = await checkBcFn(pr, project);
+        if (live && live.buildStatus && live.buildStatus !== 'failing') {
+          log('info', `Pre-dispatch build check: ${pr.id} build is ${live.buildStatus} (cached was failing) — skipping build-fix`);
+          // Persist the fresh status so subsequent ticks don't re-check on every pass
+          try {
+            mutatePullRequests(projectPrPath(project), prs => {
+              const target = shared.findPrRecord(prs, pr, project);
+              if (!target) return;
+              target.buildStatus = live.buildStatus;
+              if (live.buildStatus === 'passing') {
+                delete target.buildErrorLog;
+                delete target.buildFailReason;
+                delete target._buildFailNotified;
+                if (target.buildFixAttempts) {
+                  delete target.buildFixAttempts;
+                  delete target.buildFixEscalated;
+                }
+              }
+            });
+          } catch {}
+          continue;
+        }
+      } catch (e) { log('warn', `Pre-dispatch build check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
+
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
@@ -2306,22 +2340,47 @@ async function discoverFromPrs(config, project) {
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
       if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
-        const agentId = resolveAgent('fix', config, pr.agent);
-        if (agentId) {
-          const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-            pr_id: pr.id, pr_branch: pr.branch || '',
-            review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
-          }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-          if (item) {
-            newWork.push(item);
-            setCooldown(key);
-            // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
+        // Pre-dispatch live conflict check — cached `_mergeConflict` may be
+        // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
+        // so a successful upstream merge can leave the flag set even after the
+        // conflict is gone. Mirror the review/re-review live-vote guard so we
+        // don't dispatch a conflict-fix for a PR that's already clean.
+        let liveSkip = false;
+        try {
+          const checkBcFn = project.repoHost === 'github' ? ghCheckLiveBuildAndConflict : adoCheckLiveBuildAndConflict;
+          const live = await checkBcFn(pr, project);
+          if (live && live.mergeConflict === false) {
+            log('info', `Pre-dispatch conflict check: ${pr.id} reports clean merge (cached was conflict) — skipping conflict-fix`);
             try {
               mutatePullRequests(projectPrPath(project), prs => {
                 const target = shared.findPrRecord(prs, pr, project);
-                if (target) target._conflictFixedAt = new Date().toISOString();
+                if (!target) return;
+                delete target._mergeConflict;
+                delete target._conflictFixedAt;
               });
-            } catch (e) { log('warn', `conflict-fix timestamp: ${e.message}`); }
+            } catch {}
+            liveSkip = true;
+          }
+        } catch (e) { log('warn', `Pre-dispatch conflict check for ${pr.id}: ${e.message} — skipping dispatch`); liveSkip = true; }
+
+        if (!liveSkip) {
+          const agentId = resolveAgent('fix', config, pr.agent);
+          if (agentId) {
+            const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+              pr_id: pr.id, pr_branch: pr.branch || '',
+              review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
+            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+            if (item) {
+              newWork.push(item);
+              setCooldown(key);
+              // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
+              try {
+                mutatePullRequests(projectPrPath(project), prs => {
+                  const target = shared.findPrRecord(prs, pr, project);
+                  if (target) target._conflictFixedAt = new Date().toISOString();
+                });
+              } catch (e) { log('warn', `conflict-fix timestamp: ${e.message}`); }
+            }
           }
         }
       }
