@@ -11812,7 +11812,7 @@ async function testPreDispatchBuildAndConflictFreshness() {
   await test('ado.js checkLiveBuildAndConflict uses adoFetch with a 4s timeout (cheap pre-dispatch)', () => {
     const fnStart = adoSrc.indexOf('async function checkLiveBuildAndConflict(');
     assert.ok(fnStart !== -1, 'ado.js must define checkLiveBuildAndConflict');
-    const fnEnd = adoSrc.indexOf('\n}\n', fnStart);
+    const fnEnd = adoSrc.indexOf('\nasync function fetchAdoPrMetadata', fnStart);
     const fn = adoSrc.slice(fnStart, fnEnd + 2);
     assert.ok(fn.includes('adoFetch('),
       'checkLiveBuildAndConflict must use the in-process adoFetch wrapper (no curl shell-out)');
@@ -11827,7 +11827,7 @@ async function testPreDispatchBuildAndConflictFreshness() {
   await test('github.js checkLiveBuildAndConflict uses ghApi (no shell-out)', () => {
     const fnStart = ghSrc.indexOf('async function checkLiveBuildAndConflict(');
     assert.ok(fnStart !== -1, 'github.js must define checkLiveBuildAndConflict');
-    const fnEnd = ghSrc.indexOf('\n}\n', fnStart);
+    const fnEnd = ghSrc.indexOf('\nmodule.exports', fnStart);
     const fn = ghSrc.slice(fnStart, fnEnd + 2);
     assert.ok(fn.includes('ghApi('),
       'checkLiveBuildAndConflict must use the in-process ghApi wrapper');
@@ -20598,6 +20598,7 @@ async function main() {
 
     // W-moa4gs7dpd7a: ado.js pure helpers — classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle
     await testAdoPureHelpers();
+    await testAdoRepositoryIdFallback();
 
     await testGhThrottle();
     await testGhThrottleEngineGuards();
@@ -34075,6 +34076,244 @@ async function testCreateThrottleTracker() {
       'ado.js must use createThrottleTracker');
     assert.ok(adoSrc.includes("label: 'ado'") || adoSrc.includes('label: "ado"'),
       'ado.js must create tracker with label "ado"');
+  });
+}
+
+// ─── W-mojy9mobqfnu: ADO polling repository metadata resilience ─────────────
+
+async function testAdoRepositoryIdFallback() {
+  console.log('\n── W-mojy9mobqfnu: ADO polling repositoryId fallback/config errors ──');
+
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+  const basePr = {
+    id: 'ado:org/proj/repo:42',
+    prNumber: 42,
+    title: 'Test PR',
+    status: 'active',
+    reviewStatus: 'pending',
+    url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/42',
+  };
+
+  async function withAdoPollFixture(project, prs, fn) {
+    const restore = createTestMinionsDir();
+    const origFetch = globalThis.fetch;
+    try {
+      const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      testShared.safeWrite(testShared.projectPrPath(project), prs);
+
+      delete require.cache[require.resolve(adoPath)];
+      const ado = require(adoPath);
+      ado._setAdoTokenForTest('eyJ-fake-test-token');
+
+      await fn({ ado, testShared });
+    } finally {
+      globalThis.fetch = origFetch;
+      try {
+        const ado = require(adoPath);
+        if (ado._setAdoTokenForTest) ado._setAdoTokenForTest(null);
+      } catch {}
+      delete require.cache[require.resolve(adoPath)];
+      restore();
+    }
+  }
+
+  function successfulPollFetch(calls, expectedRepoToken) {
+    return async (url) => {
+      calls.push(url);
+      assert.ok(!url.includes('/repositories//'),
+        `ADO poll URL must never contain an empty repository segment: ${url}`);
+      if (url.includes(`/repositories/${expectedRepoToken}/pullrequests/42?`)) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            status: 'active',
+            mergeStatus: 'succeeded',
+            lastMergeCommit: { commitId: 'merge-abc' },
+            lastMergeSourceCommit: { commitId: 'source-abc' },
+            reviewers: [],
+          }),
+          headers: { get: () => null },
+        };
+      }
+      if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${expectedRepoToken}`)) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            value: [
+              { id: 7, sourceVersion: 'merge-abc', status: 'completed', result: 'succeeded' },
+            ],
+          }),
+          headers: { get: () => null },
+        };
+      }
+      return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+    };
+  }
+
+  await test('ADO pollPrStatus uses repoName when repositoryId is empty', async () => {
+    const project = {
+      name: 'ado-empty-repository-id',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado, testShared }) => {
+      const calls = [];
+      globalThis.fetch = successfulPollFetch(calls, 'repo-name');
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
+        'pollPrStatus must recover from empty repositoryId by polling via project.repoName');
+      const stored = testShared.safeJson(testShared.projectPrPath(project));
+      assert.strictEqual(stored[0].buildStatus, 'passing',
+        'pollPrStatus should persist the mocked build result when repoName fallback succeeds');
+      assert.ok(stored[0].lastBuildCheck,
+        'pollPrStatus should record lastBuildCheck after a successful fallback poll');
+    });
+  });
+
+  await test('ADO pollPrHumanComments uses repoName when repositoryId is empty', async () => {
+    const project = {
+      name: 'ado-comments-empty-repository-id',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const calls = [];
+      globalThis.fetch = async (url) => {
+        calls.push(url);
+        assert.ok(!url.includes('/repositories//'),
+          `ADO comment poll URL must never contain an empty repository segment: ${url}`);
+        if (url.includes('/repositories/repo-name/pullrequests/42/threads?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ value: [] }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrHumanComments({ projects: [project], engine: {} });
+
+      assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42/threads?')),
+        'pollPrHumanComments must recover from empty repositoryId by polling via project.repoName');
+    });
+  });
+
+  await test('ADO pollPrStatus keeps using valid repositoryId when present', async () => {
+    const project = {
+      name: 'ado-valid-repository-id',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: 'repo-guid',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const calls = [];
+      globalThis.fetch = successfulPollFetch(calls, 'repo-guid');
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      assert.ok(calls.some(url => url.includes('/repositories/repo-guid/pullrequests/42?')),
+        'valid project.repositoryId must remain the preferred ADO repository identifier');
+      assert.ok(!calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
+        'repoName fallback must not override a valid repositoryId');
+    });
+  });
+
+  await test('ADO pollPrStatus logs a clear config error when repositoryId and repoName are missing', async () => {
+    const project = {
+      name: 'ado-missing-repository-metadata',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '',
+      repoName: '',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const logs = [];
+      const origConsoleLog = console.log;
+      let fetchCalls = 0;
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      globalThis.fetch = async () => {
+        fetchCalls++;
+        return { ok: true, status: 200, text: async () => '{}', headers: { get: () => null } };
+      };
+      try {
+        await ado.pollPrStatus({ projects: [project], engine: {} });
+      } finally {
+        console.log = origConsoleLog;
+      }
+
+      assert.strictEqual(fetchCalls, 0,
+        'ADO polling must not call the API with an empty repository segment');
+      assert.ok(logs.some(line =>
+        line.includes('ADO PR polling disabled for project ado-missing-repository-metadata')
+        && line.includes('project.repositoryId')
+        && line.includes('project.repoName')
+      ), 'empty ADO repository metadata must be surfaced as a clear configuration error');
+    });
+  });
+
+  await test('GitHub repository slug ignores empty repositoryId and uses repoName', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+
+    assert.strictEqual(
+      gh.getRepoSlug({
+        repoHost: 'github',
+        adoOrg: 'octo-org',
+        repoName: 'repo-name',
+        repositoryId: '',
+      }),
+      'octo-org/repo-name',
+      'GitHub polling must continue deriving owner/repo from adoOrg + repoName, not repositoryId'
+    );
+  });
+
+  await test('ADO pollPrStatus ignores GitHub projects with empty repositoryId', async () => {
+    const project = {
+      name: 'github-empty-repository-id',
+      repoHost: 'github',
+      adoOrg: 'octo-org',
+      repoName: 'repo',
+      repositoryId: '',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const logs = [];
+      const origConsoleLog = console.log;
+      let fetchCalls = 0;
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      globalThis.fetch = async () => {
+        fetchCalls++;
+        return { ok: true, status: 200, text: async () => '{}', headers: { get: () => null } };
+      };
+      try {
+        await ado.pollPrStatus({ projects: [project], engine: {} });
+      } finally {
+        console.log = origConsoleLog;
+      }
+
+      assert.strictEqual(fetchCalls, 0,
+        'ADO poller must leave GitHub projects to engine/github.js');
+      assert.ok(!logs.some(line => line.includes('ADO PR polling disabled')),
+        'GitHub projects with empty repositoryId must not be reported as ADO configuration errors');
+    });
   });
 }
 

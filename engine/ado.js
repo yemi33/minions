@@ -27,6 +27,24 @@ const getAdoPrUrl = (project, prNumber) => {
   return `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${repoPath}/pullrequest/${prNumber}`;
 };
 
+function isGitHubProject(project) {
+  return String(project?.repoHost || '').toLowerCase() === 'github';
+}
+
+function getAdoRepositoryId(project) {
+  const repositoryId = String(project?.repositoryId || '').trim();
+  if (repositoryId) return repositoryId;
+  return String(project?.repoName || '').trim();
+}
+
+function getAdoProjectLabel(project) {
+  return project?.name || project?.repoName || `${project?.adoOrg || 'unknown-org'}/${project?.adoProject || 'unknown-project'}`;
+}
+
+function logMissingAdoRepository(project, purpose) {
+  log('error', `${purpose} disabled for project ${getAdoProjectLabel(project)}: missing project.repositoryId and project.repoName; configure one so Azure DevOps repository API calls can target the repo`);
+}
+
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
 
 /** Classify an array of ADO build records into a single status string. */
@@ -238,7 +256,7 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, 
 // ─── Shared PR Polling Loop ──────────────────────────────────────────────────
 
 /**
- * Iterate active PRs across all projects. Calls `callback(project, pr, prNum, orgBase)`
+ * Iterate active PRs across all projects. Calls `callback(project, pr, prNum, orgBase, adoRepositoryId)`
  * for each active PR. If callback returns truthy, the PR file is saved after the project loop.
  */
 async function forEachActivePr(config, token, callback) {
@@ -246,11 +264,18 @@ async function forEachActivePr(config, token, callback) {
   let totalUpdated = 0;
 
   for (const project of projects) {
-    if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
+    if (isGitHubProject(project)) continue;
+    if (!project.adoOrg || !project.adoProject) continue;
 
     const prs = getPrs(project);
     const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
+
+    const adoRepositoryId = getAdoRepositoryId(project);
+    if (!adoRepositoryId) {
+      logMissingAdoRepository(project, 'ADO PR polling');
+      continue;
+    }
 
     let projectUpdated = 0;
     const orgBase = getAdoOrgBase(project);
@@ -262,7 +287,7 @@ async function forEachActivePr(config, token, callback) {
       const results = await Promise.allSettled(batch.map(async (pr) => {
         const prNum = shared.getPrNumber(pr);
         if (!prNum) return false;
-        return callback(project, pr, prNum, orgBase);
+        return callback(project, pr, prNum, orgBase, adoRepositoryId);
       }));
       for (const r of results) {
         if (r.status === 'fulfilled' && r.value) projectUpdated++;
@@ -275,7 +300,11 @@ async function forEachActivePr(config, token, callback) {
         // Merge back updated PRs — preserve disk values that may have been changed
         // by other writers between poll start and this write
         for (const updatedPr of activePrs) {
-          const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
+          const updatedPrNumber = shared.getPrNumber(updatedPr);
+          const idx = currentPrs.findIndex(p =>
+            p.id === updatedPr.id
+            || (updatedPrNumber != null && shared.getPrNumber(p) === updatedPrNumber)
+          );
           if (idx >= 0) {
             // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
             // The disk version may have been set to 'approved' by another writer after we read
@@ -317,9 +346,10 @@ async function pollPrStatus(config) {
     return;
   }
 
-  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
+  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase, adoRepositoryId) => {
     try {
-    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}`;
+    const encodedRepoId = encodeURIComponent(adoRepositoryId);
+    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}/pullrequests/${prNum}`;
     let updated = false;
 
     // Clear stale flag — we're attempting a fresh poll
@@ -453,7 +483,7 @@ async function pollPrStatus(config) {
     if (prNumber && mergeCommitId) {
       try {
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
         const allBuilds = buildsData?.value || [];
         const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
@@ -544,7 +574,7 @@ async function pollPrStatus(config) {
           const mergeStrategy = config.engine?.prMergeMethod === 'merge' ? 1 : config.engine?.prMergeMethod === 'rebase' ? 2 : 3; // 3 = squash
           const identityUrl = `${orgBase}/_apis/connectionData?api-version=7.1`;
           const identity = await adoFetch(identityUrl, token).catch(() => null);
-          const autoCompleteUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
+          const autoCompleteUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}/pullrequests/${prNum}?api-version=7.1`;
           await adoFetch(autoCompleteUrl, token, {
             method: 'PATCH',
             body: JSON.stringify({
@@ -599,8 +629,8 @@ async function pollPrHumanComments(config) {
   const token = await getAdoToken();
   if (!token) return;
 
-  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
-    const threadsUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}/threads?api-version=7.1`;
+  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase, adoRepositoryId) => {
+    const threadsUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests/${prNum}/threads?api-version=7.1`;
     const threadsData = await adoFetch(threadsUrl, token);
     const threads = threadsData.value || [];
 
@@ -698,10 +728,16 @@ async function reconcilePrs(config) {
   let totalAdded = 0;
 
   for (const project of projects) {
-    if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
+    if (isGitHubProject(project)) continue;
+    if (!project.adoOrg || !project.adoProject) continue;
+    const adoRepositoryId = getAdoRepositoryId(project);
+    if (!adoRepositoryId) {
+      logMissingAdoRepository(project, 'ADO PR reconciliation');
+      continue;
+    }
 
     const orgBase = shared.getAdoOrgBase(project);
-    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests?searchCriteria.status=active&api-version=7.1`;
+    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests?searchCriteria.status=active&api-version=7.1`;
 
     let prData;
     try {
@@ -829,7 +865,12 @@ async function checkLiveReviewStatus(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
-    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
+    const adoRepositoryId = getAdoRepositoryId(project);
+    if (!adoRepositoryId) {
+      logMissingAdoRepository(project, 'ADO live review check');
+      return null;
+    }
+    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests/${prNum}?api-version=7.1`;
     // SEC-02: use in-process adoFetch rather than a shell-out — keeps the bearer
     // token out of the process argv list where any local process could read it.
     // 4s timeout preserves the original request-cancellation semantics via AbortSignal.
@@ -868,7 +909,13 @@ async function checkLiveBuildAndConflict(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
-    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}`;
+    const adoRepositoryId = getAdoRepositoryId(project);
+    if (!adoRepositoryId) {
+      logMissingAdoRepository(project, 'ADO live build/conflict check');
+      return null;
+    }
+    const encodedRepoId = encodeURIComponent(adoRepositoryId);
+    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}`;
     const prUrl = `${repoBase}/pullrequests/${prNum}?api-version=7.1`;
     // 4s timeout — same budget as checkLiveReviewStatus. This is a pre-dispatch
     // gate; we'd rather miss a freshness signal and fall back to cache than
@@ -889,7 +936,7 @@ async function checkLiveBuildAndConflict(pr, project) {
       if (mergeCommitId) {
         try {
           const mergeRef = encodeURIComponent(`refs/pull/${prNum}/merge`);
-          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
           const buildsData = await adoFetch(buildsUrl, token, { timeout: 4000 });
           const allBuilds = buildsData?.value || [];
           const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
@@ -940,9 +987,15 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   if (!token) return null;
 
   const orgBase = getAdoOrgBase(project);
-  const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}`;
+  const adoRepositoryId = getAdoRepositoryId(project);
+  if (!adoRepositoryId) {
+    logMissingAdoRepository(project, 'ADO single PR status fetch');
+    return null;
+  }
+  const encodedRepoId = encodeURIComponent(adoRepositoryId);
+  const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}`;
   const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-  const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+  const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
 
   // Fetch PR metadata and builds in parallel
   const [prData, buildsData] = await Promise.all([
@@ -1011,7 +1064,12 @@ const getAdoThrottleState = () => _adoThrottle.getState();
  * @returns {{ prNumber: number, url: string }|null}
  */
 async function findOpenPrOnBranch(project, branch) {
-  if (!project.adoOrg || !project.adoProject || !project.repositoryId || !branch) return null;
+  if (!project.adoOrg || !project.adoProject || !branch) return null;
+  const adoRepositoryId = getAdoRepositoryId(project);
+  if (!adoRepositoryId) {
+    logMissingAdoRepository(project, 'ADO branch PR lookup');
+    return null;
+  }
   if (isAdoThrottled()) {
     log('debug', `[ado] Skipping branch PR lookup for ${project.name || project.repoName || 'unknown project'}:${branch} — throttled`);
     return null;
@@ -1020,7 +1078,7 @@ async function findOpenPrOnBranch(project, branch) {
   if (!token) return null;
   const orgBase = shared.getAdoOrgBase(project);
   const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
-  const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${sourceRef}&api-version=7.1`;
+  const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${sourceRef}&api-version=7.1`;
   const data = await adoFetch(url, token);
   const pr = (data.value || [])[0];
   if (!pr) return null;
