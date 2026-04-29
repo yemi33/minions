@@ -789,11 +789,79 @@ async function checkLiveReviewStatus(pr, project) {
   }
 }
 
+/**
+ * Cheap pre-dispatch freshness check for build status and merge-conflict state.
+ * Mirrors checkLiveReviewStatus — fetches PR data once, classifies check-runs
+ * for the current head SHA, and reports whether GitHub still considers the PR
+ * unmergeable.
+ *
+ * Returns null if the check can't run (no slug/PR/network) so callers can fall
+ * back to cached state. Otherwise returns:
+ *   {
+ *     buildStatus: 'failing' | 'passing' | 'running' | 'none' | null,
+ *     mergeConflict: boolean,
+ *   }
+ *
+ * `mergeConflict` is true only when GitHub explicitly reports `mergeable: false`
+ * — `mergeable: null` means GitHub is still computing the merge state, so the
+ * caller should treat that as "no fresh signal" and trust the cache.
+ *
+ * `buildStatus` is null when we couldn't query check-runs or the PR isn't open;
+ * caller falls back to cached value.
+ */
+async function checkLiveBuildAndConflict(pr, project) {
+  try {
+    const slug = getRepoSlug(project);
+    if (!slug) return null;
+    const prNum = shared.getPrNumber(pr);
+    if (!prNum) return null;
+    const prData = await ghApi(`/pulls/${prNum}`, slug);
+    if (!prData || prData === GH_NOT_FOUND) return null;
+
+    // Conflict signal — only treat `mergeable === false` as a positive
+    // conflict. `null` means "GitHub still computing" → we have no fresh
+    // info, so fall back to whatever the cache says.
+    let mergeConflict;
+    if (prData.mergeable === false) mergeConflict = true;
+    else if (prData.mergeable === true) mergeConflict = false;
+    else mergeConflict = !!pr._mergeConflict; // computing — preserve cached view
+
+    // Build signal — only meaningful for open PRs. Mirrors pollPrStatus's
+    // check-runs classification so the live read and cached poll agree on
+    // 'failing' / 'passing' / 'running' / 'none'.
+    let buildStatus = null;
+    if (prData.state === 'open' && prData.head?.sha) {
+      try {
+        const checksData = await ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
+        if (checksData && Array.isArray(checksData.check_runs)) {
+          const runs = checksData.check_runs;
+          if (runs.length === 0) {
+            buildStatus = 'none';
+          } else {
+            const hasFailed = runs.some(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
+            const allDone = runs.every(r => r.status === 'completed');
+            const allPassed = runs.every(r => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+            if (hasFailed) buildStatus = 'failing';
+            else if (allDone && allPassed) buildStatus = 'passing';
+            else buildStatus = 'running';
+          }
+        }
+      } catch (e) { log('warn', `Live build check checks query for ${pr.id}: ${e.message}`); }
+    }
+
+    return { buildStatus, mergeConflict };
+  } catch (e) {
+    log('warn', `Live build/conflict check for ${pr.id}: ${e.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   pollPrStatus,
   pollPrHumanComments,
   reconcilePrs,
   checkLiveReviewStatus,
+  checkLiveBuildAndConflict,
   isGhThrottled,
   getGhThrottleState,
   // Exported for testing
