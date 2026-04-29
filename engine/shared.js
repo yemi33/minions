@@ -1065,11 +1065,36 @@ const WORK_TYPE = {
 
 // Per-work-type heartbeat timeouts (ms) — read-heavy tasks need longer silence windows.
 // Keyed by WORK_TYPE constants; types not listed fall back to ENGINE_DEFAULTS.heartbeatTimeout.
+//
+// Ordering reflects how quiet each task type can legitimately be:
+//   verify > test  > ask = explore > review > (default) implement/fix
+//
+// verify and test were added for #1887: verify tasks routinely do legitimate quiet
+// work (multi-repo bring-up, detached service startup, readiness polling) and were
+// being killed at the 5min default heartbeat as "Hung — no output for 309s" despite
+// being healthy. Test tasks similarly include cold builds (Gradle, dotnet, npm
+// install) whose dependency-resolution phase is silent for 4-7 minutes.
+//
+// These are FLOOR values — a max-runtime ceiling (engine.agentTimeout, default 5h)
+// still catches genuinely wedged tasks. Distinguish "idle timeout" (this map) from
+// "max runtime exceeded" (agentTimeout) — they have different mitigations.
 Object.assign(ENGINE_DEFAULTS.heartbeatTimeouts, {
   [WORK_TYPE.EXPLORE]: 600000,   // 10 min — spends most time reading/analyzing, minimal stdout
   [WORK_TYPE.ASK]:     600000,   // 10 min — research-heavy, long silent analysis periods
-  [WORK_TYPE.REVIEW]:  480000,   // 8 min — code review reads extensively before producing output
+  [WORK_TYPE.REVIEW]:  480000,   // 8 min  — code review reads extensively before producing output
+  [WORK_TYPE.TEST]:    600000,   // 10 min — cold build + test runs go silent during dependency resolution (#1887)
+  [WORK_TYPE.VERIFY]:  900000,   // 15 min — multi-repo bring-up, detached service startup, readiness polling (#1887)
 });
+
+// Structured kill-reason codes for timeout-driven dispatch failures (#1887).
+// Surfaced via dispatch entry _killReason annotation so dashboards/audits can
+// distinguish idle-timeout vs max-runtime vs orphan without grepping free-text
+// reason strings. Stable string values — never renumber, never repurpose.
+const KILL_REASON = {
+  IDLE_TIMEOUT: 'idle-timeout',   // process exists, no output for type-specific heartbeat — fix: emit progress markers or raise heartbeatTimeouts
+  MAX_RUNTIME:  'max-runtime',    // wall-clock exceeded engine.agentTimeout — fix: split task into smaller items
+  ORPHAN:       'orphan',         // no tracked process and no recent output past grace period — fix: investigate why the spawn died
+};
 
 const PLAN_STATUS = {
   ACTIVE: 'active', AWAITING_APPROVAL: 'awaiting-approval', APPROVED: 'approved',
@@ -2189,7 +2214,7 @@ module.exports = {
   resolveAgentMaxBudget, resolveAgentBareMode,
   applyLegacyCcModelMigration, _resetLegacyCcModelMigrationFlag,
   runtimeConfigWarnings,
-  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, KILL_REASON, trackReviewMetric, queuePlanToPrd,
   WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,

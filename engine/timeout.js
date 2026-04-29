@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS, KILL_REASON } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -22,6 +22,27 @@ function engine() { if (!_engine) _engine = require('../engine'); return _engine
 // Lazy require for dispatch module (also circular via engine)
 let _dispatch = null;
 function dispatch() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
+
+// ─── Kill-Reason Annotation Helper ───────────────────────────────────────────
+// Stamp a structured _killReason on the matching dispatch entry so dashboards,
+// audit logs, and diagnostic tooling can distinguish idle-timeout vs max-runtime
+// vs orphan without parsing free-text reason strings (#1887).
+//
+// The dispatch lock window is intentionally tiny — read+filter+annotate, no
+// external calls. Best-effort: if the entry has already moved off the active
+// queue (race with completeDispatch) we silently no-op.
+function annotateKillReason(dispatchId, reason, meta = {}) {
+  try {
+    dispatch().mutateDispatch((dp) => {
+      for (const entry of (dp.active || [])) {
+        if (entry.id !== dispatchId) continue;
+        entry._killReason = reason;
+        entry._killMeta = { ...meta, killedAt: ts() };
+        break;
+      }
+    });
+  } catch (e) { log('warn', `annotateKillReason: ${e.message}`); }
+}
 
 // ─── Idle Alert State ────────────────────────────────────────────────────────
 
@@ -138,12 +159,21 @@ function checkTimeouts(config) {
   const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
 
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
+  //    "Max runtime" is the wall-clock ceiling — distinct from idle timeout (#1887).
+  //    A task that's actively producing output for 5h+ STILL gets killed here.
   for (const [id, info] of activeProcesses.entries()) {
     const itemTimeout = info.meta?.deadline ? Math.max(0, info.meta.deadline - new Date(info.startedAt).getTime()) : timeout;
     const elapsed = Date.now() - new Date(info.startedAt).getTime();
     if (elapsed > itemTimeout) {
-      log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${Math.round(elapsed / 1000)}s — killing`);
-      dispatch().updateAgentStatus(id, AGENT_STATUS.TIMED_OUT, `Hard timeout after ${Math.round(elapsed / 1000)}s`);
+      const elapsedSec = Math.round(elapsed / 1000);
+      const limitSec = Math.round(itemTimeout / 1000);
+      const reason = `Max runtime exceeded after ${elapsedSec}s (limit: ${limitSec}s)`;
+      log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${elapsedSec}s (limit: ${limitSec}s) — killing`,
+        { event: 'kill_max_runtime', killReason: KILL_REASON.MAX_RUNTIME, elapsedSec, limitSec });
+      dispatch().updateAgentStatus(id, AGENT_STATUS.TIMED_OUT, reason);
+      // Annotate the matching dispatch entry so dashboards/audits can distinguish
+      // max-runtime from idle-timeout from orphan without grepping reason strings.
+      annotateKillReason(id, KILL_REASON.MAX_RUNTIME, { elapsedSec, limitSec });
       shared.killGracefully(info.proc, 5000);
     }
   }
@@ -408,17 +438,34 @@ function checkTimeouts(config) {
       _logState = `logExists=true logSize=${lst.size} pidPresent=${pidPresent}`;
     } catch { /* ENOENT — keep default */ }
 
+    // Compose a kill-reason suffix that always names the configured idle limit and
+    // work type — auditors should never have to grep elsewhere to know why the kill
+    // fired (#1887). When a blocking-tool extension was active, surface that too so
+    // the user can immediately tell the kill happened *despite* the extension.
+    const limitSec = Math.round(effectiveTimeout / 1000);
+    const typeLabel = workType ? `type=${workType}` : 'type=default';
+    const blockingSuffix = isBlocking ? `, blocking=${blockingTool || 'true'}` : '';
+    const limitDetail = `(${typeLabel}, limit=${limitSec}s${blockingSuffix})`;
+
     if (!hasProcess && silentMs > effectiveTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
-      // No tracked process AND no recent output past effective timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
-      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
-      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
+      // No tracked process AND no recent output past effective timeout AND (grace period expired OR confirmed-dead at restart) → orphaned.
+      // _logState carries logExists=/logSize=/pidPresent= diagnostics — include it both inline and as structured meta (logFile=...).
+      const reason = `Orphaned — no process, idle ${silentSec}s ${limitDetail}`;
+      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s ${limitDetail} [${_logState}]`,
+        { event: 'kill_orphan', killReason: KILL_REASON.ORPHAN, silentSec, limitSec, workType: workType || null, blocking: isBlocking, logFile: liveLogPath, logState: _logState });
+      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, reason);
+      annotateKillReason(item.id, KILL_REASON.ORPHAN, { silentSec, limitSec, workType: workType || null, blocking: isBlocking });
       // Clear session so retry starts fresh
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
-      deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
+      deadItems.push({ item, reason });
     } else if (hasProcess && silentMs > effectiveTimeout) {
-      // Has process but no output past effective timeout → hung
-      log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
-      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Hung — no output for ${silentSec}s`);
+      // Has process but no output past effective timeout → idle timeout (#1887).
+      // Frame as "Idle timeout" not "Hung" — distinguishes from max-runtime.
+      const reason = `Idle timeout — no output for ${silentSec}s ${limitDetail}`;
+      log('warn', `Idle timeout: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s ${limitDetail} [${_logState}]`,
+        { event: 'kill_idle_timeout', killReason: KILL_REASON.IDLE_TIMEOUT, silentSec, limitSec, workType: workType || null, blocking: isBlocking });
+      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, reason);
+      annotateKillReason(item.id, KILL_REASON.IDLE_TIMEOUT, { silentSec, limitSec, workType: workType || null, blocking: isBlocking });
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
         shared.killGracefully(procInfo.proc, 5000);
@@ -432,7 +479,7 @@ function checkTimeouts(config) {
       }
       // Clear session so retry starts fresh instead of resuming the killed session
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
-      deadItems.push({ item, reason: `Hung — no output for ${silentSec}s` });
+      deadItems.push({ item, reason });
     }
     // If has process and recent output → healthy, let it run
   }

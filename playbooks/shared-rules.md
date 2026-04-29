@@ -84,6 +84,38 @@ The engine reads `input.timeout` from the tool call and extends the heartbeat to
 
 If you don't know how long a command takes, default to **Pattern A** — there is no downside to streaming.
 
+### Pattern C — Progress markers for inherently-quiet phases (verify / test)
+
+Some workflows — verify task multi-repo bring-up, detached service startup, readiness polling, dependency installs — have stretches that are **legitimately quiet** and don't fit Pattern A or B. For those, the engine uses a **progress-aware idle timeout**: any line you write to stdout resets the heartbeat, and `verify` / `test` work types get longer idle floors (15 min / 10 min respectively) than the default 5 min.
+
+The supported marker protocol — emit one of these as a single stdout line whenever you reach a milestone:
+
+```
+PHASE_START: <name>                    # entering a new phase
+PHASE_PROGRESS: <name> <message>       # still alive, here's what I'm doing
+PHASE_DONE: <name> <success|fail|skip> # phase finished
+```
+
+Examples (verify task):
+```
+PHASE_START: install-deps
+PHASE_PROGRESS: install-deps fetching node_modules (4m elapsed)
+PHASE_DONE: install-deps success
+PHASE_START: gradle-build
+PHASE_PROGRESS: gradle-build resolving dependencies (3m elapsed)
+PHASE_PROGRESS: gradle-build compiling :app (6m elapsed)
+PHASE_DONE: gradle-build success
+PHASE_START: stack-readiness
+PHASE_PROGRESS: stack-readiness waiting for http://localhost:8080/health (2m elapsed)
+PHASE_DONE: stack-readiness success
+```
+
+Rules:
+- Emit a marker **at least every 60-120s** during long quiet phases. The engine kills work types that go silent past their type-specific idle limit; markers count as activity.
+- Markers do **not** override the max-runtime ceiling (default 5h via `engine.agentTimeout`). Genuinely wedged tasks still get killed — just with a clearer reason.
+- Use markers ONLY for genuinely silent phases. If you're already streaming via Pattern A or producing tool output, don't bother — every output line already resets the heartbeat.
+- Kill messages now distinguish `Idle timeout — no output for Xs (type=verify, limit=900s)` from `Max runtime exceeded after Xs (limit: Ys)` from `Orphaned`. Read the reason: idle → emit more markers; max-runtime → split the task; orphan → investigate spawn death.
+
 ## Checking PR and Build Status
 
 When asked to check build status, CI results, or review state for a PR:

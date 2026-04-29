@@ -12518,10 +12518,16 @@ async function testCheckTimeouts() {
     assert.ok(notToDoBlock.includes('Monitor({ command:') && notToDoBlock.includes('bash_id'),
       '"What NOT to do" should call out Monitor({ command: ... }) and direct agents to Monitor({ bash_id }) instead');
 
-    // 3. Pattern C must NOT be added. ScheduleWakeup is for idle waits, not active
-    //    monitoring — re-initializes session per wake, 270s polling gap.
-    assert.ok(!/###\s+Pattern C\b/.test(sharedRules),
-      'shared-rules.md must NOT add Pattern C — ScheduleWakeup is wrong tool for active build monitoring');
+    // 3. ScheduleWakeup-based "Pattern C" must NOT be added. ScheduleWakeup is for
+    //    idle waits, not active monitoring — re-initializes session per wake, 270s
+    //    polling gap. (#1887 added a legitimate Pattern C — Progress Markers — for
+    //    inherently-quiet verify/test phases; that one is allowed and is unrelated
+    //    to the ScheduleWakeup anti-pattern this test guards against.)
+    const patternCMatch = sharedRules.match(/###\s+Pattern C[^\n]*/);
+    if (patternCMatch) {
+      assert.ok(!/ScheduleWakeup/i.test(patternCMatch[0]),
+        `shared-rules.md Pattern C section must NOT be the ScheduleWakeup anti-pattern (got: "${patternCMatch[0]}")`);
+    }
     assert.ok(!sharedRules.includes('ScheduleWakeup'),
       'shared-rules.md must NOT recommend ScheduleWakeup for build monitoring');
   });
@@ -12698,6 +12704,128 @@ async function testCheckTimeouts() {
       }
       // Any other error is fine — the function needs a full engine context to run end-to-end.
     }
+  });
+
+  // ── #1887: progress-aware idle timeout for quiet verify/test work ──
+  // Verify tasks routinely do legitimate quiet work (multi-repo bring-up, detached
+  // service startup, readiness polling) where stdout is silent for several minutes.
+  // The default 5min heartbeat false-fails them. verify gets the longest idle
+  // window, test next, and fix/review/implement keep their existing semantics.
+
+  await test('#1887: verify gets the longest per-type heartbeat (>= 15min)', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    const verifyMs = hbt[shared.WORK_TYPE.VERIFY];
+    assert.ok(typeof verifyMs === 'number',
+      'verify must have an explicit per-type heartbeat — never inherits the 5min default');
+    assert.ok(verifyMs >= 900000,
+      `verify per-type heartbeat must be >= 900000ms (15min) for legitimate quiet work; got ${verifyMs}`);
+  });
+
+  await test('#1887: test gets a longer per-type heartbeat than the default (>= 10min)', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    const testMs = hbt[shared.WORK_TYPE.TEST];
+    assert.ok(typeof testMs === 'number',
+      'test must have an explicit per-type heartbeat — never inherits the 5min default');
+    assert.ok(testMs >= 600000,
+      `test per-type heartbeat must be >= 600000ms (10min) for cold-build silence; got ${testMs}`);
+  });
+
+  await test('#1887: per-type ordering matches issue request — verify >= test >= review/explore/ask', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    const verifyMs = hbt[shared.WORK_TYPE.VERIFY];
+    const testMs = hbt[shared.WORK_TYPE.TEST];
+    const askMs = hbt[shared.WORK_TYPE.ASK];
+    const exploreMs = hbt[shared.WORK_TYPE.EXPLORE];
+    const reviewMs = hbt[shared.WORK_TYPE.REVIEW];
+    assert.ok(verifyMs >= testMs, `verify (${verifyMs}) must be >= test (${testMs})`);
+    assert.ok(testMs >= reviewMs, `test (${testMs}) must be >= review (${reviewMs})`);
+    assert.ok(askMs > 0 && exploreMs > 0, 'ask/explore retain their previous floors');
+  });
+
+  await test('#1887: 9-minute silence on verify does NOT exceed the resolved per-type heartbeat', () => {
+    // Behavioral: rebuild perTypeTimeouts exactly as checkTimeouts does and verify
+    // a quiet verify task at 9 minutes is BELOW the kill threshold. This is the
+    // false-failure scenario from the issue: 307-309s of silence on a verify task.
+    const { ENGINE_DEFAULTS, WORK_TYPE } = require('../engine/shared');
+    const config = {};
+    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    const verifyHeartbeat = perTypeTimeouts[WORK_TYPE.VERIFY] || ENGINE_DEFAULTS.heartbeatTimeout;
+    const silentMs = 9 * 60 * 1000; // 9 minutes — observed false-failure window from #1887 evidence
+    assert.ok(silentMs < verifyHeartbeat,
+      `9min silence on verify must be below the per-type idle timeout (${verifyHeartbeat}ms); otherwise the false-failure from #1887 is still possible`);
+  });
+
+  await test('#1887: 6-minute silence on test does NOT exceed the resolved per-type heartbeat', () => {
+    // Test workloads (cold gradle, dotnet test, npm install + build) routinely have
+    // 5-8 min of silent dependency resolution. Default 5min heartbeat false-fails them.
+    const { ENGINE_DEFAULTS, WORK_TYPE } = require('../engine/shared');
+    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts };
+    const testHeartbeat = perTypeTimeouts[WORK_TYPE.TEST] || ENGINE_DEFAULTS.heartbeatTimeout;
+    const silentMs = 6 * 60 * 1000;
+    assert.ok(silentMs < testHeartbeat,
+      `6min silence on test must be below the per-type idle timeout (${testHeartbeat}ms)`);
+  });
+
+  await test('#1887: user can override per-type verify heartbeat via config.engine.heartbeatTimeouts', () => {
+    // The hardcoded floor is generous but must remain user-tunable for unusually slow stacks.
+    const { ENGINE_DEFAULTS, WORK_TYPE } = require('../engine/shared');
+    const config = { engine: { heartbeatTimeouts: { [WORK_TYPE.VERIFY]: 1800000 } } };
+    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    assert.strictEqual(perTypeTimeouts[WORK_TYPE.VERIFY], 1800000,
+      'config override must beat the hardcoded floor');
+  });
+
+  await test('#1887: hard-runtime kill message labels the limit so kill reason is unambiguous', () => {
+    // Distinguishing "max runtime exceeded" from "idle timeout" matters because
+    // the user mitigation differs: max-runtime → split the task, idle-timeout →
+    // emit progress markers / raise heartbeatTimeouts. Embed the limit (Ys) so
+    // logs read at a glance: "Max runtime exceeded after 18000s (limit: 18000s)".
+    const hardBlock = src.slice(src.indexOf('hit hard timeout'), src.indexOf('hit hard timeout') + 400);
+    assert.ok(/limit/i.test(hardBlock) || /Max runtime/.test(hardBlock),
+      'Hard timeout message must include the configured limit and/or read as "Max runtime exceeded"');
+  });
+
+  await test('#1887: idle-timeout (hung) kill message labels limit and work type', () => {
+    // The current "Hung — no output for 309s" message hides why 309s was the threshold.
+    // The fix surfaces: (a) work type, (b) configured limit, so a user can immediately
+    // tell whether the kill was correct or the type was wrong.
+    const hungBlock = src.slice(src.indexOf('Hung'), src.indexOf('Hung') + 600);
+    assert.ok(/Idle timeout/i.test(hungBlock) || /limit/i.test(hungBlock),
+      'Hung-agent message must surface "Idle timeout" framing and/or the configured limit so the kill reason is auditable');
+  });
+
+  await test('#1887: dispatch entries get a structured _killReason annotation on timeout-driven failure', () => {
+    // Without a structured marker, dashboards/audits can't tell idle-timeout apart
+    // from max-runtime apart from orphan. A free-text reason string is fragile to grep.
+    assert.ok(src.includes('_killReason'),
+      'timeout.js should annotate _killReason on the dispatch entry so dashboards/audit can distinguish idle vs max-runtime vs orphan');
+  });
+
+  await test('#1887: KILL_REASON enum exported from shared.js with idle/max-runtime/orphan values', () => {
+    assert.ok(shared.KILL_REASON, 'shared.js should export KILL_REASON enum');
+    assert.ok(shared.KILL_REASON.IDLE_TIMEOUT, 'KILL_REASON.IDLE_TIMEOUT should be defined');
+    assert.ok(shared.KILL_REASON.MAX_RUNTIME, 'KILL_REASON.MAX_RUNTIME should be defined');
+    assert.ok(shared.KILL_REASON.ORPHAN, 'KILL_REASON.ORPHAN should be defined');
+    // Values must be stable strings — auditors and dashboards key off them.
+    const set = new Set([shared.KILL_REASON.IDLE_TIMEOUT, shared.KILL_REASON.MAX_RUNTIME, shared.KILL_REASON.ORPHAN]);
+    assert.strictEqual(set.size, 3, 'each KILL_REASON value must be unique');
+  });
+
+  await test('#1887: shared-rules.md documents the progress marker protocol so verify agents reach for it', () => {
+    // The engine already counts ALL stdout as activity; what's missing is an idiomatic,
+    // documented protocol for verify/test agents to emit periodic "I'm alive" lines
+    // during long quiet phases. PHASE_START/PHASE_PROGRESS/PHASE_DONE per the issue.
+    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(sharedRules.includes('PHASE_PROGRESS'),
+      'shared-rules.md should teach the PHASE_PROGRESS heartbeat marker');
+    assert.ok(/progress[- ]aware/i.test(sharedRules) || /progress marker/i.test(sharedRules),
+      'shared-rules.md should explain the progress-aware idle timeout concept');
+  });
+
+  await test('#1887: verify.md playbook tells verify agents to emit progress markers during long phases', () => {
+    const verifyPlaybook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
+    assert.ok(verifyPlaybook.includes('PHASE_PROGRESS') || verifyPlaybook.includes('progress marker'),
+      'verify.md must reference progress markers since verify is the primary trigger for #1887');
   });
 }
 
@@ -30736,10 +30864,11 @@ async function testCCMultiTab() {
   });
 
   await test('timeout.js kills Unix process tree on hung agent timeout', () => {
-    // The hung agent branch should include pkill -P for Unix tree kill
-    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
-    assert.ok(hungMatch, 'Should have hung agent detection block');
-    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+    // The hung-agent branch (renamed to "Idle timeout" in #1887 — same code path,
+    // clearer label) should include pkill -P for Unix tree kill.
+    const hungMatch = timeoutSrc.match(/(?:Hung agent|Idle timeout)[\s\S]*?deadItems\.push/);
+    assert.ok(hungMatch, 'Should have idle-timeout/hung agent detection block');
+    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Idle-timeout handler should attempt process tree kill on Unix');
   });
 
   await test('cleanup.js logs resource cleanup summary', () => {

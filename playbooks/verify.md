@@ -60,6 +60,14 @@ If a build or test fails, **do NOT fix it** — report the exact error and conti
 
 > ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
 
+> 🫀 **Verify tasks have a longer idle window** (15 min vs the default 5 min) but are NOT timeout-free. For phases that are genuinely silent — multi-repo bring-up, detached service startup, readiness polling — emit a **progress marker** every 60-120 seconds so the engine knows you're alive:
+> ```
+> PHASE_START: <name>                       # entering a new phase
+> PHASE_PROGRESS: <name> <message>          # still alive, here's what I'm doing
+> PHASE_DONE: <name> <success|fail|skip>    # phase finished
+> ```
+> Each marker line resets the heartbeat. See **Pattern C — Progress markers** in the shared rules below for examples.
+
 ## Step 4: Start the Application (if applicable)
 
 Determine if the project has a **runnable application** (web server, API, desktop app, mobile emulator, etc.) by reading its documentation and build config. For mobile apps, check if an emulator/simulator can be launched or if building an APK/IPA is the appropriate verification step.
