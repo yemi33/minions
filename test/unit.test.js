@@ -6922,6 +6922,38 @@ async function testConfigAndPlaybooks() {
       'GitHub PR instructions should not inline Markdown via --body "..."');
   });
 
+  await test('Azure DevOps PR helper instructions prefer az CLI with MCP fallback', () => {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    const project = {
+      repoHost: 'ado',
+      adoOrg: 'contoso',
+      adoProject: 'platform',
+      repoName: 'service',
+      repositoryId: 'repo-guid',
+      mainBranch: 'master',
+    };
+    const combined = [
+      pb.getRepoHostToolRule(project),
+      pb.getPrCreateInstructions(project),
+      pb.getPrCommentInstructions(project),
+      pb.getPrFetchInstructions(project),
+      pb.getPrVoteInstructions(project),
+    ].join('\n\n');
+
+    assert.ok(/az CLI first|use the `az` CLI first|prefer(?:s)? (?:the )?`az` CLI/i.test(combined),
+      'ADO helper instructions should explicitly prefer az CLI first');
+    assert.ok(/az repos pr create/i.test(combined),
+      'ADO PR creation instructions should name az repos pr create');
+    assert.ok(/az repos pr show/i.test(combined),
+      'ADO PR fetch instructions should name az repos pr show');
+    assert.ok(/az repos pr comment/i.test(combined),
+      'ADO PR comment instructions should name az repos pr comment');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(combined),
+      'ADO helper instructions should describe MCP as a fallback');
+    assert.ok(/do not use `gh`|never use gh/i.test(combined),
+      'ADO helper instructions should still prohibit gh for Azure DevOps repositories');
+  });
+
   await test('explore work type is consistently documented as no-PR research/reporting', () => {
     const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
     const explore = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'explore.md'), 'utf8');
@@ -11577,6 +11609,224 @@ async function testDiscoverFromPrs() {
 
       assert.deepStrictEqual(discovered, [],
         'Active review dispatch canonicalizes PR-42 to github:octo/repo#42, so a raw PR-42 fix must be suppressed as the same PR');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('pruneStalePrDispatches removes queued PR fixes whose tracker entry is gone (#1839)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshDispatch = require('../engine/dispatch');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(freshShared.projectPrPath(project), []);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [
+          {
+            id: 'stale-fix',
+            type: 'fix',
+            agent: 'dallas',
+            task: 'Fix stale PR',
+            meta: {
+              source: 'pr-human-feedback',
+              project: { name: 'demo', localPath: testDir },
+              branch: 'work/W-review-lineage',
+              dispatchKey: 'human-fix-demo-PR-42',
+              pr: {
+                id: 'PR-42',
+                prNumber: 42,
+                url: 'https://github.com/octo/repo/pull/42',
+                branch: 'work/W-review-lineage',
+                prdItems: ['W-review-lineage'],
+              },
+            },
+          },
+          {
+            id: 'manual-work',
+            type: 'fix',
+            agent: 'ralph',
+            task: 'Unrelated manual work',
+            meta: { source: 'work-item', item: { id: 'W-manual' } },
+          },
+        ],
+        active: [],
+        completed: [],
+      });
+
+      assert.strictEqual(freshDispatch.pruneStalePrDispatches(config), 1);
+      const after = freshShared.safeJson(path.join(testDir, 'engine', 'dispatch.json'));
+      assert.deepStrictEqual(after.pending.map(d => d.id), ['manual-work']);
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('pruneStalePrDispatches keeps queued re-review when PR remains active (#1839)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshDispatch = require('../engine/dispatch');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(freshShared.projectPrPath(project), [{
+        id: 'PR-42',
+        prNumber: 42,
+        status: 'active',
+        title: 'Still active',
+        branch: 'feat/live-pr-42',
+        agent: 'dallas',
+        url: 'https://github.com/octo/repo/pull/42',
+      }]);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [{
+          id: 'active-rereview',
+          type: 'review',
+          agent: 'ripley',
+          task: 'Re-review active PR',
+          meta: {
+            source: 'pr',
+            project: { name: 'demo', localPath: testDir },
+            branch: 'feat/live-pr-42',
+            dispatchKey: 'rereview-demo-PR-42',
+            pr: {
+              id: 'PR-42',
+              prNumber: 42,
+              status: 'active',
+              branch: 'feat/live-pr-42',
+              url: 'https://github.com/octo/repo/pull/42',
+            },
+          },
+        }],
+        active: [],
+        completed: [],
+      });
+
+      assert.strictEqual(freshDispatch.pruneStalePrDispatches(config), 0);
+      const after = freshShared.safeJson(path.join(testDir, 'engine', 'dispatch.json'));
+      assert.deepStrictEqual(after.pending.map(d => d.id), ['active-rereview']);
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs routes active changes-requested fix from live PR branch and author (#1839)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' }, ripley: { name: 'Ripley', role: 'Reviewer' } },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshQueries.invalidateDispatchCache();
+
+      freshQueries.getPrs = () => [{
+        id: 'PR-42',
+        prNumber: 42,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Needs a fix',
+        branch: 'feat/live-pr-42',
+        prdItems: ['W-impl-42'],
+        minionsReview: { note: 'Please fix the API boundary.' },
+        url: 'https://github.com/octo/repo/pull/42',
+      }];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].type, 'fix');
+      assert.strictEqual(discovered[0].agent, 'dallas');
+      assert.strictEqual(discovered[0].meta.branch, 'feat/live-pr-42');
+      assert.strictEqual(discovered[0].meta.pr.branch, 'feat/live-pr-42');
     } finally {
       restore();
       for (const mod of [
@@ -20356,6 +20606,29 @@ async function testSchedulerAdditionalCoverage() {
 async function testIntegrationHarnessRootGuard() {
   console.log('\n── Integration Harness Root Guard ──');
 
+  function loadMinionsHarness(envOverrides = {}) {
+    const keys = ['MINIONS_TEST_DIR', 'MINIONS_TEST_ALLOW_REAL_ROOT'];
+    const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(envOverrides, key)) {
+        const value = envOverrides[key];
+        if (value === undefined || value === null) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const harnessPath = path.join(MINIONS_DIR, 'test', 'minions-tests.js');
+    delete require.cache[require.resolve(harnessPath)];
+    try {
+      return require(harnessPath);
+    } finally {
+      delete require.cache[require.resolve(harnessPath)];
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  }
+
   await test('minions integration harness is import-safe', () => {
     const { spawnSync } = require('child_process');
     const result = spawnSync(process.execPath, ['-e', "require('./test/minions-tests.js'); console.log('import-ok')"], {
@@ -20370,18 +20643,46 @@ async function testIntegrationHarnessRootGuard() {
     assert.ok(result.stdout.includes('import-ok'), 'import should complete after requiring minions-tests.js');
   });
 
-  await test('integration harness root guard accepts the served checkout root', () => {
-    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+  await test('integration harness root guard accepts explicit isolated MINIONS_TEST_DIR', () => {
+    const isolatedRoot = createTmpDir();
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: isolatedRoot,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
+    assert.doesNotThrow(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: isolatedRoot }, isolatedRoot);
+    });
+  });
+
+  await test('integration harness root guard refuses repo root without explicit override', () => {
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: undefined,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
+    assert.throws(() => {
+      assertDashboardRootMatchesLocal({ minionsDir: MINIONS_DIR }, MINIONS_DIR);
+    }, /MINIONS_TEST_DIR|Refusing to run/i);
+  });
+
+  await test('integration harness root guard allows repo root with explicit override', () => {
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: undefined,
+      MINIONS_TEST_ALLOW_REAL_ROOT: '1',
+    });
     assert.doesNotThrow(() => {
       assertDashboardRootMatchesLocal({ minionsDir: MINIONS_DIR }, MINIONS_DIR);
     });
   });
 
   await test('integration harness root guard rejects a different served root', () => {
-    const { assertDashboardRootMatchesLocal } = require(path.join(MINIONS_DIR, 'test', 'minions-tests.js'));
+    const isolatedRoot = createTmpDir();
+    const { assertDashboardRootMatchesLocal } = loadMinionsHarness({
+      MINIONS_TEST_DIR: isolatedRoot,
+      MINIONS_TEST_ALLOW_REAL_ROOT: undefined,
+    });
     const otherRoot = path.join(os.tmpdir(), 'different-minions-root');
     assert.throws(() => {
-      assertDashboardRootMatchesLocal({ minionsDir: otherRoot }, MINIONS_DIR);
+      assertDashboardRootMatchesLocal({ minionsDir: otherRoot }, isolatedRoot);
     }, /refusing to run/i);
   });
 
@@ -37843,6 +38144,28 @@ async function testCliCommandHandlers() {
     return { logs, errs, exits };
   }
 
+  async function withCaptureAsync(fn) {
+    const logs = [];
+    const errs = [];
+    const exits = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    console.log = (...a) => { logs.push(a.map(String).join(' ')); };
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    process.exit = (code) => { exits.push(code); throw new Error('__EXIT__' + code); };
+    let threw = null;
+    try { await fn(); }
+    catch (e) { if (!/^__EXIT__/.test(e.message)) threw = e; }
+    finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+    if (threw) throw threw;
+    return { logs, errs, exits };
+  }
+
   // ── handleCommand routing ────────────────────────────────────────────────
 
   await test('handleCommand: unknown command prints error and exits 1', () => {
@@ -38195,6 +38518,121 @@ async function testCliCommandHandlers() {
     return JSON.parse(fs.readFileSync(path.join(testDir, 'config.json'), 'utf8'));
   }
 
+  await test('_parseRuntimeFlags: extracts space/equal forms, effort, and preserves remaining args', () => {
+    const h = setupHarness();
+    try {
+      const args = [
+        'work',
+        '--cli=copilot',
+        '--model', 'claude-sonnet-4.5',
+        '--unknown', 'value',
+        '--effort=high',
+      ];
+      const parsed = h.cli._parseRuntimeFlags(args);
+      assert.deepStrictEqual(parsed, {
+        cli: 'copilot',
+        model: 'claude-sonnet-4.5',
+        effort: 'high',
+        modelExplicit: true,
+        errors: [],
+      });
+      assert.deepStrictEqual(args, ['work', '--unknown', 'value'],
+        'recognized runtime flags should be removed in-place while unknown args remain');
+    } finally { h.restore(); }
+  });
+
+  await test('_parseRuntimeFlags: reports missing values without swallowing later valid flags', () => {
+    const h = setupHarness();
+    try {
+      const args = ['--cli', '--model=', 'tail', '--effort'];
+      const parsed = h.cli._parseRuntimeFlags(args);
+      assert.strictEqual(parsed.cli, undefined);
+      assert.strictEqual(parsed.model, '');
+      assert.strictEqual(parsed.effort, undefined);
+      assert.strictEqual(parsed.modelExplicit, true,
+        'empty --model= is explicit so callers can clear engine.defaultModel');
+      assert.ok(parsed.errors.some(e => /--cli requires a value/.test(e)),
+        `expected --cli missing-value error, got: ${parsed.errors.join(' | ')}`);
+      assert.ok(parsed.errors.some(e => /--effort requires a value/.test(e)),
+        `expected --effort missing-value error, got: ${parsed.errors.join(' | ')}`);
+      assert.deepStrictEqual(args, ['tail'],
+        'bad flags should be removed, unrelated positional args should remain');
+    } finally { h.restore(); }
+  });
+
+  await test('_modelLooksIncompatible: detects Claude shorthand only for Copilot defaults', () => {
+    const h = setupHarness();
+    try {
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'sonnet'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'Opus'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'haiku'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'gpt-5.4'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'claude-sonnet-4.5'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'sonnet'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'claude-sonnet-4.5'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('future-runtime', 'sonnet'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', null), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', undefined), false);
+    } finally { h.restore(); }
+  });
+
+  await test('_applyRuntimeFlags: uses locked config write and ignores model when not explicit', () => {
+    const h = setupHarness({
+      config: {
+        projects: [{ name: 'minions', localPath: 'D:\\repo' }],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer', model: 'sonnet' } },
+        customTopLevel: { keep: true },
+        engine: { defaultCli: 'claude', defaultModel: 'sonnet', keepFlag: true },
+      },
+    });
+    const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const originalMutate = testShared.mutateJsonFileLocked;
+    let lockedPath = null;
+    try {
+      testShared.mutateJsonFileLocked = (filePath, mutateFn, opts) => {
+        lockedPath = filePath;
+        return originalMutate(filePath, mutateFn, opts);
+      };
+      const result = h.cli._applyRuntimeFlags({
+        cli: 'copilot',
+        model: 'gpt-5.4',
+        modelExplicit: false,
+      });
+      assert.strictEqual(result.applied, true);
+      assert.strictEqual(path.basename(lockedPath), 'config.json',
+        'config updates must go through mutateJsonFileLocked(config.json)');
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot');
+      assert.strictEqual(cfg.engine.defaultModel, 'sonnet',
+        'model value must be ignored unless modelExplicit=true');
+      assert.strictEqual(cfg.engine.keepFlag, true, 'unrelated engine config should be preserved');
+      assert.deepStrictEqual(cfg.customTopLevel, { keep: true }, 'unrelated top-level config should be preserved');
+      assert.strictEqual(cfg.agents.dallas.model, 'sonnet', 'per-agent overrides should be preserved');
+    } finally {
+      testShared.mutateJsonFileLocked = originalMutate;
+      h.restore();
+    }
+  });
+
+  await test('_applyRuntimeFlags: explicit empty model deletes defaultModel and clears ccModel', () => {
+    const h = setupHarness({
+      config: {
+        projects: [],
+        agents: {},
+        engine: { defaultCli: 'copilot', defaultModel: 'gpt-5.4', ccModel: 'haiku', keepFlag: true },
+      },
+    });
+    try {
+      const result = h.cli._applyRuntimeFlags({ cli: undefined, model: '', modelExplicit: true });
+      assert.deepStrictEqual(result, { warnings: [], applied: true });
+      const cfg = readConfig(h.testDir);
+      assert.strictEqual(cfg.engine.defaultCli, 'copilot', 'defaultCli should be unchanged');
+      assert.ok(!('defaultModel' in cfg.engine), '--model "" should delete engine.defaultModel');
+      assert.ok(!('ccModel' in cfg.engine), 'explicit model changes should clear engine.ccModel');
+      assert.strictEqual(cfg.engine.keepFlag, true, 'unrelated engine config should be preserved');
+    } finally { h.restore(); }
+  });
+
   await test('start --cli copilot --model claude-sonnet-4.5: writes fleet keys + clears CC overrides', () => {
     const h = setupHarness({
       // Pre-state: defaults are claude/sonnet with CC overrides already set,
@@ -38367,6 +38805,22 @@ async function testCliCommandHandlers() {
     } finally { h.restore(); }
   });
 
+  await test('config set-cli rejects unexpected extra args without mutating config', () => {
+    const before = { projects: [], agents: {}, engine: { defaultCli: 'claude', defaultModel: 'sonnet' } };
+    const h = setupHarness({
+      config: before,
+      control: { state: 'stopped', pid: null },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('config', ['set-cli', 'copilot', 'surprise']));
+      assert.deepStrictEqual(cap.exits, [2]);
+      assert.ok(cap.errs.some(e => /unexpected arguments after set-cli: surprise/.test(e)),
+        `expected unexpected-arg error, got: ${cap.errs.join(' | ')}`);
+      assert.deepStrictEqual(readConfig(h.testDir).engine, before.engine,
+        'invalid config set-cli invocation must not mutate config');
+    } finally { h.restore(); }
+  });
+
   await test('start --cli requires a value: exits 2 with friendly error', () => {
     const h = setupHarness({
       config: { projects: [], agents: {}, engine: {} },
@@ -38376,6 +38830,27 @@ async function testCliCommandHandlers() {
       assert.deepStrictEqual(cap.exits, [2]);
       assert.ok(cap.errs.some(e => /--cli requires a value/.test(e)),
         `expected --cli value error, got: ${cap.errs.join(' | ')}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.doctor: invokes preflight doctor with test minions dir and exits on failure', async () => {
+    const doctorCalls = [];
+    const h = setupHarness({
+      preflight: {
+        runPreflight: () => ({ results: [] }),
+        printPreflight: () => {},
+        doctor: async (dir) => {
+          doctorCalls.push(dir);
+          return false;
+        },
+      },
+    });
+    try {
+      const cap = await withCaptureAsync(async () => {
+        await h.cli.handleCommand('doctor', []);
+      });
+      assert.deepStrictEqual(doctorCalls, [h.testDir]);
+      assert.deepStrictEqual(cap.exits, [1], 'doctor failure should exit non-zero');
     } finally { h.restore(); }
   });
 
@@ -38440,6 +38915,24 @@ async function testCliCommandHandlers() {
         'clean install should not print CC overrides line');
       assert.ok(/Default CLI:\s*claude\s*\(default\)/.test(allLogs),
         `default CLI line should mark "(default)" annotation when defaultCli is unset, got: ${allLogs}`);
+    } finally { h.restore(); }
+  });
+
+  await test('commands.status: reports missing project paths in project summary', () => {
+    const h = setupHarness({
+      config: {
+        projects: [{ name: 'missing', localPath: path.join(os.tmpdir(), 'minions-definitely-missing-project') }],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: {},
+      },
+      control: { state: 'running', pid: process.pid },
+      dispatch: { pending: [], active: [], completed: [] },
+    });
+    try {
+      const cap = withCapture(() => h.cli.handleCommand('status', []));
+      const allLogs = cap.logs.join('\n');
+      assert.ok(/Projects:\s*0 linked \(1 path missing\)/.test(allLogs),
+        `status should summarize missing project paths, got: ${allLogs}`);
     } finally { h.restore(); }
   });
 }

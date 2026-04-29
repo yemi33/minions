@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1629 (2026-04-29)
+
+### Other
+- test(cli): add unit tests for runtime-flag helpers
+
+## 0.1.1627 (2026-04-29)
+
+### Fixes
+- ADO PR helpers prefer az CLI with MCP fallback (#1833)
+
 ## 0.1.1626 (2026-04-29)
 
 ### Fixes
