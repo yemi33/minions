@@ -8,12 +8,22 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS, MINIONS_DIR } = shared;
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
-const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
-const PIPELINE_RUNS_PATH = path.join(__dirname, 'pipeline-runs.json');
+// All module-relative paths flow through MINIONS_DIR so MINIONS_TEST_DIR
+// (set by test/unit.test.js createTestMinionsDir) consistently redirects
+// pipeline writes into the temp root instead of the live runtime root.
+const PIPELINES_DIR = path.join(MINIONS_DIR, 'pipelines');
+const PIPELINE_RUNS_PATH = path.join(MINIONS_DIR, 'engine', 'pipeline-runs.json');
+const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
+const MEETINGS_DIR = path.join(MINIONS_DIR, 'meetings');
+const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
+const PRD_DIR = path.join(MINIONS_DIR, 'prd');
+const NOTES_INBOX_DIR = path.join(MINIONS_DIR, 'notes', 'inbox');
+const NOTES_ARCHIVE_DIR = path.join(MINIONS_DIR, 'notes', 'archive');
+const CONFIG_PATH = path.join(MINIONS_DIR, 'config.json');
 
 function truncatePipelineContext(text, maxBytes, label) {
   return shared.truncateTextBytes(text, maxBytes, `\n\n_...${label} truncated — inspect the upstream artifacts if needed._`);
@@ -213,7 +223,7 @@ function evaluateCondition(condition, ctx) {
     case 'noFailedItems': {
       // True when all work items created by the pipeline are done (not failed)
       if (!run) return false;
-      const wiPath = path.join(__dirname, '..', 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       const workItems = safeJson(wiPath) || [];
       const allProjectWi = shared.getProjects(config).reduce((acc, p) => {
         return acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []);
@@ -284,7 +294,7 @@ function executeTaskStage(stage, stageState, run, config) {
   // Create work item(s) for the task
   const items = stage.items || [{ title: stage.title, description: stage.description || '', type: stage.taskType || 'explore', agent: stage.agent }];
   const count = stage.count || items.length;
-  const wiPath = path.join(__dirname, '..', 'work-items.json');
+  const wiPath = CENTRAL_WI_PATH;
   const createdIds = [];
 
   mutateWorkItems(wiPath, workItems => {
@@ -352,7 +362,7 @@ function _findExistingPlanForMeeting(meetingIds, plansDir) {
   // Build slug prefixes for both pipeline and dashboard naming conventions
   const slugPrefixes = [];
   for (const mid of meetingIds) {
-    const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
+    const mtg = safeJson(path.join(MEETINGS_DIR, mid + '.json'));
     if (mtg?.title) {
       // Dashboard convention: "Meeting follow-up: {title}" → slug
       const dashSlug = slugify('meeting-follow-up-' + mtg.title);
@@ -383,11 +393,11 @@ function _findExistingPrdForPlan(planFile, prdDir) {
 }
 
 async function executePlanStage(stage, stageState, run, config) {
-  const plansDir = path.join(__dirname, '..', 'plans');
+  const plansDir = PLANS_DIR;
   if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
 
   const slug = slugify(stage.title || 'pipeline-plan');
-  const wiPath = path.join(__dirname, '..', 'work-items.json');
+  const wiPath = CENTRAL_WI_PATH;
   const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
 
   // ── Reconciliation: check if a plan already exists for a meeting in this run ──
@@ -398,7 +408,7 @@ async function executePlanStage(stage, stageState, run, config) {
       log('info', `Pipeline ${run.pipelineId}: reconciling plan stage — adopting existing plan "${existingPlanFile}"`);
 
       // Check if a PRD already exists for this plan (skip plan-to-prd entirely)
-      const prdDir = path.join(__dirname, '..', 'prd');
+      const prdDir = PRD_DIR;
       const existingPrdFile = _findExistingPrdForPlan(existingPlanFile, prdDir);
       if (existingPrdFile) {
         log('info', `Pipeline ${run.pipelineId}: PRD "${existingPrdFile}" already exists for plan "${existingPlanFile}" — skipping plan-to-prd`);
@@ -436,7 +446,7 @@ async function executePlanStage(stage, stageState, run, config) {
   let meetingContext = '';
   for (const mid of meetingIds) {
     try {
-      const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
+      const mtg = safeJson(path.join(MEETINGS_DIR, mid + '.json'));
       if (mtg) {
         const transcript = truncatePipelineContext(
           (mtg.transcript || []).map(formatTranscriptEntry).join('\n\n---\n\n'),
@@ -586,7 +596,7 @@ function executeScheduleStage(stage, stageState, config) {
       config.schedules.push({ ...sched, enabled: true });
     }
   }
-  safeWrite(path.join(__dirname, '..', 'config.json'), config);
+  safeWrite(CONFIG_PATH, config);
   return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }
 
@@ -647,7 +657,7 @@ function isStageComplete(stage, stageState, run, config) {
   switch (stage.type) {
     case STAGE_TYPE.TASK: {
       // Check root + all project work-items.json (WIs may be moved to project paths)
-      const wiPath = path.join(__dirname, '..', 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       const workItems = safeJson(wiPath) || [];
       const allProjectWi = shared.getProjects(config).reduce((acc, p) => {
         return acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []);
@@ -671,7 +681,7 @@ function isStageComplete(stage, stageState, run, config) {
     }
     case STAGE_TYPE.PLAN: {
       // Plan stage completion: PRD conversion done + all materialized work items done
-      const wiPath = path.join(__dirname, '..', 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       const workItems = safeJson(wiPath) || [];
       const allProjectWi = shared.getProjects(config).reduce((acc, p) => {
         return acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []);
@@ -687,7 +697,7 @@ function isStageComplete(stage, stageState, run, config) {
       if (!prdDone) return false;
 
       // Discover PRDs and their work items — collect into local arrays, then merge into artifacts
-      const prdDir = path.join(__dirname, '..', 'prd');
+      const prdDir = PRD_DIR;
       const plans = artifacts.plans || [];
       const discoveredPrds = [];
       const discoveredWiIds = [];
@@ -811,7 +821,7 @@ async function discoverPipelineWork(config) {
           // Collect output
           let output = '';
           if (stage.type === STAGE_TYPE.TASK) {
-            const wiPath = path.join(__dirname, '..', 'work-items.json');
+            const wiPath = CENTRAL_WI_PATH;
             const workItems = safeJson(wiPath) || [];
             const projWi = shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []), []);
             const allWi = [...workItems, ...projWi];
@@ -830,8 +840,8 @@ async function discoverPipelineWork(config) {
           // Scan for inbox/archive notes created by this stage's agents
           try {
             const notesDirs = [
-              path.join(__dirname, '..', 'notes', 'inbox'),
-              path.join(__dirname, '..', 'notes', 'archive'),
+              NOTES_INBOX_DIR,
+              NOTES_ARCHIVE_DIR,
             ];
             const stageWiIds = stageState.artifacts?.workItems || [];
             const notes = [];
@@ -871,7 +881,7 @@ async function discoverPipelineWork(config) {
           if (nextPlanStage) {
             const meetingIds = _findMeetingsInRun(activeRun);
             if (meetingIds.length > 0) {
-              const plansDir = path.join(__dirname, '..', 'plans');
+              const plansDir = PLANS_DIR;
               if (fs.existsSync(plansDir)) {
                 const existingPlan = _findExistingPlanForMeeting(meetingIds, plansDir);
                 if (existingPlan) {

@@ -11,7 +11,7 @@ const queries = require('./queries');
 const { safeJson, safeRead, log, ts } = shared;
 const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = shared.MINIONS_DIR;
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
 
 // ─── Temp Agents ─────────────────────────────────────────────────────────────
@@ -116,9 +116,17 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-function resolveAgent(workType, config, authorAgent = null) {
+function normalizeAgentHints(agentHints, authorAgent = null) {
+  const raw = Array.isArray(agentHints) ? agentHints : (agentHints ? String(agentHints).split(',') : []);
+  return raw
+    .map(id => String(id).trim().toLowerCase())
+    .map(id => id === '_author_' && authorAgent ? String(authorAgent).trim().toLowerCase() : id)
+    .filter(Boolean);
+}
+
+function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
   const routes = getRoutingTableCached();
-  const route = routes[workType] || routes['implement'];
+  const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
   const agents = config.agents || {};
 
   // Resolve _author_ token
@@ -144,6 +152,14 @@ function resolveAgent(workType, config, authorAgent = null) {
     if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
     return null;
   };
+
+  const hintedAgents = normalizeAgentHints(agentHints, authorAgent);
+  if (hintedAgents.length > 0) {
+    for (const id of hintedAgents) {
+      if (isAvailable(id)) { _claimedAgents.add(id); return id; }
+    }
+    return null;
+  }
 
   // Resolve _any_ token — pick any available agent (#480)
   if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
@@ -192,4 +208,5 @@ module.exports = {
   resolveAgent,
   setTempBudget,
   getTempBudget,
+  normalizeAgentHints,
 };

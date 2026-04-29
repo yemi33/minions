@@ -12,7 +12,7 @@ const queries = require('./queries');
 const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = shared.MINIONS_DIR;
 const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
 
 // Import tempAgents from routing module
@@ -32,11 +32,11 @@ function getPrCreateInstructions(project) {
     const repo = project?.repoName || '';
     const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
     return `Use \`gh pr create\` to create a pull request:\n` +
-      `- \`gh pr create --base ${mainBranch} --head <your-branch> --title "PR title" --body "PR description" --repo ${org}/${repo}\`\n` +
+      `- Write the PR description to a temporary Markdown file, then run: \`gh pr create --base ${mainBranch} --head <your-branch> --title "PR title" --body-file <body-file.md> --repo ${org}/${repo}\`\n` +
       `- Always set --base to \`${mainBranch}\` (the main branch)\n` +
       `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
       `- Use --head to specify your feature branch name\n` +
-      `- Include a meaningful --title and --body describing the changes`;
+      `- Include a meaningful --title and body file describing the changes`;
   }
   // Default: Azure DevOps
   return `Use \`mcp__azure-ado__repo_create_pull_request\`:\n- repositoryId: \`${repoId}\``;
@@ -49,10 +49,10 @@ function getPrCommentInstructions(project) {
     const org = project?.adoOrg || '';
     const repo = project?.repoName || '';
     return `Use \`gh pr comment\` to post a comment on the PR:\n` +
-      `- \`gh pr comment <number> --body "Your comment text" --repo ${org}/${repo}\`\n` +
+      `- Write the Markdown comment to a temporary file, then run: \`gh pr comment <number> --body-file <body-file.md> --repo ${org}/${repo}\`\n` +
       `- Replace <number> with the PR number\n` +
       `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
-      `- Use --body to provide the comment text (supports Markdown)`;
+      `- Use --body-file so Markdown, quotes, and newlines are passed safely`;
   }
   return `Use \`mcp__azure-ado__repo_create_pull_request_thread\`:\n- repositoryId: \`${repoId}\``;
 }
@@ -83,8 +83,8 @@ function getPrVoteInstructions(project) {
     const repo = project?.repoName || '';
     return `**IMPORTANT: GitHub blocks self-approval** — all agents share the same credentials, so \`--approve\` and \`--request-changes\` will fail with "can't approve your own PR." Use \`--comment\` instead.\n\n` +
       `Submit your review verdict using \`gh pr review\` with \`--comment\`:\n` +
-      `- Approve: \`gh pr review <number> --comment --body "VERDICT: APPROVE\\n\\n<your review details>" --repo ${org}/${repo}\`\n` +
-      `- Request changes: \`gh pr review <number> --comment --body "VERDICT: REQUEST_CHANGES\\n\\n<your review details>" --repo ${org}/${repo}\`\n` +
+      `- Write a Markdown review body file whose first line is \`VERDICT: APPROVE\`, then run: \`gh pr review <number> --comment --body-file <body-file.md> --repo ${org}/${repo}\`\n` +
+      `- For requested changes, use \`VERDICT: REQUEST_CHANGES\` as the first line in that same --body-file flow\n` +
       `- Replace <number> with the PR number\n` +
       `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
       `- **Your comment body MUST start with \`VERDICT: APPROVE\` or \`VERDICT: REQUEST_CHANGES\`** on its own line — the engine parses this to record your vote\n` +
@@ -319,12 +319,14 @@ function renderPlaybook(type, vars) {
     if (sharedRules) content += '\n\n' + sharedRules;
   } catch { /* optional — shared rules file may not exist */ }
 
+  const inertAppendices = [];
+
   // Inject pinned context (always visible to agents) — capped at 4KB
   let pinnedContent = '';
   try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch { /* optional */ }
   if (pinnedContent) {
     if (pinnedContent.length > 4096) pinnedContent = pinnedContent.slice(0, 4096) + '\n\n_...pinned.md truncated (read full file if needed)_';
-    content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
+    inertAppendices.push('\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent);
   }
 
   // Inject team notes (single injection point — not in buildAgentContext) — capped via ENGINE_DEFAULTS
@@ -338,7 +340,7 @@ function renderPlaybook(type, vars) {
       const budget = Math.max(0, ENGINE_DEFAULTS.maxNotesPromptBytes - Buffer.byteLength(footer, 'utf8'));
       notes = truncateTextBytes(recent, budget, '\n\n_...notes truncated_') + footer;
     }
-    content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
+    inertAppendices.push('\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes);
   }
 
   // Inject KB guardrail
@@ -433,6 +435,10 @@ function renderPlaybook(type, vars) {
   const unresolved = [...new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)))];
   if (unresolved.length > 0) {
     log('warn', `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`);
+  }
+
+  if (inertAppendices.length > 0) {
+    content += inertAppendices.join('');
   }
 
   return content;

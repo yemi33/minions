@@ -62,10 +62,6 @@ Write the decomposition result as a JSON code block in your response:
 
 Keep the total number of sub-items between 2 and 5. If the task genuinely cannot be broken down further, output a single sub-item that matches the original.
 
-{{pr_create_instructions}}
-
-{{pr_comment_instructions}}
-
 ## When to Stop
 
 Your task is complete once you have output the JSON decomposition block. The engine parses it from your output. Do NOT begin implementing the sub-items. Stop after outputting the JSON.

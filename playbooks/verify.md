@@ -111,7 +111,7 @@ For each project worktree:
 
 2. **Check for an existing E2E PR** before creating a new one:
    - For GitHub: `gh pr list --head e2e/{{plan_slug}} --state open`
-   - For ADO: search for PRs with source branch `e2e/{{plan_slug}}`
+   - For ADO: use `az` CLI first to search for PRs with source branch `e2e/{{plan_slug}}`; use ADO MCP only as a fallback when `az` is unavailable or insufficient
    - If found, **update the existing PR** description with latest build/test results. Do NOT create a duplicate.
    - If not found, create a new PR targeting the project's main branch:
      - **Title:** `[E2E] <plan summary>`

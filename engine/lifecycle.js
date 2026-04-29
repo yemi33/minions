@@ -2113,7 +2113,27 @@ function classifyFailure(code, stdout = '', stderr = '') {
   }
 
   // Permission / trust / auth failures
-  if (/permission denied|access denied|unauthorized|403 forbidden|trust.*blocked|auth.*fail/i.test(combined)) {
+  //
+  // History (W-moja4a5qp9pj): the previous patterns `trust.*blocked` and
+  // `auth.*fail` used unbounded greedy `.*`. JSONL agent init events that
+  // emit the entire skill / slash-command catalogue on a single line
+  // happen to contain words like `check-self-authored-...` and
+  // `diagnose-build-fail-...`, which made the greedy regex match across
+  // thousands of unrelated characters and silently flag healthy agents
+  // as PERMISSION_BLOCKED on any non-zero exit. Use anchored phrases that
+  // only match real auth/trust failure messages.
+  const _PERM_PHRASES = [
+    /\bpermission denied\b/i,
+    /\baccess denied\b/i,
+    /\bunauthorized\b/i,
+    /\b403 forbidden\b/i,
+    /\bauthentication (?:failed|error|failure)\b/i,
+    /\bauth(?:entication)? (?:fail(?:ed|ure|s)?|denied|rejected)\b/i,
+    /\btrust (?:gate|domain|zone|policy)? ?(?:is |was |has been )?(?:blocked|denied|rejected)\b/i,
+    /\bcredentials? (?:rejected|invalid|expired)\b/i,
+    /\btoken (?:rejected|invalid|expired|revoked)\b/i,
+  ];
+  if (_PERM_PHRASES.some(re => re.test(combined))) {
     return FAILURE_CLASS.PERMISSION_BLOCKED;
   }
 

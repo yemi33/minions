@@ -420,6 +420,8 @@ Context-only PRs: PRs with `_contextOnly: true` are polled (status, votes, build
 
 Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it, the command can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions, causing agent orphans. PR status and human comments are polled every `prPollStatusEvery` / `prPollCommentsEvery` ticks (default 12 each, ~12 min). PR → PRD item linking derived from `pull-requests.json` prdItems.
 
+For agent-driven Azure DevOps actions outside the engine pollers, use the `az` CLI first. Use ADO MCP tools (`mcp__azure-ado__*`) only as a fallback when `az` is unavailable or insufficient for the operation. Never use `gh` for Azure DevOps repositories.
+
 **evalLoop and polling interaction:** `evalLoop` gates the entire review→fix cycle. `adoPollEnabled` (or `ghPollEnabled` for GitHub projects) gates whether PR status is polled at all. Review auto-dispatch requires *both* to be true — `reviewEnabled = evalLoopEnabled && pollEnabled`. After a fix agent completes, the PR's `reviewStatus` is reset to `'waiting'` and `minionsReview.fixedAt` is set, which triggers a second-pass re-review on the next discovery tick (also gated by `evalLoop`). The `autoReview` flag was removed and consolidated into `evalLoop`.
 
 ## Dashboard

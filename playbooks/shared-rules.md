@@ -107,3 +107,9 @@ Output is JSON with the same fields. Exit 0 on success, 1 if not found.
 **Never make raw `curl` calls to ADO APIs directly.** Use `node engine/ado-status.js` which routes through `ado.js` — authenticated, retried, circuit-broken. Raw `azureauth` + curl bypasses all of that.
 
 **If you must run `azureauth` directly, ALWAYS include `--timeout 1`.** Without this flag, `azureauth ado token` can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions. This causes the Claude Code process to silently exit and the engine to declare the agent orphaned. Example: `azureauth ado token --mode iwa --mode broker --output token --timeout 1`.
+
+## Azure DevOps Tooling
+
+For Azure DevOps repo operations, use the `az` CLI first. Prefer commands such as `az repos pr create`, `az repos pr show`, `az repos pr list`, `az repos pr comment`, `az repos pr reviewer`, `az boards work-item`, and `az pipelines` after setting defaults with `az devops configure`.
+
+Use ADO MCP fallback tools (`mcp__azure-ado__*`) only when `az` is unavailable in the environment or insufficient for a specific operation. Do not choose MCP first just because it exists, and do not use `gh` for Azure DevOps repositories.

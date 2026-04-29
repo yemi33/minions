@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.1619 (2026-04-29)
+
+### Features
+- surface partial PR escalation state (#1856)
+
+## 0.1.1617 (2026-04-29)
+
+### Fixes
+- guard stale build & conflict auto-fixes with live pre-dispatch check (#1851)
+
+## 0.1.1616 (2026-04-29)
+
+### Features
+- harden prompt injection surfaces (#1843)
+
+## 0.1.1614 (2026-04-29)
+
+### Fixes
+- recover ===ACTIONS=== JSON from fences and trailing prose (#1834) (#1837)
+
+## 0.1.1613 (2026-04-28)
+
+### Features
+- fix npm test failures (#1846)
+- hard-pin agent assignment when CC names a specific agent
+- auto-detect available CLI runtimes and pin engine.defaultCli
+- match runtime tags to actual logos (pixel-crab Claude, mascot Copilot)
+- replace runtime text tag with inline SVG logos
+
+### Fixes
+-  suppress failure inbox notes
+-  kill agents from engine tmp pid files
+-  gate live completion banner on final process exit
+- wrap CC Model input so its label/hint survive runtime hydration
+- preserve reconnect stream state
+-  preserve copilot cc action blocks
+-  improve copilot command center streaming
+- guard runtime model races
+- runtime-aware model picker + cross-runtime validation
+-  keep cc stream final text complete
+- switch Copilot icon to outline style for cleaner inline read
+- un-invert Copilot — purple silhouette + white cutouts
+- redraw Copilot icon to match actual mascot — vertical eye pills, not grill bars
+- invert Copilot icon colors for better dark-theme visibility
+
+### Other
+- Stream CC chunks incrementally
+
 ## 0.1.1592 (2026-04-28)
 
 ### Features

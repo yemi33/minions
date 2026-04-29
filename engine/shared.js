@@ -1099,8 +1099,8 @@ function trackReviewMetric(pr, newReviewStatus, config) {
   const authorId = (pr.agent || '').toLowerCase();
   if (!authorId || !config?.agents?.[authorId]) return;
   try {
-    mutateJsonFileLocked(path.join(__dirname, 'metrics.json'), (metrics) => {
-      if (!metrics[authorId]) metrics[authorId] = {};
+    mutateJsonFileLocked(path.join(MINIONS_DIR, 'engine', 'metrics.json'), (metrics) => {
+      if (!metrics[authorId]) metrics[authorId] = { ...DEFAULT_AGENT_METRICS };
       if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
       else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
       return metrics;
@@ -1110,7 +1110,10 @@ function trackReviewMetric(pr, newReviewStatus, config) {
 
 /** Queue a plan-to-prd work item with dedup check inside lock. Returns true if queued. */
 function queuePlanToPrd({ planFile, prdFile, title, description, project, createdBy, extra }) {
-  const centralWiPath = path.join(__dirname, '..', 'work-items.json');
+  // Use MINIONS_DIR (honors MINIONS_TEST_DIR override) instead of resolving from
+  // __dirname — otherwise tests that exercise this helper leak work items into
+  // the real package-root work-items.json even after createTestMinionsDir().
+  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
   let queued = false;
   mutateJsonFileLocked(centralWiPath, items => {
     if (!Array.isArray(items)) items = [];
@@ -1268,6 +1271,122 @@ function getAdoOrgBase(project) {
 }
 
 // ── Path Sanitization ───────────────────────────────────────────────────────
+
+/**
+ * Files in the LIVE Minions checkout (MINIONS_DIR) that the Command Center
+ * must never edit directly. Three flavours:
+ *
+ *   - "basenames": exact relative paths under the live root (engine.js, dashboard.js,
+ *     minions.js, config.json — and the runtime state files engine/control.json
+ *     and engine/dispatch.json).
+ *   - "globs":     direct-child JS files under protected live directories
+ *     (engine/*.js, bin/*.js).
+ *   - "prefixes":  relative directory prefixes whose entire subtree is read-only
+ *     when it lives in the live root (dashboard/**).
+ *
+ * The list is intentionally small and explicit. It mirrors the textual rule in
+ * `prompts/cc-system.md`. Source of truth lives here; the system prompt renders
+ * `{{cc_protected_paths}}` from this list at startup so the two cannot drift.
+ *
+ * The guard is ROOT-AWARE: a path only counts as protected when its absolute
+ * resolution sits inside MINIONS_DIR. The same basename inside an isolated
+ * task worktree (e.g. `D:/worktrees/minions-work/W-xxx/dashboard.js`) is NOT
+ * protected — agents working in those copies are free to edit them, since
+ * git keeps changes inside the worktree until the agent pushes a branch.
+ */
+const _CC_PROTECTED_BASENAMES = Object.freeze([
+  'engine.js',
+  'dashboard.js',
+  'minions.js',
+  'config.json',
+  'engine/control.json',
+  'engine/dispatch.json',
+]);
+const _CC_PROTECTED_FILE_GLOBS = Object.freeze([
+  'engine/*.js',
+  'bin/*.js',
+]);
+const _CC_PROTECTED_PREFIXES = Object.freeze([
+  'dashboard/',
+]);
+
+/**
+ * Returns the literal text used by the CC system prompt for the protected-file
+ * rule. Combines the basenames + prefixes above into a single sentence so the
+ * authored rule and the helper that enforces it can never disagree.
+ *
+ * The result is anchored to a specific live root so the LLM can't conflate
+ * "edits to dashboard.js" with "edits to a worktree copy of dashboard.js".
+ */
+function describeCcProtectedPaths(liveRoot) {
+  const root = (liveRoot && typeof liveRoot === 'string') ? liveRoot : MINIONS_DIR;
+  const norm = root.replace(/\\/g, '/');
+  const basenames = _CC_PROTECTED_BASENAMES.map(b => '`' + b + '`').join(', ');
+  const globs = _CC_PROTECTED_FILE_GLOBS.map(g => '`' + g + '`').join(', ');
+  const prefixes = _CC_PROTECTED_PREFIXES.map(p => '`' + p + '**`').join(', ');
+  return `READ ONLY in the live checkout at \`${norm}\` — never write/edit: ${basenames}, ${globs}, ${prefixes}. This rule is path-scoped, not basename-scoped. Files with the same basename inside an isolated agent worktree (e.g. \`{worktreeRoot}/W-<id>/dashboard.js\`) are NOT protected — agents working in their own worktrees may edit any repository source the work item requires.`;
+}
+
+function renderCcSystemPrompt(raw, opts) {
+  const liveRoot = (opts && typeof opts.liveRoot === 'string') ? opts.liveRoot : MINIONS_DIR;
+  return String(raw || '')
+    .replace(/\{\{minions_dir\}\}/g, liveRoot)
+    .replace(/\{\{cc_protected_paths\}\}/g, describeCcProtectedPaths(liveRoot));
+}
+
+/**
+ * Is this absolute path a CC-protected file in the LIVE Minions checkout?
+ *
+ * Returns true ONLY if all three hold:
+ *   1. `absPath` resolves to something inside `liveRoot` (default: MINIONS_DIR).
+ *   2. Its relative path matches a protected basename (e.g. `dashboard.js`)
+ *      OR matches a protected direct-child glob (`engine/*.js`, `bin/*.js`)
+ *      OR sits under a protected directory prefix (`dashboard/`).
+ *   3. The input is a real string (no nullish, no non-string values).
+ *
+ * Returns false for:
+ *   - Paths outside `liveRoot` (worktrees, sibling repos, scratch dirs, etc.)
+ *   - Non-protected files inside `liveRoot` (notes.md, knowledge/foo.md, …)
+ *   - Invalid inputs (null/undefined/empty/non-string)
+ *
+ * Why this exists: PR W-moja4a5qp9pj. The CC system prompt previously named
+ * protected files by basename only ("never write/edit dashboard.js"). Agents
+ * dispatched into isolated worktrees inherited the same prose verbatim and
+ * occasionally interpreted it as banning their own worktree copy of those
+ * files, blocking otherwise legitimate fixes. The guard now distinguishes
+ * "same path, live tree" from "same basename, worktree copy".
+ */
+function isLiveCommandCenterPath(absPath, opts) {
+  if (typeof absPath !== 'string' || absPath.length === 0) return false;
+  if (absPath.includes('\0')) return false;
+  const liveRoot = (opts && typeof opts.liveRoot === 'string') ? opts.liveRoot : MINIONS_DIR;
+  const pathApi = /^[a-zA-Z]:[\\/]/.test(absPath) || /^[a-zA-Z]:[\\/]/.test(liveRoot) ? path.win32 : path;
+  let resolved;
+  let resolvedRoot;
+  try {
+    resolved = pathApi.resolve(absPath);
+    resolvedRoot = pathApi.resolve(liveRoot);
+  } catch { return false; }
+  // Must be inside liveRoot. Compare with trailing separator to avoid the
+  // sibling-prefix bug ("D:/squad-old" startsWith "D:/squad").
+  const rootWithSep = resolvedRoot.endsWith(pathApi.sep) ? resolvedRoot : (resolvedRoot + pathApi.sep);
+  const caseInsensitive = pathApi === path.win32 || process.platform === 'win32';
+  const cmpResolved = caseInsensitive ? resolved.toLowerCase() : resolved;
+  const cmpResolvedRoot = caseInsensitive ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const cmpRootWithSep = caseInsensitive ? rootWithSep.toLowerCase() : rootWithSep;
+  if (cmpResolved !== cmpResolvedRoot && !cmpResolved.startsWith(cmpRootWithSep)) return false;
+  // Compute the path relative to the live root and normalize separators so
+  // the basename / prefix checks are platform-independent.
+  const rel = pathApi.relative(resolvedRoot, resolved).replace(/\\/g, '/');
+  if (rel === '' || rel === '.') return false; // root itself is not a "file"
+  const relForMatch = rel.toLowerCase();
+  if (_CC_PROTECTED_BASENAMES.includes(relForMatch)) return true;
+  if (/^(?:engine|bin)\/[^/]+\.js$/.test(relForMatch)) return true;
+  for (const prefix of _CC_PROTECTED_PREFIXES) {
+    if (relForMatch === prefix.slice(0, -1) /* exact dir */ || relForMatch.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 /**
  * Validate that a user-supplied filename stays within the given base directory.
@@ -2096,6 +2215,12 @@ module.exports = {
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
+  isLiveCommandCenterPath,
+  describeCcProtectedPaths,
+  renderCcSystemPrompt,
+  _CC_PROTECTED_BASENAMES, // exported for testing
+  _CC_PROTECTED_FILE_GLOBS, // exported for testing
+  _CC_PROTECTED_PREFIXES,  // exported for testing
   isAllowedOrigin,
   buildSecurityHeaders,
   hasDangerousKey,

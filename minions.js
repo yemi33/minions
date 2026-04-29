@@ -462,9 +462,11 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
   const removedPlaceholders = cleanupPlaceholderProjects(config);
+  const hadConfiguredDefaultCli = config.engine?.defaultCli !== undefined;
   // Merge defaults — fills in new fields from upgrades while preserving user customizations
   if (!config.engine) config.engine = {};
   for (const [k, v] of Object.entries(ENGINE_DEFAULTS)) {
+    if (k === 'defaultCli') continue;
     if (config.engine[k] === undefined) config.engine[k] = v;
   }
   if (!config.claude) config.claude = {};
@@ -478,7 +480,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   // Auto-detect available runtime CLIs and pin engine.defaultCli to whichever
   // is installed. Only set if the user hasn't already configured one — never
   // overwrite an explicit choice on `init --force` upgrades.
-  if (!config.engine.defaultCli) {
+  if (!hadConfiguredDefaultCli) {
     const detected = _detectAvailableRuntimes();
     if (detected.length === 1) {
       config.engine.defaultCli = detected[0];
@@ -578,4 +580,3 @@ if (cmd && commands[cmd]) {
   console.log('                            cleans worktrees, archives data dir to projects/.archived/');
   console.log('    list                    List linked projects\n');
 }
-
