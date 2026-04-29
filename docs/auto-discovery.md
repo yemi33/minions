@@ -32,8 +32,12 @@ Before scanning, the engine materializes plans and specs into project work items
 |----------|--------|---------------|
 | Minions review pending/waiting | Queue a code review | `review` |
 | Minions review `changes-requested` | Route back to author for fixes | `fix` |
+| Human feedback pending | Route back to author for fixes | `fix` |
 | `buildStatus: "failing"` | Route to any agent for build fix | `fix` |
+| `_mergeConflict: true` | Route to author for conflict resolution | `fix` |
 Skips PRs where `status !== "active"`.
+
+PR fix triggers are evaluated in this source order inside `discoverFromPrs()`: review feedback first (`engine.js:2166-2180`), human feedback second (`engine.js:2191-2226`), build failure third (`engine.js:2229-2271`), and merge conflict fourth (`engine.js:2299-2317`). Conflict fixes are additionally gated by `!fixDispatched` (`engine.js:2301`), so any earlier successful fix dispatch in the same PR discovery pass suppresses the conflict fix until a later pass.
 
 ### Source 2: PRD Gap Analysis (via `materializePlansAsWorkItems`)
 
@@ -413,4 +417,3 @@ All discovery behavior is controlled via `config.json`:
 ```
 
 To disable a work source for a project, set `"enabled": false`. To change where the engine looks for PRD or PR files, change the `path` field (resolved relative to `localPath`).
-
