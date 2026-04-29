@@ -111,6 +111,17 @@ function isRetryableFailureReason(reason = '', failureClass = '') {
     'invalid file path',
     'missing required',
     'validation failed',
+    'auth failure',
+    'authentication failed',
+    'authentication failure',
+    'unauthorized',
+    'invalid api key',
+    'please log in',
+    'budget-exceeded',
+    'budget exceeded',
+    'budget cap exceeded',
+    'max-budget-usd',
+    'cost limit',
   ];
   return !nonRetryable.some(s => r.includes(s));
 }

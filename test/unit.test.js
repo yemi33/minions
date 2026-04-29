@@ -20713,6 +20713,7 @@ async function main() {
     // W-mo0jwu9iwnm1: Duplicate PR prevention + cancel stale dispatches on PR close
     await testDuplicatePrPrevention();
     await testCancelDispatchesOnPrClose();
+    await testDispatchQueueHelpers();
 
     // W-8eobrosn: GitHub poller maxBuffer fix
     await testGhMaxBuffer();
@@ -37175,6 +37176,249 @@ async function testCancelDispatchesOnPrClose() {
 
       const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
       assert.strictEqual(dispatch.pending.length, 1, 'Queue unchanged for null/empty input');
+    } finally { restore(); }
+  });
+}
+
+// ─── W-mok4kz1pjm6w: engine/dispatch.js queue helper coverage ───────────────
+
+async function testDispatchQueueHelpers() {
+  console.log('\n── W-mok4kz1pjm6w — engine/dispatch.js queue helpers ──');
+
+  await test('cancelPendingWorkItems cancels matching pending and queued items only', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testShared = require('../engine/shared');
+      const wiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      testShared.safeWrite(wiPath, [
+        { id: 'W-1', status: 'pending', title: 'match pending', group: 'target' },
+        { id: 'W-2', status: 'queued', title: 'match queued', group: 'target' },
+        { id: 'W-3', status: 'in-progress', title: 'match active', group: 'target' },
+        { id: 'W-4', status: 'pending', title: 'other pending', group: 'other' },
+        { id: 'W-5', status: 'done', title: 'match done', group: 'target' },
+      ]);
+
+      const cancelled = testDispatch.cancelPendingWorkItems(wiPath, w => w.group === 'target', 'pr-closed');
+
+      assert.strictEqual(cancelled, 2, 'Should cancel matching pending/queued items');
+      const items = testShared.safeJson(wiPath);
+      assert.deepStrictEqual(items.map(w => [w.id, w.status, w._cancelledBy || '']), [
+        ['W-1', 'cancelled', 'pr-closed'],
+        ['W-2', 'cancelled', 'pr-closed'],
+        ['W-3', 'in-progress', ''],
+        ['W-4', 'pending', ''],
+        ['W-5', 'done', ''],
+      ]);
+    } finally { restore(); }
+  });
+
+  await test('cancelPendingWorkItems handles missing files and no matches as no-ops', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testShared = require('../engine/shared');
+      const missingPath = path.join(process.env.MINIONS_TEST_DIR, 'missing-work-items.json');
+      assert.strictEqual(testDispatch.cancelPendingWorkItems(missingPath, () => true, 'missing'), 0,
+        'Missing work-items file should return 0');
+
+      const wiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      const original = [{ id: 'W-1', status: 'pending', group: 'other' }];
+      testShared.safeWrite(wiPath, original);
+      assert.strictEqual(testDispatch.cancelPendingWorkItems(wiPath, w => w.group === 'target', 'none'), 0,
+        'No matching work items should return 0');
+      assert.deepStrictEqual(testShared.safeJson(wiPath), original, 'No-match cancellation should leave file unchanged');
+    } finally { restore(); }
+  });
+
+  await test('writeInboxAlert writes sanitized dated alert file and creates inbox dir', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      fs.rmSync(testQueries.INBOX_DIR, { recursive: true, force: true });
+
+      testDispatch.writeInboxAlert('../bad slug 🤖/?', '# Alert\n\nBody');
+
+      const files = fs.readdirSync(testQueries.INBOX_DIR);
+      assert.strictEqual(files.length, 1, 'Should create exactly one alert file');
+      assert.match(files[0], /^engine-alert-bad-slug-[a-f0-9]{8}-\d{4}-\d{2}-\d{2}\.md$/,
+        `Alert filename should sanitize slug and include date, got ${files[0]}`);
+      const content = fs.readFileSync(path.join(testQueries.INBOX_DIR, files[0]), 'utf8');
+      assert.strictEqual(content, '# Alert\n\nBody');
+    } finally { restore(); }
+  });
+
+  await test('writeInboxAlert handles empty slug and keeps distinct slugs unique', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      testDispatch.writeInboxAlert('', 'empty slug');
+      testDispatch.writeInboxAlert('second-slug', 'second slug');
+
+      const files = fs.readdirSync(testQueries.INBOX_DIR).sort();
+      assert.strictEqual(files.length, 2, 'Different slugs should produce distinct alert files');
+      assert.ok(files.some(f => /^engine-alert-item-\d{4}-\d{2}-\d{2}\.md$/.test(f)),
+        `Empty slug should fall back to item slug, got ${files.join(', ')}`);
+      assert.ok(files.some(f => /^engine-alert-second-slug-\d{4}-\d{2}-\d{2}\.md$/.test(f)),
+        `Expected dated second-slug alert file, got ${files.join(', ')}`);
+    } finally { restore(); }
+  });
+
+  await test('writeInboxAlert deduplicates same slug on the same day', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      testDispatch.writeInboxAlert('same-slug', 'first');
+      testDispatch.writeInboxAlert('same-slug', 'second');
+
+      const files = fs.readdirSync(testQueries.INBOX_DIR);
+      assert.strictEqual(files.length, 1, 'Same slug/date should not create duplicate alerts');
+      const content = fs.readFileSync(path.join(testQueries.INBOX_DIR, files[0]), 'utf8');
+      assert.strictEqual(content, 'first', 'Deduped alert should preserve first content');
+    } finally { restore(); }
+  });
+
+  await test('cleanDispatchEntries removes matching queues, kills active pid, and deletes sidecars', () => {
+    const restore = createTestMinionsDir();
+    const childProcess = require('child_process');
+    const originalExecFileSync = childProcess.execFileSync;
+    const originalKill = process.kill;
+    const killed = [];
+    try {
+      childProcess.execFileSync = (cmd, args) => {
+        killed.push({ cmd, args });
+        return Buffer.from('');
+      };
+      process.kill = (pid, signal) => {
+        killed.push({ pid, signal });
+        return true;
+      };
+
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      const tmpDir = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      testShared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'pending-match', meta: { group: 'target' } },
+          { id: 'pending-keep', meta: { group: 'other' } },
+        ],
+        active: [
+          { id: 'active-match', meta: { group: 'target' } },
+          { id: 'active-keep', meta: { group: 'other' } },
+        ],
+        completed: [
+          { id: 'completed-match', meta: { group: 'target' } },
+        ],
+      });
+      for (const name of ['pid-active-match.pid', 'prompt-active-match.md', 'sysprompt-active-match.md', 'sysprompt-active-match.md.tmp']) {
+        fs.writeFileSync(path.join(tmpDir, name), name.startsWith('pid-') ? '123456' : 'sidecar');
+      }
+
+      const removed = testDispatch.cleanDispatchEntries(d => d.meta?.group === 'target');
+
+      assert.strictEqual(removed, 3, 'Should count removed pending, active, and completed entries');
+      const dispatch = testShared.safeJson(testQueries.DISPATCH_PATH);
+      assert.deepStrictEqual(dispatch.pending.map(d => d.id), ['pending-keep']);
+      assert.deepStrictEqual(dispatch.active.map(d => d.id), ['active-keep']);
+      assert.deepStrictEqual(dispatch.completed, []);
+      assert.ok(killed.length >= 1, 'Should attempt to kill matched active PID');
+      if (process.platform === 'win32') {
+        assert.deepStrictEqual(killed[0], { cmd: 'taskkill', args: ['/PID', '123456', '/T'] });
+      } else {
+        assert.deepStrictEqual(killed[0], { pid: 123456, signal: 'SIGTERM' });
+      }
+      for (const name of ['pid-active-match.pid', 'prompt-active-match.md', 'sysprompt-active-match.md', 'sysprompt-active-match.md.tmp']) {
+        assert.ok(!fs.existsSync(path.join(tmpDir, name)), `${name} should be deleted`);
+      }
+    } finally {
+      childProcess.execFileSync = originalExecFileSync;
+      process.kill = originalKill;
+      restore();
+    }
+  });
+
+  await test('cleanDispatchEntries handles active entries without pid files', () => {
+    const restore = createTestMinionsDir();
+    const originalKill = process.kill;
+    const killed = [];
+    try {
+      process.kill = (pid, signal) => {
+        killed.push({ pid, signal });
+        return true;
+      };
+
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      const tmpDir = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      testShared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [],
+        active: [{ id: 'active-no-pid', meta: { group: 'target' } }],
+        completed: [],
+      });
+      fs.writeFileSync(path.join(tmpDir, 'prompt-active-no-pid.md'), 'prompt');
+
+      const removed = testDispatch.cleanDispatchEntries(d => d.meta?.group === 'target');
+
+      assert.strictEqual(removed, 1, 'Should remove active entry even without pid file');
+      assert.deepStrictEqual(testShared.safeJson(testQueries.DISPATCH_PATH).active, []);
+      assert.deepStrictEqual(killed, [], 'No pid file should mean no kill attempt');
+      assert.ok(!fs.existsSync(path.join(tmpDir, 'prompt-active-no-pid.md')), 'Prompt sidecar should still be deleted');
+    } finally {
+      process.kill = originalKill;
+      restore();
+    }
+  });
+
+  await test('isRetryableFailureReason covers failure reason matrix and edge cases', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.strictEqual(dispatch.isRetryableFailureReason('agent timed out', shared.FAILURE_CLASS.TIMEOUT), true,
+      'Timeouts should be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('Claude CLI crashed with internal error', shared.FAILURE_CLASS.SPAWN_ERROR), true,
+      'Crashes/spawn errors should be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('authentication failed'), false,
+      'Auth failures should not be retryable even without failureClass');
+    assert.strictEqual(dispatch.isRetryableFailureReason('auth failure on Azure DevOps', shared.FAILURE_CLASS.PERMISSION_BLOCKED), false,
+      'Permission/auth failure class should not be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('context window exhausted', shared.FAILURE_CLASS.OUT_OF_CONTEXT), true,
+      'Context exhaustion gets one fresh-session retry via recovery policy');
+    assert.strictEqual(dispatch.isRetryableFailureReason('budget-exceeded'), false,
+      'Budget cap exhaustion should not be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason(''), true, 'Empty reason should remain retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason(undefined, 'future-unknown-class'), true,
+      'Unknown failure classes should fall back to retryable unless reason is known non-retryable');
+  });
+
+  await test('updateAgentStatus updates matching dispatch entry and no-ops unknown id', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      testShared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [{ id: 'pending-status', agent: 'dallas' }],
+        active: [{ id: 'active-status', agent: 'ripley' }],
+        completed: [],
+      });
+
+      testDispatch.updateAgentStatus('pending-status', shared.AGENT_STATUS.READY, 'ready for spawn');
+      const beforeUnknown = testShared.safeJson(testQueries.DISPATCH_PATH);
+      testDispatch.updateAgentStatus('missing-status', shared.AGENT_STATUS.FAILED, 'should not write');
+      const afterUnknown = testShared.safeJson(testQueries.DISPATCH_PATH);
+
+      const entry = afterUnknown.pending.find(d => d.id === 'pending-status');
+      assert.strictEqual(entry.workerState, shared.AGENT_STATUS.READY);
+      assert.ok(entry.workerStateAt, 'workerStateAt should be set');
+      assert.strictEqual(entry.workerStateDetail, 'ready for spawn');
+      assert.deepStrictEqual(afterUnknown, beforeUnknown, 'Unknown dispatch ID should leave dispatch.json unchanged');
     } finally { restore(); }
   });
 }
