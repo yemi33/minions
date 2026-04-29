@@ -38,8 +38,17 @@ function getPrCreateInstructions(project) {
       `- Use --head to specify your feature branch name\n` +
       `- Include a meaningful --title and body file describing the changes`;
   }
-  // Default: Azure DevOps
-  return `Use \`mcp__azure-ado__repo_create_pull_request\`:\n- repositoryId: \`${repoId}\``;
+  // Default: Azure DevOps — prefer `az` CLI first, ADO MCP only as fallback
+  const adoOrg = project?.adoOrg || '';
+  const adoProject = project?.adoProject || '';
+  const repoName = project?.repoName || '';
+  const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
+  return `For Azure DevOps, use the \`az\` CLI first to create a pull request:\n` +
+    `- Run \`az devops configure --defaults organization=https://dev.azure.com/${adoOrg} project="${adoProject}"\` once per session if defaults are not yet set\n` +
+    `- Then: \`az repos pr create --repository "${repoName}" --source-branch <your-branch> --target-branch ${mainBranch} --title "PR title" --description @<body-file.md>\`\n` +
+    `- Use \`@<file>\` syntax for \`--description\` so Markdown, quotes, and newlines pass safely\n` +
+    `- Always set --target-branch to \`${mainBranch}\` (the main branch)\n\n` +
+    `If \`az\` is unavailable or insufficient for this operation, fall back to \`mcp__azure-ado__repo_create_pull_request\` with repositoryId \`${repoId}\`. Do not use \`gh\` for Azure DevOps repositories.`;
 }
 
 function getPrCommentInstructions(project) {
@@ -54,7 +63,12 @@ function getPrCommentInstructions(project) {
       `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
       `- Use --body-file so Markdown, quotes, and newlines are passed safely`;
   }
-  return `Use \`mcp__azure-ado__repo_create_pull_request_thread\`:\n- repositoryId: \`${repoId}\``;
+  // Azure DevOps — prefer `az` CLI first, ADO MCP only as fallback
+  const repoName = project?.repoName || '';
+  return `For Azure DevOps, use the \`az\` CLI first to post a comment on the PR:\n` +
+    `- Write the Markdown comment to a temporary file, then run: \`az repos pr comment create --pull-request-id <number> --content @<body-file.md>\` (substitute your project's repo \`${repoName}\` if not using \`az devops configure\` defaults)\n` +
+    `- Use \`@<file>\` syntax for \`--content\` so Markdown, quotes, and newlines pass safely\n\n` +
+    `If \`az repos pr comment\` is unavailable or insufficient (e.g. older az-devops extension, thread/status semantics needed), fall back to \`mcp__azure-ado__repo_create_pull_request_thread\` with repositoryId \`${repoId}\`. Do not use \`gh\` for Azure DevOps repositories.`;
 }
 
 function getPrFetchInstructions(project) {
@@ -72,7 +86,13 @@ function getPrFetchInstructions(project) {
       `- Or use \`gh pr checkout <number> --repo ${org}/${repo}\` to fetch and checkout in one step\n` +
       `- The base branch is \`${mainBranch}\``;
   }
-  return `Use \`mcp__azure-ado__repo_get_pull_request_by_id\` to fetch PR status.`;
+  // Azure DevOps — prefer `az` CLI first, ADO MCP only as fallback
+  const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
+  return `For Azure DevOps, use the \`az\` CLI first to fetch PR status:\n` +
+    `- \`az repos pr show --id <number>\` returns PR state, mergeStatus, source/target branches, vote summary, and policy/build evaluations\n` +
+    `- For the local branch: \`git fetch origin <branch-name>\` then inspect via \`git show\`/\`git diff\` (do NOT checkout in your main working tree)\n` +
+    `- The base branch is \`${mainBranch}\`\n\n` +
+    `If \`az\` is unavailable or insufficient, fall back to \`mcp__azure-ado__repo_get_pull_request_by_id\`. Do not use \`gh\` for Azure DevOps repositories.`;
 }
 
 function getPrVoteInstructions(project) {
@@ -90,7 +110,11 @@ function getPrVoteInstructions(project) {
       `- **Your comment body MUST start with \`VERDICT: APPROVE\` or \`VERDICT: REQUEST_CHANGES\`** on its own line — the engine parses this to record your vote\n` +
       `- Do NOT use \`--approve\` or \`--request-changes\` flags — they will fail`;
   }
-  return `Use \`mcp__azure-ado__repo_update_pull_request_reviewers\`:\n- repositoryId: \`${repoId}\`\n- Set your reviewer vote on the PR (10=approve, 5=approve-with-suggestions, -10=reject)`;
+  // Azure DevOps — prefer `az` CLI first, ADO MCP only as fallback
+  return `For Azure DevOps, use the \`az\` CLI first to set your reviewer vote:\n` +
+    `- \`az repos pr set-vote --id <number> --vote {approve | approve-with-suggestions | reject | reset | wait-for-author}\`\n` +
+    `- Pair the vote with \`az repos pr comment create --pull-request-id <number> --content @<verdict.md>\` so the verdict body is recorded as a thread comment\n\n` +
+    `If \`az\` is unavailable or insufficient, fall back to \`mcp__azure-ado__repo_update_pull_request_reviewers\` with repositoryId \`${repoId}\` (vote integers: 10=approve, 5=approve-with-suggestions, 0=no-vote, -5=wait-for-author, -10=reject). Do not use \`gh\` for Azure DevOps repositories.`;
 }
 
 function getRepoHostLabel(project) {
@@ -102,7 +126,7 @@ function getRepoHostLabel(project) {
 function getRepoHostToolRule(project) {
   const host = getRepoHost(project);
   if (host === 'github') return 'Use GitHub MCP tools or `gh` CLI for PR operations';
-  return 'Use Azure DevOps MCP tools (mcp__azure-ado__*) for PR operations — NEVER use gh CLI';
+  return 'For Azure DevOps, use the `az` CLI first for PR operations (e.g. `az repos pr create`, `az repos pr show`, `az repos pr comment`, `az repos pr set-vote`); use ADO MCP tools (`mcp__azure-ado__*`) only as a fallback when `az` is unavailable or insufficient. Do not use `gh` for Azure DevOps repositories.';
 }
 
 // ─── Task Context Resolution ────────────────────────────────────────────────

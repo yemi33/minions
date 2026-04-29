@@ -6922,6 +6922,38 @@ async function testConfigAndPlaybooks() {
       'GitHub PR instructions should not inline Markdown via --body "..."');
   });
 
+  await test('Azure DevOps PR helper instructions prefer az CLI with MCP fallback', () => {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    const project = {
+      repoHost: 'ado',
+      adoOrg: 'contoso',
+      adoProject: 'platform',
+      repoName: 'service',
+      repositoryId: 'repo-guid',
+      mainBranch: 'master',
+    };
+    const combined = [
+      pb.getRepoHostToolRule(project),
+      pb.getPrCreateInstructions(project),
+      pb.getPrCommentInstructions(project),
+      pb.getPrFetchInstructions(project),
+      pb.getPrVoteInstructions(project),
+    ].join('\n\n');
+
+    assert.ok(/az CLI first|use the `az` CLI first|prefer(?:s)? (?:the )?`az` CLI/i.test(combined),
+      'ADO helper instructions should explicitly prefer az CLI first');
+    assert.ok(/az repos pr create/i.test(combined),
+      'ADO PR creation instructions should name az repos pr create');
+    assert.ok(/az repos pr show/i.test(combined),
+      'ADO PR fetch instructions should name az repos pr show');
+    assert.ok(/az repos pr comment/i.test(combined),
+      'ADO PR comment instructions should name az repos pr comment');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(combined),
+      'ADO helper instructions should describe MCP as a fallback');
+    assert.ok(/do not use `gh`|never use gh/i.test(combined),
+      'ADO helper instructions should still prohibit gh for Azure DevOps repositories');
+  });
+
   await test('explore work type is consistently documented as no-PR research/reporting', () => {
     const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
     const explore = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'explore.md'), 'utf8');
