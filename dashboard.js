@@ -23,6 +23,7 @@ const queries = require('./engine/queries');
 const teams = require('./engine/teams');
 const ado = require('./engine/ado');
 const gh = require('./engine/github');
+const issues = require('./engine/issues');
 const watchesMod = require('./engine/watches');
 const os = require('os');
 
@@ -4467,40 +4468,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       if (!body.title) return jsonReply(res, 400, { error: 'title required' });
-
-      // Check gh CLI is available
-      try { shared.exec('gh --version', { encoding: 'utf-8', timeout: 5000, windowsHide: true }); }
-      catch { return jsonReply(res, 500, { error: 'gh CLI not installed. Run: npm install -g gh' }); }
-
-      const repo = 'yemi33/minions';
-      const labels = (body.labels || ['bug']).join(',');
-      const bugBody = (body.description || '') + '\n\n---\n_Filed via Minions dashboard_';
-
-      // Write body to temp file to avoid shell escaping issues with quotes, backticks, newlines
-      const tmpBody = path.join(ENGINE_DIR, 'tmp', `bug-body-${Date.now()}.md`);
-      safeWrite(tmpBody, bugBody);
-      const safeTitle = body.title.replace(/["`$\\]/g, '');
-      try {
-        const cmd = `gh issue create --repo "${repo}" --title "${safeTitle}" --body-file "${tmpBody}" --label "${labels}" 2>&1`;
-        const result = shared.exec(cmd, { encoding: 'utf-8', timeout: 30000, windowsHide: true });
-        shared.safeUnlink(tmpBody);
-        // Detect gh errors in output
-        if (result.includes('authentication') || result.includes('auth login')) {
-          return jsonReply(res, 401, { error: 'GitHub auth required. Run: gh auth login' });
-        }
-        const urlMatch = result.match(/https:\/\/github\.com\/\S+/);
-        if (!urlMatch) {
-          return jsonReply(res, 500, { error: 'Issue may not have been created: ' + result.trim().slice(0, 200) });
-        }
-        return jsonReply(res, 200, { ok: true, url: urlMatch[0], output: result.trim() });
-      } catch (e) {
-        shared.safeUnlink(tmpBody);
-        throw e;
-      }
+      const result = issues.createGitHubIssue({
+        title: body.title,
+        description: body.description || '',
+        labels: body.labels,
+        repo: 'yemi33/minions',
+        tmpDir: path.join(ENGINE_DIR, 'tmp'),
+      });
+      return jsonReply(res, 200, result);
     } catch (e) {
-      const msg = e.message || '';
-      if (msg.includes('ENOENT') || msg.includes('not found')) return jsonReply(res, 500, { error: 'gh CLI not found. Install from https://cli.github.com/' });
-      return jsonReply(res, 500, { error: msg });
+      return jsonReply(res, e.statusCode || 500, { error: e.message || 'Issue creation failed' });
     }
   }
 

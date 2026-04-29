@@ -1126,10 +1126,11 @@ async function ccExecuteAction(action, targetTabId) {
       case 'file-bug': {
         var res10 = await _ccFetch('/api/issues/create', { title: action.title, description: action.description, labels: action.labels });
         var d10 = await res10.json();
+        var labelWarning = d10.warning ? ' <span style="color:var(--orange)">(' + escHtml(d10.warning) + ')</span>' : '';
         if (d10.url) {
-          status.innerHTML = '&#128027; Bug filed: <a href="' + escHtml(d10.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(action.title) + '</a>';
+          status.innerHTML = '&#128027; Bug filed: <a href="' + escHtml(d10.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(action.title) + '</a>' + labelWarning;
         } else {
-          status.innerHTML = '&#128027; Bug filed: <strong>' + escHtml(action.title) + '</strong> — <a href="https://github.com/yemi33/minions/issues" target="_blank" style="color:var(--blue)">view issues</a>';
+          status.innerHTML = '&#128027; Bug filed: <strong>' + escHtml(action.title) + '</strong> — <a href="https://github.com/yemi33/minions/issues" target="_blank" style="color:var(--blue)">view issues</a>' + labelWarning;
         }
         status.style.color = 'var(--green)';
         break;
