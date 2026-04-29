@@ -205,6 +205,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
                 delete wi.failedAt;
                 delete wi.dispatched_at;
                 delete wi.dispatched_to;
+                delete wi._pendingReason;
               }
             });
           }
