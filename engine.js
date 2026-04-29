@@ -2411,6 +2411,7 @@ function discoverFromWorkItems(config, project) {
 
   for (const item of items) {
     try {
+    if (isItemCompleted(item)) continue;
     // Re-evaluate failed items: if deps have recovered, reset to pending
     if (item.status === WI_STATUS.FAILED && !isItemCompleted(item) && item.failReason === 'Dependency failed — cannot proceed') {
       const depStatus = areDependenciesMet(item, config);
@@ -2908,6 +2909,7 @@ function discoverCentralWorkItems(config) {
 
   for (const item of items) {
     try {
+    if (isItemCompleted(item)) continue;
     if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     const key = `central-work-${item.id}`;
