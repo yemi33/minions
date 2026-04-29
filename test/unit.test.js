@@ -11624,6 +11624,224 @@ async function testDiscoverFromPrs() {
     }
   });
 
+  await test('pruneStalePrDispatches removes queued PR fixes whose tracker entry is gone (#1839)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshDispatch = require('../engine/dispatch');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(freshShared.projectPrPath(project), []);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [
+          {
+            id: 'stale-fix',
+            type: 'fix',
+            agent: 'dallas',
+            task: 'Fix stale PR',
+            meta: {
+              source: 'pr-human-feedback',
+              project: { name: 'demo', localPath: testDir },
+              branch: 'work/W-review-lineage',
+              dispatchKey: 'human-fix-demo-PR-42',
+              pr: {
+                id: 'PR-42',
+                prNumber: 42,
+                url: 'https://github.com/octo/repo/pull/42',
+                branch: 'work/W-review-lineage',
+                prdItems: ['W-review-lineage'],
+              },
+            },
+          },
+          {
+            id: 'manual-work',
+            type: 'fix',
+            agent: 'ralph',
+            task: 'Unrelated manual work',
+            meta: { source: 'work-item', item: { id: 'W-manual' } },
+          },
+        ],
+        active: [],
+        completed: [],
+      });
+
+      assert.strictEqual(freshDispatch.pruneStalePrDispatches(config), 1);
+      const after = freshShared.safeJson(path.join(testDir, 'engine', 'dispatch.json'));
+      assert.deepStrictEqual(after.pending.map(d => d.id), ['manual-work']);
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('pruneStalePrDispatches keeps queued re-review when PR remains active (#1839)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshDispatch = require('../engine/dispatch');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(freshShared.projectPrPath(project), [{
+        id: 'PR-42',
+        prNumber: 42,
+        status: 'active',
+        title: 'Still active',
+        branch: 'feat/live-pr-42',
+        agent: 'dallas',
+        url: 'https://github.com/octo/repo/pull/42',
+      }]);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [{
+          id: 'active-rereview',
+          type: 'review',
+          agent: 'ripley',
+          task: 'Re-review active PR',
+          meta: {
+            source: 'pr',
+            project: { name: 'demo', localPath: testDir },
+            branch: 'feat/live-pr-42',
+            dispatchKey: 'rereview-demo-PR-42',
+            pr: {
+              id: 'PR-42',
+              prNumber: 42,
+              status: 'active',
+              branch: 'feat/live-pr-42',
+              url: 'https://github.com/octo/repo/pull/42',
+            },
+          },
+        }],
+        active: [],
+        completed: [],
+      });
+
+      assert.strictEqual(freshDispatch.pruneStalePrDispatches(config), 0);
+      const after = freshShared.safeJson(path.join(testDir, 'engine', 'dispatch.json'));
+      assert.deepStrictEqual(after.pending.map(d => d.id), ['active-rereview']);
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/dispatch',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs routes active changes-requested fix from live PR branch and author (#1839)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' }, ripley: { name: 'Ripley', role: 'Reviewer' } },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshQueries.invalidateDispatchCache();
+
+      freshQueries.getPrs = () => [{
+        id: 'PR-42',
+        prNumber: 42,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Needs a fix',
+        branch: 'feat/live-pr-42',
+        prdItems: ['W-impl-42'],
+        minionsReview: { note: 'Please fix the API boundary.' },
+        url: 'https://github.com/octo/repo/pull/42',
+      }];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].type, 'fix');
+      assert.strictEqual(discovered[0].agent, 'dallas');
+      assert.strictEqual(discovered[0].meta.branch, 'feat/live-pr-42');
+      assert.strictEqual(discovered[0].meta.pr.branch, 'feat/live-pr-42');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('discoverFromPrs reads normalized PRs via queries.getPrs', () => {
     assert.ok(src.includes('const prs = queries.getPrs(project);'),
       'discoverFromPrs should read PRs through queries.getPrs so IDs are canonicalized before dispatch decisions');

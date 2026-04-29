@@ -12,7 +12,7 @@ const { setCooldownFailure } = require('./cooldown');
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
   sidecarDispatchPrompt, deleteDispatchPromptSidecar,
-  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS } = shared;
+  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS, PR_STATUS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -89,6 +89,64 @@ function addToDispatch(item) {
   });
   if (added) log('info', `Queued dispatch: ${item.id} (${item.type} → ${item.agent})`);
   return item.id;
+}
+
+function _resolveDispatchProject(projectRef, config) {
+  if (!projectRef) return null;
+  const projects = getProjects(config);
+  if (projectRef.name) {
+    const byName = projects.find(p => p.name === projectRef.name);
+    if (byName) return byName;
+  }
+  if (projectRef.localPath) {
+    const refPath = path.resolve(projectRef.localPath);
+    const byPath = projects.find(p => p.localPath && path.resolve(p.localPath) === refPath);
+    if (byPath) return byPath;
+  }
+  return projectRef;
+}
+
+function _isPrBackedDispatch(entry) {
+  return !!(entry?.meta?.pr && entry.meta?.project);
+}
+
+function getStalePrDispatchReason(entry, config) {
+  if (!_isPrBackedDispatch(entry)) return '';
+  const project = _resolveDispatchProject(entry.meta.project, config);
+  if (!project) return 'missing project metadata';
+
+  const tracked = shared.findPrRecord(queries.getPrs(project), entry.meta.pr, project);
+  const prLabel = entry.meta.pr?.id || entry.meta.pr?.url || entry.id;
+  if (!tracked) return `PR ${prLabel} is no longer tracked`;
+  if (tracked.status !== PR_STATUS.ACTIVE) return `PR ${tracked.id || prLabel} is ${tracked.status || 'missing status'}`;
+  if (tracked._contextOnly) return `PR ${tracked.id || prLabel} is context-only`;
+
+  const queuedBranch = entry.meta.branch || entry.meta.pr?.branch || '';
+  const trackedBranch = tracked.branch || '';
+  if (queuedBranch && trackedBranch && shared.sanitizeBranch(queuedBranch) !== shared.sanitizeBranch(trackedBranch)) {
+    return `PR ${tracked.id || prLabel} branch changed from ${queuedBranch} to ${trackedBranch}`;
+  }
+
+  return '';
+}
+
+function pruneStalePrDispatches(config = queries.getConfig()) {
+  const removed = [];
+  mutateDispatch((dispatch) => {
+    dispatch.pending = (dispatch.pending || []).filter(entry => {
+      const reason = getStalePrDispatchReason(entry, config);
+      if (!reason) return true;
+      removed.push({ entry, reason });
+      return false;
+    });
+    return dispatch;
+  });
+
+  for (const { entry, reason } of removed) {
+    try { deleteDispatchPromptSidecar(entry); } catch { /* cleanup best-effort */ }
+    log('info', `Dropped stale PR dispatch ${entry.id}: ${reason}`);
+  }
+  return removed.length;
 }
 
 // ─── Retryable Failure Classification ────────────────────────────────────────
@@ -253,11 +311,16 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
       if (prId && project) {
         try {
           const prsPath = projectPrPath(project);
+          let restored = false;
           mutatePullRequests(prsPath, prs => {
             const target = shared.findPrRecord(prs, { id: prId }, project);
-            if (target?.humanFeedback) target.humanFeedback.pendingFix = true;
+            if (target?.humanFeedback) {
+              target.humanFeedback.pendingFix = true;
+              restored = true;
+            }
           });
-          log('info', `Restored pendingFix=true on ${prId} after failed human-feedback fix`);
+          if (restored) log('info', `Restored pendingFix=true on ${prId} after failed human-feedback fix`);
+          else log('info', `Skipped pendingFix restore for ${prId} — PR is no longer tracked`);
         } catch (e) { log('warn', `restore pendingFix: ${e.message}`); }
       }
       // Clear completed dispatch entry so dedup doesn't block re-dispatch
@@ -424,6 +487,8 @@ module.exports = {
   completeDispatch,
   writeInboxAlert,
   updateAgentStatus,
+  getStalePrDispatchReason,
+  pruneStalePrDispatches,
   cancelPendingDispatchesForPr,
   cleanDispatchEntries,
   cancelPendingWorkItems,
