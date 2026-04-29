@@ -766,6 +766,11 @@ For all state files, look under \`${MINIONS_DIR}\`.`;
   return result;
 }
 
+function findCCActionsDelimiter(text) {
+  const header = findCCActionsHeader(text);
+  return header && header.parseable ? header.index : -1;
+}
+
 // Single helper that handles both the strict (well-formed) and loose forms of
 // the ===ACTIONS=== delimiter. `parseable` is true only for the strict form
 // that parseCCActions can JSON.parse; loose matches still split display text
@@ -783,9 +788,9 @@ function findCCActionsHeader(text) {
       parseable: true,
     };
   }
-  // Loose: any ===ACTIONS<word-boundary>... line. Catches malformed delimiters
-  // like ===ACTIONS -> that should still be hidden from output.
-  const loose = /(?:^|\r?\n)===ACTIONS\b[^\r\n]*(?=\r?\n|$)/m.exec(text);
+  // Loose: sentinel-looking malformed delimiters such as ===ACTIONS -> should
+  // still be hidden, but prose like "===ACTIONS are documented" must render.
+  const loose = /(?:^|\r?\n)===ACTIONS(?:[ \t]*(?:[-=]>?|={1,}|$)|[^A-Za-z0-9_\s\r\n][^\r\n]*)(?=\r?\n|$)/m.exec(text);
   if (loose) {
     const headerStart = loose.index + loose[0].indexOf('===ACTIONS');
     return { index: headerStart, headerLength: 0, parseable: false };
@@ -809,6 +814,15 @@ function stripCCActionsForStream(text) {
   // Fast path: 95% of streamed chunks contain no '=' before any actions block
   // appears. Skip all regex work in that case.
   if (text.indexOf('===') < 0) return text;
+  const header = findCCActionsHeader(text);
+  if (header) return text.slice(0, header.index).trim();
+  const partialIdx = findCCActionsPartialDelimiter(text);
+  if (partialIdx >= 0) return text.slice(0, partialIdx).trimEnd();
+  return text;
+}
+
+function stripCCActionsForDisplay(text) {
+  if (!text) return '';
   const header = findCCActionsHeader(text);
   if (header) return text.slice(0, header.index).trim();
   const partialIdx = findCCActionsPartialDelimiter(text);
@@ -861,7 +875,7 @@ function _extractActionsJson(segment) {
 
 function parseCCActions(text) {
   let actions = [];
-  let displayText = text;
+  let displayText = stripCCActionsForDisplay(text);
   let parseError = null;
   const header = findCCActionsHeader(text);
   let segment = '';

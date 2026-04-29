@@ -21843,6 +21843,23 @@ async function testSettingsComprehensive() {
 }
 
 async function testCcActionTypes() {
+  function getCcActionsBlock() {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    return src.slice(src.indexOf('function findCCActionsDelimiter'), src.indexOf('// ── /loop'));
+  }
+
+  function getParseCCActions() {
+    return new Function(getCcActionsBlock() + '\nreturn parseCCActions;')();
+  }
+
+  function getStripCCActionsForDisplay() {
+    return new Function(getCcActionsBlock() + '\nreturn stripCCActionsForDisplay;')();
+  }
+
+  function getExtractActionsJson() {
+    return new Function(getCcActionsBlock() + '\nreturn _extractActionsJson;')();
+  }
+
   await test('CC system prompt includes schedule, create-meeting, set-config actions', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
@@ -21858,16 +21875,17 @@ async function testCcActionTypes() {
   });
 
   await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(headerBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = getParseCCActions();
 
     const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
     const inlineResult = parseCCActions(inline);
     assert.strictEqual(inlineResult.text, inline, 'inline mentions of ===ACTIONS=== must not truncate CC output');
     assert.deepStrictEqual(inlineResult.actions, [], 'inline mentions of ===ACTIONS=== must not be parsed as actions');
+
+    const prose = '## Action System\n===ACTIONS are documented here, not emitted as a delimiter.';
+    const proseResult = parseCCActions(prose);
+    assert.strictEqual(proseResult.text, prose, 'prose lines beginning with ===ACTIONS must remain visible');
+    assert.deepStrictEqual(proseResult.actions, [], 'prose lines beginning with ===ACTIONS must not be parsed as actions');
 
     const withActions = 'Answer first.\n\n===ACTIONS===\n[{\"type\":\"note\",\"title\":\"x\",\"content\":\"y\"}]';
     const actionResult = parseCCActions(withActions);
@@ -21928,15 +21946,65 @@ async function testCcActionTypes() {
     assert.ok(src.includes('teams.teamsPostCCResponse(body.message, displayText)'), 'streaming CC should mirror parsed display text');
   });
 
+  await test('parseCCActions rejects malformed ===ACTIONS -> delimiter without executing action JSON', () => {
+    const parseCCActions = getParseCCActions();
+
+    const malformed = [
+      'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      '',
+      '===ACTIONS ->',
+      '[{"type":"reopen-work-item","id":"W-moj69r5e3la3","project":"OfficeAgent"}]'
+    ].join('\n');
+    const result = parseCCActions(malformed);
+    assert.strictEqual(result.text, 'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      'malformed action blocks should be removed from visible response text');
+    assert.deepStrictEqual(result.actions, [],
+      'malformed action delimiter must not parse or execute action JSON');
+  });
+
+  await test('parseCCActions does not fall back to fenced action parsing after malformed delimiter', () => {
+    const parseCCActions = getParseCCActions();
+
+    const malformedWithFence = [
+      'I can reopen that.',
+      '',
+      '===ACTIONS ->',
+      '```action',
+      '{"type":"reopen-work-item","id":"W-moj69r5e3la3","project":"OfficeAgent"}',
+      '```'
+    ].join('\n');
+    const result = parseCCActions(malformedWithFence);
+    assert.strictEqual(result.text, 'I can reopen that.',
+      'rejected malformed action blocks should not leak fenced action payloads');
+    assert.deepStrictEqual(result.actions, [],
+      'fallback fenced action parser must not interpret payloads after a malformed delimiter');
+  });
+
+  await test('stripCCActionsForDisplay prevents streaming chunks from leaking action blocks', () => {
+    const stripCCActionsForDisplay = getStripCCActionsForDisplay();
+
+    assert.strictEqual(
+      stripCCActionsForDisplay('Answer first.\n\n===ACTIONS===\n[{"type":"note","title":"x","content":"y"}]'),
+      'Answer first.',
+      'valid action blocks should be hidden from streamed display text'
+    );
+    assert.strictEqual(
+      stripCCActionsForDisplay('Reopening W-moj69r5e3la3 in OfficeAgent.\n\n===ACTIONS ->\n[{"type":"reopen-work-item","id":"W-moj69r5e3la3"}]'),
+      'Reopening W-moj69r5e3la3 in OfficeAgent.',
+      'malformed action block candidates should be hidden from streamed display text'
+    );
+    assert.strictEqual(
+      stripCCActionsForDisplay('Answer first.\n\n===ACT'),
+      'Answer first.',
+      'partial action delimiter prefixes should be hidden before the full delimiter arrives'
+    );
+  });
+
   // Issue #1834: Command Center actions silently dropped when JSON segment isn't a clean array.
   // Non-Claude runtimes (Copilot/GPT) routinely wrap JSON in ```json fences or add trailing prose.
   // Parser must extract the JSON array regardless of these common deviations.
   await test('parseCCActions recovers JSON wrapped in ```json fences (issue #1834)', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(headerBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = getParseCCActions();
 
     const fenced = 'I will file that bug.\n\n===ACTIONS===\n```json\n[{"type":"file-bug","title":"Repro bug","description":"x"}]\n```';
     const result = parseCCActions(fenced);
@@ -21946,11 +22014,7 @@ async function testCcActionTypes() {
   });
 
   await test('parseCCActions recovers JSON wrapped in plain ``` fences (issue #1834)', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(headerBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = getParseCCActions();
 
     const fenced = 'Done.\n\n===ACTIONS===\n```\n[{"type":"note","title":"x","content":"y"}]\n```';
     const result = parseCCActions(fenced);
@@ -21959,11 +22023,7 @@ async function testCcActionTypes() {
   });
 
   await test('parseCCActions tolerates trailing prose after JSON array (issue #1834)', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(headerBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = getParseCCActions();
 
     const trailing = 'Filing now.\n\n===ACTIONS===\n[{"type":"file-bug","title":"x","description":"y"}]\n\nLet me know if anything is off.';
     const result = parseCCActions(trailing);
@@ -21972,11 +22032,7 @@ async function testCcActionTypes() {
   });
 
   await test('parseCCActions surfaces JSON parse failures via _actionParseError (issue #1834)', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const headerBody = src.match(/function findCCActionsHeader[\s\S]*?^}/m)[0];
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(headerBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = getParseCCActions();
 
     // Truncated JSON — no recoverable balanced bracket.
     const broken = 'Working on it.\n\n===ACTIONS===\n[{"type":"note","title":"x"';
@@ -21986,9 +22042,7 @@ async function testCcActionTypes() {
   });
 
   await test('_extractActionsJson finds balanced JSON inside fences and trailing prose', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
-    const _extractActionsJson = new Function(extractBody + '\nreturn _extractActionsJson;')();
+    const _extractActionsJson = getExtractActionsJson();
 
     assert.strictEqual(_extractActionsJson('\n```json\n[{"a":1}]\n```'), '[{"a":1}]', 'strips ```json fence');
     assert.strictEqual(_extractActionsJson('\n```\n[{"a":1}]\n```'), '[{"a":1}]', 'strips bare ``` fence');
