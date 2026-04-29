@@ -34,6 +34,7 @@ const ISOLATED_MODULES = [
   '../engine/playbook',
   '../engine/routing',
   '../engine/issues',
+  '../engine/ado',
 ];
 
 function createTmpDir() {
@@ -34329,10 +34330,10 @@ async function testCreateThrottleTracker() {
   });
 }
 
-// ─── W-mojy9mobqfnu: ADO polling repository metadata resilience ─────────────
+// ─── #1849: ADO polling lazy repositoryId resolution ────────────────────────
 
 async function testAdoRepositoryIdFallback() {
-  console.log('\n── W-mojy9mobqfnu: ADO polling repositoryId fallback/config errors ──');
+  console.log('\n── #1849: ADO polling repositoryId lazy resolution/config errors ──');
 
   const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
   const basePr = {
@@ -34349,6 +34350,7 @@ async function testAdoRepositoryIdFallback() {
     const origFetch = globalThis.fetch;
     try {
       const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      testShared.safeWrite(path.join(testShared.MINIONS_DIR, 'config.json'), { projects: [project], engine: {} });
       testShared.safeWrite(testShared.projectPrPath(project), prs);
 
       delete require.cache[require.resolve(adoPath)];
@@ -34367,11 +34369,19 @@ async function testAdoRepositoryIdFallback() {
     }
   }
 
-  function successfulPollFetch(calls, expectedRepoToken) {
+  function successfulPollFetch(calls, expectedRepoToken, resolvedRepositoryId = 'repo-guid') {
     return async (url) => {
       calls.push(url);
       assert.ok(!url.includes('/repositories//'),
         `ADO poll URL must never contain an empty repository segment: ${url}`);
+      if (url.includes('/_apis/git/repositories/repo-name?')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: resolvedRepositoryId, name: 'repo-name' }),
+          headers: { get: () => null },
+        };
+      }
       if (url.includes(`/repositories/${expectedRepoToken}/pullrequests/42?`)) {
         return {
           ok: true,
@@ -34402,7 +34412,47 @@ async function testAdoRepositoryIdFallback() {
     };
   }
 
-  await test('ADO pollPrStatus uses repoName when repositoryId is empty', async () => {
+  await test('ADO pollPrStatus warns once when repositoryId cannot be resolved', async () => {
+    const project = {
+      name: 'ado-unresolved-repository-id',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const logs = [];
+      const origConsoleLog = console.log;
+      let fetchCalls = 0;
+      console.log = (...args) => { logs.push(args.join(' ')); };
+      globalThis.fetch = async (url) => {
+        fetchCalls++;
+        assert.ok(url.includes('/_apis/git/repositories/repo-name?'),
+          `unresolved empty repositoryId should only call the repository lookup endpoint, got ${url}`);
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null }, text: async () => '' };
+      };
+      try {
+        await ado.pollPrStatus({ projects: [project], engine: {} });
+        await ado.pollPrStatus({ projects: [project], engine: {} });
+      } finally {
+        console.log = origConsoleLog;
+      }
+
+      assert.strictEqual(fetchCalls, 2,
+        'failed repositoryId resolution should be retried on later polls so self-healing remains possible');
+      const warnings = logs.filter(line =>
+        line.includes('ADO PR polling disabled for project ado-unresolved-repository-id')
+        && line.includes('project.repositoryId')
+        && line.includes('repoName')
+      );
+      assert.strictEqual(warnings.length, 1,
+        'missing repositoryId warning should be emitted once per startup per project');
+    });
+  });
+
+  await test('ADO pollPrStatus resolves empty repositoryId from repoName and persists it', async () => {
     const project = {
       name: 'ado-empty-repository-id',
       adoOrg: 'org',
@@ -34414,23 +34464,30 @@ async function testAdoRepositoryIdFallback() {
 
     await withAdoPollFixture(project, [{ ...basePr }], async ({ ado, testShared }) => {
       const calls = [];
-      globalThis.fetch = successfulPollFetch(calls, 'repo-name');
+      globalThis.fetch = successfulPollFetch(calls, 'repo-guid');
 
       await ado.pollPrStatus({ projects: [project], engine: {} });
 
-      assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
-        'pollPrStatus must recover from empty repositoryId by polling via project.repoName');
+      assert.ok(calls.some(url => url.includes('/_apis/git/repositories/repo-name?')),
+        'pollPrStatus must resolve empty repositoryId via the ADO repositories API and repoName');
+      assert.ok(calls.some(url => url.includes('/repositories/repo-guid/pullrequests/42?')),
+        'pollPrStatus must use the resolved repositoryId for PR polling');
       const stored = testShared.safeJson(testShared.projectPrPath(project));
       assert.strictEqual(stored[0].buildStatus, 'passing',
-        'pollPrStatus should persist the mocked build result when repoName fallback succeeds');
+        'pollPrStatus should persist the mocked build result when repositoryId resolution succeeds');
       assert.ok(stored[0].lastBuildCheck,
-        'pollPrStatus should record lastBuildCheck after a successful fallback poll');
+        'pollPrStatus should record lastBuildCheck after a successful resolved-ID poll');
+      const storedConfig = testShared.safeJson(path.join(testShared.MINIONS_DIR, 'config.json'));
+      assert.strictEqual(storedConfig.projects[0].repositoryId, 'repo-guid',
+        'resolved repositoryId must be persisted back to config.json');
+      assert.strictEqual(project.repositoryId, 'repo-guid',
+        'resolved repositoryId must also update the in-memory project so the current poll can proceed');
     });
   });
 
-  await test('ADO pollPrHumanComments uses repoName when repositoryId is empty', async () => {
+  await test('ADO pollPrStatus uses persisted repositoryId on subsequent polls without re-resolving', async () => {
     const project = {
-      name: 'ado-comments-empty-repository-id',
+      name: 'ado-subsequent-polls',
       adoOrg: 'org',
       adoProject: 'proj',
       repositoryId: '',
@@ -34440,25 +34497,15 @@ async function testAdoRepositoryIdFallback() {
 
     await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
       const calls = [];
-      globalThis.fetch = async (url) => {
-        calls.push(url);
-        assert.ok(!url.includes('/repositories//'),
-          `ADO comment poll URL must never contain an empty repository segment: ${url}`);
-        if (url.includes('/repositories/repo-name/pullrequests/42/threads?')) {
-          return {
-            ok: true,
-            status: 200,
-            text: async () => JSON.stringify({ value: [] }),
-            headers: { get: () => null },
-          };
-        }
-        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
-      };
+      globalThis.fetch = successfulPollFetch(calls, 'repo-guid');
 
-      await ado.pollPrHumanComments({ projects: [project], engine: {} });
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+      await ado.pollPrStatus({ projects: [project], engine: {} });
 
-      assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42/threads?')),
-        'pollPrHumanComments must recover from empty repositoryId by polling via project.repoName');
+      assert.strictEqual(calls.filter(url => url.includes('/_apis/git/repositories/repo-name?')).length, 1,
+        'repositoryId should be resolved once and cached in memory for subsequent polls in the same startup');
+      assert.strictEqual(calls.filter(url => url.includes('/repositories/repo-guid/pullrequests/42?')).length, 2,
+        'both the initial poll and a later poll should reach the PR endpoint using the resolved repositoryId');
     });
   });
 

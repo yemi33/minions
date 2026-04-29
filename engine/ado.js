@@ -33,16 +33,92 @@ function isGitHubProject(project) {
 
 function getAdoRepositoryId(project) {
   const repositoryId = String(project?.repositoryId || '').trim();
-  if (repositoryId) return repositoryId;
-  return String(project?.repoName || '').trim();
+  return repositoryId || null;
 }
 
 function getAdoProjectLabel(project) {
   return project?.name || project?.repoName || `${project?.adoOrg || 'unknown-org'}/${project?.adoProject || 'unknown-project'}`;
 }
 
-function logMissingAdoRepository(project, purpose) {
-  log('error', `${purpose} disabled for project ${getAdoProjectLabel(project)}: missing project.repositoryId and project.repoName; configure one so Azure DevOps repository API calls can target the repo`);
+const _missingAdoRepositoryWarnings = new Set();
+
+function getAdoRepositoryWarningKey(project) {
+  return project?.name
+    || `${project?.adoOrg || ''}/${project?.adoProject || ''}/${project?.repoName || ''}`
+    || 'unknown-project';
+}
+
+function logMissingAdoRepository(project, purpose, reason) {
+  const key = getAdoRepositoryWarningKey(project);
+  if (_missingAdoRepositoryWarnings.has(key)) return;
+  _missingAdoRepositoryWarnings.add(key);
+  log('warn', `${purpose} disabled for project ${getAdoProjectLabel(project)}: ${reason}`);
+}
+
+function projectConfigEntryMatches(candidate, project) {
+  if (!candidate || typeof candidate !== 'object') return false;
+  if (project?.name && candidate.name === project.name) return true;
+  if (project?.localPath && candidate.localPath === project.localPath) return true;
+  return String(candidate.adoOrg || '').trim() === String(project?.adoOrg || '').trim()
+    && String(candidate.adoProject || '').trim() === String(project?.adoProject || '').trim()
+    && String(candidate.repoName || '').trim() === String(project?.repoName || '').trim();
+}
+
+function persistResolvedAdoRepositoryId(project, repositoryId) {
+  const configPath = path.join(shared.MINIONS_DIR, 'config.json');
+  let finalRepositoryId = repositoryId;
+  let matched = false;
+
+  mutateJsonFileLocked(configPath, (config) => {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+    if (!Array.isArray(config.projects)) return config;
+    const entry = config.projects.find(candidate => projectConfigEntryMatches(candidate, project));
+    if (!entry) return config;
+
+    matched = true;
+    const currentRepositoryId = String(entry.repositoryId || '').trim();
+    if (currentRepositoryId) {
+      finalRepositoryId = currentRepositoryId;
+      return config;
+    }
+    entry.repositoryId = repositoryId;
+    return config;
+  }, { defaultValue: { projects: [] }, skipWriteIfUnchanged: true });
+
+  project.repositoryId = finalRepositoryId;
+  if (!matched) {
+    log('warn', `Resolved ADO repositoryId for project ${getAdoProjectLabel(project)} but could not find a matching config.json project entry to persist it`);
+  }
+  return finalRepositoryId;
+}
+
+async function resolveAdoRepositoryId(project, token, purpose) {
+  const configured = getAdoRepositoryId(project);
+  if (configured) return configured;
+
+  const repoName = String(project?.repoName || '').trim();
+  if (!repoName) {
+    logMissingAdoRepository(project, purpose, 'missing project.repositoryId and project.repoName; configure one so Azure DevOps repository API calls can target the repo');
+    return null;
+  }
+
+  try {
+    const orgBase = getAdoOrgBase(project);
+    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(repoName)}?api-version=7.1`;
+    const repoData = await adoFetch(url, token);
+    const resolvedRepositoryId = String(repoData?.id || '').trim();
+    if (!resolvedRepositoryId) {
+      logMissingAdoRepository(project, purpose, `missing project.repositoryId; ADO repository lookup for repoName "${repoName}" did not return an id`);
+      return null;
+    }
+
+    const finalRepositoryId = persistResolvedAdoRepositoryId(project, resolvedRepositoryId);
+    log('info', `Resolved ADO repositoryId for project ${getAdoProjectLabel(project)} from repoName "${repoName}"`);
+    return finalRepositoryId;
+  } catch (e) {
+    logMissingAdoRepository(project, purpose, `missing project.repositoryId; could not resolve it from repoName "${repoName}" (${e.message})`);
+    return null;
+  }
 }
 
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
@@ -271,9 +347,8 @@ async function forEachActivePr(config, token, callback) {
     const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
 
-    const adoRepositoryId = getAdoRepositoryId(project);
+    const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO PR polling');
     if (!adoRepositoryId) {
-      logMissingAdoRepository(project, 'ADO PR polling');
       continue;
     }
 
@@ -730,9 +805,8 @@ async function reconcilePrs(config) {
   for (const project of projects) {
     if (isGitHubProject(project)) continue;
     if (!project.adoOrg || !project.adoProject) continue;
-    const adoRepositoryId = getAdoRepositoryId(project);
+    const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO PR reconciliation');
     if (!adoRepositoryId) {
-      logMissingAdoRepository(project, 'ADO PR reconciliation');
       continue;
     }
 
@@ -865,9 +939,8 @@ async function checkLiveReviewStatus(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
-    const adoRepositoryId = getAdoRepositoryId(project);
+    const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO live review check');
     if (!adoRepositoryId) {
-      logMissingAdoRepository(project, 'ADO live review check');
       return null;
     }
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests/${prNum}?api-version=7.1`;
@@ -909,9 +982,8 @@ async function checkLiveBuildAndConflict(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
-    const adoRepositoryId = getAdoRepositoryId(project);
+    const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO live build/conflict check');
     if (!adoRepositoryId) {
-      logMissingAdoRepository(project, 'ADO live build/conflict check');
       return null;
     }
     const encodedRepoId = encodeURIComponent(adoRepositoryId);
@@ -987,9 +1059,8 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   if (!token) return null;
 
   const orgBase = getAdoOrgBase(project);
-  const adoRepositoryId = getAdoRepositoryId(project);
+  const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO single PR status fetch');
   if (!adoRepositoryId) {
-    logMissingAdoRepository(project, 'ADO single PR status fetch');
     return null;
   }
   const encodedRepoId = encodeURIComponent(adoRepositoryId);
@@ -1065,17 +1136,16 @@ const getAdoThrottleState = () => _adoThrottle.getState();
  */
 async function findOpenPrOnBranch(project, branch) {
   if (!project.adoOrg || !project.adoProject || !branch) return null;
-  const adoRepositoryId = getAdoRepositoryId(project);
-  if (!adoRepositoryId) {
-    logMissingAdoRepository(project, 'ADO branch PR lookup');
-    return null;
-  }
   if (isAdoThrottled()) {
     log('debug', `[ado] Skipping branch PR lookup for ${project.name || project.repoName || 'unknown project'}:${branch} — throttled`);
     return null;
   }
   const token = await getAdoToken();
   if (!token) return null;
+  const adoRepositoryId = await resolveAdoRepositoryId(project, token, 'ADO branch PR lookup');
+  if (!adoRepositoryId) {
+    return null;
+  }
   const orgBase = shared.getAdoOrgBase(project);
   const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
   const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(adoRepositoryId)}/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${sourceRef}&api-version=7.1`;
