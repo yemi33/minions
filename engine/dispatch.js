@@ -243,6 +243,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     const retryableFailure = isRetryableFailureReason(reason, failureClass);
     let completedWorkItemFailure = false;
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
+      // If the live item cannot be resolved, keep the existing retry path.
       try {
         completedWorkItemFailure = isCompletedWorkItemForFailure(readLiveWorkItem(item.meta));
       } catch (e) { log('warn', 'read live work item before retry: ' + e.message); }
