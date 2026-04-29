@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1614 (2026-04-29)
+
+### Fixes
+- recover ===ACTIONS=== JSON from fences and trailing prose (#1834) (#1837)
+
 ## 0.1.1613 (2026-04-28)
 
 ### Features
