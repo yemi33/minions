@@ -72,7 +72,7 @@ After pushing, respond to each review comment/thread:
 - **If you fixed it**: Reply confirming the fix, then resolve the thread
 - **If you chose not to fix it**: Reply with your rationale explaining why the current approach is preferred — leave the thread open for the reviewer to decide
 - **GitHub**: Reply to each review comment, resolve conversations you've fixed
-- **ADO**: Reply to each thread, set status to `fixed` or `closed` for fixes; leave `active` for rationale replies
+- **ADO**: Use `az` CLI first to reply to each thread and update status when supported; use ADO MCP only as a fallback when `az` is unavailable or insufficient. Set status to `fixed` or `closed` for fixes; leave `active` for rationale replies
 
 ## When to Stop
 
@@ -94,4 +94,3 @@ pending: <any remaining work, or none>
 ```
 
 Replace the values with your actual results. This block MUST appear in your final output.
-

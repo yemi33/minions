@@ -18,6 +18,22 @@ const os = require('os');
 let passed = 0, failed = 0, skipped = 0;
 const results = [];
 const tmpDirs = [];
+const ISOLATED_MODULES = [
+  '../engine/shared',
+  '../engine/queries',
+  '../engine/lifecycle',
+  '../engine/dispatch',
+  '../engine/cleanup',
+  '../engine/timeout',
+  '../engine/pipeline',
+  '../engine/meeting',
+  '../engine/consolidation',
+  '../engine/llm',
+  '../engine/watches',
+  '../engine/scheduler',
+  '../engine/playbook',
+  '../engine/routing',
+];
 
 function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minions-test-'));
@@ -59,15 +75,19 @@ function createTestMinionsDir() {
   fs.writeFileSync(path.join(dir, 'engine', 'metrics.json'), '{}');
   fs.writeFileSync(path.join(dir, 'engine', 'log.json'), '[]');
   fs.writeFileSync(path.join(dir, 'work-items.json'), '[]');
+  const routingPath = path.join(MINIONS_DIR, 'routing.md');
+  if (fs.existsSync(routingPath)) {
+    fs.copyFileSync(routingPath, path.join(dir, 'routing.md'));
+  }
 
   process.env.MINIONS_TEST_DIR = dir;
   // Bust require cache so modules re-resolve MINIONS_DIR
-  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
+  for (const mod of ISOLATED_MODULES) {
     try { delete require.cache[require.resolve(mod)]; } catch {}
   }
   return function restore() {
     delete process.env.MINIONS_TEST_DIR;
-    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
+    for (const mod of ISOLATED_MODULES) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
   };
@@ -6605,8 +6625,8 @@ async function testConfigAndPlaybooks() {
     const initStart = src.indexOf('async function initMinions');
     const initEnd = src.indexOf('\nconst commands', initStart);
     const initFn = src.slice(initStart, initEnd);
-    assert.ok(/if \(!config\.engine\.defaultCli\)/.test(initFn),
-      'init should only auto-set defaultCli when not already configured');
+    assert.ok(/hadConfiguredDefaultCli/.test(initFn) && /if \(!hadConfiguredDefaultCli\)/.test(initFn),
+      'init should only auto-set defaultCli when the loaded config did not already configure one');
     assert.ok(/if \(k === 'defaultCli'\) continue;/.test(initFn),
       'init should not seed defaultCli from ENGINE_DEFAULTS before runtime detection');
     assert.ok(initFn.includes('_detectAvailableRuntimes()'),
@@ -6658,6 +6678,38 @@ async function testConfigAndPlaybooks() {
       'publish workflow should use the admin PAT when closing stale publish PRs');
     assert.ok(!src.includes('gh pr merge "$BRANCH" --auto --squash --delete-branch --admin'),
       'publish workflow should not use invalid --auto + --admin combination');
+  });
+
+  await test('publish workflow validates before publishing or opening publish PRs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    const testIndex = src.indexOf('npm test');
+    const publishIndex = src.indexOf('npm publish --access public');
+    const prCreateIndex = src.indexOf('gh pr create');
+    assert.ok(testIndex !== -1, 'publish workflow should run unit tests inline');
+    assert.ok(publishIndex !== -1, 'publish workflow should publish to npm');
+    assert.ok(prCreateIndex !== -1, 'publish workflow should create the publish PR');
+    assert.ok(testIndex < publishIndex,
+      'publish workflow should run tests before npm publish so failed validation does not publish a bad version');
+    assert.ok(testIndex < prCreateIndex,
+      'publish workflow should run tests before creating the publish PR so failed validation does not leave a fresh stale PR');
+  });
+
+  await test('publish workflow closes only publish PRs during failure cleanup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
+    assert.ok(src.includes('trap cleanup_on_failure EXIT'),
+      'publish workflow should install a failure trap so later step failures clean up publish PRs');
+    assert.ok(src.includes('close_publish_prs ""'),
+      'failure cleanup should include the current publish PR instead of only old stale PRs');
+    assert.ok(src.includes('close_publish_prs "$PUBLISH_PR_NUMBER"'),
+      'success path should close stale publish PRs while preserving the current PR for merge');
+    assert.ok(src.includes('--limit 200'),
+      'stale publish cleanup should scan more than the default 30 open PRs');
+    assert.ok(src.includes('select(.title | startswith("chore: publish "))'),
+      'stale cleanup should filter by the publish PR title prefix');
+    assert.ok(src.includes('select(.headRefName | startswith("chore/publish-"))'),
+      'stale cleanup should filter by the publish branch prefix to avoid non-publish PRs');
+    assert.ok(src.includes('GH_TOKEN="$GH_ADMIN_TOKEN" gh pr close "$pr" --delete-branch'),
+      'stale cleanup should use the admin token when closing publish PRs');
   });
 
   await test('publish workflow guards recursive skip-ci publishes and serializes runs', () => {
@@ -10368,6 +10420,17 @@ async function testResolveAgent() {
       };
       assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), 'lambert',
         'Lambert hint must override verify routing default of Dallas');
+    } finally { restore(); }
+  });
+
+  await test('normalizeAgentHints supports comma strings and _author_ token', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      assert.deepStrictEqual(
+        routing.normalizeAgentHints(' lambert, _author_, ', 'Dallas'),
+        ['lambert', 'dallas']
+      );
     } finally { restore(); }
   });
 
@@ -18716,14 +18779,9 @@ async function testSchedulerCronParsing() {
   });
 
   await test('discoverScheduledWork substitutes {{date}} in title and description', () => {
-    // Preserve + restore real schedule-runs.json so the test doesn't leak state
-    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    const restore = createTestMinionsDir();
     try {
-      // Wipe any prior run record for our test IDs so the cron fires now
-      let runs = {};
-      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
-      delete runs['test-date-sub'];
-      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+      const testScheduler = require('../engine/scheduler');
 
       const today = new Date().toISOString().slice(0, 10);
       const config = {
@@ -18737,23 +18795,20 @@ async function testSchedulerCronParsing() {
           enabled: true,
         }],
       };
-      const work = scheduler.discoverScheduledWork(config);
+      const work = testScheduler.discoverScheduledWork(config);
       const item = work.find(w => w._scheduleId === 'test-date-sub');
       assert.ok(item, 'discoverScheduledWork should emit a work item for the enabled schedule');
       assert.strictEqual(item.title, `health check ${today}`, 'title must have {{date}} substituted');
       assert.strictEqual(item.description, `explore test-health-${today}.md`, 'description must have {{date}} substituted');
     } finally {
-      _restoreFileState(runsSnapshot);
+      restore();
     }
   });
 
   await test('discoverScheduledWork falls back to substituted title when description is absent', () => {
-    const runsSnapshot = _captureFileState(scheduler.SCHEDULE_RUNS_PATH);
+    const restore = createTestMinionsDir();
     try {
-      let runs = {};
-      try { runs = JSON.parse(fs.readFileSync(scheduler.SCHEDULE_RUNS_PATH, 'utf8') || '{}'); } catch {}
-      delete runs['test-date-title-fallback'];
-      fs.writeFileSync(scheduler.SCHEDULE_RUNS_PATH, JSON.stringify(runs));
+      const testScheduler = require('../engine/scheduler');
 
       const today = new Date().toISOString().slice(0, 10);
       const config = {
@@ -18765,13 +18820,13 @@ async function testSchedulerCronParsing() {
           enabled: true,
         }],
       };
-      const work = scheduler.discoverScheduledWork(config);
+      const work = testScheduler.discoverScheduledWork(config);
       const item = work.find(w => w._scheduleId === 'test-date-title-fallback');
       assert.ok(item, 'should emit a work item');
       assert.strictEqual(item.description, `daily probe ${today}`,
         'description should fall back to title with {{date}} substituted');
     } finally {
-      _restoreFileState(runsSnapshot);
+      restore();
     }
   });
 }
@@ -18849,7 +18904,7 @@ async function testSchedulerSameMinuteGuard() {
 async function testSchedulerDispatchTimePersistence() {
   console.log('\n── scheduler.js — dispatch-time persistence (W-mo3zu273f8tm) ──');
 
-  // Helper: snapshot + reset schedule-runs.json AND its .backup sidecar.
+  // Helper: snapshot + reset isolated schedule-runs.json AND its .backup sidecar.
   // safeJson auto-restores from a .backup file when the main file is missing,
   // so both must be cleared for a true blank slate inside tests.
   function _snapshotAndClearScheduleRuns(realPath) {
@@ -18872,12 +18927,9 @@ async function testSchedulerDispatchTimePersistence() {
   await test('discoverScheduledWork writes lastRun and lastWorkItemId at dispatch time', () => {
     const restore = createTestMinionsDir();
     try {
-      // scheduler.js resolves SCHEDULE_RUNS_PATH once at require time relative
-      // to __dirname, so we can't redirect via MINIONS_TEST_DIR alone. Snapshot
-      // and clear the real file (and its .backup sidecar) for this test.
       const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
-      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
-      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      const runsPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(runsPath);
       try {
         const config = {
           schedules: [{
@@ -18891,7 +18943,7 @@ async function testSchedulerDispatchTimePersistence() {
         const work = schedulerMod.discoverScheduledWork(config);
         assert.strictEqual(work.length, 1, 'schedule matching now should produce one work item');
         const wi = work[0];
-        const runs = shared.safeJson(realPath) || {};
+        const runs = shared.safeJson(runsPath) || {};
         const entry = runs['test-dispatch-time-persistence'];
         assert.ok(entry && typeof entry === 'object',
           'schedule-runs entry must be written at dispatch time as an object');
@@ -18914,8 +18966,8 @@ async function testSchedulerDispatchTimePersistence() {
     const restore = createTestMinionsDir();
     try {
       const schedulerMod = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
-      const realPath = schedulerMod.SCHEDULE_RUNS_PATH;
-      const restoreFiles = _snapshotAndClearScheduleRuns(realPath);
+      const runsPath = schedulerMod.SCHEDULE_RUNS_PATH;
+      const restoreFiles = _snapshotAndClearScheduleRuns(runsPath);
       try {
         const config = {
           schedules: [{
@@ -18957,24 +19009,27 @@ async function testSchedulerDispatchTimePersistence() {
 async function testSchedulerAdditionalCoverage() {
   console.log('\n── scheduler.js — additional parseCron/shouldRunNow/discoverScheduledWork coverage ──');
 
-  // Snapshot + clear schedule-runs.json (and its .backup sidecar). safeJson auto-
-  // restores from .backup when the main file is missing, so both must be cleared
-  // for a true blank slate inside tests. Returns a restore function that puts
-  // whatever was there back — keeps tests atomic with respect to real engine state.
-  function snapshotAndClearScheduleRuns() {
-    const realPath = scheduler.SCHEDULE_RUNS_PATH;
-    const backupPath = realPath + '.backup';
-    const snapshot = fs.existsSync(realPath) ? fs.readFileSync(realPath) : null;
-    const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
-    try { fs.unlinkSync(realPath); } catch {}
-    try { fs.unlinkSync(backupPath); } catch {}
-    return function restoreFiles() {
-      if (snapshot) fs.writeFileSync(realPath, snapshot);
-      else { try { fs.unlinkSync(realPath); } catch {} }
-      if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
-      else { try { fs.unlinkSync(backupPath); } catch {} }
-    };
-  }
+  const restoreSchedulerRoot = createTestMinionsDir();
+  try {
+    const scheduler = require('../engine/scheduler');
+
+    // Snapshot + clear isolated schedule-runs.json (and its .backup sidecar).
+    // safeJson auto-restores from .backup when the main file is missing, so both
+    // must be cleared for a true blank slate inside each scheduler test.
+    function snapshotAndClearScheduleRuns() {
+      const runsPath = scheduler.SCHEDULE_RUNS_PATH;
+      const backupPath = runsPath + '.backup';
+      const snapshot = fs.existsSync(runsPath) ? fs.readFileSync(runsPath) : null;
+      const backupSnap = fs.existsSync(backupPath) ? fs.readFileSync(backupPath) : null;
+      try { fs.unlinkSync(runsPath); } catch {}
+      try { fs.unlinkSync(backupPath); } catch {}
+      return function restoreFiles() {
+        if (snapshot) fs.writeFileSync(runsPath, snapshot);
+        else { try { fs.unlinkSync(runsPath); } catch {} }
+        if (backupSnap) fs.writeFileSync(backupPath, backupSnap);
+        else { try { fs.unlinkSync(backupPath); } catch {} }
+      };
+    }
 
   // Patch Date so `new Date()` and Date.now() return the fixed timestamp. Calls
   // with explicit args (e.g. new Date(isoString)) still use the real Date.
@@ -19449,6 +19504,9 @@ async function testSchedulerAdditionalCoverage() {
       restoreFiles();
     }
   });
+  } finally {
+    restoreSchedulerRoot();
+  }
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -20258,62 +20316,60 @@ async function testExecSilent() {
 async function testTrackReviewMetric() {
   console.log('\n── shared.js — trackReviewMetric ──');
 
-  // trackReviewMetric writes to the real engine/metrics.json via path.join(__dirname, ...).
-  // That path is hardcoded to this shared.js module's directory, so we can't redirect it
-  // via MINIONS_TEST_DIR. Back up the file before tests and restore on exit.
-  const metricsPath = path.join(MINIONS_DIR, 'engine', 'metrics.json');
-  const snapshot = _captureFileState(metricsPath);
+  const restore = createTestMinionsDir();
+  const isolatedShared = require('../engine/shared');
+  const metricsPath = path.join(isolatedShared.MINIONS_DIR, 'engine', 'metrics.json');
 
   try {
     await test('trackReviewMetric skips when review status is not approved or changes-requested', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({ agent: 'dallas' }, 'waiting', { agents: { dallas: {} } });
-      shared.trackReviewMetric({ agent: 'dallas' }, 'pending', { agents: { dallas: {} } });
-      shared.trackReviewMetric({ agent: 'dallas' }, null, { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'waiting', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'pending', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, null, { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(m, {}, 'no metric should be recorded for unknown statuses');
     });
 
     await test('trackReviewMetric skips when pr has no agent', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({}, 'approved', { agents: { dallas: {} } });
-      shared.trackReviewMetric({ agent: '' }, 'approved', { agents: { dallas: {} } });
-      shared.trackReviewMetric({ agent: null }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({}, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: '' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: null }, 'approved', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(m, {}, 'empty/missing agent should be skipped');
     });
 
     await test('trackReviewMetric skips when agent not in config.agents', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({ agent: 'ghost' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'ghost' }, 'approved', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.ghost, undefined, 'non-configured agent should not be recorded');
     });
 
     await test('trackReviewMetric increments prsApproved for configured agent', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.dallas.prsApproved, 1);
-      assert.strictEqual(m.dallas.prsRejected, undefined);
+      assert.strictEqual(m.dallas.prsRejected, 0);
     });
 
     await test('trackReviewMetric increments prsRejected for changes-requested', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.dallas.prsRejected, 1);
-      assert.strictEqual(m.dallas.prsApproved, undefined);
+      assert.strictEqual(m.dallas.prsApproved, 0);
     });
 
     await test('trackReviewMetric sequential calls accumulate via lock-based read-modify-write', () => {
       fs.writeFileSync(metricsPath, '{}');
       const config = { agents: { dallas: {} } };
       for (let i = 0; i < 5; i++) {
-        shared.trackReviewMetric({ agent: 'dallas' }, 'approved', config);
+        isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', config);
       }
       for (let i = 0; i < 3; i++) {
-        shared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', config);
+        isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'changes-requested', config);
       }
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.dallas.prsApproved, 5);
@@ -20324,7 +20380,7 @@ async function testTrackReviewMetric() {
       fs.writeFileSync(metricsPath, JSON.stringify({
         dallas: { prsApproved: 4, tasksCompleted: 20, totalCostUsd: 1.23 },
       }));
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.dallas.prsApproved, 5);
       assert.strictEqual(m.dallas.tasksCompleted, 20, 'unrelated fields must be preserved');
@@ -20333,8 +20389,8 @@ async function testTrackReviewMetric() {
 
     await test('trackReviewMetric lowercases agent id before lookup and write', () => {
       fs.writeFileSync(metricsPath, '{}');
-      shared.trackReviewMetric({ agent: 'Dallas' }, 'approved', { agents: { dallas: {} } });
-      shared.trackReviewMetric({ agent: 'DALLAS' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'Dallas' }, 'approved', { agents: { dallas: {} } });
+      isolatedShared.trackReviewMetric({ agent: 'DALLAS' }, 'approved', { agents: { dallas: {} } });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(m.dallas.prsApproved, 2);
       assert.strictEqual(m.Dallas, undefined);
@@ -20344,15 +20400,15 @@ async function testTrackReviewMetric() {
     await test('trackReviewMetric does not throw on missing config', () => {
       fs.writeFileSync(metricsPath, '{}');
       // Should not throw — config?.agents?.[authorId] short-circuits to undefined.
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', undefined);
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', null);
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', {});
-      shared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: {} });
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', undefined);
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', null);
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', {});
+      isolatedShared.trackReviewMetric({ agent: 'dallas' }, 'approved', { agents: {} });
       const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(m, {}, 'no writes should occur without a configured agent');
     });
   } finally {
-    _restoreFileState(snapshot);
+    restore();
   }
 }
 
@@ -21129,8 +21185,9 @@ async function testCcActionTypes() {
   await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
     const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
-    const parseCCActions = new Function(findBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
 
     const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
     const inlineResult = parseCCActions(inline);
@@ -21141,6 +21198,78 @@ async function testCcActionTypes() {
     const actionResult = parseCCActions(withActions);
     assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
     assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
+  });
+
+  // Issue #1834: Command Center actions silently dropped when JSON segment isn't a clean array.
+  // Non-Claude runtimes (Copilot/GPT) routinely wrap JSON in ```json fences or add trailing prose.
+  // Parser must extract the JSON array regardless of these common deviations.
+  await test('parseCCActions recovers JSON wrapped in ```json fences (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const fenced = 'I will file that bug.\n\n===ACTIONS===\n```json\n[{"type":"file-bug","title":"Repro bug","description":"x"}]\n```';
+    const result = parseCCActions(fenced);
+    assert.strictEqual(result.text, 'I will file that bug.', '```json fence must not block the action split');
+    assert.strictEqual(result.actions.length, 1, '```json fence must not swallow the action JSON');
+    assert.strictEqual(result.actions[0].type, 'file-bug', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions recovers JSON wrapped in plain ``` fences (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const fenced = 'Done.\n\n===ACTIONS===\n```\n[{"type":"note","title":"x","content":"y"}]\n```';
+    const result = parseCCActions(fenced);
+    assert.strictEqual(result.actions.length, 1, 'plain ``` fence must not swallow the action JSON');
+    assert.strictEqual(result.actions[0].type, 'note', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions tolerates trailing prose after JSON array (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const trailing = 'Filing now.\n\n===ACTIONS===\n[{"type":"file-bug","title":"x","description":"y"}]\n\nLet me know if anything is off.';
+    const result = parseCCActions(trailing);
+    assert.strictEqual(result.actions.length, 1, 'trailing prose after JSON array must not silently drop actions');
+    assert.strictEqual(result.actions[0].type, 'file-bug', 'action body parsed through the trailing prose');
+  });
+
+  await test('parseCCActions surfaces JSON parse failures via _actionParseError (issue #1834)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + extractBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    // Truncated JSON — no recoverable balanced bracket.
+    const broken = 'Working on it.\n\n===ACTIONS===\n[{"type":"note","title":"x"';
+    const result = parseCCActions(broken);
+    assert.strictEqual(result.actions.length, 0, 'truncated JSON yields no actions');
+    assert.ok(result._actionParseError, 'parser must surface _actionParseError so callers can warn instead of silently dropping');
+  });
+
+  await test('_extractActionsJson finds balanced JSON inside fences and trailing prose', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const extractBody = src.match(/function _extractActionsJson[\s\S]*?^}/m)[0];
+    const _extractActionsJson = new Function(extractBody + '\nreturn _extractActionsJson;')();
+
+    assert.strictEqual(_extractActionsJson('\n```json\n[{"a":1}]\n```'), '[{"a":1}]', 'strips ```json fence');
+    assert.strictEqual(_extractActionsJson('\n```\n[{"a":1}]\n```'), '[{"a":1}]', 'strips bare ``` fence');
+    assert.strictEqual(_extractActionsJson('\n[{"a":1}]\n\nFollow-up note.'), '[{"a":1}]', 'extracts balanced [ array ] from trailing prose');
+    assert.strictEqual(_extractActionsJson('\n{"type":"note","title":"x"}\n\nDone.'), '{"type":"note","title":"x"}', 'extracts balanced { object } from trailing prose');
+    // Strings containing brackets must not throw off the balance counter.
+    assert.strictEqual(_extractActionsJson('\n[{"content":"][}{"}]\n\nx'), '[{"content":"][}{"}]', 'string contents do not break bracket balance');
+    // Escaped quotes inside strings.
+    assert.strictEqual(_extractActionsJson('\n[{"content":"a\\"b"}]\n'), '[{"content":"a\\"b"}]', 'escaped quotes do not break string scan');
   });
 }
 
@@ -29537,7 +29666,9 @@ async function testIsolationVerification() {
   });
 
   await test('no known test-only agent IDs in metrics.json', () => {
-    const metrics = shared.safeJson(path.join(shared.MINIONS_DIR, 'engine', 'metrics.json')) || {};
+    const metricsPath = path.join(shared.MINIONS_DIR, 'engine', 'metrics.json');
+    let metrics = {};
+    try { metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8')); } catch {}
     // temp-* is also the real runtime prefix for temporary agents, so only flag
     // IDs that are unambiguously test-only in the shared metrics file.
     const bad = Object.keys(metrics).filter(k => k === 'agent1' || k === 'reviewer' || k.startsWith('_test'));
@@ -29591,6 +29722,91 @@ async function testIsolationVerification() {
   await test('shared.js uses MINIONS_TEST_DIR env override', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     assert.ok(src.includes('MINIONS_TEST_DIR'), 'Should check env var');
+  });
+
+  await test('scheduler SCHEDULE_RUNS_PATH respects MINIONS_TEST_DIR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testScheduler = require('../engine/scheduler');
+      assert.strictEqual(
+        testScheduler.SCHEDULE_RUNS_PATH,
+        path.join(process.env.MINIONS_TEST_DIR, 'engine', 'schedule-runs.json')
+      );
+    } finally { restore(); }
+  });
+
+  await test('queries read metrics without restoring package-root backups', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testQueries = require('../engine/queries');
+      const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
+      fs.writeFileSync(metricsPath + '.backup', JSON.stringify({ dallas: { prsApproved: 1 } }));
+      fs.unlinkSync(metricsPath);
+      testQueries.getDispatchQueue();
+      testQueries.getMetrics();
+      assert.ok(!fs.existsSync(metricsPath),
+        'read-only query helpers must not recreate metrics.json from .backup sidecars');
+    } finally { restore(); }
+  });
+
+  await test('queuePlanToPrd writes only to isolated MINIONS_TEST_DIR work-items.json', () => {
+    const restore = createTestMinionsDir();
+    const slug = 'isolation-queue-' + Date.now();
+    const realWiPath = path.join(MINIONS_DIR, 'work-items.json');
+    const realBefore = fs.existsSync(realWiPath) ? fs.readFileSync(realWiPath, 'utf8') : null;
+    try {
+      const testShared = require('../engine/shared');
+      const queued = testShared.queuePlanToPrd({
+        planFile: `${slug}.md`,
+        title: slug,
+        description: slug,
+        project: 'minions',
+        createdBy: 'test',
+      });
+      assert.strictEqual(queued, true, 'queuePlanToPrd should queue in the test root');
+      const testItems = JSON.parse(fs.readFileSync(path.join(process.env.MINIONS_TEST_DIR, 'work-items.json'), 'utf8'));
+      assert.ok(testItems.some(w => w.planFile === `${slug}.md`), 'test work-items.json should contain queued item');
+      const realAfter = fs.existsSync(realWiPath) ? fs.readFileSync(realWiPath, 'utf8') : null;
+      assert.strictEqual(realAfter, realBefore, 'package-root work-items.json must not be touched while MINIONS_TEST_DIR is set');
+    } finally { restore(); }
+  });
+
+  await test('pipeline plan stages create plans and PRD work items only in MINIONS_TEST_DIR', async () => {
+    const restore = createTestMinionsDir();
+    const slug = 'isolation-pipeline-' + Date.now();
+    const realPlanPath = path.join(MINIONS_DIR, 'plans', `${slug}-${new Date().toISOString().slice(0, 10)}.md`);
+    const realWiPath = path.join(MINIONS_DIR, 'work-items.json');
+    const realWiBefore = fs.existsSync(realWiPath) ? fs.readFileSync(realWiPath, 'utf8') : null;
+    try {
+      const llmPath = require.resolve('../engine/llm');
+      require.cache[llmPath] = {
+        id: llmPath,
+        filename: llmPath,
+        loaded: true,
+        exports: { callLLM: async () => ({ text: `# ${slug}\n\nTest plan content.` }) },
+      };
+
+      const pipeline = require('../engine/pipeline');
+      const p = {
+        id: slug,
+        enabled: true,
+        stages: [{ id: 'plan', type: 'plan', title: slug, description: 'isolation regression' }],
+      };
+      pipeline.savePipeline(p);
+      pipeline.startRun(p.id, p);
+      await pipeline.discoverPipelineWork({ projects: [], agents: {}, engine: {} });
+
+      const testPlanPath = path.join(process.env.MINIONS_TEST_DIR, 'plans', `${slug}-${new Date().toISOString().slice(0, 10)}.md`);
+      assert.ok(fs.existsSync(testPlanPath), 'plan file should be created in the isolated test root');
+      const testItems = JSON.parse(fs.readFileSync(path.join(process.env.MINIONS_TEST_DIR, 'work-items.json'), 'utf8'));
+      assert.ok(testItems.some(w => w.title && w.title.includes(slug)), 'plan-to-prd work item should be written in the isolated test root');
+      assert.ok(!fs.existsSync(realPlanPath), 'package-root plans/ must not receive the test plan');
+      const realWiAfter = fs.existsSync(realWiPath) ? fs.readFileSync(realWiPath, 'utf8') : null;
+      assert.strictEqual(realWiAfter, realWiBefore, 'package-root work-items.json must not receive pipeline test work items');
+    } finally {
+      try { fs.unlinkSync(realPlanPath); } catch {}
+      restore();
+    }
   });
 
   await test('llm.js derives paths from shared.MINIONS_DIR', () => {
@@ -34946,6 +35162,38 @@ async function testAzureauthTimeout() {
     assert.ok(src.includes('azureauth') && src.includes('timeout'),
       'shared-rules.md should have explicit guidance about azureauth timeout');
   });
+
+  await test('README ADO guidance prefers az CLI with MCP as fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'README.md'), 'utf8');
+    const idx = src.indexOf('### Azure DevOps Users');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(idx >= 0, 'README should document Azure DevOps users');
+    assert.ok(/az CLI first|prefer(?:s)? the `az` CLI|use the `az` CLI first/i.test(section),
+      'README ADO guidance should explicitly prefer az CLI first');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(section),
+      'README ADO guidance should describe MCP as a fallback');
+  });
+
+  await test('shared-rules.md tells agents to use az CLI before ADO MCP', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(/Azure DevOps Tooling/i.test(src),
+      'shared-rules.md should have explicit Azure DevOps tooling guidance');
+    assert.ok(/az CLI first|use the `az` CLI first|prefer(?:s)? `az`/i.test(src),
+      'shared-rules.md should tell agents to prefer az CLI first');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(src),
+      'shared-rules.md should tell agents to use ADO MCP only as a fallback');
+  });
+
+  await test('CLAUDE.md ADO integration tells agents to use az CLI before ADO MCP', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    const idx = src.indexOf('## ADO Integration');
+    const section = src.slice(idx, src.indexOf('\n## ', idx + 1));
+    assert.ok(idx >= 0, 'CLAUDE.md should document ADO integration');
+    assert.ok(/az` CLI first|use the `az` CLI first|prefer(?:s)? `az`/i.test(section),
+      'CLAUDE.md should tell agents to use az CLI first for ADO');
+    assert.ok(/MCP[^.\n]*(fallback|when `az` is unavailable|insufficient)/i.test(section),
+      'CLAUDE.md should tell agents to use ADO MCP only as a fallback');
+  });
 }
 
 // ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
@@ -37245,9 +37493,8 @@ async function testPipelineBehavioral() {
   await test('executeTaskStage creates work items with correct properties', () => {
     const restore = createTestMinionsDir();
     try {
-      // pipeline.js uses path.join(__dirname, '..', 'work-items.json') which is the real path
-      // So we use the real work-items.json but with unique IDs for cleanup
       const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
       const testRunId = 'run-testexec' + Date.now();
       const run = {
         runId: testRunId,
@@ -37265,8 +37512,8 @@ async function testPipelineBehavioral() {
       };
 
       // Read work-items.json before
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      const wiBefore = shared.safeJson(wiPath) || [];
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
+      const wiBefore = isolatedShared.safeJson(wiPath) || [];
       const countBefore = wiBefore.length;
 
       const result = freshPipeline.executeTaskStage(stage, {}, run, {});
@@ -37274,7 +37521,7 @@ async function testPipelineBehavioral() {
       assert.ok(result.artifacts.workItems.length > 0, 'Should create work item IDs');
 
       // Read work-items.json after
-      const wiAfter = shared.safeJson(wiPath) || [];
+      const wiAfter = isolatedShared.safeJson(wiPath) || [];
       const newItems = wiAfter.filter(w => w._pipelineRun === testRunId);
       assert.strictEqual(newItems.length, 1, 'Should have created 1 work item');
       const wi = newItems[0];
@@ -37288,7 +37535,7 @@ async function testPipelineBehavioral() {
       assert.ok(wi.branch.includes('test-pipeline'), 'Branch should reference pipeline ID');
 
       // Cleanup: remove the test work item
-      shared.mutateJsonFileLocked(wiPath, items => {
+      isolatedShared.mutateJsonFileLocked(wiPath, items => {
         return items.filter(w => w._pipelineRun !== testRunId);
       }, { defaultValue: [] });
     } finally {
@@ -37300,24 +37547,25 @@ async function testPipelineBehavioral() {
     const restore = createTestMinionsDir();
     try {
       const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
       const testRunId = 'run-testidempotent' + Date.now();
       const run = { runId: testRunId, pipelineId: 'test-pipeline', stages: {} };
       const stage = { id: 'task-idem', type: 'task', title: 'Idempotent Task', taskType: 'explore' };
 
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
 
       // First call
       freshPipeline.executeTaskStage(stage, {}, run, {});
-      const wiAfter1 = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      const wiAfter1 = (isolatedShared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
       const count1 = wiAfter1.length;
 
       // Second call — should not duplicate
       freshPipeline.executeTaskStage(stage, {}, run, {});
-      const wiAfter2 = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      const wiAfter2 = (isolatedShared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
       assert.strictEqual(wiAfter2.length, count1, 'Should not create duplicates on second call');
 
       // Cleanup
-      shared.mutateJsonFileLocked(wiPath, items => {
+      isolatedShared.mutateJsonFileLocked(wiPath, items => {
         return items.filter(w => w._pipelineRun !== testRunId);
       }, { defaultValue: [] });
     } finally {
@@ -37329,6 +37577,7 @@ async function testPipelineBehavioral() {
     const restore = createTestMinionsDir();
     try {
       const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
       const testRunId = 'run-testmulti' + Date.now();
       const run = { runId: testRunId, pipelineId: 'test-pipeline', stages: {} };
       const stage = {
@@ -37340,11 +37589,11 @@ async function testPipelineBehavioral() {
         ],
       };
 
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
       const result = freshPipeline.executeTaskStage(stage, {}, run, {});
       assert.strictEqual(result.artifacts.workItems.length, 2, 'Should create 2 WI IDs');
 
-      const newItems = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      const newItems = (isolatedShared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
       assert.strictEqual(newItems.length, 2, 'Should create 2 work items');
       assert.strictEqual(newItems[0].title, 'Task A');
       assert.strictEqual(newItems[0].type, 'implement');
@@ -37352,7 +37601,7 @@ async function testPipelineBehavioral() {
       assert.strictEqual(newItems[1].type, 'test');
 
       // Cleanup
-      shared.mutateJsonFileLocked(wiPath, items => {
+      isolatedShared.mutateJsonFileLocked(wiPath, items => {
         return items.filter(w => w._pipelineRun !== testRunId);
       }, { defaultValue: [] });
     } finally {

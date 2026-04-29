@@ -57,7 +57,7 @@ Use subagents only for genuinely parallel, independent tasks. For reading files,
 ## Rules
 - Do NOT modify existing code unless the task explicitly asks for it.
 - Do NOT create a PR from explore work; exploration produces findings, not branches.
-- Use the appropriate MCP tools for PR creation — check available tools before starting.
+- Use the appropriate repo-host tooling for PR creation. For Azure DevOps, prefer the `az` CLI first and use ADO MCP only as a fallback when `az` is unavailable or insufficient.
 - Do NOT checkout branches in the main working tree — use worktrees.
 - Read `notes.md` for all team rules before starting.
 - Only emit a ```skill block if you uncovered a durable reusable workflow that is not already documented and is likely to help future tasks; zero skills is the default, and one-off findings belong in the inbox notes instead.

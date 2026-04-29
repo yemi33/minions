@@ -97,6 +97,10 @@ function timeSince(ms) {
   return `${Math.floor(s / 3600)}h ago`;
 }
 
+function readJsonNoRestore(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return null; }
+}
+
 // ── Core State Readers ──────────────────────────────────────────────────────
 
 let _configPollKeyMigrationChecked = false;
@@ -146,7 +150,7 @@ function getConfig() {
 }
 
 function getControl() {
-  return safeJson(CONTROL_PATH) || { state: 'stopped', pid: null };
+  return readJsonNoRestore(CONTROL_PATH) || { state: 'stopped', pid: null };
 }
 
 let _dispatchCache = null;
@@ -155,7 +159,7 @@ function getDispatch() {
   // Short-lived cache — dispatch.json is read 10+ times per tick but only changes on mutateDispatch
   const now = Date.now();
   if (_dispatchCache && (now - _dispatchCacheAt) < 2000) return _dispatchCache;
-  _dispatchCache = safeJson(DISPATCH_PATH) || { pending: [], active: [], completed: [] };
+  _dispatchCache = readJsonNoRestore(DISPATCH_PATH) || { pending: [], active: [], completed: [] };
   _dispatchCacheAt = now;
   return _dispatchCache;
 }
@@ -165,7 +169,7 @@ function getDispatchQueue() {
   const d = getDispatch();
   const allCompleted = d.completed || [];
   // Lifetime total from metrics (dispatch.completed is capped at 100)
-  const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+  const metrics = readJsonNoRestore(path.join(ENGINE_DIR, 'metrics.json')) || {};
   d.completedTotal = Object.entries(metrics).filter(([k]) => !k.startsWith('_')).reduce((sum, [, m]) => sum + (m.tasksCompleted || 0) + (m.tasksErrored || 0), 0);
   d.completed = allCompleted.slice(-20);
   return d;
@@ -194,7 +198,7 @@ function getEngineLog() {
 }
 
 function getMetrics() {
-  const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+  const metrics = readJsonNoRestore(path.join(ENGINE_DIR, 'metrics.json')) || {};
 
   for (const [agentId, m] of Object.entries(metrics)) {
     if (agentId.startsWith('_')) continue;
@@ -234,8 +238,10 @@ function getMetrics() {
   }
 
   // Apply enrichments to agent metrics
-  for (const [agentId, m] of Object.entries(metrics)) {
+  for (const [agentId, existing] of Object.entries(metrics)) {
     if (agentId.startsWith('_')) continue;
+    const m = { ...DEFAULT_AGENT_METRICS, ...(existing && typeof existing === 'object' ? existing : {}) };
+    metrics[agentId] = m;
     const lower = agentId.toLowerCase();
     if (prCountByAgent[lower] !== undefined) {
       m.prsCreated = prCountByAgent[lower];
@@ -474,7 +480,7 @@ function getAgentDetail(id) {
 
 function getPrs(project) {
   if (project) {
-    const prs = safeJson(projectPrPath(project)) || [];
+    const prs = readJsonNoRestore(projectPrPath(project)) || [];
     shared.normalizePrRecords(prs, project);
     return prs;
   }
@@ -510,7 +516,7 @@ function getPullRequests(config) {
   for (const dirName of projectDirs) {
     const project = projectByName.get(dirName) || null;
     const prPath = project ? projectPrPath(project) : path.join(MINIONS_DIR, 'projects', dirName, 'pull-requests.json');
-    const prs = safeJson(prPath);
+    const prs = readJsonNoRestore(prPath);
     if (!Array.isArray(prs)) continue;
     shared.normalizePrRecords(prs, project);
     const base = project?.prUrlBase || '';
@@ -527,7 +533,7 @@ function getPullRequests(config) {
     }
   }
   // Central pull-requests.json — manually linked PRs without a project
-  const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json'));
+  const centralPrs = readJsonNoRestore(path.join(MINIONS_DIR, 'pull-requests.json'));
   if (centralPrs) {
     shared.normalizePrRecords(centralPrs, null);
     for (const pr of centralPrs) {
@@ -1023,7 +1029,7 @@ function getPrdInfo(config) {
           if (cached && cached.mtimeMs === stat.mtimeMs) {
             plan = cached.plan;
           } else {
-            plan = safeJson(filePath);
+            plan = readJsonNoRestore(filePath);
             _prdFileCache.set(filePath, { mtimeMs: stat.mtimeMs, plan });
           }
           if (!plan || !plan.missing_features) continue;
@@ -1068,13 +1074,13 @@ function getPrdInfo(config) {
   const wiById = {};
   for (const project of projects) {
     try {
-      const workItems = safeJson(projectWorkItemsPath(project)) || [];
+      const workItems = readJsonNoRestore(projectWorkItemsPath(project)) || [];
       for (const wi of workItems) { if (!wi?.id) { console.warn(`[queries] Skipping work item without id in ${project.name}:`, JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan) wiById[wi.id] = wi; }
     } catch { /* optional */ }
   }
   // Also check central work-items.json
   try {
-    const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+    const centralWi = readJsonNoRestore(path.join(MINIONS_DIR, 'work-items.json')) || [];
     for (const wi of centralWi) { if (!wi?.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
   } catch { /* optional */ }
 

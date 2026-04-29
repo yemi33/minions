@@ -26,7 +26,7 @@ const path = require('path');
 const shared = require('./shared');
 const { safeJson, safeWrite, mutateJsonFileLocked, ts, dateStamp, WI_STATUS } = shared;
 
-const SCHEDULE_RUNS_PATH = path.join(__dirname, 'schedule-runs.json');
+const SCHEDULE_RUNS_PATH = path.join(shared.MINIONS_DIR, 'engine', 'schedule-runs.json');
 
 /**
  * Substitute schedule-time template variables in a string.

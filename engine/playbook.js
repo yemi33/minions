@@ -12,7 +12,7 @@ const queries = require('./queries');
 const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = shared.MINIONS_DIR;
 const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
 
 // Import tempAgents from routing module

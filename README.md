@@ -276,7 +276,7 @@ When you run `minions add <dir>`, it prompts for project details and saves them 
 
 **Key fields:**
 - `description` — critical for auto-routing. Agents read this to decide which repo to work in.
-- `repoHost` — `"ado"` (Azure DevOps) or `"github"`. Controls which MCP tools agents use for PR creation, review comments, and status checks. Defaults to `"ado"`.
+- `repoHost` — `"ado"` (Azure DevOps) or `"github"`. Controls which repo-host tooling agents use for PR creation, review comments, and status checks. Defaults to `"ado"`.
 - `repositoryId` — required for ADO (the repo GUID), optional for GitHub.
 - `adoOrg` — ADO organization or GitHub org/user.
 - `adoProject` — ADO project name (leave blank for GitHub).
@@ -302,17 +302,17 @@ All detected values are shown as defaults in the interactive prompts — just pr
 
 When dispatching agents, the engine reads each project's `CLAUDE.md` and injects it into the agent's system prompt as "Project Conventions". This means agents automatically follow repo-specific rules (logging, build commands, coding style, etc.) without needing to discover them each time. Each project can have different conventions.
 
-## MCP Server Integration
+## Repo Host Tooling
 
-Agents need MCP tools to interact with your repo host (create PRs, post review comments, etc.). Agents inherit MCP servers directly from `~/.claude.json` as Claude Code processes — add servers there and they're immediately available to all agents on next spawn.
+Agents need repo-host tooling to create PRs, post review comments, check status, and handle review feedback. GitHub repos use `gh`. Azure DevOps repos should use the `az` CLI first and keep the Azure DevOps MCP server available only as a fallback when `az` is unavailable or does not support the required operation.
 
-**Example:** If you use Azure DevOps, configure the `azure-ado` MCP server in your Claude Code settings. If you use GitHub, configure the `github` MCP server. Agents will discover and use whichever tools are available.
+Agents inherit MCP servers directly from `~/.claude.json` as Claude Code processes — add fallback servers there and they're immediately available to all agents on next spawn.
 
 Manually refresh with `minions mcp-sync`.
 
 ### Azure DevOps Users
 
-For the best experience with ADO repos, install the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) and use the [Azure DevOps MCP server](https://github.com/microsoft/azure-devops-mcp). This gives agents full access to PRs, work items, repos, and pipelines via MCP tools — no `gh` CLI needed.
+For the best experience with ADO repos, install the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) with the Azure DevOps extension. Agents should use the `az` CLI first for Azure DevOps operations such as PR creation, PR lookup, comments, reviewers, work items, and pipelines. Use the Azure DevOps MCP fallback only when `az` is unavailable in the environment or insufficient for a specific action.
 
 ```bash
 # Install Azure CLI
@@ -320,12 +320,13 @@ winget install Microsoft.AzureCLI   # Windows
 brew install azure-cli               # macOS
 curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash  # Linux
 
-# Login and set defaults
+# Install/enable the Azure DevOps extension, then login and set defaults
+az extension add --name azure-devops
 az login
 az devops configure --defaults organization=https://dev.azure.com/YOUR_ORG project=YOUR_PROJECT
 ```
 
-Then add the ADO MCP server to your Claude Code settings (`~/.claude.json`). The engine will auto-sync it to all agents on next start.
+Optionally add the [Azure DevOps MCP server](https://github.com/microsoft/azure-devops-mcp) to your Claude Code settings (`~/.claude.json`) as a fallback. The engine will auto-sync it to all agents on next start.
 
 ## Work Items
 
