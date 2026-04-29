@@ -64,10 +64,13 @@ Determine if this project is a **webapp** (has a dev server, serves HTTP, has a 
 - Check CLAUDE.md for run instructions
 
 If it IS a webapp:
-1. Start the dev server
-2. Wait for it to be ready (watch for "ready on", "listening on", "compiled" messages)
-3. Note the localhost URL and port
-4. **Keep the server running** — do NOT kill it
+1. Start the dev server **detached from your process** so it survives after you exit.
+   - If the repo docs provide a local run or background-start command, use that.
+   - Otherwise, use the detached-process mechanism that fits the current environment. Do not assume Bash, PowerShell, or any specific shell unless the repo or runtime clearly provides it.
+2. Wait a few seconds, then verify it using the repo's documented smoke test, health check, startup output, or the lightest project-appropriate manual check.
+3. Note the localhost URL, port, process identifier/PID, or equivalent runtime details the repo exposes.
+4. Output the exact restart command with **absolute worktree paths**.
+5. Include the stop command or shutdown procedure that matches how you started it.
 
 If it is NOT a webapp (library, CLI tool, backend service without UI), skip this step.
 
@@ -98,7 +101,9 @@ Structure your report exactly like this:
 ### Local Server
 - Status: RUNNING / NOT_APPLICABLE
 - URL: http://localhost:XXXX (if running)
-- Run Command: `cd <absolute-path> && <command>`
+- PID / Process: <pid or equivalent identifier, if running>
+- Restart Command: `cd <absolute-path-to-worktree> && <exact start command>`
+- Stop Command: `<exact stop command or shutdown procedure>`
 
 ### Summary
 (1-2 sentence overall assessment — is this PR safe to review?)
@@ -139,11 +144,12 @@ Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT
 - **Do NOT create pull requests** — this is a build/test task only
 - **Do NOT push commits** or modify code
 - **Do NOT attempt to fix build/test failures** — report them and file a work item
-- If starting a dev server, output the **exact run command with absolute paths** so the user can restart it:
+- If starting a dev server, output the **exact restart command with absolute paths** so the user can restart it:
   ```
-  ## Run Command
+  ## Restart Command
   cd <absolute-path-to-worktree> && <exact start command>
   ```
+- Also include the server URL, PID/process identifier, and matching stop command.
 - Use the worktree path, NOT the main project path, for all commands
 - The worktree will persist after your process ends so the user can inspect it
 
