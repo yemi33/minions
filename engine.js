@@ -2171,7 +2171,7 @@ async function discoverFromPrs(config, project) {
     if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      const agentId = resolveAgent('fix', config, pr.agent);
+      const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
@@ -2210,7 +2210,7 @@ async function discoverFromPrs(config, project) {
         }
         continue;
       }
-      const agentId = resolveAgent('fix', config, pr.agent);
+      const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
 
       const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
@@ -2290,7 +2290,7 @@ async function discoverFromPrs(config, project) {
         }
       } catch (e) { log('warn', `Pre-dispatch build check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
-      const agentId = resolveAgent('fix', config, pr.agent);
+      const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
 
       let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
@@ -2365,7 +2365,7 @@ async function discoverFromPrs(config, project) {
         } catch (e) { log('warn', `Pre-dispatch conflict check for ${pr.id}: ${e.message} — skipping dispatch`); liveSkip = true; }
 
         if (!liveSkip) {
-          const agentId = resolveAgent('fix', config, pr.agent);
+          const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
           if (agentId) {
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
               pr_id: pr.id, pr_branch: pr.branch || '',
@@ -2502,7 +2502,7 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     const agentHints = routing.extractAgentHints(item);
-    const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
+    const agentId = item.agent || resolveAgent(workType, config, { agentHints });
     if (!agentId) {
       // Check if reason is budget
       const cfgAgents = config.agents || {};
@@ -3022,7 +3022,7 @@ function discoverCentralWorkItems(config) {
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
       const agentHints = routing.extractAgentHints(item);
-      const agentId = item.agent || resolveAgent(workType, config, null, agentHints);
+      const agentId = item.agent || resolveAgent(workType, config, { agentHints });
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
@@ -3664,7 +3664,7 @@ async function tickInner() {
     // be of type string. Received undefined` and re-queues — every tick. Try to
     // resolve a fallback via routing; if none is available, skip this tick.
     if (!item.agent || typeof item.agent !== 'string') {
-      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, null, routing.extractAgentHints(item.meta?.item));
+      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, { agentHints: routing.extractAgentHints(item.meta?.item) });
       if (!fallback) {
         log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
         continue;

@@ -6160,36 +6160,85 @@ async function testLlmModule() {
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
   });
 
-  await test('llm streaming accumulator does not finalize Copilot tool-request narration', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+  await test('copilot stream consumer does not finalize tool-request narration', () => {
+    // Behavior moved out of engine/llm.js into the runtime adapter — assert
+    // against engine/runtimes/copilot.js so the rule still has source-coverage.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot.js'), 'utf8');
     assert.ok(src.includes('function _copilotAssistantMessageHasTools('),
-      'stream accumulator should identify Copilot assistant messages that request tools');
-    assert.ok(src.includes('!_copilotAssistantMessageHasTools(obj)'),
-      'stream accumulator should not treat tool-request narration as terminal answer text');
-    assert.ok(src.includes('if (copilotMessageBuffer && !copilotTaskCompleteSeen)') && src.includes('text = _streamText(copilotMessageBuffer)'),
-      'stream accumulator should preserve trailing Copilot deltas when no final assistant.message arrives');
+      'copilot adapter should identify assistant messages that request tools');
+    assert.ok(src.includes('_copilotAssistantMessageHasTools(obj)'),
+      'copilot stream consumer should consult the helper before treating content as terminal text');
+    assert.ok(src.includes('copilotMessageBuffer'),
+      'copilot stream consumer should buffer assistant.message_delta deltaContent');
+    assert.ok(src.includes('copilotTaskCompleteSeen'),
+      'copilot stream consumer should suppress further deltas once task_complete fires');
   });
 
-  await test('llm streaming accumulator treats Copilot task_complete as terminal summary', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
-    assert.ok(src.includes("obj.type === 'session.task_complete'") && src.includes('_captureCopilotTaskComplete(obj.data?.summary'),
-      'stream accumulator should capture Copilot session.task_complete summary');
+  await test('copilot stream consumer treats task_complete as terminal summary', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot.js'), 'utf8');
+    assert.ok(src.includes("obj.type === 'session.task_complete'") && src.includes('_captureTaskComplete(obj.data?.summary'),
+      'copilot adapter should capture session.task_complete summary');
     assert.ok(src.includes("tr.name === 'task_complete'") && src.includes('continue;'),
       'task_complete tool requests should be captured as terminal summaries, not emitted as normal tools');
-    assert.ok(src.includes("obj.data.toolName === 'task_complete'") && src.includes('return;'),
+    assert.ok(src.includes("obj.data.toolName === 'task_complete'"),
       'task_complete tool starts should not remain as progress-only tool events');
-    assert.ok(src.includes('COPILOT_TASK_COMPLETE_GRACE_MS') && src.includes('onTaskComplete: scheduleTaskCompleteClose'),
+    const llmSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(llmSrc.includes('COPILOT_TASK_COMPLETE_GRACE_MS') && llmSrc.includes('onTaskComplete: scheduleTaskCompleteClose'),
       'streaming calls should close Copilot shortly after terminal task_complete so the UI stops spinning');
   });
 
-  await test('llm streaming accumulator consumes Claude partial stream_event deltas', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
-    assert.ok(src.includes("obj.type === 'stream_event'") && src.includes('_captureClaudeStreamEvent(obj)'),
-      'stream accumulator should inspect Claude stream_event records');
+  await test('claude stream consumer handles partial stream_event deltas', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
+    assert.ok(src.includes("obj.type === 'stream_event'"),
+      'claude adapter should inspect stream_event records');
     assert.ok(src.includes("event.type === 'content_block_delta'") && src.includes("delta.type === 'text_delta'"),
-      'stream accumulator should turn Claude text_delta records into live chunks');
+      'claude adapter should turn text_delta records into live chunks via ctx.pushText');
     assert.ok(src.includes("event.type === 'message_start'") && src.includes('claudeStreamBlocks.clear()'),
-      'Claude partial stream state should reset between assistant messages');
+      'claude per-stream state should reset between assistant messages');
+  });
+
+  await test('llm.js streaming accumulator delegates event handling to runtime.createStreamConsumer', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.createStreamConsumer(ctx)'),
+      'accumulator must build a runtime stream consumer once per stream');
+    assert.ok(src.includes('consumer.consume(ev)'),
+      'accumulator must hand parsed events to the consumer');
+    assert.ok(/streamConsumer\b/.test(src),
+      'accumulator must capability-gate the consumer requirement (streamConsumer)');
+  });
+
+  await test('llm.js source contains zero runtime-event obj.type === branches (consumer-only)', () => {
+    // Mirrors the existing `runtime.name ===` ban — pin the rule that
+    // engine/llm.js never branches on Claude/Copilot event shapes inline.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    const codeOnly = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    // Banned: any obj.type === '<runtime event>' branch left over from when
+    // the accumulator inspected event shapes directly.
+    const banned = [
+      "obj.type === 'stream_event'",
+      "obj.type === 'session.task_complete'",
+      "obj.type === 'assistant'",
+      "obj.type === 'assistant.message_delta'",
+      "obj.type === 'assistant.message'",
+      "obj.type === 'assistant.reasoning'",
+      "obj.type === 'assistant.reasoning_delta'",
+      "obj.type === 'tool.execution_start'",
+    ];
+    for (const needle of banned) {
+      assert.ok(!codeOnly.includes(needle),
+        `engine/llm.js still contains "${needle}" — runtime-event handling must live in the adapter's createStreamConsumer`);
+    }
+  });
+
+  await test('Claude and Copilot adapters declare streamConsumer capability', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    assert.strictEqual(claude.capabilities.streamConsumer, true);
+    assert.strictEqual(copilot.capabilities.streamConsumer, true);
+    assert.strictEqual(typeof claude.createStreamConsumer, 'function');
+    assert.strictEqual(typeof copilot.createStreamConsumer, 'function');
   });
 
   // ── Export Shape ─────────────────────────────────────────────────────────
@@ -10596,7 +10645,7 @@ async function testResolveAgent() {
         },
         engine: { allowTempAgents: false },
       };
-      assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), 'lambert',
+      assert.strictEqual(routing.resolveAgent('verify', config, { agentHints: ['lambert'] }), 'lambert',
         'Lambert hint must override verify routing default of Dallas');
     } finally { restore(); }
   });
@@ -10644,7 +10693,7 @@ async function testResolveAgent() {
         },
         engine: { allowTempAgents: false },
       };
-      assert.strictEqual(routing.resolveAgent('verify', config, null, ['lambert']), null,
+      assert.strictEqual(routing.resolveAgent('verify', config, { agentHints: ['lambert'] }), null,
         'Busy Lambert hint must block dispatch instead of rerouting to Dallas');
     } finally { restore(); }
   });
@@ -10660,8 +10709,8 @@ async function testResolveAgent() {
       'extractAgentHints should derive hints from preferred_agent/agents');
     assert.ok(engineSrc.includes('routing.extractAgentHints(item)'),
       'Work-item discovery should derive agent hints via routing.extractAgentHints');
-    assert.ok(engineSrc.includes('resolveAgent(workType, config, null, agentHints)'),
-      'Work-item discovery should pass hints into resolveAgent so routing defaults do not override them');
+    assert.ok(engineSrc.includes('resolveAgent(workType, config, { agentHints })'),
+      'Work-item discovery should pass hints into resolveAgent (opts-bag form) so routing defaults do not override them');
     assert.ok(engineSrc.includes('routing.extractAgentHints(item.meta?.item)'),
       'Pending dispatch fallback should preserve work-item agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item)'),
@@ -35842,7 +35891,13 @@ async function testLoopToWatchInterception() {
     assert.ok(handleStream, 'handleCommandCenterStream must exist');
     const fnText = handleStream[0];
     assert.ok(fnText.includes('_detectLoopInvocation'), 'streaming path must call _detectLoopInvocation');
-    assert.ok(fnText.includes('toolUses.push({ name, input: input || {} })'),
+    // Tool-use capture lives in the hoisted _invokeCcStream helper now (shared
+    // between the initial call and the resume-fail retry). Either the helper
+    // body or the inline form is acceptable — the contract is "tool metadata
+    // is captured into toolUses on every onToolUse callback".
+    const invokeFn = dashSrc.match(/function _invokeCcStream[\s\S]*?^  }/m);
+    const captureSite = (invokeFn && invokeFn[0]) || fnText;
+    assert.ok(captureSite.includes('toolUses.push({ name, input: input || {} })'),
       'streaming path must retain tool-use metadata so loop fallback still works when the final text omits /loop');
     assert.ok(fnText.includes('toolUses = []; // discard stale metadata from the failed resume attempt'),
       'streaming retry path must clear stale tool metadata before the fresh retry');

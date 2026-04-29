@@ -156,7 +156,8 @@ function normalizeAgentHints(agentHints, authorAgent = null, agents = null) {
   return normalized;
 }
 
-function resolveAgent(workType, config, authorAgent = null, agentHints = null) {
+function resolveAgent(workType, config, opts = {}) {
+  const { authorAgent = null, agentHints = null } = opts || {};
   const routes = getRoutingTableCached();
   const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
   const agents = config.agents || {};

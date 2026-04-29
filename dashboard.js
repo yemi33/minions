@@ -584,7 +584,7 @@ function _ensureCcLiveStream(tabId) {
     tabId,
     text: '',
     tools: [],
-    thinking: false,
+    thinkingSent: false,
     donePayload: null,
     writer: null,
     endResponse: null,
@@ -4635,6 +4635,40 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return out;
   }
 
+  /**
+   * Build the callLLMStreaming invocation for the SSE Command Center path.
+   * Both the initial call and the post-resume-fail retry share the same
+   * onChunk/onToolUse/onThinking shape — only `sessionId` differs (set on
+   * initial call, undefined on retry). Hoisted to keep the two call sites
+   * in lock-step.
+   */
+  function _invokeCcStream({ prompt, sessionId, liveState, toolUses, model, effort, maxTurns, engineConfig }) {
+    const { callLLMStreaming } = require('./engine/llm');
+    return callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
+      timeout: 900000, label: 'command-center', model, maxTurns,
+      allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+      sessionId, effort, direct: true,
+      engineConfig,
+      onChunk: (text) => {
+        const display = stripCCActionsForStream(text);
+        liveState.text = display;
+        // Once text is flowing, the SSE-replay branch (live.thinkingSent &&
+        // !live.text) shouldn't show stale "Thinking…" on reconnect.
+        if (liveState.thinkingSent) liveState.thinkingSent = false;
+        if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
+      },
+      onToolUse: (name, input) => {
+        toolUses.push({ name, input: input || {} });
+        liveState.tools.push({ name, input: input || {} });
+        if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
+      },
+      onThinking: () => {
+        liveState.thinkingSent = true;
+        if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
+      },
+    });
+  }
+
   async function handleCommandCenterStream(req, res) {
     // SSE Origin gate (belt-and-suspenders: the top-level dispatcher has
     // already rejected disallowed origins on POST, but validate again here
@@ -4702,7 +4736,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         for (const tool of live.tools || []) {
           writeCcEvent({ type: 'tool', name: tool.name, input: _lightToolInput(tool.input) });
         }
-        if (live.thinking && !live.text) writeCcEvent({ type: 'thinking', text: 'Thinking...' });
+        if (live.thinkingSent && !live.text) writeCcEvent({ type: 'thinking', text: 'Thinking...' });
         if (live.text) writeCcEvent({ type: 'chunk', text: live.text });
         if (live.donePayload) {
           writeCcEvent(live.donePayload);
@@ -4773,33 +4807,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const preamble = wasResume ? '' : buildCCStatePreamble();
         const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
 
-        const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
+        const { trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
         const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
         const ccMaxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
         let toolUses = [];
-        const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
-          allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-          sessionId, effort: streamEffort, direct: true,
+        const llmPromise = _invokeCcStream({
+          prompt, sessionId, liveState, toolUses,
+          model: streamModel, effort: streamEffort, maxTurns: ccMaxTurns,
           engineConfig: CONFIG.engine,
-          onChunk: (text) => {
-            const display = stripCCActionsForStream(text);
-            liveState.text = display;
-            if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
-            // Once text is flowing, the SSE-replay branch (live.thinking &&
-            // !live.text) shouldn't show stale "Thinking…" on reconnect.
-            if (liveState.thinking) liveState.thinking = false;
-          },
-          onToolUse: (name, input) => {
-            toolUses.push({ name, input: input || {} });
-            liveState.tools.push({ name, input: input || {} });
-            if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
-          },
-          onThinking: () => {
-            liveState.thinking = true;
-            if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
-          }
         });
         _ccStreamAbort = llmPromise.abort;
         liveState.abortFn = _ccStreamAbort;
@@ -4814,33 +4830,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const freshPreamble = buildCCStatePreamble();
           const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
           toolUses = []; // discard stale metadata from the failed resume attempt
-          const retryPromise = callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
-            timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
-            allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-            effort: streamEffort, direct: true,
+          const retryPromise = _invokeCcStream({
+            prompt: freshPrompt, sessionId: undefined, liveState, toolUses,
+            model: streamModel, effort: streamEffort, maxTurns: ccMaxTurns,
             engineConfig: CONFIG.engine,
-            onChunk: (text) => {
-              const display = stripCCActionsForStream(text);
-              liveState.text = display;
-              if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
-              // Same reset as the initial path so resume-fail retries don't
-              // leave a stale "Thinking…" frame visible on SSE reconnect.
-              if (liveState.thinking) liveState.thinking = false;
-            },
-            onToolUse: (name, input) => {
-              toolUses.push({ name, input: input || {} });
-              liveState.tools.push({ name, input: input || {} });
-              if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
-            },
-            onThinking: () => {
-              liveState.thinking = true;
-              if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
-            }
-            });
-            _ccStreamAbort = retryPromise.abort;
-            liveState.abortFn = _ccStreamAbort;
-            ccInFlightAborts.set(tabId, _ccStreamAbort);
-            const retryResult = await retryPromise;
+          });
+          _ccStreamAbort = retryPromise.abort;
+          liveState.abortFn = _ccStreamAbort;
+          ccInFlightAborts.set(tabId, _ccStreamAbort);
+          const retryResult = await retryPromise;
           trackUsage('command-center', retryResult.usage);
           if (retryResult.text) {
             // Fresh session succeeded — use retryResult from here

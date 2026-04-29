@@ -360,6 +360,137 @@ function parseError(rawOutput) {
   return { message: '', code: null, retriable: true };
 }
 
+// ── Stream Consumer ─────────────────────────────────────────────────────────
+//
+// Per-stream consumer factory invoked by engine/llm.js's accumulator. The
+// accumulator owns global stream state (stdout/stderr/text dedup/tool dedup)
+// and exposes the `ctx` API below; the consumer owns Claude-specific per-stream
+// state (joined-text accumulator, content-block Map for tool/thinking
+// tracking) and translates Claude event shapes into ctx callbacks.
+//
+// `ctx` shape (provided by accumulator):
+//   maxTextLength, pushText(value), pushToolUse(name, input),
+//   notifyThinking(), notifyTaskComplete(summary, success),
+//   setUsage(usage), setSessionId(id), setText(value),
+//   toolUseAlreadySeen(name, input)
+
+const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
+
+function createStreamConsumer(ctx) {
+  // Per-stream local state. `claudeStreamBlocks` is kept for Map-based
+  // bookkeeping (tool-use blocks, thinking events, out-of-order text-block
+  // reassembly). The incremental `claudeJoinedText` string is the hot-path
+  // accumulator — appending one delta at a time keeps the stream loop O(n).
+  let claudeJoinedText = '';
+  const claudeStreamBlocks = new Map();
+
+  function _rebuildClaudeJoinedText() {
+    claudeJoinedText = Array.from(claudeStreamBlocks.keys()).sort((a, b) => a - b)
+      .map(index => claudeStreamBlocks.get(index))
+      .filter(block => block && block.type === 'text' && block.text)
+      .map(block => block.text)
+      .join('');
+  }
+
+  function _consumeStreamEvent(obj) {
+    const event = obj?.event;
+    if (!event || typeof event !== 'object') return;
+    if (event.type === 'message_start') {
+      claudeStreamBlocks.clear();
+      claudeJoinedText = '';
+      return;
+    }
+    if (event.type === 'content_block_start') {
+      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
+      const block = event.content_block || {};
+      claudeStreamBlocks.set(index, { type: block.type || '', text: block.text || '' });
+      if (THINKING_BLOCK_TYPES.has(block.type)) ctx.notifyThinking();
+      // Out-of-order block landing: rebuild from the Map. Common case is
+      // monotonic in-order arrival, where the trailing-append branch wins.
+      const indices = Array.from(claudeStreamBlocks.keys());
+      const isTrailing = indices.every(i => i <= index);
+      if (!isTrailing) {
+        _rebuildClaudeJoinedText();
+      } else if (block.type === 'text' && block.text) {
+        claudeJoinedText += block.text;
+      }
+      if (claudeJoinedText) ctx.pushText(claudeJoinedText);
+      return;
+    }
+    if (event.type === 'content_block_delta') {
+      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
+      const delta = event.delta || {};
+      if (delta.type === 'thinking_delta' || typeof delta.thinking === 'string') ctx.notifyThinking();
+      if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text) {
+        const block = claudeStreamBlocks.get(index) || { type: 'text', text: '' };
+        block.type = 'text';
+        block.text = (block.text || '') + delta.text;
+        claudeStreamBlocks.set(index, block);
+        // Common case: deltas arrive monotonically per index — append directly.
+        claudeJoinedText += delta.text;
+        ctx.pushText(claudeJoinedText);
+      }
+      return;
+    }
+    // content_block_stop / message_delta / message_stop are observed but the
+    // accumulator doesn't need to act on them — terminal text comes via the
+    // result event below.
+  }
+
+  function consume(obj) {
+    if (!obj || typeof obj !== 'object') return;
+
+    if (obj.session_id) ctx.setSessionId(obj.session_id);
+
+    if (obj.type === 'stream_event') {
+      _consumeStreamEvent(obj);
+      return;
+    }
+
+    if (obj.type === 'result' && typeof obj.result === 'string') {
+      // Claude result event: terminal text + usage. Override any previously
+      // streamed text — this is the authoritative final answer.
+      ctx.setText(obj.result);
+      if (obj.total_cost_usd || obj.usage) {
+        ctx.setUsage({
+          costUsd: obj.total_cost_usd || 0,
+          inputTokens: obj.usage?.input_tokens || 0,
+          outputTokens: obj.usage?.output_tokens || 0,
+          cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
+          cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
+          durationMs: obj.duration_ms || 0,
+          numTurns: obj.num_turns || 0,
+        });
+      }
+      return;
+    }
+
+    if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+      // Claude assistant turn: content blocks (text + tool_use).
+      // Multi-text-block messages (with --include-partial-messages) need their
+      // text JOINED before pushText, otherwise each block overwrites the prior.
+      let assistantText = '';
+      for (const block of obj.message.content) {
+        if (block?.type === 'text' && block.text) {
+          assistantText += block.text;
+        } else if (THINKING_BLOCK_TYPES.has(block?.type)) {
+          ctx.notifyThinking();
+        } else if (block?.type === 'tool_use' && block.name) {
+          ctx.pushToolUse(block.name, block.input || {});
+        }
+      }
+      if (assistantText) ctx.pushText(assistantText);
+    }
+  }
+
+  function reset() {
+    claudeJoinedText = '';
+    claudeStreamBlocks.clear();
+  }
+
+  return { consume, reset };
+}
+
 // ── Capability Block ────────────────────────────────────────────────────────
 
 const capabilities = {
@@ -387,6 +518,8 @@ const capabilities = {
   fallbackModel: true,
   // Engine controls session persistence (writes session.json on completion)
   sessionPersistenceControl: true,
+  // Adapter implements createStreamConsumer(ctx) — required by llm.js accumulator
+  streamConsumer: true,
 };
 
 // Install hint surfaced when `resolveBinary()` returns null. Consumed by
@@ -409,6 +542,8 @@ module.exports = {
   parseOutput,
   parseStreamChunk,
   parseError,
+  createStreamConsumer,
   // Exposed for unit tests — never imported by engine code
   _CLAUDE_SHORTHANDS,
+  THINKING_BLOCK_TYPES,
 };

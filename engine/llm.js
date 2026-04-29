@@ -24,10 +24,6 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 
-// Claude content blocks come in two thinking variants; hoisted to module scope
-// so the streaming accumulator's hot path doesn't recreate the set per event.
-const THINKING_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking']);
-
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 
 function trackEngineUsage(category, usage) {
@@ -246,12 +242,12 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
 // ─── Streaming Accumulator ───────────────────────────────────────────────────
 //
 // Reads JSONL events as they stream in. JSON parsing is delegated to
-// `runtime.parseStreamChunk()` — that gives us the runtime's defensive
-// guarantees (e.g. Copilot rewrapping unknown event types as type:'ignore').
+// `runtime.parseStreamChunk()` and event-shape interpretation is delegated to
+// `runtime.createStreamConsumer(ctx)`. This file stays runtime-agnostic — it
+// owns the global accumulator state (stdout/stderr/text dedup/toolUses) and
+// exposes a `ctx` callback API the adapter calls when it sees Claude- or
+// Copilot-shaped events.
 //
-// Text / tool extraction branches on event SHAPE rather than runtime identity.
-// Both Claude and Copilot events flow through here; for any given object only
-// one branch matches because the event type strings don't collide.
 // Final reconciliation calls `runtime.parseOutput(stdout)` so per-runtime
 // finalization quirks (Copilot's premiumRequests, Claude's session_id) stay
 // inside the adapter.
@@ -267,6 +263,10 @@ function _createStreamAccumulator({
   onTaskComplete = null,
   onThinking = null,
 }) {
+  if (!runtime?.capabilities?.streamConsumer || typeof runtime.createStreamConsumer !== 'function') {
+    throw new Error(`runtime ${runtime?.name || '<unknown>'} missing createStreamConsumer (capabilities.streamConsumer)`);
+  }
+
   let stdout = '';
   let stderr = '';
   let lineBuf = '';
@@ -274,217 +274,76 @@ function _createStreamAccumulator({
   let usage = null;
   let sessionId = null;
   let lastTextSent = '';
-  const toolUses = [];
-
-  // Copilot streams `assistant.message_delta` with `data.deltaContent` chunks
-  // before emitting `assistant.message`. Tool-request messages can include
-  // narration ("I'll inspect...") that is only progress text, so terminal text
-  // comes from non-tool assistant messages or trailing deltas.
-  let copilotMessageBuffer = '';
-  let copilotTaskCompleteSeen = false;
-  let copilotTaskCompleteSummary = '';
-  const claudeStreamBlocks = new Map();
-  // Maintained accumulator of Claude text — incrementally appended on each
-  // text_delta so the hot path doesn't rebuild from the Map every chunk
-  // (rebuild was O(n) per delta → O(n²) over the response).
-  let claudeJoinedText = '';
   let thinkingSent = false;
+  let taskCompleteFired = false;
+  let lastTaskCompleteSummary = '';
+  const toolUses = [];
 
   function _streamText(value) {
     return (maxTextLength && value.length > maxTextLength) ? value.slice(-maxTextLength) : value;
   }
 
-  function _copilotAssistantMessageHasTools(obj) {
-    const requests = obj?.data?.toolRequests;
-    return Array.isArray(requests) && requests.length > 0;
-  }
-
-  function _notifyThinking() {
-    if (!onThinking || thinkingSent) return;
-    thinkingSent = true;
-    onThinking();
-  }
-
-  // Rebuild the joined text from the Map. Only used as a safety net when
-  // content blocks arrive out of order (a non-trailing index lands after a
-  // later one — rare but possible if events get reordered upstream).
-  function _rebuildClaudeJoinedText() {
-    claudeJoinedText = Array.from(claudeStreamBlocks.keys()).sort((a, b) => a - b)
-      .map(index => claudeStreamBlocks.get(index))
-      .filter(block => block && block.type === 'text' && block.text)
-      .map(block => block.text)
-      .join('');
-  }
-
-  function _captureClaudeText(value) {
-    if (typeof value !== 'string' || !value) return;
-    const nextText = _streamText(value);
-    text = nextText;
-    if (onChunk && nextText !== lastTextSent) {
-      lastTextSent = nextText;
-      onChunk(nextText);
-    }
-  }
-
-  function _captureClaudeStreamEvent(obj) {
-    const event = obj?.event;
-    if (!event || typeof event !== 'object') return false;
-    if (event.type === 'message_start') {
-      claudeStreamBlocks.clear();
-      claudeJoinedText = '';
-      thinkingSent = false;
-      return true;
-    }
-    if (event.type === 'content_block_start') {
-      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
-      const block = event.content_block || {};
-      claudeStreamBlocks.set(index, { type: block.type || '', text: block.text || '' });
-      if (THINKING_BLOCK_TYPES.has(block.type)) _notifyThinking();
-      // If a block lands at a non-trailing index (out-of-order delivery), the
-      // monotonic-append path can't reconstruct the joined text — rebuild as
-      // a safety net. The common case is in-order arrival; rebuild is rare.
-      const indices = Array.from(claudeStreamBlocks.keys());
-      const isTrailing = indices.every(i => i <= index);
-      if (!isTrailing) {
-        _rebuildClaudeJoinedText();
-      } else if (block.type === 'text' && block.text) {
-        claudeJoinedText += block.text;
+  // ── ctx surface — the only API the runtime stream consumer sees ─────────
+  const ctx = {
+    maxTextLength,
+    pushText(value) {
+      if (typeof value !== 'string' || !value) return;
+      const next = _streamText(value);
+      text = next;
+      if (onChunk && next !== lastTextSent) {
+        lastTextSent = next;
+        onChunk(next);
       }
-      if (claudeJoinedText) _captureClaudeText(claudeJoinedText);
-      return true;
-    }
-    if (event.type === 'content_block_delta') {
-      const index = Number.isInteger(event.index) ? event.index : Number(event.index) || 0;
-      const delta = event.delta || {};
-      if (delta.type === 'thinking_delta' || typeof delta.thinking === 'string') _notifyThinking();
-      if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text) {
-        const block = claudeStreamBlocks.get(index) || { type: 'text', text: '' };
-        block.type = 'text';
-        block.text = (block.text || '') + delta.text;
-        claudeStreamBlocks.set(index, block);
-        // Common case: deltas arrive monotonically per index, so appending to
-        // the joined accumulator directly is correct.
-        claudeJoinedText += delta.text;
-        _captureClaudeText(claudeJoinedText);
-      }
-      return true;
-    }
-    return event.type === 'content_block_stop' || event.type === 'message_delta' || event.type === 'message_stop';
-  }
-
-  function _captureCopilotTaskComplete(summary, success = true) {
-    if (typeof summary !== 'string' || !summary) return;
-    const finalSummary = _streamText(summary);
-    const alreadySeen = copilotTaskCompleteSeen && copilotTaskCompleteSummary === finalSummary;
-    copilotTaskCompleteSeen = true;
-    copilotTaskCompleteSummary = finalSummary;
-    const hadText = !!text;
-    if (!hadText) {
-      text = finalSummary;
-      if (onChunk && finalSummary !== lastTextSent) {
-        lastTextSent = finalSummary;
-        onChunk(finalSummary);
-      }
-    }
-    copilotMessageBuffer = '';
-    if (!alreadySeen && onTaskComplete) onTaskComplete({ summary: finalSummary, success: success !== false });
-  }
-
-  function captureEvent(obj) {
-    if (!obj || typeof obj !== 'object') return;
-
-    // ── Claude shape ────────────────────────────────────────────────────────
-    if (obj.session_id) sessionId = obj.session_id;
-    if (obj.type === 'stream_event') {
-      _captureClaudeStreamEvent(obj);
-    }
-    if (obj.type === 'result' && typeof obj.result === 'string') {
-      // Claude result event: terminal text + usage.
-      text = maxTextLength ? obj.result.slice(-maxTextLength) : obj.result;
-      if (obj.total_cost_usd || obj.usage) {
-        usage = {
-          costUsd: obj.total_cost_usd || 0,
-          inputTokens: obj.usage?.input_tokens || 0,
-          outputTokens: obj.usage?.output_tokens || 0,
-          cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
-          cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
-          durationMs: obj.duration_ms || 0,
-          numTurns: obj.num_turns || 0,
-        };
-      }
-    }
-    if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
-      // Claude assistant turn: content blocks (text + tool_use).
-      // Multi-text-block messages (common with --include-partial-messages) need
-      // their text joined before _captureClaudeText, otherwise each block
-      // overwrites the prior one.
-      let assistantText = '';
-      for (const block of obj.message.content) {
-        if (block?.type === 'text' && block.text) {
-          assistantText += block.text;
-        } else if (THINKING_BLOCK_TYPES.has(block?.type)) {
-          _notifyThinking();
-        } else if (block?.type === 'tool_use' && block.name) {
-          const toolUse = { name: block.name, input: block.input || {} };
-          toolUses.push(toolUse);
-          if (onToolUse) onToolUse(toolUse.name, toolUse.input);
+    },
+    setText(value) {
+      // Hard-set text bypassing dedup — for terminal events that should
+      // override any streamed text (Claude's `result`, Copilot's final
+      // assistant.message). onChunk is NOT fired here; this is the
+      // authoritative final-text path, not a streaming chunk.
+      if (typeof value !== 'string') return;
+      text = _streamText(value);
+    },
+    pushToolUse(name, input) {
+      if (!name) return;
+      const toolUse = { name, input: input || {} };
+      toolUses.push(toolUse);
+      if (onToolUse) onToolUse(toolUse.name, toolUse.input);
+    },
+    toolUseAlreadySeen(name, input) {
+      if (!name) return false;
+      const stringified = JSON.stringify(input || {});
+      return toolUses.some(t => t.name === name && JSON.stringify(t.input) === stringified);
+    },
+    notifyThinking() {
+      if (!onThinking || thinkingSent) return;
+      thinkingSent = true;
+      onThinking();
+    },
+    notifyTaskComplete(summary, success = true) {
+      if (typeof summary !== 'string' || !summary) return;
+      const finalSummary = _streamText(summary);
+      const alreadySeen = taskCompleteFired && lastTaskCompleteSummary === finalSummary;
+      lastTaskCompleteSummary = finalSummary;
+      // Surface as terminal text only if nothing streamed yet.
+      if (!text) {
+        text = finalSummary;
+        if (onChunk && finalSummary !== lastTextSent) {
+          lastTextSent = finalSummary;
+          onChunk(finalSummary);
         }
       }
-      if (assistantText) _captureClaudeText(assistantText);
-    }
+      if (!alreadySeen && onTaskComplete) {
+        taskCompleteFired = true;
+        onTaskComplete({ summary: finalSummary, success: success !== false });
+      } else {
+        taskCompleteFired = true;
+      }
+    },
+    setUsage(u) { if (u) usage = u; },
+    setSessionId(id) { if (typeof id === 'string' && id) sessionId = id; },
+  };
 
-    // ── Copilot shape ───────────────────────────────────────────────────────
-    if (obj.type === 'result' && typeof obj.sessionId === 'string') sessionId = obj.sessionId;
-    if (obj.type === 'session.task_complete') {
-      _captureCopilotTaskComplete(obj.data?.summary, obj.data?.success);
-    }
-    if (obj.type === 'assistant.reasoning' || obj.type === 'assistant.reasoning_delta') {
-      _notifyThinking();
-    }
-    if (obj.type === 'assistant.message_delta' && typeof obj.data?.deltaContent === 'string') {
-      if (copilotTaskCompleteSeen) return;
-      copilotMessageBuffer += obj.data.deltaContent;
-      if (onChunk && copilotMessageBuffer !== lastTextSent) {
-        lastTextSent = copilotMessageBuffer;
-        onChunk(copilotMessageBuffer);
-      }
-    }
-    if (obj.type === 'assistant.message' && typeof obj.data?.content === 'string') {
-      // Tool-request narration ("I'll look into this...") is progress text, not
-      // the final answer. Keep streaming it live, but don't let it become the
-      // terminal result if the process exits before a final answer message.
-      const content = obj.data.content;
-      if (content && !_copilotAssistantMessageHasTools(obj)) text = _streamText(content);
-      copilotMessageBuffer = '';
-      if (Array.isArray(obj.data.toolRequests)) {
-        for (const tr of obj.data.toolRequests) {
-          if (tr && tr.name) {
-            if (tr.name === 'task_complete') {
-              _captureCopilotTaskComplete(tr.arguments?.summary || tr.intentionSummary);
-              continue;
-            }
-            const toolUse = { name: tr.name, input: tr.arguments || {} };
-            toolUses.push(toolUse);
-            if (onToolUse) onToolUse(toolUse.name, toolUse.input);
-          }
-        }
-      }
-    }
-    if (obj.type === 'tool.execution_start' && obj.data?.toolName) {
-      if (obj.data.toolName === 'task_complete') {
-        _captureCopilotTaskComplete(obj.data.arguments?.summary);
-        return;
-      }
-      const toolUse = { name: obj.data.toolName, input: obj.data.arguments || {} };
-      // Dedup: assistant.message.toolRequests already adds this — only push if
-      // we haven't seen it yet (toolCallId would be the unique key, but we
-      // compare by name+input shape since not every consumer cares).
-      if (!toolUses.some(t => t.name === toolUse.name && JSON.stringify(t.input) === JSON.stringify(toolUse.input))) {
-        toolUses.push(toolUse);
-        if (onToolUse) onToolUse(toolUse.name, toolUse.input);
-      }
-    }
-  }
+  const consumer = runtime.createStreamConsumer(ctx);
 
   function ingestStdout(chunk) {
     const str = chunk == null ? '' : chunk.toString();
@@ -494,7 +353,7 @@ function _createStreamAccumulator({
     lineBuf = lines.pop() || '';
     for (const line of lines) {
       const ev = runtime.parseStreamChunk(line);
-      if (ev) captureEvent(ev);
+      if (ev) consumer.consume(ev);
     }
   }
 
@@ -506,12 +365,9 @@ function _createStreamAccumulator({
     const trimmed = lineBuf.trim();
     if (trimmed) {
       const ev = runtime.parseStreamChunk(trimmed);
-      if (ev) captureEvent(ev);
+      if (ev) consumer.consume(ev);
     }
-    if (copilotMessageBuffer && !copilotTaskCompleteSeen) {
-      text = _streamText(copilotMessageBuffer);
-    }
-    if (!text && copilotTaskCompleteSummary) text = copilotTaskCompleteSummary;
+    if (!text && lastTaskCompleteSummary) text = lastTaskCompleteSummary;
     // Reconciliation: if any field is still missing, ask the runtime adapter
     // to re-parse the whole stdout. parseOutput() may catch a result event
     // that was malformed when streamed in chunks.

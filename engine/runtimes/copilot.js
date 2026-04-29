@@ -529,6 +529,112 @@ async function listModels({ env = process.env, timeoutMs = 10000 } = {}) {
   return models;
 }
 
+// ── Stream Consumer ─────────────────────────────────────────────────────────
+//
+// Per-stream consumer factory invoked by engine/llm.js's accumulator. Owns
+// Copilot-specific per-stream state (delta-content buffer, task_complete
+// signal). Translates Copilot event shapes into ctx callbacks.
+//
+// `ctx` shape (provided by accumulator):
+//   maxTextLength, pushText(value), pushToolUse(name, input),
+//   notifyThinking(), notifyTaskComplete(summary, success),
+//   setUsage(usage), setSessionId(id), setText(value),
+//   toolUseAlreadySeen(name, input)
+
+function _copilotAssistantMessageHasTools(obj) {
+  const requests = obj?.data?.toolRequests;
+  return Array.isArray(requests) && requests.length > 0;
+}
+
+function createStreamConsumer(ctx) {
+  // Copilot streams `assistant.message_delta` with `data.deltaContent` chunks
+  // before emitting `assistant.message`. Tool-request narration ("I'll
+  // inspect...") is progress text only — terminal text comes from non-tool
+  // assistant messages or trailing deltas.
+  let copilotMessageBuffer = '';
+  let copilotTaskCompleteSeen = false;
+
+  function _captureTaskComplete(summary, success = true) {
+    if (typeof summary !== 'string' || !summary) return;
+    copilotTaskCompleteSeen = true;
+    copilotMessageBuffer = '';
+    ctx.notifyTaskComplete(summary, success !== false);
+  }
+
+  function consume(obj) {
+    if (!obj || typeof obj !== 'object') return;
+
+    if (obj.type === 'result' && typeof obj.sessionId === 'string') {
+      ctx.setSessionId(obj.sessionId);
+    }
+
+    if (obj.type === 'session.task_complete') {
+      _captureTaskComplete(obj.data?.summary, obj.data?.success);
+      return;
+    }
+
+    if (obj.type === 'assistant.reasoning' || obj.type === 'assistant.reasoning_delta') {
+      ctx.notifyThinking();
+      return;
+    }
+
+    if (obj.type === 'assistant.message_delta' && typeof obj.data?.deltaContent === 'string') {
+      if (copilotTaskCompleteSeen) return;
+      copilotMessageBuffer += obj.data.deltaContent;
+      ctx.pushText(copilotMessageBuffer);
+      return;
+    }
+
+    if (obj.type === 'assistant.message') {
+      // Process toolRequests EVEN WHEN data.content is undefined — tool-only
+      // assistant messages would otherwise be dropped (earlier review bug:
+      // the `typeof data.content === 'string'` gate skipped them entirely).
+      const data = obj.data || {};
+      const content = data.content;
+      const hasTools = _copilotAssistantMessageHasTools(obj);
+      if (typeof content === 'string') {
+        // Tool-request narration is progress text only — don't let it become
+        // the terminal answer. A non-tool assistant.message overrides any
+        // streamed deltas (Copilot's authoritative final text for the turn).
+        if (content && !hasTools) ctx.setText(content);
+        copilotMessageBuffer = '';
+      }
+      if (Array.isArray(data.toolRequests)) {
+        for (const tr of data.toolRequests) {
+          if (!tr || !tr.name) continue;
+          if (tr.name === 'task_complete') {
+            _captureTaskComplete(tr.arguments?.summary || tr.intentionSummary);
+            continue;
+          }
+          ctx.pushToolUse(tr.name, tr.arguments || {});
+        }
+      }
+      return;
+    }
+
+    if (obj.type === 'tool.execution_start' && obj.data?.toolName) {
+      if (obj.data.toolName === 'task_complete') {
+        _captureTaskComplete(obj.data.arguments?.summary);
+        return;
+      }
+      const name = obj.data.toolName;
+      const input = obj.data.arguments || {};
+      // Dedup against assistant.message.toolRequests — accumulator tracks
+      // the toolUses array and exposes a same-name+input check.
+      if (!ctx.toolUseAlreadySeen(name, input)) {
+        ctx.pushToolUse(name, input);
+      }
+    }
+  }
+
+  function reset() {
+    copilotMessageBuffer = '';
+    copilotTaskCompleteSeen = false;
+  }
+
+  return { consume, reset };
+}
+
 // ── Capability Block ────────────────────────────────────────────────────────
 
 const capabilities = {
@@ -556,6 +662,8 @@ const capabilities = {
   fallbackModel: false,
   // Copilot manages session state internally in ~/.copilot/session-state/
   sessionPersistenceControl: false,
+  // Adapter implements createStreamConsumer(ctx) — required by llm.js accumulator
+  streamConsumer: true,
 };
 
 // Install hint surfaced when `resolveBinary()` returns null. Covers all
@@ -582,10 +690,12 @@ module.exports = {
   parseOutput,
   parseStreamChunk,
   parseError,
+  createStreamConsumer,
   // Exposed for unit tests — engine code MUST go through resolveRuntime + the
   // adapter contract; never reach into these helpers directly.
   _CLAUDE_SHORTHANDS,
   _resetShorthandWarning,
   _mapEffort,
+  _copilotAssistantMessageHasTools,
   KNOWN_EVENT_TYPES,
 };
