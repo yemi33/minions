@@ -6259,8 +6259,8 @@ async function testLlmModule() {
       'copilot stream consumer should consult the helper before treating content as terminal text');
     assert.ok(src.includes('copilotMessageBuffer'),
       'copilot stream consumer should buffer assistant.message_delta deltaContent');
-    assert.ok(src.includes('copilotTaskCompleteSeen'),
-      'copilot stream consumer should suppress further deltas once task_complete fires');
+    assert.ok(src.includes('ctx.pushText(summary)'),
+      'copilot stream consumer should surface task_complete summaries even after progress narration streamed');
   });
 
   await test('copilot stream consumer treats task_complete as terminal summary', () => {
@@ -6274,6 +6274,37 @@ async function testLlmModule() {
     const llmSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(llmSrc.includes('COPILOT_TASK_COMPLETE_GRACE_MS') && llmSrc.includes('onTaskComplete: scheduleTaskCompleteClose'),
       'streaming calls should close Copilot shortly after terminal task_complete so the UI stops spinning');
+  });
+
+  await test('copilot stream consumer emits task_complete summary after tool-use progress text', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const texts = [];
+    const tools = [];
+    const completions = [];
+    const consumer = copilot.createStreamConsumer({
+      maxTextLength: 0,
+      pushText: (text) => texts.push(text),
+      setText: (text) => texts.push(text),
+      pushToolUse: (name, input) => tools.push({ name, input }),
+      toolUseAlreadySeen: () => false,
+      notifyThinking: () => {},
+      notifyTaskComplete: (summary, success) => completions.push({ summary, success }),
+      setUsage: () => {},
+      setSessionId: () => {},
+    });
+    consumer.consume({ type: 'assistant.message_delta', data: { deltaContent: 'I will run' } });
+    consumer.consume({
+      type: 'assistant.message',
+      data: { content: 'I will run', toolRequests: [{ name: 'powershell', arguments: { command: 'Write-Output ok' } }] },
+    });
+    consumer.consume({
+      type: 'assistant.message',
+      data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'STREAM_CHECK_123' } }] },
+    });
+    assert.strictEqual(texts[texts.length - 1], 'STREAM_CHECK_123',
+      'task_complete summary should replace streamed progress as the latest text');
+    assert.deepStrictEqual(tools, [{ name: 'powershell', input: { command: 'Write-Output ok' } }]);
+    assert.deepStrictEqual(completions, [{ summary: 'STREAM_CHECK_123', success: true }]);
   });
 
   await test('claude stream consumer handles partial stream_event deltas', () => {

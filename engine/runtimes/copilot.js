@@ -552,12 +552,11 @@ function createStreamConsumer(ctx) {
   // inspect...") is progress text only — terminal text comes from non-tool
   // assistant messages or trailing deltas.
   let copilotMessageBuffer = '';
-  let copilotTaskCompleteSeen = false;
 
   function _captureTaskComplete(summary, success = true) {
     if (typeof summary !== 'string' || !summary) return;
-    copilotTaskCompleteSeen = true;
     copilotMessageBuffer = '';
+    ctx.pushText(summary);
     ctx.notifyTaskComplete(summary, success !== false);
   }
 
@@ -579,7 +578,6 @@ function createStreamConsumer(ctx) {
     }
 
     if (obj.type === 'assistant.message_delta' && typeof obj.data?.deltaContent === 'string') {
-      if (copilotTaskCompleteSeen) return;
       copilotMessageBuffer += obj.data.deltaContent;
       ctx.pushText(copilotMessageBuffer);
       return;
@@ -629,7 +627,6 @@ function createStreamConsumer(ctx) {
 
   function reset() {
     copilotMessageBuffer = '';
-    copilotTaskCompleteSeen = false;
   }
 
   return { consume, reset };
