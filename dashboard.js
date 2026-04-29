@@ -778,7 +778,7 @@ function findCCActionsDelimiter(text) {
 // but are not parsed (they shouldn't reach the user as actions).
 function findCCActionsHeader(text) {
   if (!text) return null;
-  // Strict: ===ACTIONS={0,3} on its own line, optional trailing whitespace.
+  // Tier 1 — strict, parseable: 3 leading + 0-3 trailing equals, well-formed line.
   const strict = /(?:^|\r?\n)===ACTIONS={0,3}[ \t]*(?=\r?\n|$)/m.exec(text);
   if (strict) {
     const headerStart = strict.index + strict[0].indexOf('===ACTIONS');
@@ -789,11 +789,23 @@ function findCCActionsHeader(text) {
       parseable: true,
     };
   }
-  // Loose: sentinel-looking malformed delimiters such as ===ACTIONS -> should
-  // still be hidden, but prose like "===ACTIONS are documented" must render.
+  // Tier 2 — loose: sentinel-looking malformed delimiters such as ===ACTIONS ->
+  // should still be hidden, but prose like "===ACTIONS are documented" must render.
   const loose = /(?:^|\r?\n)===ACTIONS(?:[ \t]*(?:[-=]>?|={1,}|$)|[^A-Za-z0-9_\s\r\n][^\r\n]*)(?=\r?\n|$)/m.exec(text);
   if (loose) {
     const headerStart = loose.index + loose[0].indexOf('===ACTIONS');
+    return { index: headerStart, headerLength: 0, parseable: false };
+  }
+  // Tier 3 — very loose: 2+ leading equals, optional whitespace, ACTIONS keyword
+  // (case-insensitive), optional trailing equals. Catches the common model
+  // fumbles: ====ACTIONS===, ===actions===, ===ACTIONS=====, ==ACTIONS==. Must
+  // still be a complete line (preceded by line start, followed by EOL or EOS)
+  // so prose like "the answer is 2 + 3 = 5" or "==Important==" doesn't match.
+  const veryLoose = /(?:^|\r?\n)={2,}[ \t]*ACTIONS[ \t]*={0,}[ \t]*(?=\r?\n|$)/im.exec(text);
+  if (veryLoose) {
+    // Skip the leading newline (if any) so headerStart points to first '='.
+    const offset = veryLoose[0].search(/=/);
+    const headerStart = veryLoose.index + (offset >= 0 ? offset : 0);
     return { index: headerStart, headerLength: 0, parseable: false };
   }
   return null;
@@ -804,7 +816,15 @@ function findCCActionsPartialDelimiter(text) {
   const delimiter = '===ACTIONS===';
   const lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1;
   const trailingLine = text.slice(lineStart).trimEnd();
-  if (trailingLine.length >= 3 && trailingLine.length < delimiter.length && delimiter.startsWith(trailingLine)) {
+  if (!trailingLine) return -1;
+  // Pure "=" run of any length 1+ is a likely partial of any delimiter tier.
+  // The next chunk arrives within milliseconds and the strip is restored or
+  // completed — false-positives at chunk EOL self-heal.
+  if (/^=+$/.test(trailingLine)) return lineStart;
+  // Strict prefix of the canonical "===ACTIONS===" (case-insensitive so
+  // "===act" and "===ACT" both strip).
+  if (trailingLine.length >= 1 && trailingLine.length < delimiter.length
+      && delimiter.toLowerCase().startsWith(trailingLine.toLowerCase())) {
     return lineStart;
   }
   return -1;
@@ -895,6 +915,12 @@ function parseCCActions(text) {
       } else if (segment.trim()) {
         parseError = 'no JSON value found after ===ACTIONS=== delimiter';
       }
+    } else {
+      // Loose/very-loose match: delimiter present but malformed (e.g. extra
+      // equals, lowercase, trailing punct). Surface so the client banner fires
+      // instead of silently dropping actions — user resends with the strict
+      // shape.
+      parseError = 'Malformed ===ACTIONS=== delimiter (extra equals, lowercase, or trailing punctuation). Actions silently discarded — fix the model output.';
     }
   }
   if (actions.length === 0) {
@@ -927,7 +953,15 @@ function stripCCActionSyntax(text) {
   if (!text) return '';
   let displayText = text;
   const header = findCCActionsHeader(text);
-  if (header) displayText = text.slice(0, header.index).trim();
+  if (header) {
+    displayText = text.slice(0, header.index).trim();
+  } else {
+    // C-2: doc-chat streaming must also catch partial ===ACTIONS===
+    // delimiters at the chunk tail — without this, a tail like `===ACT`
+    // leaks raw to the modal until the next chunk completes the header.
+    const partialIdx = findCCActionsPartialDelimiter(displayText);
+    if (partialIdx >= 0) displayText = displayText.slice(0, partialIdx).trimEnd();
+  }
   return displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
 }
 

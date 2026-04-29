@@ -22225,6 +22225,133 @@ async function testCcActionTypes() {
     // Escaped quotes inside strings.
     assert.strictEqual(_extractActionsJson('\n[{"content":"a\\"b"}]\n'), '[{"content":"a\\"b"}]', 'escaped quotes do not break string scan');
   });
+
+  // ── Hardening fixes (security audit C-1, C-2, R-1, R-2/R-3/R-4, P-1) ──────
+  function getFindCCActionsPartialDelimiter() {
+    return new Function(getCcActionsBlock() + '\nreturn findCCActionsPartialDelimiter;')();
+  }
+  function getFindCCActionsHeader() {
+    return new Function(getCcActionsBlock() + '\nreturn findCCActionsHeader;')();
+  }
+  function getStripCCActionSyntax() {
+    return new Function(getCcActionsBlock() + '\nreturn stripCCActionSyntax;')();
+  }
+
+  await test('findCCActionsPartialDelimiter (C-1, R-2) strips short equals tails and pure-= runs', () => {
+    const findPartial = getFindCCActionsPartialDelimiter();
+
+    // Pure-equals runs of any length 1+ are likely partials of any tier.
+    assert.ok(findPartial('Answer.\n=') >= 0, 'single = at chunk EOL must strip (C-1)');
+    assert.ok(findPartial('Answer.\n==') >= 0, 'double == at chunk EOL must strip (C-1)');
+    assert.ok(findPartial('Answer.\n===') >= 0, 'triple === at chunk EOL must strip');
+    assert.ok(findPartial('Answer.\n=====') >= 0, '5+ equals run at chunk EOL must strip (R-2)');
+    assert.ok(findPartial('Answer.\n=========') >= 0, '9+ equals run at chunk EOL must strip (R-2)');
+    // Strict prefixes of the canonical delimiter.
+    assert.ok(findPartial('Answer.\n===A') >= 0, '===A is a strict prefix and must strip');
+    assert.ok(findPartial('Answer.\n===ACT') >= 0, '===ACT is a strict prefix and must strip');
+    // Empty trailing line — nothing to strip.
+    assert.strictEqual(findPartial('Answer.\n'), -1, 'empty trailing line must not strip');
+    // Non-prefix prose must NOT match.
+    assert.strictEqual(findPartial('Answer is 5'), -1, 'plain prose must not match partial delimiter');
+    assert.strictEqual(findPartial('==hello'), -1, 'non-prefix line beginning with == must not match');
+  });
+
+  await test('findCCActionsHeader (R-2/R-3/R-4) returns parseable=false for malformed delimiter shapes', () => {
+    const findHeader = getFindCCActionsHeader();
+
+    // Tier-1 strict — parseable.
+    const strict = findHeader('Body\n\n===ACTIONS===\n[]');
+    assert.ok(strict, 'canonical ===ACTIONS=== must match');
+    assert.strictEqual(strict.parseable, true, 'canonical delimiter must be parseable');
+
+    // Tier-3 very loose — parseable=false.
+    const extraLeading = findHeader('Body\n\n====ACTIONS===\n[]');
+    assert.ok(extraLeading, '====ACTIONS=== must match (extra leading equals)');
+    assert.strictEqual(extraLeading.parseable, false, 'extra-leading delimiter must be parseable=false');
+
+    const lowercase = findHeader('Body\n\n===actions===\n[]');
+    assert.ok(lowercase, '===actions=== must match (lowercase)');
+    assert.strictEqual(lowercase.parseable, false, 'lowercase delimiter must be parseable=false');
+
+    const extraTrailing = findHeader('Body\n\n===ACTIONS=====\n[]');
+    assert.ok(extraTrailing, '===ACTIONS===== must match (5 trailing equals)');
+    assert.strictEqual(extraTrailing.parseable, false, '5-trailing-equals delimiter must be parseable=false');
+
+    // Tier-2 loose — punctuation tail.
+    const trailingPunct = findHeader('Body\n\n===ACTIONS, foo\n[]');
+    assert.ok(trailingPunct, '===ACTIONS, foo must match (loose punctuation)');
+    assert.strictEqual(trailingPunct.parseable, false, 'trailing-punct delimiter must be parseable=false');
+
+    // Negative cases — must NOT match.
+    assert.strictEqual(findHeader('Body\n\n==Important==\nMore body'), null, '==Important== (no ACTIONS keyword) must not match');
+    assert.strictEqual(findHeader('the answer is 2 + 3 = 5'), null, 'arithmetic with single = must not match');
+    assert.strictEqual(findHeader('## Action System\n===ACTIONS are documented here, not emitted as a delimiter.'),
+      null, 'inline prose beginning with ===ACTIONS but with non-delimiter trailing chars must not match');
+  });
+
+  await test('parseCCActions (R-1) sets _actionParseError when header.parseable is false', () => {
+    const parseCCActions = getParseCCActions();
+
+    const malformed = 'Body.\n\n====ACTIONS===\n[{"type":"note"}]';
+    const result = parseCCActions(malformed);
+    assert.strictEqual(result.actions.length, 0, 'malformed delimiter must not execute action JSON');
+    assert.ok(result._actionParseError, 'parseCCActions must surface _actionParseError on parseable=false (R-1)');
+    assert.ok(/Malformed/.test(result._actionParseError), '_actionParseError message must mention "Malformed"');
+    assert.strictEqual(result.text, 'Body.', 'malformed delimiter line must not leak into display text');
+  });
+
+  await test('stripCCActionSyntax (C-2) handles partial delimiter on doc-chat chunk tail', () => {
+    const stripCCActionSyntax = getStripCCActionSyntax();
+
+    // Full canonical delimiter — strips as before.
+    assert.strictEqual(
+      stripCCActionSyntax('Doc answer.\n\n===ACTIONS===\n[{"type":"note"}]'),
+      'Doc answer.',
+      'full delimiter still strips'
+    );
+    // Partial delimiter at chunk tail — was leaking before C-2.
+    assert.strictEqual(
+      stripCCActionSyntax('Doc answer.\n\n===ACT'),
+      'Doc answer.',
+      'partial delimiter at chunk tail must be stripped (C-2)'
+    );
+    assert.strictEqual(
+      stripCCActionSyntax('Doc answer.\n\n=='),
+      'Doc answer.',
+      'short equals tail must be stripped from doc-chat (C-2)'
+    );
+  });
+
+  await test('client _ccStripActionBlockFromText strips short equals tails and prefixes', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const stripBody = src.match(/function _ccStripActionBlockFromText[\s\S]*?^}/m)[0];
+    const strip = new Function(stripBody + '\nreturn _ccStripActionBlockFromText;')();
+
+    // Short equals tail (was gated at length >= 3 before C-1).
+    assert.strictEqual(strip('Answer.\n='), 'Answer.', 'single = tail must strip on the client (C-1)');
+    assert.strictEqual(strip('Answer.\n=='), 'Answer.', '== tail must strip on the client (C-1)');
+    // Prefix of the canonical delimiter.
+    assert.strictEqual(strip('Answer.\n===act'), 'Answer.', '===act prefix must strip on the client (case-insensitive)');
+    // Very-loose tier (R-2/R-3) on the client.
+    assert.strictEqual(strip('Answer.\n\n====ACTIONS===\n[{"a":1}]'), 'Answer.', 'extra-leading equals must strip on client');
+    assert.strictEqual(strip('Answer.\n\n===actions===\n[{"a":1}]'), 'Answer.', 'lowercase ACTIONS must strip on client');
+    // Negative — plain prose must not strip.
+    assert.strictEqual(strip('the answer is 2 + 3 = 5'), 'the answer is 2 + 3 = 5', 'arithmetic with single = must not match');
+  });
+
+  await test('ccSaveState (P-1) re-strips persisted message html before localStorage write', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const saveBody = src.match(/function ccSaveState[\s\S]*?^}/m)[0];
+    assert.ok(saveBody.includes('_ccStripActionBlockFromText'),
+      'ccSaveState must re-strip persisted html as a final-line defense (P-1)');
+  });
+
+  await test('_ccMigrateLegacy (P-1) cleans persisted action-block dirt on load', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const migrateBlock = src.slice(src.indexOf('function _ccMigrateLegacy'), src.indexOf('// ── Tab helper'));
+    assert.ok(migrateBlock.includes('_ccStripActionBlockFromText'),
+      '_ccMigrateLegacy must run _ccStripActionBlockFromText over persisted html on load (P-1)');
+  });
 }
 
 async function testAutoModeStatus() {

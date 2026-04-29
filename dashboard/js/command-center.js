@@ -17,14 +17,29 @@ try { localStorage.removeItem('cc-sending'); } catch {}
 function _ccStripActionBlockFromText(value) {
   var text = value || '';
   if (!text) return text;
+  // Tier 1 — strict: 3 leading + 0-3 trailing equals on its own line.
   var full = /(?:^|\r?\n)===ACTIONS={0,3}[ \t]*(?=\r?\n|$)/m.exec(text);
   if (full) return text.slice(0, full.index + full[0].indexOf('===ACTIONS')).trim();
+  // Tier 2 — loose: ===ACTIONS followed by punctuation/extra-equals to EOL.
   var block = /(?:^|\r?\n)===ACTIONS\b[^\r\n]*(?=\r?\n|$)/m.exec(text);
   if (block) return text.slice(0, block.index + block[0].indexOf('===ACTIONS')).trim();
+  // Tier 3 — very loose: 2+ leading equals + ACTIONS keyword + 0+ trailing
+  // equals, case-insensitive. Catches ====ACTIONS===, ===actions===, etc.
+  var veryLoose = /(?:^|\r?\n)={2,}[ \t]*ACTIONS[ \t]*={0,}[ \t]*(?=\r?\n|$)/im.exec(text);
+  if (veryLoose) {
+    var offset = veryLoose[0].search(/=/);
+    var headerStart = veryLoose.index + (offset >= 0 ? offset : 0);
+    return text.slice(0, headerStart).trim();
+  }
+  // Partial delimiter at chunk tail (streaming): strip "=", "==", "===", etc.,
+  // and prefixes of "===ACTIONS===" so the user never sees a raw partial.
   var delimiter = '===ACTIONS===';
   var lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1;
   var trailingLine = text.slice(lineStart).trimEnd();
-  if (trailingLine.length >= 3 && trailingLine.length < delimiter.length && delimiter.indexOf(trailingLine) === 0) {
+  if (!trailingLine) return text;
+  if (/^=+$/.test(trailingLine)) return text.slice(0, lineStart).trimEnd();
+  if (trailingLine.length >= 1 && trailingLine.length < delimiter.length
+      && delimiter.toLowerCase().indexOf(trailingLine.toLowerCase()) === 0) {
     return text.slice(0, lineStart).trimEnd();
   }
   return text;
@@ -37,6 +52,20 @@ function _ccStripActionBlockFromText(value) {
     if (legacyTabs) {
       // Already migrated — load tabs
       _ccTabs = JSON.parse(legacyTabs) || [];
+      // P-1: clean any historical action-block dirt persisted by prior buggy
+      // versions before the strip pipeline was hardened. Runs once per load;
+      // ccSaveState applies the same strip on the way out so future writes
+      // can't reintroduce it.
+      for (var ti = 0; ti < _ccTabs.length; ti++) {
+        var msgs = _ccTabs[ti].messages || [];
+        for (var mi = 0; mi < msgs.length; mi++) {
+          var m = msgs[mi];
+          if (m && typeof m.html === 'string') {
+            var stripped = _ccStripActionBlockFromText(m.html);
+            if (stripped !== m.html) m.html = stripped;
+          }
+        }
+      }
       _ccActiveTabId = localStorage.getItem('cc-active-tab') || (_ccTabs.length > 0 ? _ccTabs[0].id : null);
       return;
     }
@@ -343,9 +372,19 @@ function ccSaveState() {
   _ccSaveDebounce = setTimeout(function() {
     _ccSaveDebounce = null;
     try {
-      // Save tabs with trimmed messages
+      // P-1: Re-strip persisted message html as a final-line defense against
+      // any future server-side regression. Messages are stored as rendered
+      // HTML, but a leaked ===ACTIONS=== delimiter would survive markdown
+      // rendering as literal text and round-trip into localStorage. Strip on
+      // the way out so the persisted state is always clean.
       var toSave = _ccTabs.map(function(t) {
-        return { id: t.id, title: t.title, sessionId: t.sessionId, messages: t.messages.slice(-CC_MAX_MESSAGES_PER_TAB) };
+        var msgs = t.messages.slice(-CC_MAX_MESSAGES_PER_TAB).map(function(m) {
+          if (!m || typeof m.html !== 'string') return m;
+          var stripped = _ccStripActionBlockFromText(m.html);
+          if (stripped === m.html) return m;
+          return { role: m.role, html: stripped };
+        });
+        return { id: t.id, title: t.title, sessionId: t.sessionId, messages: msgs };
       });
       localStorage.setItem('cc-tabs', JSON.stringify(toSave));
       if (_ccActiveTabId) localStorage.setItem('cc-active-tab', _ccActiveTabId);
