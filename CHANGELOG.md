@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1624 (2026-04-29)
+
+### Features
+- harden ADO repository polling (#1872)
+- resilient file-bug label preflight (#1840) (#1867)
+
+### Fixes
+- use elapsed time for PR pollers (#1870)
+
+### Other
+- test(dispatch): add unit tests for cancelPendingWorkItems, writeInboxAlert, cleanDispatchEntries (#1874)
+
 ## 0.1.1621 (2026-04-29)
 
 ### Features
