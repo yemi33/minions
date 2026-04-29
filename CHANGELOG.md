@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1621 (2026-04-29)
+
+### Features
+- harden action block parsing (#1863)
+
 ## 0.1.1620 (2026-04-29)
 
 ### Features
