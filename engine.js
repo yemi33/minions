@@ -2049,7 +2049,8 @@ async function discoverFromPrs(config, project) {
   for (const pr of prs) {
     if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
     const prDisplayId = shared.getPrDisplayId(pr);
-    if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
+    const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
+    if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
       log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);

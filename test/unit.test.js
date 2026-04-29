@@ -6374,8 +6374,9 @@ async function testPrReviewFixCycle() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('activePrIds'),
       'discoverFromPrs should track active PR dispatches');
-    assert.ok(src.includes('shared.getCanonicalPrId(') && src.includes('activePrIds.has(pr.id)'),
-      'Should canonicalize active dispatch PR IDs before checking whether the current PR is already active');
+    assert.ok(src.includes('const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || \'\');') &&
+        src.includes('activePrIds.has(prCanonicalId)'),
+      'Should compare canonical active dispatch PR IDs to the current PR canonical ID');
   });
 
   await test('Only active PRs are considered for review/fix', () => {
@@ -11155,6 +11156,87 @@ async function testDiscoverFromPrs() {
   await test('discoverFromPrs skips PRs with active dispatch', () => {
     assert.ok(src.includes('activePrIds') || src.includes('activeDispatch'),
       'Should skip PRs that already have an active dispatch to prevent races');
+  });
+
+  await test('discoverFromPrs suppresses fix dispatch when active review uses canonical PR ID', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { ralph: { name: 'Ralph', role: 'Engineer' } },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [{
+          id: 'review-active',
+          type: 'review',
+          agent: 'ripley',
+          meta: {
+            dispatchKey: 'review-demo-PR-42',
+            project: { name: 'demo' },
+            pr: { id: 'PR-42', prNumber: 42, url: 'https://github.com/octo/repo/pull/42' },
+          },
+        }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+
+      const rawPr = {
+        id: 'PR-42',
+        prNumber: 42,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'ralph',
+        title: 'Needs a fix',
+        branch: 'work/pr-42-fix',
+        prdItems: ['W-42'],
+        url: 'https://github.com/octo/repo/pull/42',
+      };
+      freshQueries.getPrs = () => [rawPr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.deepStrictEqual(discovered, [],
+        'Active review dispatch canonicalizes PR-42 to github:octo/repo#42, so a raw PR-42 fix must be suppressed as the same PR');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('discoverFromPrs reads normalized PRs via queries.getPrs', () => {
