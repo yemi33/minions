@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1615 (2026-04-29)
+
+### Features
+- harden publish workflow cleanup (#1850)
+- isolate unit test state (#1847)
+- clarify ado tooling guidance (#1838)
+
+### Fixes
+- recover ===ACTIONS=== JSON from fences and trailing prose (#1834) (#1837)
+
 ## 0.1.1613 (2026-04-28)
 
 ### Features
