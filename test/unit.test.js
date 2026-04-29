@@ -11123,6 +11123,53 @@ async function testRenderPlaybook() {
   });
 }
 
+// ─── engine/playbook.js — buildAgentContext Tests ───────────────────────────
+
+async function testBuildAgentContext() {
+  console.log('\n── engine/playbook.js — buildAgentContext ──');
+
+  await test('buildAgentContext tolerates and flags non-string PR _context values', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const playbook = require('../engine/playbook');
+      const minionsDir = freshShared.MINIONS_DIR;
+      const project = { name: 'minions', localPath: path.join(minionsDir, 'repo') };
+      fs.mkdirSync(project.localPath, { recursive: true });
+      const config = { projects: [project], agents: {}, engine: {} };
+      fs.writeFileSync(path.join(minionsDir, 'config.json'), JSON.stringify(config));
+      fs.writeFileSync(freshShared.projectPrPath(project), JSON.stringify([
+        { id: 'github:yemi33/minions#1886', status: freshShared.PR_STATUS.ACTIVE, title: 'Object context', _context: { issue: 1886 }, branch: 'work/object-context' },
+        { id: 'github:yemi33/minions#1887', status: freshShared.PR_STATUS.ACTIVE, title: 'Array context', _context: ['unexpected'], branch: 'work/array-context' },
+        { id: 'github:yemi33/minions#1888', status: freshShared.PR_STATUS.ACTIVE, title: 'Number context', _context: 42, branch: 'work/number-context' },
+        { id: 'github:yemi33/minions#1889', status: freshShared.PR_STATUS.ACTIVE, title: 'String context', _context: 'valid context stays readable', branch: 'work/string-context' },
+      ]));
+
+      const context = playbook.buildAgentContext('dallas', config, project);
+
+      assert.ok(context.includes('github:yemi33/minions#1886'), 'Active PR should still be included');
+      assert.ok(context.includes('[invalid _context: expected string, got object: {"issue":1886}]'),
+        'Object _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('[invalid _context: expected string, got array: ["unexpected"]]'),
+        'Array _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('[invalid _context: expected string, got number: 42]'),
+        'Number _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('valid context stays readable'),
+        'String _context values should keep their existing prompt formatting');
+      assert.ok(!context.includes('[object Object]'),
+        'Malformed object context must not be implicitly stringified');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+}
+
 // ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
 
 async function testValidatePlaybookVars() {
@@ -20507,6 +20554,7 @@ async function main() {
     await testResolveAgent();
     await testTempAgentBudget();
     await testRenderPlaybook();
+    await testBuildAgentContext();
     await testValidatePlaybookVars();
     await testResolvePlaybookPath();
     await testSelectPlaybook();
