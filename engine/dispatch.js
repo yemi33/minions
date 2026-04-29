@@ -184,6 +184,22 @@ function isRetryableFailureReason(reason = '', failureClass = '') {
   return !nonRetryable.some(s => r.includes(s));
 }
 
+function isCompletedWorkItemForFailure(item) {
+  return !!item && (
+    item.status === WI_STATUS.DONE ||
+    (!!item.completedAt && (!!item._pr || !!item._prUrl))
+  );
+}
+
+function readLiveWorkItem(meta) {
+  const itemId = meta?.item?.id;
+  if (!itemId) return null;
+  const wiPath = lifecycle().resolveWorkItemPath(meta);
+  if (!wiPath) return null;
+  const items = safeJson(wiPath) || [];
+  return Array.isArray(items) ? items.find(i => i.id === itemId) || null : null;
+}
+
 // ─── Complete Dispatch ───────────────────────────────────────────────────────
 
 function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
@@ -225,82 +241,94 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
 
     // Update source work item status on failure + auto-retry with backoff
     const retryableFailure = isRetryableFailureReason(reason, failureClass);
-    if (result === DISPATCH_RESULT.ERROR && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
+    let completedWorkItemFailure = false;
+    if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
+      try {
+        completedWorkItemFailure = isCompletedWorkItemForFailure(readLiveWorkItem(item.meta));
+      } catch (e) { log('warn', 'read live work item before retry: ' + e.message); }
+    }
+    if (result === DISPATCH_RESULT.ERROR && item.meta?.dispatchKey && retryableFailure && !completedWorkItemFailure) {
+      setCooldownFailure(item.meta.dispatchKey);
+    }
 
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
-      let retries = (item.meta.item._retryCount || 0);
-      try {
-        const wi = queries.getWorkItems().find(i => i.id === item.meta.item.id);
-        if (wi) retries = wi._retryCount || 0;
-      } catch (e) { log('warn', 'read retry count: ' + e.message); }
-      const maxRetries = ENGINE_DEFAULTS.maxRetries;
-      // Use per-class retry limits from recovery.js when failureClass is available
-      const classAllowsRetry = failureClass ? recovery().shouldRetry(failureClass, retries) : (retries < maxRetries);
-      if (retryableFailure && classAllowsRetry) {
-        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}${failureClass ? ' [' + failureClass + ']' : ''}`);
-        lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
-        // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
-        if (item.meta?.dispatchKey) {
-          try {
-            mutateDispatch((dp) => {
-              dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];
-              return dp;
-            });
-          } catch (e) { log('warn', 'clear dispatch for retry: ' + e.message); }
-        }
-        // Increment retry counter on the source work item
-        try {
-          const wiPath = lifecycle().resolveWorkItemPath(item.meta);
-          if (wiPath) {
-            mutateWorkItems(wiPath, items => {
-              const wi = items.find(i => i.id === item.meta.item.id);
-              if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
-                wi._retryCount = retries + 1;
-                wi.status = WI_STATUS.PENDING;
-                wi._lastRetryReason = reason || '';
-                wi._lastRetryAt = ts();
-                delete wi.failReason;
-                delete wi.failedAt;
-                delete wi.dispatched_at;
-                delete wi.dispatched_to;
-              }
-            });
-          }
-        } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
+      if (completedWorkItemFailure) {
+        log('info', `Dispatch error for ${item.meta.item.id} ignored — work item is already completed`);
       } else {
-        // Human-readable labels for each failure class — used as fallback when reason is empty
-        const CLASS_LABELS = {
-          [FAILURE_CLASS.EMPTY_OUTPUT]: 'agent produced no output \u2014 likely crashed on startup',
-          [FAILURE_CLASS.BUILD_FAILURE]: 'build/test/lint failure in output',
-          [FAILURE_CLASS.MERGE_CONFLICT]: 'merge conflict',
-          [FAILURE_CLASS.MAX_TURNS]: 'reached max turn limit',
-          [FAILURE_CLASS.TIMEOUT]: 'timed out waiting for agent',
-          [FAILURE_CLASS.SPAWN_ERROR]: 'agent process failed to start',
-          [FAILURE_CLASS.NETWORK_ERROR]: 'network or API error',
-          [FAILURE_CLASS.OUT_OF_CONTEXT]: 'context window exhausted',
-          [FAILURE_CLASS.CONFIG_ERROR]: 'configuration error',
-          [FAILURE_CLASS.PERMISSION_BLOCKED]: 'permission or auth failure',
-          [FAILURE_CLASS.UNKNOWN]: 'unknown error',
-        };
-        const classLabel = failureClass ? (CLASS_LABELS[failureClass] || failureClass) : '';
-        const effectiveReason = reason || classLabel || 'Unknown error';
-        const classSuffix = failureClass ? ` [${failureClass.toUpperCase().replace(/-/g, '_')}]` : '';
-        const finalReason = !retryableFailure
-          ? `Non-retryable failure: ${effectiveReason}${classSuffix}`
-          : (reason || `Failed after ${maxRetries} retries${classSuffix}`);
-        lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.FAILED, finalReason);
-        // Surface blocked dependents in logs without creating failure inbox noise.
+        let retries = (item.meta.item._retryCount || 0);
         try {
-          const config = getConfig();
-          const failedId = item.meta.item.id;
-          const blockedItems = [];
-          const allItems = queries.getWorkItems(config);
-          allItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
-            .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
+          const wi = queries.getWorkItems().find(i => i.id === item.meta.item.id);
+          if (wi) retries = wi._retryCount || 0;
+        } catch (e) { log('warn', 'read retry count: ' + e.message); }
+        const maxRetries = ENGINE_DEFAULTS.maxRetries;
+        // Use per-class retry limits from recovery.js when failureClass is available
+        const classAllowsRetry = failureClass ? recovery().shouldRetry(failureClass, retries) : (retries < maxRetries);
+        if (retryableFailure && classAllowsRetry) {
+          log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}${failureClass ? ' [' + failureClass + ']' : ''}`);
+          lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
+          // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
+          if (item.meta?.dispatchKey) {
+            try {
+              mutateDispatch((dp) => {
+                dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];
+                return dp;
+              });
+            } catch (e) { log('warn', 'clear dispatch for retry: ' + e.message); }
+          }
+          // Increment retry counter on the source work item
+          try {
+            const wiPath = lifecycle().resolveWorkItemPath(item.meta);
+            if (wiPath) {
+              mutateWorkItems(wiPath, items => {
+                const wi = items.find(i => i.id === item.meta.item.id);
+                if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
+                  wi._retryCount = retries + 1;
+                  wi.status = WI_STATUS.PENDING;
+                  wi._lastRetryReason = reason || '';
+                  wi._lastRetryAt = ts();
+                  delete wi.failReason;
+                  delete wi.failedAt;
+                  delete wi.dispatched_at;
+                  delete wi.dispatched_to;
+                }
+              });
+            }
+          } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
+        } else {
+          // Human-readable labels for each failure class — used as fallback when reason is empty
+          const CLASS_LABELS = {
+            [FAILURE_CLASS.EMPTY_OUTPUT]: 'agent produced no output \u2014 likely crashed on startup',
+            [FAILURE_CLASS.BUILD_FAILURE]: 'build/test/lint failure in output',
+            [FAILURE_CLASS.MERGE_CONFLICT]: 'merge conflict',
+            [FAILURE_CLASS.MAX_TURNS]: 'reached max turn limit',
+            [FAILURE_CLASS.TIMEOUT]: 'timed out waiting for agent',
+            [FAILURE_CLASS.SPAWN_ERROR]: 'agent process failed to start',
+            [FAILURE_CLASS.NETWORK_ERROR]: 'network or API error',
+            [FAILURE_CLASS.OUT_OF_CONTEXT]: 'context window exhausted',
+            [FAILURE_CLASS.CONFIG_ERROR]: 'configuration error',
+            [FAILURE_CLASS.PERMISSION_BLOCKED]: 'permission or auth failure',
+            [FAILURE_CLASS.UNKNOWN]: 'unknown error',
+          };
+          const classLabel = failureClass ? (CLASS_LABELS[failureClass] || failureClass) : '';
+          const effectiveReason = reason || classLabel || 'Unknown error';
+          const classSuffix = failureClass ? ` [${failureClass.toUpperCase().replace(/-/g, '_')}]` : '';
+          const finalReason = !retryableFailure
+            ? `Non-retryable failure: ${effectiveReason}${classSuffix}`
+            : (reason || `Failed after ${maxRetries} retries${classSuffix}`);
+          lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.FAILED, finalReason);
+          // Surface blocked dependents in logs without creating failure inbox noise.
+          try {
+            const config = getConfig();
+            const failedId = item.meta.item.id;
+            const blockedItems = [];
+            const allItems = queries.getWorkItems(config);
+            allItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
+              .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
 
-          log('warn', `Work item ${failedId} failed: ${finalReason}` +
-            (blockedItems.length > 0 ? `; blocked dependents: ${blockedItems.map(line => line.replace(/^- `([^`]+)`.*/, '$1')).join(', ')}` : '; no downstream items blocked'));
-        } catch (e) { log('warn', 'summarize failure dependents: ' + e.message); }
+            log('warn', `Work item ${failedId} failed: ${finalReason}` +
+              (blockedItems.length > 0 ? `; blocked dependents: ${blockedItems.map(line => line.replace(/^- `([^`]+)`.*/, '$1')).join(', ')}` : '; no downstream items blocked'));
+          } catch (e) { log('warn', 'summarize failure dependents: ' + e.message); }
+        }
       }
     }
 

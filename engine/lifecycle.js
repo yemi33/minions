@@ -560,10 +560,18 @@ function updateWorkItemStatus(meta, status, reason) {
   const wiPath = resolveWorkItemPath(meta);
   if (!wiPath) return;
 
+  let completionGuarded = false;
   mutateJsonFileLocked(wiPath, (items) => {
     if (!items || !Array.isArray(items)) return items;
     const target = items.find(i => i.id === itemId);
     if (!target) return items;
+    if (status !== WI_STATUS.DONE && (
+      target.status === WI_STATUS.DONE ||
+      (!!target.completedAt && (!!target._pr || !!target._prUrl))
+    )) {
+      completionGuarded = true;
+      return items;
+    }
 
     if (meta.source === 'central-work-item-fanout') {
       if (!target.agentResults) target.agentResults = {};
@@ -609,6 +617,10 @@ function updateWorkItemStatus(meta, status, reason) {
     return items;
   }, { defaultValue: [], skipWriteIfUnchanged: true });
 
+  if (completionGuarded) {
+    log('info', `Work item ${itemId} already completed — ignoring ${status} status update`);
+    return;
+  }
   log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
   syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
 }

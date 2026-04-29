@@ -15546,6 +15546,77 @@ async function testDispatchPromptSidecar() {
     }
   });
 
+  await test('completeDispatch does not retry completed work item after exit-time stderr (#1884)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const project = { name: 'minions', localPath: createTmpDir() };
+      fs.writeFileSync(path.join(process.env.MINIONS_TEST_DIR, 'config.json'), JSON.stringify({
+        projects: [project],
+        agents: {},
+        engine: {}
+      }));
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const wiPath = freshShared.projectWorkItemsPath(project);
+      const completedAt = '2026-04-29T18:04:03.000Z';
+      fs.writeFileSync(wiPath, JSON.stringify([{
+        id: 'W-exit-stderr',
+        title: 'Already complete',
+        status: freshShared.WI_STATUS.DONE,
+        completedAt,
+        _pr: 'github:yemi33/minions#123',
+        dispatched_to: 'rebecca'
+      }]));
+
+      const dispatchKey = 'work-minions-W-exit-stderr';
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({
+          id: 'dispatch-exit-stderr',
+          agent: 'rebecca',
+          type: 'fix',
+          meta: {
+            dispatchKey,
+            source: 'work-item',
+            item: { id: 'W-exit-stderr' },
+            project
+          }
+        });
+        return dp;
+      });
+
+      testDispatch.completeDispatch(
+        'dispatch-exit-stderr',
+        freshShared.DISPATCH_RESULT.ERROR,
+        'At C:\\Users\\user\\.claude\\hooks\\session-end-teams-notify.ps1:10 char:5 | Write-Error "No input received from stdin"'
+      );
+
+      const [updated] = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      assert.strictEqual(updated.status, freshShared.WI_STATUS.DONE,
+        'late stderr failure must not reopen a completed work item');
+      assert.strictEqual(updated.completedAt, completedAt,
+        'late stderr failure must not clear or replace completion timestamp');
+      assert.strictEqual(updated._pr, 'github:yemi33/minions#123',
+        'late stderr failure must preserve the PR linkage that proves completion');
+      assert.ok(!updated._lastRetryReason,
+        'completed work item must not receive retry metadata from exit-time stderr');
+
+      const dispatch = testQueries.getDispatch();
+      assert.ok(dispatch.completed.some(d => d.id === 'dispatch-exit-stderr' && d.meta?.dispatchKey === dispatchKey),
+        'completed dispatch dedupe marker must remain so late stderr cannot immediately re-dispatch');
+      assert.ok(!dispatch.pending.some(d => d.meta?.dispatchKey === dispatchKey),
+        'late stderr must not enqueue a retry for a completed work item');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('assertStateFileSize throws when file exceeds limit', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'huge.json');
