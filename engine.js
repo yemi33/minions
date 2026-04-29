@@ -102,7 +102,7 @@ const withFileLock = shared.withFileLock;
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
 const { mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch,
-  writeInboxAlert, updateAgentStatus } = require('./engine/dispatch');
+  writeInboxAlert, updateAgentStatus, pruneStalePrDispatches } = require('./engine/dispatch');
 
 // ─── Timeout / Steering / Idle (extracted to engine/timeout.js) ──────────────
 
@@ -3609,6 +3609,7 @@ async function tickInner() {
     const maxC = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
     setTempBudget(Math.max(0, maxC - activeCountPre));
   }
+  try { pruneStalePrDispatches(config); } catch (e) { log('warn', 'prune stale PR dispatches: ' + e.message); }
   let discoveryOk = true;
   try { await discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); discoveryOk = false; }
 
@@ -3885,7 +3886,7 @@ module.exports = {
   validateConfig,
 
   // Dispatch management (re-exported from engine/dispatch.js)
-  mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert, updateAgentStatus,
+  mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert, updateAgentStatus, pruneStalePrDispatches,
   activeProcesses, realActivityMap, engineRestartGraceExempt,
   get engineRestartGraceUntil() { return engineRestartGraceUntil; },
   set engineRestartGraceUntil(v) { engineRestartGraceUntil = v; },
