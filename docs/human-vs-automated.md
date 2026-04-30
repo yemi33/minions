@@ -50,8 +50,8 @@ These run continuously without you:
 - **Build failure detection** — auto-files fix tasks when CI fails
 - **Inbox consolidation** — LLM-powered dedup and categorization when inbox hits threshold
 - **Knowledge base classification** — auto-assigns category to consolidated notes
-- **Heartbeat monitoring** — detects hung/dead agents, marks them failed
-- **Blocking tool detection** — extends timeout when agent is in a long-running operation
+- **Process-based liveness** — tracks running agent processes and enforces the hard runtime limit
+- **Stale-orphan detection** — cleans up dispatches after process tracking is lost
 - **Metrics collection** — tracks tasks, errors, PRs, approvals per agent
 - **Dispatch priority** — fixes first, then reviews, then implementations
 - **Cooldown & backoff** — prevents re-dispatching recently failed items
@@ -98,11 +98,10 @@ If you start the engine and dashboard, then leave:
 2. Discovers pending work items, PRD gaps, PR reviews needed
 3. Dispatches agents (up to max concurrent)
 4. Agents create worktrees, write code, create PRs
-5. Engine monitors for completion, hung agents, build failures
+5. Engine monitors for process exit, hard timeouts, stale orphans, and build failures
 6. Successful work → PRs appear in your ADO/GitHub queue
 7. Failed work → marked failed, waiting for your retry
 8. Notes consolidated into team knowledge automatically
 9. Worktrees cleaned up after PRs merge
 
 **What blocks:** Plans waiting for approval. PRs waiting for your review vote. Failed tasks waiting for retry. Everything else keeps moving.
-

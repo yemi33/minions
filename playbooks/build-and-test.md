@@ -8,156 +8,39 @@ Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 Team root: {{team_root}}
 Project path: {{project_path}}
 
-## Your Task
+## Mission
 
-A new PR has been created: **{{pr_id}}** — "{{pr_title}}"
+A new PR has been created: **{{pr_id}}** - "{{pr_title}}"
 Branch: `{{pr_branch}}` | Author: {{pr_author}}
 
-Your job is to **check out the branch, build it, run tests, and if it's a webapp, start a local dev server** so the human reviewer can see it running.
+Run the project's normal build/test verification for this PR and report whether it is ready for human review. If it is a runnable app, identify the local URL and the exact command needed to run it.
 
-## Instructions
+## Long-Running Commands
 
-### 1. Set up a worktree for the PR branch
+Builds, dependency installs, tests, and dev servers can be quiet for a long time. Let normal CLI commands run naturally; do not add artificial heartbeat output or split commands just to show progress.
 
-You are already in the correct working directory on branch `{{pr_branch}}`. Do NOT create additional worktrees.
+## Approach
 
-### 2. Install dependencies
+Work from the current checkout prepared by the engine. Read the repo's own instructions first (`CLAUDE.md`, README, package files, Makefiles, project scripts) and adapt to the build system you find.
 
-Look at the project's build system (package.json, CLAUDE.md, README, Makefile, etc.) and install:
-```bash
-# Examples — use whatever the project needs:
-yarn install   # or npm install
-pip install -r requirements.txt
-dotnet restore
-```
+If build or tests fail, report the relevant errors clearly and stop. Do not fix code, push commits, or create PRs from this task.
 
-### 3. Build the project
+If a server/app should be run for review, include the URL and a copy-pasteable run command with absolute paths. If the server must survive after the agent exits, start it detached and record the PID, restart command, and stop command; otherwise just provide the command for the user.
 
-Run the project's build command:
-```bash
-# Examples:
-yarn build   # or npm run build
-dotnet build
-cargo build
-```
+## Findings
 
-If the build **fails**, report the errors clearly and stop. Do NOT attempt to fix the code.
+Write findings to `{{team_root}}/notes/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md` only after successful verification.
 
-> ⚠️ **Cold builds are silent for minutes** (Gradle daemon spin-up, dotnet restore, fresh `npm install`). Run them via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` on the Bash call (max 600000 ms). Without one of these, the heartbeat monitor will kill the agent at ~5 min of silence. See **Long-Running Build / Test Commands** below.
+Include:
+- Branch, author, and project
+- Build status and important warnings/errors
+- Test status and failed test names if any
+- Local server status, URL, run command, PID, restart command, and stop command if applicable
+- A short summary of whether the PR is ready to review
 
-### 4. Run tests
+## Constraints
 
-```bash
-# Examples:
-yarn test   # or npm test
-pytest
-dotnet test
-```
-
-Report test results: how many passed, failed, skipped.
-
-### 5. Start a local dev server (if applicable)
-
-Determine if this project is a **webapp** (has a dev server, serves HTTP, has a UI):
-- Check package.json for `dev`, `start`, `serve` scripts
-- Check for frameworks: Next.js, React, Angular, Vue, Express, Flask, ASP.NET
-- Check CLAUDE.md for run instructions
-
-If it IS a webapp:
-1. Start the dev server **detached from your process** so it survives after you exit.
-   - If the repo docs provide a local run or background-start command, use that.
-   - Otherwise, use the detached-process mechanism that fits the current environment. Do not assume Bash, PowerShell, or any specific shell unless the repo or runtime clearly provides it.
-2. Wait a few seconds, then verify it using the repo's documented smoke test, health check, startup output, or the lightest project-appropriate manual check.
-3. Note the localhost URL, port, process identifier/PID, or equivalent runtime details the repo exposes.
-4. Output the exact restart command with **absolute worktree paths**.
-5. Include the stop command or shutdown procedure that matches how you started it.
-
-If it is NOT a webapp (library, CLI tool, backend service without UI), skip this step.
-
-## Output Format
-
-Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md` **only after a successful verification run**: the build passed, required tests passed, and any applicable local server is running or not applicable.
-
-If the build fails, tests fail, dependency setup fails, or a required local server cannot start, do **not** write an inbox note. Follow the failure handling below and report the failure in your final response instead.
-
-Structure your report exactly like this:
-
-```markdown
-## Build & Test Report: {{pr_id}}
-
-**Branch:** {{pr_branch}}
-**Author:** {{pr_author}}
-**Project:** {{project_name}}
-
-### Build
-- Status: PASS
-- Notes: (any warnings or issues)
-
-### Tests
-- Status: PASS / SKIPPED
-- Results: X passed, 0 failed, Z skipped
-- Failed tests: none
-
-### Local Server
-- Status: RUNNING / NOT_APPLICABLE
-- URL: http://localhost:XXXX (if running)
-- PID / Process: <pid or equivalent identifier, if running>
-- Restart Command: `cd <absolute-path-to-worktree> && <exact start command>`
-- Stop Command: `<exact stop command or shutdown procedure>`
-
-### Summary
-(1-2 sentence overall assessment — is this PR safe to review?)
-```
-
-## Auto-file Work Items on Failure
-
-If the build or tests fail, create a work item so another agent can fix it. Write a JSON entry to the project's work queue:
-
-```bash
-# Read existing items, append new one, write back
-node -e "
-const fs = require('fs');
-const p = '{{project_path}}/.minions/work-items.json';
-const items = JSON.parse(fs.readFileSync(p, 'utf8') || '[]');
-const id = 'W' + String(items.reduce((m,i) => Math.max(m, parseInt((i.id||'').match(/(\d+)$/)?.[1]||0)), 0) + 1).padStart(3, '0');
-items.push({
-  id,
-  title: 'Fix build/test failure on PR {{pr_id}}: <SHORT DESCRIPTION OF FAILURE>',
-  type: 'fix',
-  priority: 'high',
-  description: '<PASTE THE BUILD/TEST ERROR OUTPUT HERE — keep it under 2000 chars>',
-  status: 'pending',
-  created: new Date().toISOString(),
-  createdBy: '{{agent_id}}',
-  pr: '{{pr_id}}',
-  branch: '{{pr_branch}}'
-});
-fs.writeFileSync(p, JSON.stringify(items, null, 2));
-console.log('Filed work item:', id);
-"
-```
-
-Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT HERE>` with the actual error details. The engine will pick this up on the next tick and dispatch a fix agent.
-
-## Rules
-
-- **Do NOT create pull requests** — this is a build/test task only
-- **Do NOT push commits** or modify code
-- **Do NOT attempt to fix build/test failures** — report them and file a work item
-- If starting a dev server, output the **exact restart command with absolute paths** so the user can restart it:
-  ```
-  ## Restart Command
-  cd <absolute-path-to-worktree> && <exact start command>
-  ```
-- Also include the server URL, PID/process identifier, and matching stop command.
-- Use the worktree path, NOT the main project path, for all commands
-- The worktree will persist after your process ends so the user can inspect it
-
-## Do not clean up the worktree
-
-Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up automatically after the PR is merged or closed.
-
-
-## When to Stop
-
-Your task is complete once you have: (1) built the project, (2) run tests, (3) started the app if applicable, and (4) written the success findings to the inbox file. If verification failed, stop after filing the failure work item when applicable and reporting the failure in your final response; do not write an inbox file.
+- Do not create pull requests or push commits.
+- Do not modify code unless the task explicitly changes into a fix task.
+- Use the current checkout/worktree prepared by the engine.
+- Do not remove worktrees; the engine handles cleanup automatically.

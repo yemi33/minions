@@ -2,7 +2,7 @@
 
 ## The Problem
 
-When the engine restarts, it loses its in-memory process handles (`activeProcesses` Map). Claude CLI agents spawned before the restart are still running as OS processes, but the engine can't monitor their stdout, detect exit codes, or manage their lifecycle. Without protection, the heartbeat check (5-min default) would kill these agents as "orphans."
+When the engine restarts, it loses its in-memory process handles (`activeProcesses` Map). Claude CLI agents spawned before the restart may still be running as OS processes, but the engine can't monitor their process state, detect exit codes, or manage their lifecycle. Stale-orphan detection keeps these dispatch records from staying active forever after the restart grace period expires.
 
 ## What's Persisted vs Lost
 
@@ -10,7 +10,7 @@ When the engine restarts, it loses its in-memory process handles (`activeProcess
 |-------|---------|-----------------|
 | Dispatch queue (pending/active/completed) | `engine/dispatch.json` | Yes |
 | Agent status (working/idle/error) | Derived from `engine/dispatch.json` | Yes |
-| Agent live output | `agents/*/live-output.log` | Yes (mtime used as heartbeat) |
+| Agent live output | `agents/*/live-output.log` | Yes (mtime used for orphan cleanup) |
 | Process handles (`ChildProcess`) | In-memory Map | **No** |
 | Cooldown timestamps | In-memory Map | **No** (repopulated from `engine/cooldowns.json`) |
 
@@ -29,14 +29,11 @@ Configurable via `config.json`:
 }
 ```
 
-### 2. Blocking Tool Detection
+### 2. Process-Based Liveness
 
-Even after the grace period expires, the engine scans each agent's `live-output.log` for the most recent `tool_use` call. If the agent is in a known blocking tool:
+After the grace period expires, a dispatch with a tracked live process keeps running until the process exits or exceeds `engine.agentTimeout`. Quiet stdout/stderr alone is not a hang signal; long builds, dependency installs, and tests can legitimately be silent.
 
-- **`TaskOutput` with `block: true`** — timeout extended to the task's own timeout + 1 min
-- **`Bash` with long timeout (>5 min)** — timeout extended to the bash timeout + 1 min
-
-This works for both tracked processes and orphans (no process handle).
+If there is no live tracked process, the engine uses `live-output.log` mtime as indirect evidence. Once the log is stale for `engine.heartbeatTimeout`, the dispatch is treated as an orphan and marked failed.
 
 ### 3. Stop Warning
 
@@ -86,7 +83,7 @@ T+0-20m  Ticks run. Orphan detection skipped (grace period).
          Engine detects completed output on next tick via file scan.
 
 T+20m    Grace period expires.
-         Heartbeat check resumes. Blocking tool detection still active.
-         Agent in TaskOutput block:true gets extended timeout.
-         Agent with no output for 5min+ and no blocking tool → orphaned.
+          Stale-orphan detection resumes.
+          Dispatch with live tracked process → keep running.
+          Dispatch with no live process and stale output → orphaned.
 ```

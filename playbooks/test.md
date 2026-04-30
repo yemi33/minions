@@ -15,60 +15,37 @@ Team root: {{team_root}}
 
 {{additional_context}}
 
-## Instructions
+## Mission
 
-This is a **test/build/run task**. Your goal is to build, run, test, or verify something.
+Build, run, test, or verify the requested target. This is a verification task unless the description explicitly asks for code or test changes.
 
-1. **Navigate** to the correct project directory
-2. You are already in the correct working directory. If you need a specific branch, use `git checkout` — do NOT create additional worktrees.
-3. **Build** the project — follow the repo's build instructions (check CLAUDE.md, package.json, README)
-4. **Run** if the task asks for it (e.g., `yarn start`, `yarn dev`, docker-compose, etc.)
-5. **Test** if the task asks for it (e.g., `yarn test`, `pytest`, etc.)
-6. **Write tests** if the task asks you to add or improve test coverage — commit and open a PR when done
-7. **Report results** — what worked, what failed, build output, test results, localhost URL if running
+## Long-Running Commands
 
-## Working Style
+Builds, tests, dependency installs, and server startups can be silent for several minutes. Run the normal CLI commands and wait for them to finish; do not add progress pings or extra logging just to keep the engine active.
 
-Use subagents only for genuinely parallel, independent tasks. For building, testing, and reporting results, work directly — do not spawn subagents.
+## Approach
 
-## Rules
+Work from the current project checkout prepared by the engine. Follow the repo's own instructions (`CLAUDE.md`, README, package files, Makefiles, project scripts) and run the smallest sensible set of commands that proves the requested behavior.
 
-- **Do NOT modify production code** unless the task explicitly asks for a fix
-- **Create a PR** if the task involves writing or modifying files (new tests, test fixes, etc.) — follow the same PR conventions as implement tasks
-- **Do NOT push or create a PR** for pure build/run/verify tasks that make no file changes
-- Use PowerShell for build commands on Windows if applicable
-- If a build or test fails, report the error clearly — don't try to fix it unless asked
-- If running a local server, report the URL (e.g., http://localhost:3000)
+If the task asks you to add or modify files, commit those focused changes, push the branch, and create a PR using the same conventions as implement tasks. For pure build/run/verify tasks, do not push or create a PR.
 
-## Run Command
+If a build or test fails, report the error clearly instead of fixing it unless the task explicitly asks for a fix.
 
-When the build succeeds and the task involves running a server or app, output a ready-to-paste run command using **absolute paths** so the user can launch it from any terminal. Format it exactly like this:
+If the task involves a local server or app, report the URL and a ready-to-paste run command with absolute paths:
 
-```
+```text
 ## Run Command
 cd <absolute-path-to-project-or-worktree> && <exact command to start the server>
 ```
 
-Example: `cd C:/Users/you/my-project && yarn dev`
+## Findings
 
-The agent process terminates after completion, so any dev server you start will die with it. The user needs this command to run it themselves.
+Write findings to `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md` only after successful completion.
 
-## After Successful Completion
+Include build status, test results, errors or warnings, run command, localhost URL if applicable, and PR URL if file changes were made.
 
-Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md` **only after a successful run**: all requested build/test/run steps completed, required checks passed, and any required PR was created.
+## Constraints
 
-If any requested build, test, run, or file-change step fails or is blocked, do **not** write an inbox note. Report the failure clearly in your final response, including the command, error summary, and any next action needed.
-
-Include:
-- Build status
-- Test results if applicable
-- Any errors or warnings
-- The run command (absolute paths, copy-pasteable from any terminal)
-- Localhost URL if applicable
-
-
-## When to Stop
-
-Your task is complete once you have run the tests, written the success findings to the inbox file, and (if the task involved file changes) created and submitted a PR. If the run failed or was blocked, stop after reporting the failure in your final response; do not write an inbox file.
-
-Do NOT remove worktrees — the engine handles cleanup automatically.
+- Do not modify production code unless explicitly asked.
+- Use PowerShell for build commands on Windows if applicable.
+- Do not remove worktrees; the engine handles cleanup automatically.
