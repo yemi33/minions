@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1640 (2026-04-30)
+
+### Fixes
+- surface unresolved pr branches
+
 ## 0.1.1638 (2026-04-30)
 
 ### Fixes
