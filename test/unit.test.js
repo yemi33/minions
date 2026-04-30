@@ -11665,6 +11665,201 @@ async function testDiscoverFromPrs() {
       'Should discover fix work when human feedback is pending');
   });
 
+  await test('discoverFromPrs dispatches new human feedback even after build-fix escalation (#1907)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: false, evalLoop: true, maxBuildFixAttempts: 3 },
+        agents: { ralph: { name: 'Ralph', role: 'Engineer' } },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+
+      freshQueries.getPrs = () => [{
+        id: 'PR-1907',
+        prNumber: 1907,
+        status: 'active',
+        reviewStatus: 'waiting',
+        minionsReview: { fixedAt: '2026-04-29T02:48:00.000Z' },
+        buildStatus: 'failing',
+        buildFixAttempts: 3,
+        buildFixEscalated: true,
+        humanFeedback: {
+          pendingFix: true,
+          lastProcessedCommentDate: '2026-04-30T12:02:00.000Z',
+          feedbackContent: '**[NEW]** **Caleb** (2026-04-30T12:02:00.000Z):\nPlease address this new review finding.',
+        },
+        agent: 'ralph',
+        title: 'Escalated build with fresh comments',
+        branch: 'work/pr-1907-build-escalated',
+        prdItems: ['W-1907'],
+        url: 'https://github.com/octo/repo/pull/1907',
+      }];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.strictEqual(discovered.length, 1, 'fresh reviewer comments must dispatch despite buildFixEscalated');
+      assert.strictEqual(discovered[0].type, 'fix');
+      assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
+      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1907');
+      assert.ok(discovered[0].prompt.includes('Please address this new review finding.'),
+        'human-feedback fix prompt must include the fresh reviewer comment');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs prioritizes pending human feedback over stale-vote re-review (#1907)', async () => {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const previousGithubModule = require.cache[githubPath];
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: {
+          pollPrStatus: async () => {},
+          pollPrHumanComments: async () => {},
+          reconcilePrs: async () => {},
+          checkLiveReviewStatus: async () => 'waiting',
+          checkLiveBuildAndConflict: async () => ({ buildStatus: 'passing', mergeConflict: false }),
+          isGhThrottled: () => false,
+        },
+      };
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: {
+          ralph: { name: 'Ralph', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+
+      freshQueries.getPrs = () => [{
+        id: 'PR-1908',
+        prNumber: 1908,
+        status: 'active',
+        reviewStatus: 'waiting',
+        minionsReview: { fixedAt: '2026-04-30T10:00:00.000Z' },
+        lastReviewedAt: '2026-04-30T09:00:00.000Z',
+        humanFeedback: {
+          pendingFix: true,
+          lastProcessedCommentDate: '2026-04-30T12:01:00.000Z',
+          feedbackContent: '**[NEW]** **Reviewer** (2026-04-30T12:01:00.000Z):\nThis stale-vote review has a new actionable comment.',
+        },
+        agent: 'ralph',
+        title: 'Waiting vote with fresh comments',
+        branch: 'work/pr-1908-stale-vote',
+        prdItems: ['W-1908'],
+        url: 'https://github.com/octo/repo/pull/1908',
+      }];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.strictEqual(discovered.length, 1, 'fresh comments should create one human-feedback fix, not a stale re-review');
+      assert.strictEqual(discovered[0].type, 'fix');
+      assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
+      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1908');
+      assert.ok(!String(discovered[0].meta?.dispatchKey).startsWith('rereview-'),
+        'pending human feedback must not be hidden behind a stale-vote re-review dispatch');
+    } finally {
+      if (previousGithubModule) require.cache[githubPath] = previousGithubModule;
+      else delete require.cache[githubPath];
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('discoverFromPrs skips PRs with active dispatch', () => {
     assert.ok(src.includes('activePrIds') || src.includes('activeDispatch'),
       'Should skip PRs that already have an active dispatch to prevent races');
@@ -32078,29 +32273,29 @@ async function testPrReviewFixFlows() {
   });
 
   await test('review-fix sets fixDispatched flag', () => {
-    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with pending human feedback'));
+    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with build failures'));
     assert.ok(fixBlock.includes('fixDispatched = true'), 'Should set fixDispatched after review-fix');
   });
 
   // ── Human feedback fix ──
 
   await test('human feedback fix NOT gated by evalEscalated', () => {
-    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(!humanBlock.includes('evalEscalated'), 'Human feedback should NOT be gated by evalEscalated');
   });
 
   await test('human feedback fix does NOT increment _reviewFixCycles', () => {
-    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(!humanBlock.includes('_reviewFixCycles'), 'Human feedback should NOT increment cycle counter');
   });
 
   await test('human feedback fix sets fixDispatched', () => {
-    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
   });
 
   await test('human feedback fix clears stale cooldowns with no dispatch history', () => {
-    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(humanBlock.includes('blockedByCooldown && !alreadyDispatched') && humanBlock.includes('clearCooldown(key)'),
       'Human feedback should clear stale cooldowns when no dispatch history exists');
     assert.ok(humanBlock.includes('Cleared stale cooldown'),
@@ -32108,7 +32303,7 @@ async function testPrReviewFixFlows() {
   });
 
   await test('human feedback fix does not set cooldown before post-gating dispatch', () => {
-    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(!humanBlock.includes('newWork.push(item); setCooldown(key);'),
       'Human feedback should not stamp cooldown before discoverWork gating');
   });
