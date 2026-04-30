@@ -357,6 +357,13 @@ async function pollPrStatus(config) {
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
+    const sourceBranch = stripRefsHeads(prData.sourceRefName);
+    if (sourceBranch && pr.branch !== sourceBranch) {
+      pr.branch = sourceBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      updated = true;
+    }
+
     let newStatus = pr.status;
     if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
     else if (prData.status === 'abandoned') newStatus = PR_STATUS.ABANDONED;

@@ -2011,6 +2011,83 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+function normalizePrBranch(value) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return '';
+  return raw.replace(/^refs\/heads\//i, '');
+}
+
+function resolvePrBranch(pr) {
+  if (!pr || typeof pr !== 'object') return '';
+  const candidates = [
+    pr.branch,
+    pr.pr_branch,
+    pr.prBranch,
+    pr.sourceRefName,
+    pr.sourceBranch,
+    pr.sourceRef,
+    pr.headRefName,
+    pr.head?.ref,
+  ];
+  for (const candidate of candidates) {
+    const branch = normalizePrBranch(candidate);
+    if (branch) return branch;
+  }
+  return '';
+}
+
+function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' } = {}) {
+  let changed = false;
+  try {
+    mutatePullRequests(projectPrPath(project), prs => {
+      const target = shared.findPrRecord(prs, pr, project);
+      if (!target) return;
+      if (branch) {
+        if (target.branch !== branch) {
+          target.branch = branch;
+          changed = true;
+        }
+        if (target._branchResolutionError) {
+          delete target._branchResolutionError;
+          changed = true;
+        }
+        return;
+      }
+      if (reason) {
+        const currentReason = target._branchResolutionError?.reason || '';
+        if (currentReason !== reason) {
+          target._branchResolutionError = { reason, at: ts() };
+          changed = true;
+        }
+      }
+    });
+  } catch (e) {
+    log('warn', `mark PR branch resolution state for ${pr?.id || 'unknown PR'}: ${e.message}`);
+  }
+  if (branch) {
+    pr.branch = branch;
+    if (pr._branchResolutionError) delete pr._branchResolutionError;
+  } else if (reason && changed) {
+    pr._branchResolutionError = { reason, at: ts() };
+  }
+  return changed;
+}
+
+function ensurePrBranchForDispatch(project, pr, automationType) {
+  const branch = resolvePrBranch(pr);
+  if (branch) {
+    if (pr.branch !== branch || pr._branchResolutionError) {
+      updatePrBranchResolutionState(project, pr, { branch });
+    }
+    return branch;
+  }
+  const reason = `Cannot dispatch ${automationType} for ${shared.getPrDisplayId(pr)}: missing pr_branch/source branch metadata. Link or refresh the PR so the source branch is known.`;
+  if (updatePrBranchResolutionState(project, pr, { reason })) {
+    log('warn', `PR ${pr.id}: ${reason}`);
+  }
+  return '';
+}
+
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
@@ -2052,9 +2129,10 @@ async function discoverFromPrs(config, project) {
     const prDisplayId = shared.getPrDisplayId(pr);
     const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
     if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
+    const prBranchForMutex = resolvePrBranch(pr);
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
-    if (pr.branch && isBranchActive(pr.branch)) {
-      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);
+    if (prBranchForMutex && isBranchActive(prBranchForMutex)) {
+      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${prBranchForMutex} locked by another agent`);
       continue;
     }
     // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
@@ -2116,11 +2194,13 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); }
     }
 
@@ -2157,11 +2237,13 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 're-review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); }
     }
 
@@ -2173,11 +2255,13 @@ async function discoverFromPrs(config, project) {
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'fix');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_branch: prBranch,
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment review→fix cycle counter
@@ -2212,6 +2296,8 @@ async function discoverFromPrs(config, project) {
       }
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
+      if (!prBranch) continue;
 
       const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
       let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
@@ -2221,10 +2307,10 @@ async function discoverFromPrs(config, project) {
       }
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); fixDispatched = true; }
     }
 
@@ -2292,6 +2378,8 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'build-fix');
+      if (!prBranch) continue;
 
       let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
       if (pr.buildErrorLog) {
@@ -2299,9 +2387,9 @@ async function discoverFromPrs(config, project) {
       }
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_branch: prBranch,
         review_note: reviewNote,
-      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment build fix attempts counter
@@ -2367,10 +2455,12 @@ async function discoverFromPrs(config, project) {
         if (!liveSkip) {
           const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
           if (agentId) {
+            const prBranch = ensurePrBranchForDispatch(project, pr, 'conflict-fix');
+            if (!prBranch) continue;
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-              pr_id: pr.id, pr_branch: pr.branch || '',
+              pr_id: pr.id, pr_branch: prBranch,
               review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
-            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
             if (item) {
               newWork.push(item);
               setCooldown(key);

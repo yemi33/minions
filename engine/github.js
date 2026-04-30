@@ -324,6 +324,13 @@ async function pollPrStatus(config) {
 
     let updated = false;
 
+    const headBranch = prData.head?.ref ? String(prData.head.ref).trim() : '';
+    if (headBranch && pr.branch !== headBranch) {
+      pr.branch = headBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      updated = true;
+    }
+
     // Map GitHub PR state to minions status
     let newStatus = pr.status;
     if (prData.merged) newStatus = PR_STATUS.MERGED;
