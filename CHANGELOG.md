@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1634 (2026-04-30)
+
+### Features
+- build-and-test CC action + docs playbook
+
 ## 0.1.1633 (2026-04-30)
 
 ### Features
