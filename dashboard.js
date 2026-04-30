@@ -63,6 +63,42 @@ function reloadConfig() {
   PROJECTS = _getProjects(CONFIG);
 }
 
+function _normalizeSkillDirForCompare(dir) {
+  const resolved = path.resolve(String(dir || '').replace(/\//g, path.sep));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function _skillEntrySource(entry) {
+  if (!entry) return '';
+  if (entry.scope === 'claude-code') return 'claude-code';
+  if (entry.scope === 'plugin') return 'plugin';
+  if (entry.scope === 'project') return 'project:' + entry.projectName;
+  return entry.scope || '';
+}
+
+function _isValidSkillFileName(file) {
+  return !!file && !file.includes('..') && !file.includes('\0') && !file.includes('/') && !file.includes('\\');
+}
+
+function _resolveSkillReadPath({ file, dir, source, config, skillFiles } = {}) {
+  if (!_isValidSkillFileName(file)) return null;
+  const requestedDir = dir ? _normalizeSkillDirForCompare(dir) : null;
+  const requestedSource = source || '';
+  const entries = Array.isArray(skillFiles) ? skillFiles : queries.collectSkillFiles(config || CONFIG);
+  for (const entry of entries) {
+    if (!entry || entry.file !== file || !entry.dir) continue;
+    if (requestedDir && _normalizeSkillDirForCompare(entry.dir) !== requestedDir) continue;
+    if (requestedSource && _skillEntrySource(entry) !== requestedSource) continue;
+
+    const baseDir = path.resolve(entry.dir);
+    const fullPath = path.resolve(baseDir, entry.file);
+    const rel = path.relative(baseDir, fullPath);
+    if (rel && (rel.startsWith('..') || path.isAbsolute(rel))) continue;
+    return fullPath;
+  }
+  return null;
+}
+
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
@@ -4220,22 +4256,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
     const dir = params.get('dir');
-    if (!file || file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) { res.statusCode = 400; res.end('Invalid file'); return; }
+    const source = params.get('source') || '';
+    if (!_isValidSkillFileName(file)) { res.statusCode = 400; res.end('Invalid file'); return; }
 
     let content = '';
-    if (dir) {
-      // Direct path from collectSkillFiles — validate resolved path stays within expected dir
-      const resolvedDir = path.resolve(dir.replace(/\//g, path.sep));
-      const fullPath = path.join(resolvedDir, file);
-      if (fullPath.startsWith(resolvedDir)) content = safeRead(fullPath) || '';
-    }
-    if (!content) {
+    const skillPath = _resolveSkillReadPath({ file, dir, source, config: CONFIG });
+    if (skillPath) content = safeRead(skillPath) || '';
+    if (!content && !dir) {
       // Fallback: search Claude Code skills, then project skills
       const home = os.homedir();
       const claudePath = path.join(home, '.claude', 'skills', file.replace('.md', '').replace('SKILL', ''), 'SKILL.md');
       content = safeRead(claudePath) || '';
       if (!content) {
-        const source = params.get('source') || '';
         if (source.startsWith('project:')) {
           const proj = PROJECTS.find(p => p.name === source.replace('project:', ''));
           if (proj) content = safeRead(path.join(proj.localPath, '.claude', 'skills', file)) || '';
@@ -6371,6 +6403,7 @@ module.exports = {
   _parseDocChatResultText,
   _messageRequestsOrchestration,
   _formatDocChatContext,
+  _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
 };
 

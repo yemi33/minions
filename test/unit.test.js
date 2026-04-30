@@ -40942,7 +40942,7 @@ async function testDashboardPureHelpers() {
   const { getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
           _parseWatchInterval, parsePinnedEntries, _parseDocChatResultText,
           _messageRequestsOrchestration, _formatDocChatContext,
-          DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
+          _resolveSkillReadPath, DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
   const queriesMod = require(path.join(MINIONS_DIR, 'engine', 'queries'));
   const osMod = require('os');
 
@@ -41080,6 +41080,34 @@ async function testDashboardPureHelpers() {
       'doc-chat context must label selected text as untrusted');
     assert.ok(context.includes(DOC_CHAT_DOCUMENT_DELIMITER),
       'edit instructions should use the high-entropy document delimiter');
+  });
+
+  // ── skill file resolution ────────────────────────────────────────────────
+
+  await test('_resolveSkillReadPath only resolves files from discovered skill dirs', () => {
+    const allowedDir = createTmpDir();
+    const outsideDir = createTmpDir();
+    fs.writeFileSync(path.join(allowedDir, 'SKILL.md'), '# Allowed');
+    fs.writeFileSync(path.join(outsideDir, 'SKILL.md'), '# Outside');
+    const skillFiles = [{ file: 'SKILL.md', dir: allowedDir, scope: 'project', projectName: 'demo' }];
+
+    assert.strictEqual(
+      _resolveSkillReadPath({ file: 'SKILL.md', dir: allowedDir.replace(/\\/g, '/'), source: 'project:demo', skillFiles }),
+      path.resolve(allowedDir, 'SKILL.md')
+    );
+    assert.strictEqual(
+      _resolveSkillReadPath({ file: 'SKILL.md', dir: outsideDir, source: 'project:demo', skillFiles }),
+      null,
+      'caller-supplied dirs must be checked against collectSkillFiles results'
+    );
+  });
+
+  await test('_resolveSkillReadPath rejects traversal filenames', () => {
+    const allowedDir = createTmpDir();
+    const skillFiles = [{ file: 'SKILL.md', dir: allowedDir, scope: 'project', projectName: 'demo' }];
+    assert.strictEqual(_resolveSkillReadPath({ file: '..\\secret.txt', dir: allowedDir, skillFiles }), null);
+    assert.strictEqual(_resolveSkillReadPath({ file: '../secret.txt', dir: allowedDir, skillFiles }), null);
+    assert.strictEqual(_resolveSkillReadPath({ file: 'secret\0.txt', dir: allowedDir, skillFiles }), null);
   });
 
   // ── parsePinnedEntries ──────────────────────────────────────────────────
