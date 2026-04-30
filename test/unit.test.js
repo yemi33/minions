@@ -3911,7 +3911,7 @@ async function testPrAttachmentContract() {
       fs.writeFileSync(prPath, '[]');
 
       const count = lifecycle.syncPrsFromOutput(
-        JSON.stringify({ type: 'result', result: 'Created PR: https://github.com/octo/minions/pull/1902' }),
+        JSON.stringify({ type: 'result', result: 'PR created: https://github.com/octo/minions/pull/1902' }),
         'dallas',
         { branch: 'work/W-output123', item: { id: 'W-output123', title: 'Harden PR links', type: 'fix' }, project: { name: 'minions' } },
         { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
