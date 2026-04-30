@@ -1665,7 +1665,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('info', `Structured completion reports PR (${structuredCompletion.pr}) but regex sync found none — PR may already be tracked`);
   }
 
-  // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
+  // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before the failure surfaced.
   const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
   const autoRecovered = !isSuccess && prsCreatedCount > 0 && prCreatingType && !!meta?.item?.id;
   if (autoRecovered) {

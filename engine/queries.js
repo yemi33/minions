@@ -300,7 +300,7 @@ function getAgentStatus(agentId) {
       branch: active.meta?.branch || '',
       started_at: active.started_at || active.created_at || null,
     };
-    // Surface blocking tool call state from dispatch annotation (set by timeout.js)
+    // Surface any legacy blocking-tool annotation until timeout.js clears it.
     if (active._blockingToolCall) {
       result._blockingToolCall = active._blockingToolCall;
     }
@@ -355,12 +355,12 @@ function getAgentStatus(agentId) {
 
   // Fallback: derive active state from work-item markers.
   // This protects UI status when dispatch.json briefly desyncs from work-item files.
-  // Guard: only trust dispatched state within 2x heartbeatTimeout to prevent stale
+  // Guard: only trust dispatched state within 2x stale-orphan timeout to prevent stale
   // dispatched items from permanently showing an agent as working after a dead process.
   try {
     const config = getConfig();
-    const heartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
-    const staleThresholdMs = heartbeatTimeout * 2;
+    const staleOrphanTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+    const staleThresholdMs = staleOrphanTimeout * 2;
     const now = Date.now();
     const allItems = getWorkItems(config);
     const latestInFlight = allItems

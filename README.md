@@ -227,7 +227,7 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 - **Pipelines** — multi-stage workflows chaining tasks, meetings, plans, and more. Cron triggers or manual. Artifacts flow between stages.
 - **Eval loop** — after implementation, auto-dispatches review → fix cycles (configurable iterations and cost ceiling per work item)
 - **Pinned notes** — critical context pinned to all agent prompts via `pinned.md`
-- **Heartbeat monitoring** — detects dead/hung agents via output file activity, not just timeouts
+- **Process-based liveness** — live agents may be quiet; output staleness is only used for orphan cleanup after process tracking is lost
 - **Auto-cleanup** — stale temp files, orphaned worktrees, zombie processes cleaned every 10 minutes
 
 ## Dashboard
@@ -403,7 +403,7 @@ No bash or shell involved — Node spawns Node directly. Dependency branches are
 - **MCP servers** — inherited from `~/.claude.json` (no extra config needed)
 - **Full tool access** — all built-in tools plus all MCP tools
 - **Permission mode** — `bypassPermissions` (no interactive prompts)
-- **Output format** — `stream-json` (real-time streaming for live dashboard + heartbeat)
+- **Output format** — `stream-json` (real-time streaming for live dashboard + completion recovery)
 
 ### Post-Completion
 
@@ -462,15 +462,15 @@ Playbooks are fully customizable — edit the shared templates in `playbooks/` t
 
 ## Health Monitoring
 
-### Heartbeat Check (every tick)
+### Liveness Check (every tick)
 
-Uses `live-output.log` file modification time as a heartbeat:
-- **Process alive + recent output** → healthy, keep running
-- **Process alive + in blocking tool call** → extended timeout (matches tool's timeout + grace period)
-- **Process alive + silent >5min** → hung, kill and mark failed
-- **No process + silent >5min** → orphaned (engine restarted), mark failed
+Agent liveness mirrors a normal CLI process:
+- **Tracked process alive** → keep running, even if stdout/stderr are quiet
+- **Tracked process exceeds `agentTimeout`** → stop and mark timed out
+- **Tracked process exits** → handle normal completion/failure
+- **No tracked process + stale output** → treat as an orphan from engine restart/process loss and mark failed
 
-Agents can run for hours as long as they're producing output. The `heartbeatTimeout` (default 5min) only triggers on silence. When an agent is in a blocking tool call (e.g., `TaskOutput` with `block:true`, `Bash` with long timeout), the engine detects this from the live output and extends the timeout automatically.
+Builds, dependency installs, tests, and other CLI commands can legitimately produce no output for long periods. The engine does not infer "hung" from stdout/stderr silence while it still has a live process handle. `heartbeatTimeout` is only the stale-orphan grace window used when the engine has lost process tracking.
 
 ### Automated Cleanup (every 10 ticks)
 
@@ -532,7 +532,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `tickInterval` | 60000 (1min) | Milliseconds between engine ticks |
 | `maxConcurrent` | 5 | Max agents running simultaneously |
 | `agentTimeout` | 18000000 (5h) | Max total agent runtime |
-| `heartbeatTimeout` | 300000 (5min) | Kill agents silent longer than this |
+| `heartbeatTimeout` | 300000 (5min) | Stale-orphan grace after process tracking is lost |
 | `maxTurns` | 100 | Max Claude CLI turns per agent session |
 | `inboxConsolidateThreshold` | 5 | Inbox files needed before consolidation |
 | `worktreeCreateTimeout` | 300000 (5min) | Timeout for each `git worktree add` attempt |
@@ -649,7 +649,7 @@ To move to a new machine: `npm install -g @yemi33/minions && minions init --forc
     pipeline.js          <- Multi-stage pipeline orchestration
     meeting.js           <- Meeting creation, rounds, conclusion
     cleanup.js           <- Worktree + temp file cleanup
-    timeout.js           <- Agent timeout and heartbeat detection
+    timeout.js           <- Agent timeout and orphan detection
     cooldown.js          <- Dispatch cooldown with exponential backoff
     github.js            <- GitHub PR polling, comment polling, reconciliation
     routing.js           <- Agent routing and temp agent management

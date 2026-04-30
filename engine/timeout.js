@@ -1,6 +1,5 @@
 /**
- * engine/timeout.js — Timeout detection, steering, and idle threshold checks.
- * Extracted from engine.js for modularity. No logic changes.
+ * engine/timeout.js — Runtime timeout, stale-orphan cleanup, steering, and idle checks.
  */
 
 const fs = require('fs');
@@ -124,6 +123,28 @@ function checkSteering(config) {
 
 // ─── Timeout Checker ─────────────────────────────────────────────────────────
 
+function trackedProcessPid(procInfo) {
+  const pid = Number(procInfo?.proc?.pid || procInfo?.pid || 0);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+function isTrackedProcessAlive(procInfo) {
+  if (!procInfo) return false;
+  const proc = procInfo.proc;
+  if (proc && Object.prototype.hasOwnProperty.call(proc, 'exitCode') && proc.exitCode !== null) {
+    return false;
+  }
+
+  const pid = trackedProcessPid(procInfo);
+  if (!pid) return !!proc && proc.killed !== true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function checkTimeouts(config) {
   const activeProcesses = engine().activeProcesses;
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
@@ -132,10 +153,10 @@ function checkTimeouts(config) {
   const { runPostCompletionHooks } = require('./lifecycle');
 
   const timeout = config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout;
-  const defaultHeartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+  const defaultStaleOrphanTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
 
-  // Per-type heartbeat timeouts: merge ENGINE_DEFAULTS ← config overrides
-  const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+  // Optional per-type stale-orphan timeouts: merge ENGINE_DEFAULTS ← config overrides.
+  const perTypeStaleOrphanTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
 
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {
@@ -148,37 +169,32 @@ function checkTimeouts(config) {
     }
   }
 
-  // 2. Heartbeat check — for ALL active dispatch items (catches orphans after engine restart)
-  //    Uses live-output.log mtime as heartbeat. If no output for heartbeatTimeout, agent is dead.
+  // 2. Stale-orphan check — for ALL active dispatch items (catches lost process handles after restart).
+  //    Silence is not a failure for tracked live processes: long CLI commands can legitimately
+  //    produce no stdout/stderr for extended periods.
   const dispatchData = getDispatch();
   const deadItems = [];
-  const blockingAnnotations = new Map(); // id → { tool, silentMs, remainingMs } or null (clear)
+  const legacyAnnotationClears = new Set();
 
   for (const item of (dispatchData.active || [])) {
     if (!item.agent) continue;
 
-    // Per-type heartbeat: look up work type from dispatch item, fall back to default
+    // Per-type stale-orphan timeout: look up work type from dispatch item, fall back to default.
     const workType = item.workType || item.meta?.item?.type;
-    const heartbeatTimeout = (workType && perTypeTimeouts[workType]) || defaultHeartbeatTimeout;
+    const staleOrphanTimeout = (workType && perTypeStaleOrphanTimeouts[workType]) || defaultStaleOrphanTimeout;
 
-    const hasProcess = activeProcesses.has(item.id);
+    const procInfo = activeProcesses.get(item.id);
+    const hasProcess = !!procInfo;
+    const processAlive = isTrackedProcessAlive(procInfo);
     const liveLogPath = path.join(AGENTS_DIR, item.agent, 'live-output.log');
     let lastActivity = item.started_at ? new Date(item.started_at).getTime() : 0;
 
-    // For tracked processes, use realActivityMap (tracks actual agent stdout/stderr only,
-    // NOT engine heartbeat writes). This prevents the feedback loop where engine heartbeat
-    // writes to live-output.log reset the mtime that the timeout check reads (#724).
-    const realActivityMap = engine().realActivityMap;
-    if (hasProcess && realActivityMap?.has(item.id)) {
-      lastActivity = Math.max(lastActivity, realActivityMap.get(item.id));
-    } else {
-      // Orphan case (no tracked process): use live-output.log mtime as fallback.
-      // No heartbeat timer is running for orphans, so mtime is accurate.
-      try {
-        const stat = fs.statSync(liveLogPath);
-        lastActivity = Math.max(lastActivity, stat.mtimeMs);
-      } catch { /* optional */ }
-    }
+    // live-output.log mtime is only used for stale-orphan cleanup and completion recovery.
+    // It is not used as an output-silence timeout for live tracked processes.
+    try {
+      const stat = fs.statSync(liveLogPath);
+      lastActivity = Math.max(lastActivity, stat.mtimeMs);
+    } catch { /* optional */ }
 
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
@@ -266,126 +282,26 @@ function checkTimeouts(config) {
       // code is known (#1792).
     } catch (e) { log('warn', 'output completion detection: ' + e.message); }
 
-    // Resolve per-type heartbeat timeout: per-type map → base heartbeatTimeout fallback
-    const itemHeartbeat = perTypeTimeouts[item.type] || heartbeatTimeout;
-
-    // Check if agent is in a blocking tool call (TaskOutput block:true, Bash with long timeout, etc.)
-    // These tools produce no stdout for extended periods — don't kill them prematurely
-    // Check for BOTH tracked and untracked processes (orphan case after engine restart)
-    // Skip if agent already completed — blocking tool detection on stale tool calls
-    // would extend the timeout indefinitely for dead agents (#716).
-    let isBlocking = false;
-    let blockingTimeout = itemHeartbeat;
-    let blockingTool = '';
-    if (silentMs > itemHeartbeat) {
-      try {
-        const liveLog = safeRead(liveLogPath);
-        if (liveLog) {
-          // If the output contains a result event or process-exit sentinel, the agent is done.
-          // Don't extend timeout for stale blocking tool calls from before the result (#716).
-          if (liveLog.includes('"type":"result"') || liveLog.includes('\n[process-exit]')) {
-            // Agent completed but close event didn't fire — let orphan/hung detection handle it.
-            // Don't set isBlocking — use base heartbeat timeout.
-          } else {
-          // Find the last tool_use call in the output — check if it's a known blocking tool.
-          //
-          // Lookback depth (1000 lines) is sized for the heartbeat-noise scenario from #1792:
-          // a long-running Monitor / Bash / PowerShell call goes silent for 15+ minutes while
-          // a cold Gradle build runs. During that silence the ENGINE writes a heartbeat line
-          // every 30s (engine.js heartbeatTimer), so the live log accumulates ~120 heartbeat
-          // lines per hour AFTER the original tool_use line. A 30-line lookback misses the
-          // tool_use entirely, the detector treats the silence as non-blocking, and the
-          // agent gets killed at heartbeatTimeout despite legitimately waiting on a
-          // background process. 1000 lines covers ~8 hours of pure heartbeat noise — well
-          // beyond Monitor's 30 min effective timeout floor.
-          const lines = liveLog.split('\n');
-          const TOOL_USE_LOOKBACK = 1000;
-          for (let i = lines.length - 1; i >= Math.max(0, lines.length - TOOL_USE_LOOKBACK); i--) {
-            const line = lines[i];
-            if (!line.includes('"tool_use"')) continue;
-            try {
-              const parsed = JSON.parse(line);
-              const toolUse = parsed?.message?.content?.find?.(c => c.type === 'tool_use');
-              if (!toolUse) continue;
-              const input = toolUse.input || {};
-              const name = toolUse.name || '';
-              // TaskOutput with block:true — waiting for a background task
-              if (name === 'TaskOutput' && input.block === true) {
-                const taskTimeout = input.timeout || 600000; // default 10min
-                blockingTimeout = Math.max(itemHeartbeat, taskTimeout + 60000); // task timeout + 1min grace
-                isBlocking = true;
-                blockingTool = 'TaskOutput';
-              }
-              // Bash tool call — may be running a long build/install with no stdout
-              if (name === 'Bash') {
-                // Use explicit timeout if set, otherwise match Claude Code's actual Bash default (120s)
-                const bashTimeout = input.timeout || 120000;
-                blockingTimeout = Math.max(itemHeartbeat, bashTimeout + 60000);
-                isBlocking = true;
-                blockingTool = 'Bash';
-              }
-              // PowerShell tool call — Windows-native shell with same explicit-timeout
-              // semantics as Bash (input.timeout, max 600s). Required for projects that
-              // build via PowerShell on Windows (gradlew.bat, MSBuild, dotnet test) where
-              // the cold-start phase produces no stdout for several minutes (#1786).
-              if (name === 'PowerShell') {
-                const psTimeout = input.timeout || 120000;
-                blockingTimeout = Math.max(itemHeartbeat, psTimeout + 60000);
-                isBlocking = true;
-                blockingTool = 'PowerShell';
-              }
-              // Monitor tool call — blocks waiting for stdout-line notifications from a
-              // background process started via Bash with run_in_background. Between
-              // notifications the call produces no output, so the heartbeat monitor
-              // must extend timeout. No fixed timeout on Monitor — match Agent (30min)
-              // since both are inherently long-running waits (#1786).
-              if (name === 'Monitor') {
-                blockingTimeout = Math.max(itemHeartbeat, 1800000); // 30min for background process waits
-                isBlocking = true;
-                blockingTool = 'Monitor';
-              }
-              // Agent (subagent) tool call — parent waits silently for child to complete
-              if (name === 'Agent') {
-                blockingTimeout = Math.max(itemHeartbeat, 1800000); // 30min for subagents
-                isBlocking = true;
-                blockingTool = 'Agent';
-              }
-              break; // only check the most recent tool_use
-            } catch { /* JSON parse — line may not be valid JSON */ }
-          }
-          if (isBlocking) {
-            // Only log on transition — avoid spamming every tick while blocking persists
-            if (!item._blockingToolCall) {
-              log('info', `Agent ${item.agent} (${item.id}) is in a blocking tool call (${blockingTool}) — extended timeout to ${Math.round(blockingTimeout / 1000)}s (silent for ${silentSec}s)`, { event: 'blocking_tool_call_detected' });
-            }
-            blockingAnnotations.set(item.id, {
-              tool: blockingTool,
-              silentMs,
-              remainingMs: Math.max(0, blockingTimeout - silentMs),
-            });
-          }
-          } // close else
-        } // close if (liveLog)
-      } catch (e) { log('warn', 'blocking tool detection: ' + e.message); }
+    // Blocking tool annotations are no longer needed: live tracked processes are allowed to
+    // be quiet regardless of which command/tool is running.
+    if (item._blockingToolCall) {
+      legacyAnnotationClears.add(item.id);
     }
-    // Agent recovered from blocking state — clear annotation
-    if (!isBlocking && item._blockingToolCall) {
-      blockingAnnotations.set(item.id, null);
-    }
-
-    const effectiveTimeout = isBlocking ? blockingTimeout : itemHeartbeat;
 
     // Skip recently-steered agents — they're being killed and re-spawned
-    const procInfo = activeProcesses.get(item.id);
     if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
 
-    // Capture live-output.log file state for orphan/hung diagnostics
+    if (processAlive) {
+      continue;
+    }
+
+    // Capture live-output.log file state for orphan diagnostics
     // (#W-mo248lkjwgsu original, #W-mo25loq8kjer pid annotation).
     // Four distinguishable failure modes:
     //   logExists=false                         → spawn call itself threw, no log ever written
     //   logExists=true pidPresent=false         → engine stub written but spawn died before emitting pid line
-    //   logExists=true pidPresent=true silent   → process spawned (pid recorded) but never produced stdout
-    //   logExists=true pidPresent=true size>pid → genuine hang (process wrote output then stopped)
+    //   logExists=true pidPresent=true silent   → process spawned (pid recorded) but no recent output
+    //   logExists=true pidPresent=true size>pid → process handle was lost after output was written
     //
     // The pid line `[<iso>] pid: <N>` is stamped by engine.js immediately after runFile() returns.
     // Its presence → the child process was actually spawned; absence → spawn itself failed or the
@@ -408,33 +324,15 @@ function checkTimeouts(config) {
       _logState = `logExists=true logSize=${lst.size} pidPresent=${pidPresent}`;
     } catch { /* ENOENT — keep default */ }
 
-    if (!hasProcess && silentMs > effectiveTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
-      // No tracked process AND no recent output past effective timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
-      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
+    if (!processAlive && silentMs > staleOrphanTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
+      // No tracked process AND no recent output past stale-orphan timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
+      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no live process tracked, silent for ${silentSec}s [${_logState}]`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
       // Clear session so retry starts fresh
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
       deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
-    } else if (hasProcess && silentMs > effectiveTimeout) {
-      // Has process but no output past effective timeout → hung
-      log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''} [${_logState}]`);
-      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Hung — no output for ${silentSec}s`);
-      const procInfo = activeProcesses.get(item.id);
-      if (procInfo) {
-        shared.killGracefully(procInfo.proc, 5000);
-        // On Unix, also kill child process tree (killGracefully only hits parent PID)
-        if (process.platform !== 'win32' && procInfo.proc?.pid) {
-          setTimeout(() => {
-            try { shared.exec(`pkill -KILL -P ${procInfo.proc.pid}`, { timeout: 3000 }); } catch { /* children may already be dead */ }
-          }, 6000); // after grace period
-        }
-        activeProcesses.delete(item.id);
-      }
-      // Clear session so retry starts fresh instead of resuming the killed session
-      try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
-      deadItems.push({ item, reason: `Hung — no output for ${silentSec}s` });
+      activeProcesses.delete(item.id);
     }
-    // If has process and recent output → healthy, let it run
   }
 
   // Clean up dead items
@@ -442,19 +340,12 @@ function checkTimeouts(config) {
     completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);
   }
 
-  // Batch-write blocking tool call annotations to dispatch entries.
-  // This surfaces blocking state via GET /api/status → dashboard badges.
-  if (blockingAnnotations.size > 0) {
+  // Clear legacy blocking-tool annotations; process liveness no longer depends on tool parsing.
+  if (legacyAnnotationClears.size > 0) {
     const { mutateDispatch: mutateDispatchFn } = dispatch();
     mutateDispatchFn((dp) => {
       for (const activeItem of dp.active) {
-        if (!blockingAnnotations.has(activeItem.id)) continue;
-        const ann = blockingAnnotations.get(activeItem.id);
-        if (ann) {
-          activeItem._blockingToolCall = ann;
-        } else {
-          delete activeItem._blockingToolCall;
-        }
+        if (legacyAnnotationClears.has(activeItem.id)) delete activeItem._blockingToolCall;
       }
     });
   }

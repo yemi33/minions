@@ -59,9 +59,7 @@ proc.stdin.end();
 
 ### Output Format: json vs stream-json
 
-`--output-format json` produces **one JSON blob at exit**. No streaming output during execution. This broke:
-- Live output in dashboard (nothing to show until agent finishes)
-- Heartbeat monitoring (no file writes to check mtime against)
+`--output-format json` produces **one JSON blob at exit**. No streaming output during execution. This broke live output in the dashboard and made restart recovery less observable.
 
 Fix: switched to `--output-format stream-json` — streams events as they happen.
 
@@ -73,15 +71,15 @@ Agents would hang waiting for permission prompts (invisible in headless mode). A
 
 Claude Code sets `CLAUDECODE` env var to prevent nested sessions. Spawned agents inherit it and refuse to start. The engine strips it from `childEnv`, but the wrapper script was using `process.env` (which re-inherits from the parent). Fixed by stripping in both places.
 
-### Heartbeat vs Stale Detection
+### Process Liveness vs Stale-Orphan Detection
 
 Original approach: kill agents after a fixed time threshold (staleThreshold). Problem: agents can legitimately run for hours on complex tasks.
 
-New approach: heartbeat based on `live-output.log` mtime. As long as the agent produces output, it's alive. If silent for 5 minutes → declared dead. Catches orphaned processes (engine restart loses process handles) and hung agents.
+New approach: rely on the tracked process while the engine has a live process handle, regardless of whether stdout/stderr are quiet. `live-output.log` mtime is only used after process tracking is lost, such as an engine restart, to clean up stale orphaned dispatches.
 
 ### Engine Restart Orphan Problem
 
-When the engine restarts, the in-memory `activeProcesses` Map is lost. Active dispatch items stay in `dispatch.json` but the engine has no process handle. Old stale detection (6h threshold) was too slow to catch this. The heartbeat check catches it in 5 minutes.
+When the engine restarts, the in-memory `activeProcesses` Map is lost. Active dispatch items stay in `dispatch.json` but the engine has no process handle. Old stale detection (6h threshold) was too slow to catch this. Stale-orphan detection uses recent `live-output.log` activity and catches abandoned dispatches after the restart grace window.
 
 ## The Successful Run
 
@@ -107,9 +105,9 @@ When the engine restarts, the in-memory `activeProcesses` Map is lost. Active di
 
 1. **Never pass user content through shell expansion.** Use stdin or direct args via Node's `spawn` (without shell).
 2. **On Windows, npm-installed CLI tools are shell wrappers.** Resolve the actual `.js` entry point and spawn via `node`.
-3. **Streaming output format is essential** for monitoring long-running agents. One-shot JSON is useless for heartbeats.
+3. **Streaming output format is essential** for live dashboards and restart recovery. One-shot JSON hides everything until exit.
 4. **Environment variable inheritance is tricky** with nested spawns. Strip at every level.
-5. **Heartbeats > timeouts** for agents that can run for hours. Check liveness, not elapsed time.
+5. **Process liveness beats output-silence heuristics** for agents that can run quiet CLI commands for long periods.
 
 ## The Spawn Chain (Final Working Version)
 
@@ -120,9 +118,8 @@ engine.js (tick loop)
       → spawn(process.execPath, ['cli.js', '-p', '--system-prompt', content, ...args])
         → claude-code runs with prompt via stdin
           → agent works, streams JSON events to stdout
-            → engine captures to live-output.log (heartbeat)
+            → engine captures to live-output.log (dashboard + restart recovery)
             → dashboard polls /api/agent/:id/live (3s refresh)
 ```
 
 No bash. No shell. No metacharacter interpretation. Just Node spawning Node.
-

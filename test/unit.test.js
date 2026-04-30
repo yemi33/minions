@@ -7627,12 +7627,12 @@ async function testStateIntegrity() {
       'dashboard dispatch mutations should normalize queue structure');
   });
 
-  await test('Hung timeout path uses normal auto-retry flow', () => {
+  await test('Stale-orphan timeout path uses normal auto-retry flow', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes("completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);"),
-      'Hung/orphan cleanup should route through normal completeDispatch retry handling');
+      'Stale-orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
-      'Hung/orphan cleanup should not bypass work item retry handling');
+      'Stale-orphan cleanup should not bypass work item retry handling');
   });
 
   await test('Auto-retry is gated by retryable failure reason classification', () => {
@@ -7694,14 +7694,12 @@ async function testStateIntegrity() {
       'close handler should verify dispatch is still active before completing');
   });
 
-  await test('Live log appends heartbeat during silent runs', () => {
+  await test('Live log does not append heartbeat during silent runs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('[heartbeat] running — no output for'),
-      'engine should append heartbeat lines to live-output when agent is silent');
-    assert.ok(src.includes('heartbeatTimer = setInterval('),
-      'engine should create a heartbeat timer for live-output');
-    assert.ok(src.includes('if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }'),
-      'engine should clear heartbeat timer on close/error');
+    assert.ok(!src.includes('[heartbeat] running — no output for'),
+      'engine should not append heartbeat lines to live-output when an agent is silent');
+    assert.ok(!src.includes('heartbeatTimer = setInterval('),
+      'engine should not create a heartbeat timer for live-output');
   });
 
   await test('Human feedback pendingFix is cleared only after dispatch enqueue', () => {
@@ -12693,9 +12691,11 @@ async function testCheckTimeouts() {
       'Should support per-item deadline override for fan-out tasks');
   });
 
-  await test('checkTimeouts detects blocking tools', () => {
-    assert.ok(src.includes('TaskOutput') || src.includes('blocking'),
-      'Should detect blocking tool patterns to extend timeout');
+  await test('checkTimeouts does not need blocking-tool detection for live processes', () => {
+    assert.ok(src.includes('isTrackedProcessAlive'),
+      'Should determine liveness from tracked process state');
+    assert.ok(src.includes('legacyAnnotationClears'),
+      'Should clear legacy blocking-tool annotations rather than depend on tool parsing');
   });
 
   await test('checkTimeouts WI-reconcile uses skipWriteIfUnchanged to avoid file-watch tick storm', () => {
@@ -12734,7 +12734,7 @@ async function testCheckTimeouts() {
     // result alone races with the close handler. Use the [process-exit] sentinel as
     // the authoritative gate so we only detect completion AFTER spawn-agent's close
     // handler stamps the exit code.
-    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Blocking tool annotations'));
     assert.ok(detectionBlock.includes('[process-exit]'),
       'Output completion detection must gate on [process-exit] sentinel');
     // The OR-trigger on "type":"result" alone is the original bug — must be removed
@@ -12750,259 +12750,85 @@ async function testCheckTimeouts() {
     // Substring-matching `"subtype":"success"` was the false-positive vector: a resumed
     // claude CLI turn emits subtype:success even when the agent did no real work and the
     // OS later returned exit code 1, leading to the dispatch being marked SUCCESS.
-    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Blocking tool annotations'));
     assert.ok(/process-exit\][^]*?code=/.test(detectionBlock) || /code=([^]*?)\\d/.test(detectionBlock),
       'Detection block must parse `code=N` from the [process-exit] sentinel for the exit code');
     assert.ok(!/isSuccess\s*=\s*liveLog\.includes\(\s*'"subtype":"success"'\s*\)/.test(detectionBlock),
       'isSuccess must NOT be derived from a "subtype":"success" substring match in the live log — that produces false positives on resumed --resume turns (#1792)');
   });
 
-  await test('blocking detection: tool_use lookback covers long sessions, not just last 30 lines (#1792)', () => {
-    // Long Monitor / Bash sessions accumulate engine heartbeat lines (one every 30s).
-    // After 15+ minutes of silence the original tool_use line gets pushed past the
-    // 30-line lookback window — the detector then misses Monitor and the agent gets
-    // killed at heartbeatTimeout despite legitimately waiting on a background process.
-    // Lookback must be generous enough to span hours of pure heartbeat noise.
-    const blockingBlock = src.slice(src.indexOf('Find the last tool_use call'), src.indexOf('break; // only check the most recent tool_use'));
-    // Look for the lookback constant or a numeric literal substracted from lines.length
-    // that isn't `lines.length - 1` (the iteration start). Accept either an explicit
-    // named constant (e.g. `const TOOL_USE_LOOKBACK = 1000`) or a direct numeric
-    // subtraction `lines.length - 1000`.
-    const constMatch = blockingBlock.match(/(?:const\s+)?TOOL_USE_LOOKBACK\s*=\s*(\d+)/);
-    const inlineMatch = blockingBlock.match(/lines\.length\s*-\s*(\d{2,})/); // 2+ digits → skip the `- 1` iterator
-    const lookback = constMatch ? parseInt(constMatch[1], 10)
-      : inlineMatch ? parseInt(inlineMatch[1], 10)
-      : null;
-    assert.ok(lookback != null,
-      'Blocking detection must define a TOOL_USE_LOOKBACK constant or a numeric (>= 10) subtraction from lines.length');
-    assert.ok(lookback >= 500,
-      `Tool_use lookback must be >= 500 lines to handle long Monitor sessions with heartbeat noise (got ${lookback}). With heartbeats every 30s, 30-line lookback misses Monitor after ~15 min of silence.`);
+  await test('checkTimeouts allows silent tracked live processes', () => {
+    assert.ok(src.includes('if (processAlive)'),
+      'Should explicitly branch on tracked process liveness');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
+      'Should document that stdout/stderr silence is not a failure while process is alive');
+    assert.ok(src.includes('continue;'),
+      'Live tracked processes should continue instead of entering orphan cleanup');
   });
 
-  await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
-    assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
+  await test('checkTimeouts has no command-specific blocking-tool parser', () => {
+    assert.ok(!src.includes("name === 'Bash'"), 'Should not special-case Bash');
+    assert.ok(!src.includes("name === 'PowerShell'"), 'Should not special-case PowerShell');
+    assert.ok(!src.includes("name === 'Monitor'"), 'Should not special-case Monitor');
+    assert.ok(!src.includes('TOOL_USE_LOOKBACK'), 'Should not scan tool_use history for liveness');
+  });
+
+  await test('Stale-orphan timeouts merge ENGINE_DEFAULTS and config overrides', () => {
+    assert.ok(src.includes('perTypeStaleOrphanTimeouts'), 'Should use named stale-orphan timeout overrides');
     assert.ok(src.includes('ENGINE_DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
-  });
-
-  await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
-    // Verify per-type resolution happens inside the dispatch loop
-    assert.ok(src.includes('perTypeTimeouts[item.type]') || src.includes("perTypeTimeouts[item.type] || heartbeatTimeout"),
-      'Should resolve per-type timeout from item.type with heartbeatTimeout fallback');
-  });
-
-  await test('Per-type heartbeat timeouts: config.engine.heartbeatTimeouts overrides defaults', () => {
     assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
       'Should read heartbeatTimeouts from config.engine for user overrides');
-    // Verify merge order: ENGINE_DEFAULTS ← config
-    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
-      'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
   });
 
-  await test('Per-type heartbeat timeouts: blocking tool uses Math.max(itemHeartbeat, blockingTimeout)', () => {
-    // The blocking tool extension should respect per-type timeout as minimum floor
-    assert.ok(src.includes('Math.max(itemHeartbeat,'),
-      'Blocking tool timeout should use Math.max(itemHeartbeat, ...) so per-type floor is respected');
-  });
-
-  await test('Per-type heartbeat timeouts: timeout.js imports from shared.js', () => {
+  await test('timeout.js imports from shared.js', () => {
     assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
-  await test('Heartbeat feedback loop fix: uses realActivityMap for tracked processes (#724)', () => {
-    // The timeout check must use realActivityMap (in-memory, tracks real agent output only)
-    // instead of file mtime for tracked processes. File mtime is polluted by engine heartbeat writes.
-    assert.ok(src.includes('realActivityMap'), 'timeout.js should reference realActivityMap');
-    assert.ok(src.includes('realActivityMap?.has(item.id)') || src.includes("realActivityMap.has(item.id)"),
-      'Should check realActivityMap for dispatch item');
-    assert.ok(src.includes('realActivityMap.get(item.id)') || src.includes("realActivityMap?.get(item.id)"),
-      'Should read lastRealActivity from realActivityMap');
+  await test('Stale-orphan detection uses live-output mtime only after process tracking is lost', () => {
+    assert.ok(src.includes('live-output.log mtime is only used for stale-orphan cleanup'),
+      'Should document that file mtime is for orphan cleanup, not live-process silence');
+    assert.ok(src.includes('!processAlive && silentMs > staleOrphanTimeout'),
+      'Should require no live tracked process before stale-orphan cleanup');
   });
 
-  await test('Heartbeat feedback loop fix: falls back to file mtime only for orphans (#724)', () => {
-    // For orphan detection (no tracked process), file mtime is still valid because
-    // no heartbeat timer is running. The fix only uses realActivityMap when hasProcess is true.
-    assert.ok(src.includes('hasProcess && realActivityMap'),
-      'Should only use realActivityMap when process is tracked (hasProcess)');
-    assert.ok(src.includes('Orphan case') || src.includes('orphan'),
-      'Should document the orphan fallback path');
-  });
-
-  await test('Heartbeat feedback loop fix: engine.js tracks real output in realActivityMap (#724)', () => {
-    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('realActivityMap.set(id, Date.now())'),
-      'engine.js should update realActivityMap on real stdout/stderr');
-    assert.ok(engineSrc.includes('realActivityMap.delete(id)'),
-      'engine.js should clean up realActivityMap on agent close/error');
-    assert.ok(engineSrc.includes('realActivityMap,'),
-      'engine.js should export realActivityMap');
-  });
-
-  await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
-    // The Bash tool default timeout in Claude Code is 120s, not 600s.
-    // Grace = max(heartbeatTimeout, bashTimeout + 60000) = max(300000, 120000+60000) = 300000 (5min)
-    // This ensures hung agents are killed within ~5min, not ~11min.
-    assert.ok(src.includes("input.timeout || 120000"),
-      'Bash default timeout should be 120000ms (120s) to match Claude Code actual default');
-    // Verify the Bash-specific block uses 120000, not 600000
-    const bashBlock = src.slice(src.indexOf("if (name === 'Bash')"), src.indexOf("if (name === 'Bash')") + 300);
-    assert.ok(bashBlock.includes('120000') && !bashBlock.includes('600000'),
-      'Bash blocking block should use 120000ms, not 600000ms');
-  });
-
-  // ── #1786: Playbook guidance for long-running silent commands ──
-  // shared-rules.md is auto-injected into every playbook by playbook.js. The
-  // Long-Running Build / Test Commands section must teach agents the two opt-in
-  // patterns (run_in_background + Monitor; or explicit timeout). Without it,
-  // agents default to bare Bash calls and get killed at heartbeatTimeout.
-  await test('playbooks/shared-rules.md teaches run_in_background + Monitor pattern (#1786)', () => {
+  // ── Process-based liveness / stale-orphan policy ──
+  await test('playbooks/shared-rules.md allows normal quiet CLI commands', () => {
     const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
-    assert.ok(sharedRules.includes('Long-Running Build') || sharedRules.includes('long-running'),
-      'shared-rules.md should have a section on long-running commands');
-    assert.ok(sharedRules.includes('run_in_background') && sharedRules.includes('Monitor'),
-      'shared-rules.md should teach the run_in_background + Monitor pattern');
-    assert.ok(sharedRules.includes('timeout') && sharedRules.includes('600000'),
-      'shared-rules.md should mention explicit timeout opt-in (max 600000ms)');
-    assert.ok(sharedRules.includes('heartbeatTimeout') || sharedRules.includes('heartbeat'),
-      'shared-rules.md should explain heartbeat semantics so agents understand the constraint');
+    assert.ok(sharedRules.includes('Long-Running Commands'),
+      'shared-rules.md should have a concise section on long-running commands');
+    assert.ok(sharedRules.includes('normal CLI commands') && sharedRules.includes('quiet for long periods'),
+      'shared-rules.md should say quiet commands can run normally');
+    assert.ok(!sharedRules.includes('run_in_background') && !sharedRules.includes('Monitor({'),
+      'shared-rules.md should not prescribe runtime/tool-specific heartbeat workarounds');
   });
 
-  // ── #1794: prohibit grep-filtered Monitor for long builds ──
-  // Agents reach for `Monitor({ command: "tail -F <file> | grep ..." })` to suppress
-  // noisy build output, but Gradle's startup phase doesn't match the filter terms,
-  // Monitor emits zero events, and the heartbeat fires at 300s. The playbook must
-  // explicitly prohibit this form so agents override the instinct to filter noise.
-  // Pattern C (ScheduleWakeup) is intentionally NOT added — re-initializes the full
-  // Claude session per wakeup, has a 270s polling gap, and is for idle waits, not
-  // active monitoring.
-  await test('playbooks/shared-rules.md prohibits grep-filtered Monitor for long builds (#1794)', () => {
-    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
-
-    // 1. Pattern A must carry a hard prohibition against grep-filtered Monitor —
-    //    not a soft note. The string `tail | grep` should appear with `Never` /
-    //    `Do NOT` framing so the warning is unmissable.
-    assert.ok(sharedRules.includes('tail | grep') || sharedRules.includes('tail -F'),
-      'shared-rules.md should call out the tail|grep Monitor anti-pattern by name');
-    assert.ok(/Never use `Monitor\({ command:|Do NOT use `?Monitor\({ command:/.test(sharedRules),
-      'shared-rules.md should hard-prohibit Monitor({ command: ... }) — soft notes get ignored');
-    assert.ok(sharedRules.includes('startup') || sharedRules.includes('dependency'),
-      'shared-rules.md should explain WHY: Gradle startup/dependency phase produces output that does not match typical filter terms');
-
-    // 2. The "What NOT to do" section must list the grep-filtered Monitor bullet
-    //    so agents see it next to the other anti-patterns (`tee`, `sleep` loops).
-    const notToDoIdx = sharedRules.indexOf('What NOT to do');
-    assert.ok(notToDoIdx !== -1, 'shared-rules.md should have a What NOT to do section');
-    const notToDoBlock = sharedRules.slice(notToDoIdx);
-    assert.ok(notToDoBlock.includes('Monitor({ command:') && notToDoBlock.includes('bash_id'),
-      '"What NOT to do" should call out Monitor({ command: ... }) and direct agents to Monitor({ bash_id }) instead');
-
-    // 3. Pattern C must NOT be added. ScheduleWakeup is for idle waits, not active
-    //    monitoring — re-initializes session per wake, 270s polling gap.
-    assert.ok(!/###\s+Pattern C\b/.test(sharedRules),
-      'shared-rules.md must NOT add Pattern C — ScheduleWakeup is wrong tool for active build monitoring');
-    assert.ok(!sharedRules.includes('ScheduleWakeup'),
-      'shared-rules.md must NOT recommend ScheduleWakeup for build monitoring');
-  });
-
-  // ── #1786: PowerShell tool blocking detection (Windows shell parity with Bash) ──
-  // The PowerShell tool is the Windows-native equivalent of Bash. It has the same
-  // explicit-timeout semantics (input.timeout, max 600000ms). The blocking-tool
-  // detector must recognize it so cold builds (gradlew.bat, MSBuild, dotnet test)
-  // don't get killed at heartbeatTimeout while a long-running explicit-timeout
-  // PowerShell call is still legitimately running.
-  await test('blocking detection: PowerShell tool with explicit timeout extends heartbeat (#1786)', () => {
-    assert.ok(src.includes("name === 'PowerShell'"),
-      'timeout.js should detect PowerShell tool_use to extend heartbeat');
-    // PowerShell block must read input.timeout (same shape as Bash) — agent opts in
-    // to extension by setting an explicit timeout on the tool call.
-    const psIdx = src.indexOf("name === 'PowerShell'");
-    const psBlock = src.slice(psIdx, psIdx + 400);
-    assert.ok(psBlock.includes('input.timeout'),
-      'PowerShell block should read explicit timeout from input.timeout');
-    assert.ok(psBlock.includes('blockingTimeout') && psBlock.includes('Math.max'),
-      'PowerShell block should compute blockingTimeout via Math.max(itemHeartbeat, ...)');
-    assert.ok(psBlock.includes("blockingTool = 'PowerShell'"),
-      'PowerShell block should annotate blockingTool for dashboard surfacing');
-  });
-
-  // ── #1786: Monitor tool blocking detection ──
-  // Monitor blocks waiting for stdout-line notifications from a background process.
-  // Between notifications it produces no output, so without explicit detection the
-  // heartbeat monitor would kill the agent. Monitor calls do not have a fixed
-  // timeout — extend to 30 min (parity with Agent subagent calls).
-  await test('blocking detection: Monitor tool extends heartbeat (#1786)', () => {
-    assert.ok(src.includes("name === 'Monitor'"),
-      'timeout.js should detect Monitor tool_use as a blocking call');
-    const monIdx = src.indexOf("name === 'Monitor'");
-    const monBlock = src.slice(monIdx, monIdx + 400);
-    assert.ok(monBlock.includes("blockingTool = 'Monitor'"),
-      'Monitor block should annotate blockingTool for dashboard surfacing');
-    assert.ok(monBlock.includes('blockingTimeout'),
-      'Monitor block should set blockingTimeout');
-  });
-
-  // ── #1786: explicit timeout above heartbeat actually extends ──
-  // The contract per the issue: "if an agent invokes a shell tool with an explicit
-  // timeout > heartbeatTimeout, temporarily raise the heartbeat threshold for that
-  // turn." Verify the formula does the right thing: blockingTimeout must equal
-  // input.timeout + 60s grace whenever that exceeds the heartbeat baseline.
-  await test('blocking detection: explicit timeout > heartbeatTimeout raises threshold (#1786)', () => {
-    // The formula `Math.max(itemHeartbeat, bashTimeout + 60000)` ensures any
-    // explicit timeout higher than heartbeat - 60s wins. The "+ 60000" grace
-    // covers tool teardown/cleanup time after the underlying command completes.
-    assert.ok(src.includes('+ 60000'),
-      'Blocking timeout should add 60s grace on top of explicit tool timeout');
-    // Same formula must appear in both Bash and PowerShell blocks.
-    const bashIdx = src.indexOf("if (name === 'Bash')");
-    const psIdx = src.indexOf("if (name === 'PowerShell')");
-    assert.ok(bashIdx > 0 && psIdx > 0, 'Both Bash and PowerShell branches must exist');
-    const bashBlock = src.slice(bashIdx, bashIdx + 400);
-    const psBlock = src.slice(psIdx, psIdx + 400);
-    assert.ok(bashBlock.includes('+ 60000') && psBlock.includes('+ 60000'),
-      'Both Bash and PowerShell branches should add the 60s grace');
-  });
-
-  // ── Per-type heartbeat timeout tests ──
-
-  await test('ENGINE_DEFAULTS.heartbeatTimeouts has explore, ask, review entries', () => {
+  await test('ENGINE_DEFAULTS.heartbeatTimeouts is empty by default', () => {
     const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
-    assert.ok(hbt, 'heartbeatTimeouts map should exist');
-    assert.strictEqual(hbt[shared.WORK_TYPE.EXPLORE], 600000, 'EXPLORE should be 600000ms (10min)');
-    assert.strictEqual(hbt[shared.WORK_TYPE.ASK], 600000, 'ASK should be 600000ms (10min)');
-    assert.strictEqual(hbt[shared.WORK_TYPE.REVIEW], 480000, 'REVIEW should be 480000ms (8min)');
+    assert.ok(hbt && typeof hbt === 'object', 'heartbeatTimeouts map should exist for user overrides');
+    assert.deepStrictEqual(Object.keys(hbt), [], 'No work type should get a built-in silence/orphan special case');
   });
 
-  await test('heartbeatTimeouts keys use WORK_TYPE constants, not raw strings', () => {
-    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
-    // Verify the keys are the actual WORK_TYPE values (not something else)
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.EXPLORE), 'Should use WORK_TYPE.EXPLORE as key');
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.ASK), 'Should use WORK_TYPE.ASK as key');
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.REVIEW), 'Should use WORK_TYPE.REVIEW as key');
-  });
-
-  await test('checkTimeouts resolves per-type heartbeat from dispatch item workType', () => {
+  await test('checkTimeouts resolves optional per-type stale-orphan timeout from dispatch workType', () => {
     assert.ok(src.includes('item.workType') || src.includes('item.meta?.item?.type'),
       'Should read work type from dispatch item');
-    assert.ok(src.includes('perTypeTimeouts'),
-      'Should look up per-type timeout from merged map');
-    assert.ok(src.includes('defaultHeartbeatTimeout'),
-      'Should fall back to default heartbeat timeout when work type has no override');
+    assert.ok(src.includes('perTypeStaleOrphanTimeouts'),
+      'Should look up optional stale-orphan timeout from merged map');
+    assert.ok(src.includes('defaultStaleOrphanTimeout'),
+      'Should fall back to default stale-orphan timeout when work type has no override');
   });
 
-  await test('checkTimeouts merges config.engine.heartbeatTimeouts with defaults', () => {
+  await test('checkTimeouts merges config.engine.heartbeatTimeouts as stale-orphan overrides', () => {
     assert.ok(src.includes('config.engine?.heartbeatTimeouts'),
       'Should read heartbeatTimeouts from config for user overrides');
     assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should spread default heartbeatTimeouts as base');
   });
 
-  await test('per-type heartbeat is base for blocking tool extension', () => {
-    // The per-type heartbeatTimeout is declared inside the per-item loop,
-    // so blocking tool detection (which uses heartbeatTimeout) naturally uses the per-type value.
-    // Verify heartbeatTimeout is scoped inside the item loop, not outside it.
+  await test('stale-orphan timeout is scoped inside the dispatch item loop', () => {
     const loopStart = src.indexOf('for (const item of (dispatchData.active');
-    const perTypeDecl = src.indexOf('const heartbeatTimeout = (workType && perTypeTimeouts');
+    const perTypeDecl = src.indexOf('const staleOrphanTimeout = (workType && perTypeStaleOrphanTimeouts');
     assert.ok(loopStart > 0 && perTypeDecl > loopStart,
-      'heartbeatTimeout should be declared inside the per-item loop (per-type scoping)');
+      'staleOrphanTimeout should be declared inside the per-item loop');
   });
 
   await test('implement/fix types fall back to default heartbeatTimeout (no override)', () => {
@@ -13025,14 +12851,14 @@ async function testCheckTimeouts() {
       'timeout.js must not rename ENGINE_DEFAULTS in destructuring — use it directly like every other engine file');
   });
 
-  await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
-    // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
+  await test('checkTimeouts perTypeStaleOrphanTimeouts construction does not throw (#721 regression)', () => {
+    // Behavioral: construct perTypeStaleOrphanTimeouts exactly as checkTimeouts does, proving no ReferenceError
     const { ENGINE_DEFAULTS } = require('../engine/shared');
     const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
     // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
-    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
-    assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
-    assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
+    const perTypeStaleOrphanTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    assert.ok(perTypeStaleOrphanTimeouts !== null, 'perTypeStaleOrphanTimeouts should be constructable without ReferenceError');
+    assert.strictEqual(perTypeStaleOrphanTimeouts.review, 600000, 'config overrides should merge correctly');
   });
 
   await test('checkTimeouts reads engineRestartGraceExempt from engine (#869)', () => {
@@ -17045,10 +16871,10 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  await test('checkTimeouts: hung TRACKED process past heartbeat — killGracefully + TIMED_OUT', () => {
+  await test('checkTimeouts: tracked live process past heartbeat is not killed for silence', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'hung-1';
+      const itemId = 'silent-live-1';
       writeDispatch(env.testDir, {
         active: [{
           id: itemId,
@@ -17066,15 +16892,14 @@ async function testTimeoutBehavioral() {
       });
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
-        'Hung detection should drop the process from activeProcesses');
-      assert.strictEqual(env.counters.killGracefully, 1,
-        'Hung detection should killGracefully the stuck process');
+      assert.ok(env.fakeEngine.activeProcesses.has(itemId),
+        'Silent live process should remain tracked');
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Silent live process should not be killed by heartbeatTimeout');
       const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 0, 'Hung item should leave the active list');
+      assert.strictEqual(dp.active.length, 1, 'Silent live item should remain active');
       const completed = dp.completed.find(d => d.id === itemId);
-      assert.ok(completed && completed.result === 'error',
-        'Hung item should be marked ERROR in completed');
+      assert.ok(!completed, 'Silent live item should not be marked completed/error');
     } finally { env.restore(); }
   });
 
@@ -17273,16 +17098,11 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  // ── #1786: Per-tool blocking detection — Bash explicit timeout > heartbeatTimeout ──
-  // Reproduces the issue: agent calls Bash with explicit `timeout: 900000` (15 min)
-  // for a cold Gradle build. silentMs grows past heartbeatTimeout (300s) but the
-  // agent must NOT be killed because the explicit timeout is much higher. The
-  // detector reads the live-output.log, finds the Bash tool_use, and extends
-  // effectiveTimeout to bashTimeout + 60s grace.
-  await test('checkTimeouts: Bash with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
+  // ── Process-based liveness: quiet tracked processes are healthy ──
+  await test('checkTimeouts: live tracked process past heartbeat remains active without tool parsing', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'bash-long';
+      const itemId = 'quiet-live';
       const startedAt = new Date(Date.now() - 600000).toISOString(); // 10 min ago
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
@@ -17291,141 +17111,74 @@ async function testTimeoutBehavioral() {
       env.fakeEngine.activeProcesses.set(itemId, {
         agentId: 'bot', proc: {}, startedAt, meta: {},
       });
-      // realActivityMap must reflect the silence — last real output 10min ago.
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
-
-      // Agent is mid-Bash call with explicit 15 min timeout — the cold gradle
-      // scenario from the issue. No result event yet (still running).
-      const agentDir = path.join(env.testDir, 'agents', 'bot');
-      fs.mkdirSync(agentDir, { recursive: true });
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        toolUseLine + '\n[heartbeat] running — no output for 30s\n[heartbeat] running — no output for 60s\n');
-
-      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
-
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Bash with explicit 15min timeout must not be killed at heartbeatTimeout — extension should win');
-      const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1,
-        'Item must remain active while explicit-timeout extension is in effect');
-    } finally { env.restore(); }
-  });
-
-  await test('checkTimeouts: PowerShell with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
-    const env = setupIsolated();
-    try {
-      const itemId = 'ps-long';
-      const startedAt = new Date(Date.now() - 600000).toISOString();
-      writeDispatch(env.testDir, {
-        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
-      });
-      env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
       const toolUseLine = JSON.stringify({
         type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'PowerShell', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
+        message: { content: [{ type: 'tool_use', name: 'SomeTool', input: { command: 'long quiet command' } }] },
       });
       fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
       assert.strictEqual(env.counters.killGracefully, 0,
-        'PowerShell with explicit 15min timeout must not be killed at heartbeatTimeout');
+        'Live tracked process must not be killed because stdout/stderr were quiet');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Item must remain active while the tracked process is alive');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: clears legacy blocking-tool annotations without using them for liveness', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'legacy-blocking';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: startedAt,
+          workType: 'implement',
+          _blockingToolCall: { tool: 'Bash', silentMs: 600000 },
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
       const dp = readDispatch(env.testDir);
       assert.strictEqual(dp.active.length, 1, 'Item must remain active');
+      assert.strictEqual(dp.active[0]._blockingToolCall, undefined,
+        'Legacy blocking tool annotation should be cleared');
     } finally { env.restore(); }
   });
 
-  await test('checkTimeouts: Monitor tool extends heartbeat (waiting for background events) (#1786)', () => {
+  await test('checkTimeouts: stale orphan without tracked process is completed as error', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'mon-blocking';
+      const itemId = 'stale-orphan';
       const startedAt = new Date(Date.now() - 600000).toISOString();
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
       });
       env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
-      // Monitor blocks waiting for stdout-line notifications from a background process.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), 'started\n');
+      const oldTime = new Date(Date.now() - 600000);
+      fs.utimesSync(path.join(agentDir, 'live-output.log'), oldTime, oldTime);
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Monitor tool must extend heartbeat — agent is legitimately waiting on a background process');
       const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1, 'Item must remain active during Monitor wait');
-    } finally { env.restore(); }
-  });
-
-  // ── #1792: Long Monitor sessions with heartbeat noise — tool_use lookback gap ──
-  // After 15+ minutes of silence the engine heartbeat (every 30s) accumulates 30+
-  // log lines AFTER the Monitor tool_use. The original 30-line lookback window
-  // misses the tool_use entirely, the detector treats it as a non-blocking silence,
-  // and the agent gets killed at heartbeatTimeout — exactly the scenario the user
-  // hit on a cold Gradle build. Lookback must scan deep enough to find Monitor.
-  await test('checkTimeouts: Monitor tool_use buried under heartbeat lines still extends heartbeat (#1792)', () => {
-    const env = setupIsolated();
-    try {
-      const itemId = 'mon-deep';
-      // Silent for 15 min — well past the 5-min heartbeatTimeout default but well
-      // under Monitor's 30-min effective extended timeout. If the lookback finds
-      // Monitor, the agent stays alive; if it misses Monitor, the agent gets killed.
-      const silentMs = 900000; // 15 min
-      const startedAt = new Date(Date.now() - silentMs).toISOString();
-      writeDispatch(env.testDir, {
-        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
-      });
-      env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - silentMs);
-
-      const agentDir = path.join(env.testDir, 'agents', 'bot');
-      fs.mkdirSync(agentDir, { recursive: true });
-      // Monitor was called 15 min ago. Since then, 30 heartbeat lines have been
-      // appended (one every 30s). The Monitor tool_use is now line 0; everything
-      // after is heartbeat noise. With a 30-line lookback, Monitor is at or beyond
-      // the boundary — exactly the edge case from the user's Gradle build report.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
-      });
-      const heartbeats = [];
-      for (let i = 1; i <= 30; i++) {
-        heartbeats.push(`[heartbeat] running — no output for ${i * 30}s`);
-      }
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        toolUseLine + '\n' + heartbeats.join('\n') + '\n');
-
-      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
-
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Monitor tool_use buried under heartbeat lines must still extend heartbeat — the lookback must be deep enough to find it');
-      const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1,
-        'Item must remain active during long Monitor wait, not get killed because tool_use was outside the lookback window');
+      assert.strictEqual(dp.active.length, 0, 'Stale orphan should leave active queue');
+      assert.strictEqual(dp.completed[0]?.result, 'error', 'Stale orphan should complete as error');
     } finally { env.restore(); }
   });
 
@@ -17538,14 +17291,10 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  // Negative case: Bash without explicit timeout (default 120s) should NOT extend
-  // — the agent had its chance to opt in and didn't. Verifies the contract that
-  // extension is opt-in, not automatic. Without this guard, agents that hang
-  // forever (e.g. interactive prompt) would never get killed.
-  await test('checkTimeouts: Bash with no explicit timeout uses default 120s — no extension beyond heartbeat (#1786)', () => {
+  await test('checkTimeouts: arbitrary live command stays active until hard timeout', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'bash-default';
+      const itemId = 'quiet-command';
       const startedAt = new Date(Date.now() - 600000).toISOString();
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
@@ -17554,21 +17303,17 @@ async function testTimeoutBehavioral() {
       env.fakeEngine.activeProcesses.set(itemId, {
         agentId: 'bot', proc: {}, startedAt, meta: {},
       });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
-      // No explicit timeout in input — Bash defaults to 120s, blockingTimeout = max(300s, 180s) = 300s.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew test' } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), 'command started\n');
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.strictEqual(env.counters.killGracefully, 1,
-        'Bash without explicit timeout must NOT extend past heartbeatTimeout — kept opt-in semantics');
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Quiet live command must not be killed by heartbeatTimeout');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Tracked live process remains active');
     } finally { env.restore(); }
   });
 }
@@ -23416,12 +23161,12 @@ async function testDashboardBugFixes() {
       'Should have startLivePolling to restart polling');
   });
 
-  await test('engine.js writes heartbeat to live-output.log during agent run', () => {
+  await test('engine.js does not write heartbeat to live-output.log during agent run', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('[heartbeat]') && engineSrc.includes('appendFileSync') && engineSrc.includes('liveOutputPath'),
-      'Should periodically append heartbeat lines to live-output.log');
-    assert.ok(engineSrc.includes('setInterval') && engineSrc.includes('30000'),
-      'Heartbeat should fire every 30 seconds');
+    assert.ok(!engineSrc.includes('[heartbeat] running'),
+      'Should not append heartbeat lines to live-output.log');
+    assert.ok(!engineSrc.includes('heartbeatTimer'),
+      'Should not create a live-output heartbeat timer');
   });
 
   await test('engine.js writes header to live-output.log at spawn', () => {
@@ -26784,7 +26529,7 @@ async function testAutoRecoveryAndAtomicity() {
         meta: { item: { id: 'W-100', title: 'Test' }, project: mockProject, source: 'work-item' }
       };
 
-      // code=1 simulates heartbeat timeout kill
+      // code=1 simulates a failed agent process
       const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, true,
         'autoRecovered should be true when failed implement agent created PR');
@@ -30448,9 +30193,9 @@ async function testAgentStatusEnum() {
   await test('timeout.js emits TIMED_OUT status', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes('AGENT_STATUS.TIMED_OUT'), 'timeout.js should emit TIMED_OUT status');
-    // Verify it's called for both hard timeout and heartbeat timeout
+    // Verify it's called for hard runtime timeout and stale-orphan cleanup
     const timedOutCount = (src.match(/AGENT_STATUS\.TIMED_OUT/g) || []).length;
-    assert.ok(timedOutCount >= 3, `TIMED_OUT should be emitted for hard timeout, orphan, and hung agent (found ${timedOutCount} occurrences)`);
+    assert.ok(timedOutCount >= 2, `TIMED_OUT should be emitted for hard timeout and stale-orphan cleanup (found ${timedOutCount} occurrences)`);
   });
 
   await test('trust gate detection checks first 30s of output', () => {
@@ -31287,11 +31032,11 @@ async function testCCMultiTab() {
       'Should explicitly clear stale retry metadata from completed items');
   });
 
-  await test('timeout.js kills Unix process tree on hung agent timeout', () => {
-    // The hung agent branch should include pkill -P for Unix tree kill
-    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
-    assert.ok(hungMatch, 'Should have hung agent detection block');
-    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+  await test('timeout.js does not use output silence as a Unix process-tree kill trigger', () => {
+    assert.ok(!timeoutSrc.includes('Hung agent'),
+      'timeout.js should not have a hung-agent output-silence branch');
+    assert.ok(timeoutSrc.includes('Orphan detected'),
+      'timeout.js should keep stale-orphan cleanup');
   });
 
   await test('cleanup.js logs resource cleanup summary', () => {
@@ -31866,10 +31611,10 @@ async function testDashboardButtonConsistency() {
   });
 }
 
-// ─── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ────────────
+// ─── #716: Process liveness + max_turns lifecycle cleanup ───────────────────
 
 async function testIssue716HeartbeatFeedbackLoop() {
-  console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
+  console.log('\n── #716: Process liveness + max_turns lifecycle cleanup ──');
   const lifecycle = require('../engine/lifecycle');
 
   // 1. classifyFailure with exact Claude CLI error_max_turns output → MAX_TURNS (retryable)
@@ -31905,11 +31650,11 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'error_max_turns should take priority even when access denied text is also present');
   });
 
-  // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
+  // 2. realActivityMap tracked in engine.js for diagnostics/compatibility
   await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('realActivityMap'),
-      'engine.js should use realActivityMap for timeout detection');
+      'engine.js should keep realActivityMap for dispatch output activity diagnostics');
     // Must be updated on stdout data handler
     const marker = 'proc.stdout.on';
     const idx = src.indexOf(marker);
@@ -31921,20 +31666,20 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'realActivityMap should be initialized at spawn time');
   });
 
-  // 3. timeout.js uses realActivityMap instead of file mtime for tracked processes
-  await test('timeout.js uses realActivityMap for tracked processes (#716)', () => {
+  // 3. timeout.js uses process liveness instead of output-silence heuristics
+  await test('timeout.js uses tracked process liveness for live processes (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('realActivityMap'),
-      'timeout.js should check realActivityMap for tracked process');
-    assert.ok(src.includes('feedback loop'),
-      'timeout.js should comment about avoiding heartbeat feedback loop');
+    assert.ok(src.includes('isTrackedProcessAlive'),
+      'timeout.js should check process liveness for tracked processes');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
+      'timeout.js should document that live process silence is allowed');
   });
 
-  // 4. Output completion detection scans for result and process-exit
+  // 4. Output completion detection scans for process-exit sentinel
   await test('timeout.js detects completed agents from output (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
-      'timeout.js should scan for result events and process-exit sentinel');
+    assert.ok(src.includes('[process-exit]'),
+      'timeout.js should scan for the process-exit sentinel');
     assert.ok(src.includes('completedViaOutput'),
       'Should track completion via output detection');
     assert.ok(src.includes('completeDispatch(item.id'),
@@ -31950,13 +31695,13 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'Sentinel should be written to stdout (not stderr or file)');
   });
 
-  // 6. Blocking tool detection guard: don't extend timeout after agent completed
-  await test('timeout.js guards blocking tool detection against completed agents (#716)', () => {
+  // 6. Legacy blocking annotations are cleared instead of extending timeouts
+  await test('timeout.js clears legacy blocking-tool annotations (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    // The blocking tool detection section should check for result/process-exit before extending
-    const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
-    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
-      'Blocking tool detection should check for completed agent before extending timeout');
+    assert.ok(src.includes('legacyAnnotationClears'),
+      'timeout.js should clear legacy blocking-tool annotations');
+    assert.ok(!src.includes("name === 'Bash'") && !src.includes("name === 'PowerShell'"),
+      'timeout.js should not extend timeouts via shell-specific parsing');
   });
 
   // 7. Output completion detection is NOT gated by time cap
@@ -31971,16 +31716,13 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'Should use tail reading for efficiency');
   });
 
-  // 8. Heartbeat timer does NOT update realActivityMap
-  await test('engine.js heartbeat timer does NOT update realActivityMap', () => {
+  // 8. No heartbeat timer writes to live-output.log
+  await test('engine.js has no live-output heartbeat timer', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // Find the heartbeat interval — it should NOT contain realActivityMap
-    const heartbeatMatches = src.match(/heartbeatTimer\s*=\s*setInterval\(\s*\(\)\s*=>\s*\{[^}]+\}/g);
-    assert.ok(heartbeatMatches, 'Should have heartbeat timer');
-    for (const match of heartbeatMatches) {
-      assert.ok(!match.includes('realActivityMap'),
-        'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
-    }
+    assert.ok(!src.includes('heartbeatTimer'),
+      'engine.js should not create a live-output heartbeat timer');
+    assert.ok(!src.includes('[heartbeat] running'),
+      'engine.js should not inject heartbeat output into agent logs');
   });
 
   // 9. #W-mo25loq8kjer — realActivityMap seeded BEFORE stdout/stderr handlers, immediately after runFile() returns.
@@ -32030,7 +31772,7 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     // The orphan log annotation should expose whether the log contains a pid line —
     // this is the signal that differentiates "spawn died before first write" (stub only)
-    // from "process started and is genuinely hung" (pid present, no later output).
+    // from "process started before the engine lost its handle" (pid present).
     assert.ok(src.includes('pidPresent') || src.includes('pid='),
       'timeout.js _logState should surface whether a pid line is present in the live-output log');
   });
