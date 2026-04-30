@@ -42454,12 +42454,18 @@ async function testAutoLinkAgentPrs() {
 
         const prs = sharedIso.safeJson(prFile) || [];
         assert.ok(prs.length > 0, 'PR record must be created from the inbox-only URL');
-        const tracked = prs.find(p => String(p.prNumber) === '1902' || /\/pull\/1902/.test(p.url || ''));
+        const tracked = prs.find(p => String(p.prNumber) === '1902');
         assert.ok(tracked, 'PR #1902 must be tracked from the agent inbox note');
         assert.ok(Array.isArray(tracked.prdItems) && tracked.prdItems.includes('W-moljyu60wuzr'),
           'tracked PR must list W-moljyu60wuzr in prdItems so the Work Items page can render the link');
         assert.strictEqual(tracked.agent, 'Ripley', 'tracked PR must carry the originating agent name');
         assert.strictEqual(tracked.branch, 'work/W-moljyu60wuzr', 'tracked PR must carry the originating branch');
+        // Self-review of PR #1904 caught this gap: detection-from-inbox must
+        // also propagate the URL so the Work Items page renders a clickable
+        // link, not a tracked-but-empty row.
+        assert.ok(tracked.url, 'tracked PR must carry a non-empty url');
+        assert.ok(/\/pull\/1902(?:[?#]|$)/.test(tracked.url),
+          `tracked PR url must end at /pull/1902 — got ${JSON.stringify(tracked.url)}`);
         assert.ok(count >= 1, 'syncPrsFromOutput must report at least 1 added PR');
       } finally {
         sharedIso.projectPrPath = origPrPath;
