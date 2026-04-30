@@ -282,7 +282,11 @@ async function forEachActiveGhPr(config, callback) {
             }
             if (pr.description === undefined) pr.description = (prData.body || '').slice(0, 500);
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
-            if (!pr.branch && prData.head?.ref) pr.branch = prData.head.ref;
+            if (!pr.branch && prData.head?.ref) {
+              pr.branch = prData.head.ref;
+              if (pr._branchResolutionError) delete pr._branchResolutionError;
+              if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
+            }
           }
         }
         centralUpdated++;
@@ -328,6 +332,7 @@ async function pollPrStatus(config) {
     if (headBranch && pr.branch !== headBranch) {
       pr.branch = headBranch;
       if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
       updated = true;
     }
 
@@ -680,6 +685,7 @@ async function reconcilePrs(config) {
     const currentPrs = safeJson(prPath) || [];
     shared.normalizePrRecords(currentPrs, project);
     const existingIds = new Set(currentPrs.map(p => p.id));
+    let metadataUpdated = 0;
     let projectAdded = 0;
 
     // Load work items to match branches
@@ -703,6 +709,12 @@ async function reconcilePrs(config) {
         // Backfill prNumber for existing records missing it
         if (existing && existing.prNumber == null) {
           existing.prNumber = ghPr.number;
+        }
+        if (existing && !existing.branch && branch) {
+          existing.branch = branch;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
+          if (existing._pendingReason === 'missing_pr_branch') delete existing._pendingReason;
+          metadataUpdated++;
         }
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
@@ -750,7 +762,7 @@ async function reconcilePrs(config) {
     // Backfill prdItems from pr-links for any PR with empty array
     const backfilled = backfillPrPrdItems(currentPrs, getPrLinks());
 
-    if (projectAdded > 0 || backfilled > 0) {
+    if (projectAdded > 0 || backfilled > 0 || metadataUpdated > 0) {
       mutateJsonFileLocked(prPath, (lockedPrs) => {
         for (const pr of currentPrs) {
           const idx = lockedPrs.findIndex(p => p.id === pr.id);

@@ -361,6 +361,7 @@ async function pollPrStatus(config) {
     if (sourceBranch && pr.branch !== sourceBranch) {
       pr.branch = sourceBranch;
       if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
       updated = true;
     }
 
@@ -766,6 +767,7 @@ async function reconcilePrs(config) {
     shared.normalizePrRecords(existingPrs, project);
     const existingIds = new Set(existingPrs.map(p => p.id));
     let projectAdded = 0;
+    let metadataUpdated = 0;
 
     // Load work items to match branches to work item IDs
     const wiPath = shared.projectWorkItemsPath(project);
@@ -792,6 +794,12 @@ async function reconcilePrs(config) {
         // Backfill prNumber for existing records missing it
         if (existing && existing.prNumber == null) {
           existing.prNumber = adoPr.pullRequestId;
+        }
+        if (existing && !existing.branch && branch) {
+          existing.branch = branch;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
+          if (existing._pendingReason === 'missing_pr_branch') delete existing._pendingReason;
+          metadataUpdated++;
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
@@ -839,7 +847,7 @@ async function reconcilePrs(config) {
     // Backfill prdItems from pr-links for any PR with empty array
     const backfilled = shared.backfillPrPrdItems(existingPrs, shared.getPrLinks());
 
-    if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
+    if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0 || metadataUpdated > 0) {
       mutateJsonFileLocked(prPath, (currentPrs) => {
         // Merge reconciled PRs into the locked copy by ID
         for (const pr of existingPrs) {

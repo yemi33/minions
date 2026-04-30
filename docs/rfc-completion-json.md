@@ -28,7 +28,7 @@ The engine reconstructs control-plane state from the unstructured stdout of `cla
 | 6 | `parseStructuredCompletion` (`lifecycle.js:1494`) | Last ` ```completion ` fenced block, parsed as `key: value` | An agent that includes a ` ```completion ` block in a quoted file (e.g. another playbook) overrides its own real status |
 | 7 | `classifyFailure` (`lifecycle.js:2096`) | Failure-class regexes on combined stdout/stderr (`max_turns`, `permission denied`, `merge conflict`, …) | An agent that quotes one error class while genuinely failing on another gets the wrong recovery recipe |
 | 8 | `checkForLearnings` (`lifecycle.js:1266`) | Filesystem scan for `notes/inbox/*<agentId>*<date>*` | Not stdout-based, but date-collisions cause cross-task attribution |
-| 9 | `checkTimeouts` (`engine/timeout.js:189-219`) | Tail of `live-output.log` for `"type":"result"` and `[process-exit]` markers — completion-via-output detection for hung dispatches | Lower-risk: this is the claude CLI's own output, not agent-authored content |
+| 9 | `checkTimeouts` (`engine/timeout.js:189-219`) | Tail of `live-output.log` for `[process-exit]` markers — completion-via-output detection after process tracking is lost | Lower-risk: this is engine/CLI output, not agent-authored content |
 
 Sites 1–8 are agent-spoofable (intentionally or accidentally). Site 9 is claude-CLI-emitted and stays on stdout — see §6.
 
@@ -44,7 +44,7 @@ The current ` ```completion ` fenced block (Site 6) was a half-step toward struc
 5. Zero new dependencies — file write + JSON parse, same toolbox as the rest of Minions.
 
 **Non-goals.**
-1. Replacing `live-output.log` for liveness/heartbeat tracking. The CLI's own stream-json output is still the authoritative liveness signal (`"type":"result"`, `subtype:"success"` etc.) — see §6.
+1. Replacing process tracking or `live-output.log` recovery. A live tracked process is the authoritative liveness signal; `live-output.log` remains useful for completion recovery after process tracking is lost — see §6.
 2. Replacing `safeWrite`/`mutateJsonFileLocked` for engine state files. `completion.json` is one-shot, write-once, agent-authored — no concurrent writers.
 3. Hardening against a *malicious* agent. An attacker who controls the agent process could write any completion.json. The threat model is *accidental spoofing by quoted text* and *forward compatibility with structured tool outputs*.
 
@@ -269,8 +269,8 @@ The flag name `engine.requireCompletionFile` mirrors existing engine flags (`aut
 
 These paths stay on stdout / live-output.log:
 
-1. **`engine/timeout.js` completion-via-output detection** (`timeout.js:189-219`). The signal there is the claude CLI's own `"type":"result"` event, emitted by the binary even if the agent crashed before writing completion.json. Removing it would mean orphan/hung agents are never reaped. This stays as the heartbeat mechanism.
-2. **Per-tick liveness via `live-output.log` mtime** (`timeout.js:178`). Same reason — completion.json is written once at exit, not as a heartbeat.
+1. **`engine/timeout.js` completion-via-output detection** (`timeout.js:189-219`). The signal is the engine-written `[process-exit]` sentinel, emitted even if the agent crashed before writing completion.json. Removing it would mean orphans that finished during process-handle loss are never reconciled.
+2. **Stale-orphan cleanup via `live-output.log` mtime** (`timeout.js:178`). Completion.json is written once at exit, so `live-output.log` remains the best indirect signal after the engine loses process tracking.
 3. **`parseStreamJsonOutput` for `resultSummary`** in `parseAgentOutput` (`lifecycle.js:1483`). This extracts the human-readable summary from the CLI's stream-json. Even after the flip, `completion.summary` is *also* extracted, but the stream-json text remains the canonical "what did the agent say last" — used in dashboards, agent history, Teams notifications. The two coexist: `completion.summary` is for routing decisions, the stream-json text is for display.
 4. **Inbox-file skill scan** (`lifecycle.js:2013-2024`). Some agents write skills into their inbox findings file (a deliberate human-discoverable artifact). The completion file deprecates inline ` ```skill ` blocks in stdout, but the inbox file scan is opt-in and stays — it's a different surface (a real file the agent intentionally wrote, not regex-scraped from stdout).
 
@@ -308,7 +308,7 @@ These paths stay on stdout / live-output.log:
 | Agent quotes a previous ` ```completion ` block → wrong status | ✅ | ` ```completion ` parser removed in Phase 4 |
 | Agent quotes one error class while failing on another → wrong recovery recipe | ✅ | `failure.class` is explicit; if missing or invalid, falls through to `FAILURE_CLASS.UNKNOWN` (safe default) |
 | Decompose agent emits a ` ```json ` block earlier in reasoning → corrupted children | ✅ | `decomposition.subItems` is explicit |
-| Hung/orphaned agent never reaches the write site → no completion.json | ⚠️ | Engine's existing live-output.log heartbeat reaper (`timeout.js`) catches this; dispatch is marked failed via stdout completion-via-output signal |
+| Orphaned agent never reaches the write site → no completion.json | ⚠️ | Engine's stale-orphan cleanup (`timeout.js`) catches this after process tracking is lost; completed agents can still be reconciled via the `[process-exit]` sentinel |
 | Malicious agent writes a fake completion.json (e.g. claims `noop` to avoid retry) | ❌ | Out of scope — see §2 non-goals. An adversarial agent owns its own write path regardless. |
 
 The key shift: **the agent's intent is now in a place no quoted text can reach.** Stdout becomes display-only.

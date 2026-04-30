@@ -30,6 +30,7 @@ Treat this like the user typed the task directly into a CLI agent:
 - Follow existing repo conventions and avoid unrelated cleanups.
 - Validate with the repo's documented build/test/check commands. Fix regressions you introduced; if failures are pre-existing or outside the task, document the evidence.
 - Do NOT publish code with a broken build or failing tests that you introduced.
+- Long builds and tests may be quiet for several minutes. Let normal CLI commands run without artificial heartbeat output.
 
 After the change is ready for review, commit only relevant files, push `{{branch_name}}`, create the PR, and post implementation notes with the validation result:
 

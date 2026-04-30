@@ -145,7 +145,7 @@ const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconci
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
-const realActivityMap = new Map(); // dispatchId → timestamp of last REAL agent output (not engine heartbeat)
+const realActivityMap = new Map(); // dispatchId → timestamp of last agent stdout/stderr
 // tempAgents imported from engine/routing.js
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 const engineRestartGraceExempt = new Set(); // dispatch IDs with confirmed-dead PIDs at restart — bypass grace period
@@ -983,17 +983,12 @@ async function spawnAgent(dispatchItem, config) {
     throw spawnErr;
   }
 
-  // Seed realActivityMap and stamp PID immediately — BEFORE any handlers or timers (#W-mo25loq8kjer).
+  // Seed realActivityMap and stamp PID immediately — BEFORE any handlers (#W-mo25loq8kjer).
   // Why NOW, not later in the function:
-  //  1. Heartbeat clock anchoring. timeout.js uses realActivityMap as the last-activity timestamp for
-  //     tracked processes; when the map has no entry, it falls back to item.started_at (dispatch time,
-  //     which is 20-60s before actual spawn for write tasks doing worktree setup). Read-only tasks
-  //     that produce no stdout for minutes (explore, security audit, large scans) were hitting
-  //     heartbeatTimeout prematurely — clock had already been running since dispatch.
-  //  2. Error-handler race. The `proc.on('error', ...)` handler below calls realActivityMap.delete(id)
+  //  1. Error-handler race. The `proc.on('error', ...)` handler below calls realActivityMap.delete(id)
   //     on synchronous spawn failures. Seeding before registering handlers ensures delete sees a value
   //     to clear rather than leaving an absent-then-absent no-op that downstream code must guard.
-  //  3. Orphan diagnostics. The PID line gives timeout.js a deterministic way to tell "spawn died
+  //  2. Orphan diagnostics. The PID line gives timeout.js a deterministic way to tell "spawn died
   //     before first write" (stub-only log) from "process started and is hung" (stub + pid line).
   realActivityMap.set(id, Date.now());
   try {
@@ -1003,24 +998,12 @@ async function spawnAgent(dispatchItem, config) {
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
-  let lastOutputAt = Date.now();
-  let heartbeatTimer = null;
   let _trustCheckDone = false;
   const _spawnTime = Date.now();
 
-  // Keep live log active even when the agent produces no stdout/stderr for long stretches.
-  // This makes "silent but running" states visible in the dashboard tail view.
-  heartbeatTimer = setInterval(() => {
-    const silentMs = Date.now() - lastOutputAt;
-    if (silentMs < 30000) return;
-    const silentSec = Math.round(silentMs / 1000);
-    try { fs.appendFileSync(liveOutputPath, `[heartbeat] running — no output for ${silentSec}s\n`); } catch { /* optional */ }
-  }, 30000);
-
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
-    lastOutputAt = Date.now();
-    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+    realActivityMap.set(id, Date.now());
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
 
@@ -1057,14 +1040,12 @@ async function spawnAgent(dispatchItem, config) {
 
   proc.stderr.on('data', (data) => {
     const chunk = data.toString();
-    lastOutputAt = Date.now();
-    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+    realActivityMap.set(id, Date.now());
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
   });
 
   async function onAgentClose(code) {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
 
     // Emit worker-state transition: FINISHED or FAILED
@@ -1180,33 +1161,22 @@ async function spawnAgent(dispatchItem, config) {
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
       stderr = '';
-      lastOutputAt = Date.now();
-
-      // Restart heartbeat for the resumed process
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      heartbeatTimer = setInterval(() => {
-        try { fs.appendFileSync(liveOutputPath, `\n[heartbeat] running — no output for ${Math.round((Date.now() - lastOutputAt) / 1000)}s\n`); } catch {}
-      }, 30000);
-
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {
         const chunk = data.toString();
-        lastOutputAt = Date.now();
-        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+        realActivityMap.set(id, Date.now());
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();
-        lastOutputAt = Date.now();
-        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+        realActivityMap.set(id, Date.now());
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
         try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
       });
 
       // Re-wire close handler for the resumed process
       resumeProc.on('close', (resumeCode) => {
-        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         try { fs.unlinkSync(steerPromptPath); } catch { /* cleanup */ }
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
@@ -1262,7 +1232,7 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     activeProcesses.delete(id);
-    realActivityMap.delete(id); // Clean up real activity tracking
+    realActivityMap.delete(id);
 
     // If timeout checker already finalized this dispatch, don't overwrite work-item status again.
     // This avoids races where close-handler marks an auto-retried item as failed.
@@ -1301,7 +1271,7 @@ async function spawnAgent(dispatchItem, config) {
     const { resultSummary, autoRecovered } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
-    // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
+    // autoRecovered: agent failed after creating PRs — treat as success
     const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
     const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
@@ -1379,10 +1349,9 @@ async function spawnAgent(dispatchItem, config) {
   proc.on('close', onAgentClose);
 
   proc.on('error', (err) => {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
-    realActivityMap.delete(id); // Clean up real activity tracking
+    realActivityMap.delete(id);
     completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
   });
 
@@ -2011,6 +1980,8 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+const PR_PENDING_MISSING_BRANCH = 'missing_pr_branch';
+
 function normalizePrBranch(value) {
   const raw = value == null ? '' : String(value).trim();
   if (!raw) return '';
@@ -2036,6 +2007,11 @@ function resolvePrBranch(pr) {
   return '';
 }
 
+// Unified branch-resolution state writer: when branch is found, persist it and
+// clear BOTH the structured _branchResolutionError (red-badge UI) and the
+// _pendingReason marker (dashboard pending-reason vocabulary). When branch is
+// missing, set BOTH fields so the dashboard can surface the gate via either
+// rendering path.
 function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' } = {}) {
   let changed = false;
   try {
@@ -2051,12 +2027,20 @@ function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' }
           delete target._branchResolutionError;
           changed = true;
         }
+        if (target._pendingReason === PR_PENDING_MISSING_BRANCH) {
+          delete target._pendingReason;
+          changed = true;
+        }
         return;
       }
       if (reason) {
         const currentReason = target._branchResolutionError?.reason || '';
         if (currentReason !== reason) {
           target._branchResolutionError = { reason, at: ts() };
+          changed = true;
+        }
+        if (target._pendingReason !== PR_PENDING_MISSING_BRANCH) {
+          target._pendingReason = PR_PENDING_MISSING_BRANCH;
           changed = true;
         }
       }
@@ -2067,8 +2051,10 @@ function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' }
   if (branch) {
     pr.branch = branch;
     if (pr._branchResolutionError) delete pr._branchResolutionError;
+    if (pr._pendingReason === PR_PENDING_MISSING_BRANCH) delete pr._pendingReason;
   } else if (reason && changed) {
     pr._branchResolutionError = { reason, at: ts() };
+    pr._pendingReason = PR_PENDING_MISSING_BRANCH;
   }
   return changed;
 }
@@ -2076,7 +2062,7 @@ function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' }
 function ensurePrBranchForDispatch(project, pr, automationType) {
   const branch = resolvePrBranch(pr);
   if (branch) {
-    if (pr.branch !== branch || pr._branchResolutionError) {
+    if (pr.branch !== branch || pr._branchResolutionError || pr._pendingReason === PR_PENDING_MISSING_BRANCH) {
       updatePrBranchResolutionState(project, pr, { branch });
     }
     return branch;
@@ -2087,6 +2073,7 @@ function ensurePrBranchForDispatch(project, pr, automationType) {
   }
   return '';
 }
+
 
 /**
  * Scan pull-requests.json for PRs needing review or fixes

@@ -1,17 +1,6 @@
-## Quality Standard
+## Operating Principle
 
-Codex will review your changes — make sure your implementation is thorough and not lazy.
-
-## Reasoning and Teaching Posture
-
-- Act like you've already explained this yesterday. Do not ramble, re-teach obvious basics, or pad the answer. Get to the point fast.
-- You are an IQ 150 software engineering specialist. If the reasoning is average, vague, or hand-wavy, it is wrong.
-- You have a student who is eagerly trying to learn from you. Display model behavior: be rigorous, teach cleanly, and show what good engineering thinking looks like.
-- Explain concepts like you are teaching a packed auditorium. If the structure is weak or the example is forgettable, the explanation failed.
-- Always verify your claims. If you state something as true, earn it.
-- Treat every answer like there is $100 on the line. Sloppy logic, missed edge cases, and fake confidence lose the bet.
-- Assume another CLI is going to review the code and try to prove you wrong. Close every hole before you answer.
-- Leave no stone unturned when implementing or explaining. Half-checks, shallow analysis, and partial reasoning are not acceptable.
+Treat a Minions assignment like the user typed the same task directly into a capable CLI agent. Optimize for the requested outcome and use the repo's own tools, conventions, and acceptance criteria.
 
 ## Context Window Awareness
 
@@ -61,39 +50,9 @@ Treat a Minions assignment like the user typed the same task directly into a cap
   Do **not** create a skill for one-off bug fixes, isolated command outputs, obvious repo facts, or anything already covered by existing docs/playbooks/skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
 
-## Long-Running Build / Test Commands (Heartbeat Safety)
+## Long-Running Commands
 
-The engine kills agents that produce no stdout for `heartbeatTimeout` (default **300s / 5 min**). A blocking shell call with zero stdout for that long is treated as hung. Cold builds (Gradle daemon spin-up, MSBuild restore, fresh `npm install`, `cargo build`) routinely exceed this with no intermediate output.
-
-**Two approved patterns — pick one when a command may exceed 4 minutes of silence:**
-
-### Pattern A — Stream output via background process + Monitor (preferred)
-
-```
-1. Bash({ command: "./gradlew test", run_in_background: true })       # returns a bash_id immediately
-2. Monitor({ bash_id: "<id>" })                                       # streams each stdout line as a notification
-```
-
-Why: each line that the build emits arrives as a notification, which resets the heartbeat. You see live progress in the dashboard. The Monitor call itself is recognised by the engine as a blocking tool (heartbeat extended ~30 min).
-
-> ⚠️ **Never use `Monitor({ command: "tail -F <file> | grep ..." })` for long builds.** It looks tidy — only the lines you care about — but it is a heartbeat trap. Cold Gradle / MSBuild / `cargo build` spend 3–8 minutes in a startup + dependency-resolution phase that produces output that **does not match** typical filter terms (`BUILD SUCCESSFUL`, `BUILD FAILED`, `error:`). The grep filter swallows every line, Monitor emits zero notifications, the heartbeat fires at 300s, and the engine kills the agent mid-build. Always pass `bash_id` directly — every output line resets the heartbeat, and noisy output is the *whole point* of the pattern.
-
-### Pattern B — Single Bash call with explicit `timeout`
-
-```
-Bash({ command: "./gradlew test", timeout: 600000 })                  # max 600000 = 10 min
-```
-
-The engine reads `input.timeout` from the tool call and extends the heartbeat to `timeout + 60s` for that turn. **The extension is opt-in** — without an explicit `timeout`, the agent is killed at `heartbeatTimeout`. PowerShell tool follows the same rule.
-
-### What NOT to do
-
-- Do NOT run `./gradlew`, `mvn`, `dotnet test`, or any cold-cache build as a default `Bash` call (no `timeout`, no `run_in_background`). It will hit the 120s Bash default, then the 300s heartbeat, and the engine will kill you.
-- Do NOT use `Monitor({ command: "tail | grep ..." })` for any build that has a silent startup phase (cold Gradle, MSBuild, fresh `npm install`, `cargo build`). The grep filter suppresses Gradle's startup output, Monitor emits nothing, heartbeat fires at 300s, agent is killed. Use `Monitor({ bash_id })` instead — noisy output is better than a dead agent.
-- Do NOT loop `sleep` to "wait it out" — sleep produces no stdout and looks identical to a hang.
-- Do NOT pipe through `tee` thinking that helps — heartbeat reads agent stdout, not the underlying file.
-
-If you don't know how long a command takes, default to **Pattern A** — there is no downside to streaming.
+Builds, dependency installs, tests, and local servers can be quiet for long periods. Run the repo's normal CLI commands and let them finish; do not add artificial progress output, heartbeat loops, or command-specific workarounds just to keep Minions active.
 
 ## Checking PR and Build Status
 

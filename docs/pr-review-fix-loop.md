@@ -96,7 +96,7 @@ When multiple problems coexist, earlier triggers get the first chance to enqueue
 | Build fix before CI runs | `_buildFixPushedAt` grace period (10min) |
 | Duplicate dispatch | `dispatchKey` dedup + cooldown |
 | Stale review status | Pre-dispatch live API check |
-| Orphan detection | Heartbeat timeout + output scan |
+| Orphan detection | Stale-orphan timeout + output scan |
 
 ## Key files
 
