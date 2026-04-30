@@ -707,10 +707,45 @@ function reconcilePrdStatuses(config) {
 
 function syncPrsFromOutput(output, agentId, meta, config) {
 
-  const prMatches = new Set();
-  const urlPattern = /(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+)/g;
-  const textCreatedPattern = /(?:PR created|created PR|E2E PR)[:\s#-]*(\d{1,})/gi;
+  const prEvidence = new Map();
+  const trustedPrCreateToolIds = new Set();
+  const prUrlPattern = /(https?:\/\/github\.com\/[^\s"'\\)\]]+\/[^\s"'\\)\]]+\/pull\/(\d+)(?:[^\s"'\\)\]]*)?|https?:\/\/(?:dev\.azure\.com|[^/\s"'\\)\]]+\.visualstudio\.com)[^\s"'\\)\]]*?pullrequest\/(\d+)(?:[^\s"'\\)\]]*)?)/gi;
   let match;
+
+  function cleanPrUrl(url) {
+    return String(url || '').replace(/[.,;:]+$/, '');
+  }
+
+  function addPrUrlEvidence(text) {
+    if (!text) return;
+    prUrlPattern.lastIndex = 0;
+    while ((match = prUrlPattern.exec(String(text))) !== null) {
+      const prId = match[2] || match[3];
+      if (prId && !prEvidence.has(prId)) prEvidence.set(prId, cleanPrUrl(match[1]));
+    }
+  }
+
+  function addExplicitPrCreatedEvidence(text) {
+    if (!text) return;
+    const explicitPrCreatedPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
+    let createdMatch;
+    while ((createdMatch = explicitPrCreatedPattern.exec(String(text))) !== null) {
+      addPrUrlEvidence(createdMatch[1]);
+    }
+  }
+
+  function isTrustedPrCreateToolUse(block) {
+    const name = String(block?.name || '');
+    if (/(?:create|open|submit)[_-]?(?:pull[_-]?request|pr)|(?:pull[_-]?request|pr)[_-]?(?:create|open|submit)/i.test(name)) {
+      return true;
+    }
+    const inputText = typeof block?.input === 'string' ? block.input : JSON.stringify(block?.input || {});
+    if (/\bgh(?:\.exe)?\s+pr\s+create\b/i.test(inputText)) return true;
+    if (/\baz(?:\.cmd|\.exe)?\s+repos\s+pr\s+create\b/i.test(inputText)) return true;
+    const callsAdoCreateApi = /_apis\/git\/repositories\/[^\s"'\\]+\/pullrequests\b/i.test(inputText);
+    const usesPost = /\bPOST\b|-X\s*POST|-Method\s+POST|method["']?\s*:\s*["']?POST/i.test(inputText);
+    return callsAdoCreateApi && usesPost;
+  }
 
   try {
     const lines = output.split('\n');
@@ -720,60 +755,43 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         const parsed = JSON.parse(line);
         const content = parsed.message?.content || [];
         for (const block of content) {
-          // Scan tool_result blocks in user messages for PR URLs (gh pr create output lands here)
-          if (block.type === 'tool_result' && block.content) {
-            const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
+          if (block.type === 'tool_use' && block.id && isTrustedPrCreateToolUse(block)) {
+            trustedPrCreateToolIds.add(block.id);
           }
-          // Also scan assistant text blocks for PR URLs and "PR created" patterns
+          // Tool output is trusted only when tied to a known PR-create command/API call.
+          if (block.type === 'tool_result' && block.content) {
+            if (trustedPrCreateToolIds.has(block.tool_use_id)) {
+              const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+              addPrUrlEvidence(text);
+            }
+          }
+          // Assistant text must use the explicit Minions PR-created protocol line.
           if (block.type === 'text' && block.text) {
-            while ((match = urlPattern.exec(block.text)) !== null) prMatches.add(match[1] || match[2]);
-            textCreatedPattern.lastIndex = 0;
-            let m2;
-            while ((m2 = textCreatedPattern.exec(block.text)) !== null) prMatches.add(m2[1]);
+            addExplicitPrCreatedEvidence(block.text);
           }
         }
         if (parsed.type === 'result' && parsed.result) {
-          const resultText = parsed.result;
-          const createdPattern = /(?:created|opened|submitted|new PR|PR created)[^\n]*?(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
-          while ((match = createdPattern.exec(resultText)) !== null) prMatches.add(match[1] || match[2]);
-          const createdIdPattern = /(?:created|opened|submitted|new)\s+PR[# -]*(\d{1,})/gi;
-          while ((match = createdIdPattern.exec(resultText)) !== null) prMatches.add(match[1]);
+          const resultText = typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result);
+          addExplicitPrCreatedEvidence(resultText);
         }
       } catch {}
     }
   } catch {}
 
-  // prId → URL captured from inbox notes. Populated alongside prMatches so
-  // extractPrUrl below has a fallback when the agent's stdout doesn't contain
-  // the URL (the W-moljyu60wuzr / #1902 case — gh pr create ran in a sibling
-  // dispatch and only the inbox note carries the link).
-  const inboxUrls = new Map();
+  // Accept inbox fallback only when the agent wrote the explicit PR-created
+  // protocol line; generic PR mentions in findings/review notes are not evidence.
   const today = dateStamp();
   const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
   for (const f of inboxFiles) {
     const content = safeRead(path.join(INBOX_DIR, f));
     if (!content) continue;
-    // Match a PR declaration line in the agent's findings note: optional bold,
-    // optional "Pull Request" spelling, line-anchored so "see PR https://..."
-    // mid-paragraph mentions don't trigger a false-positive. The protocol
-    // and host prefix is optional so "PR: https://github.com/..." ,
-    // "**PR:** github.com/...", etc. all match.
-    const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request)[:\*]*\*?\s*[#-]*\s*(?:https?:\/\/)?[^\s"]*?(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
+    const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
     while ((match = prHeaderPattern.exec(content)) !== null) {
-      const prId = match[1] || match[2];
-      prMatches.add(prId);
-      // Pull the URL substring out of the matched chunk so we can hand it to
-      // extractPrUrl as a fallback. Prefer the first inbox URL we see for a
-      // given prId — later notes don't override the canonical record.
-      if (!inboxUrls.has(prId)) {
-        const urlMatch = match[0].match(/https?:\/\/[^\s"\\)]+/);
-        if (urlMatch) inboxUrls.set(prId, urlMatch[0].replace(/[.,;:]+$/, ''));
-      }
+      addPrUrlEvidence(match[1]);
     }
   }
 
-  if (prMatches.size === 0) return 0;
+  if (prEvidence.size === 0) return 0;
 
   const projects = shared.getProjects(config);
   if (projects.length === 0 && !meta?.project?.name) return 0;
@@ -798,13 +816,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   // doesn't contain the link (gh pr create may have run in a sibling dispatch
   // whose stdout was rotated; the inbox note is the durable artifact).
   function extractPrUrl(prId) {
-    // Stop at backslash in addition to whitespace/quotes — raw JSONL encodes newlines as \n (literal
-    // backslash-n), so without this the regex would capture e.g. "pull/1804\n/usr/bin/bash".
-    const ghMatch = output.match(new RegExp(`https?://github\\.com/[^\\s"'\\)\\]\\\\]*?/pull/${prId}(?:[^\\s"'\\)\\]\\\\]*)`, 'i'));
-    if (ghMatch) return ghMatch[0].replace(/[.,;:]+$/, '');
-    const adoMatch = output.match(new RegExp(`https?://(?:dev\\.azure\\.com|[^/]+\\.visualstudio\\.com)[^\\s"'\\)\\]\\\\]*?pullrequest/${prId}(?:[^\\s"'\\)\\]\\\\]*)`, 'i'));
-    if (adoMatch) return adoMatch[0].replace(/[.,;:]+$/, '');
-    return inboxUrls.get(prId) || '';
+    return prEvidence.get(prId) || '';
   }
 
   const agentName = config.agents?.[agentId]?.name || agentId;
@@ -814,7 +826,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   // Group new PRs by target file path
   const newPrsByPath = new Map(); // prPath -> [{ prId, newEntry }]
 
-  for (const prId of prMatches) {
+  for (const prId of prEvidence.keys()) {
     const targetProject = useCentral ? null : resolveProjectForPr(prId);
     const targetName = targetProject ? targetProject.name : '_central';
     const prPath = targetProject ? shared.projectPrPath(targetProject) : centralPrPath;
