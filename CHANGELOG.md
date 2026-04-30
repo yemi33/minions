@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1635 (2026-04-30)
+
+### Other
+- Make agent liveness process-based
+
 ## 0.1.1634 (2026-04-30)
 
 ### Features
