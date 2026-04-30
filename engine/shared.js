@@ -699,8 +699,8 @@ const ENGINE_DEFAULTS = {
   maxConcurrent: 5,
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
-  heartbeatTimeout: 300000, // 5min — base heartbeat for most work types
-  heartbeatTimeouts: {}, // per-type overrides; merged with defaults at runtime (see timeout.js)
+  heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
+  heartbeatTimeouts: {}, // optional per-type stale-orphan overrides; merged at runtime (see timeout.js)
   maxTurns: 100,
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
@@ -758,7 +758,7 @@ const ENGINE_DEFAULTS = {
   copilotReasoningSummaries: false,  // Copilot --enable-reasoning-summaries (Anthropic-family models only)
   maxBudgetUsd: undefined,       // fleet USD ceiling for --max-budget-usd (per-agent override: agents.<id>.maxBudgetUsd). Honors 0 via ?? so a literal cap of $0 works
   disableModelDiscovery: false,  // skip runtime.listModels() REST calls fleet-wide (settings UI falls back to free-text)
-  heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
+  heartbeatTimeouts: {},
   maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
@@ -1063,14 +1063,6 @@ const WORK_TYPE = {
   MEETING: 'meeting', EXPLORE: 'explore', ASK: 'ask', TEST: 'test', DOCS: 'docs',
 };
 
-// Per-work-type heartbeat timeouts (ms) — read-heavy tasks need longer silence windows.
-// Keyed by WORK_TYPE constants; types not listed fall back to ENGINE_DEFAULTS.heartbeatTimeout.
-Object.assign(ENGINE_DEFAULTS.heartbeatTimeouts, {
-  [WORK_TYPE.EXPLORE]: 600000,   // 10 min — spends most time reading/analyzing, minimal stdout
-  [WORK_TYPE.ASK]:     600000,   // 10 min — research-heavy, long silent analysis periods
-  [WORK_TYPE.REVIEW]:  480000,   // 8 min — code review reads extensively before producing output
-});
-
 const PLAN_STATUS = {
   ACTIVE: 'active', AWAITING_APPROVAL: 'awaiting-approval', APPROVED: 'approved',
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
@@ -1164,7 +1156,7 @@ const FAILURE_CLASS = {
   PERMISSION_BLOCKED: 'permission-blocked', // Trust gate, permission denied, auth failure
   MERGE_CONFLICT: 'merge-conflict',       // Git merge conflict in worktree or dependency
   BUILD_FAILURE: 'build-failure',         // Compilation, lint, or test failure
-  TIMEOUT: 'timeout',                     // Hard timeout or heartbeat timeout
+  TIMEOUT: 'timeout',                     // Hard runtime timeout or stale-orphan timeout
   EMPTY_OUTPUT: 'empty-output',           // Agent produced no meaningful output
   SPAWN_ERROR: 'spawn-error',             // Process failed to start or crashed immediately
   NETWORK_ERROR: 'network-error',         // API rate limit, DNS, connectivity
@@ -1907,6 +1899,80 @@ function addPrLink(prId, itemId, { project = null, url = '', prNumber = null } =
   });
 }
 
+/**
+ * Canonical PR-producing work contract helper.
+ *
+ * Dashboard rendering derives work-item PR columns from PR.prdItems (with
+ * engine/pr-links.json as a compatibility fallback). Any path that discovers or
+ * manually records a PR for a work item must use this helper so the PR record
+ * and the canonical work-item attachment are created together and idempotently.
+ */
+function upsertPullRequestRecord(prPath, entry, { project = null, itemId = null, itemIds = null, beforeInsert = null } = {}) {
+  if (!prPath) throw new Error('prPath required');
+  if (!entry || typeof entry !== 'object') throw new Error('entry required');
+
+  const linkedItemIds = normalizePrLinkItems([
+    ...(Array.isArray(entry.prdItems) ? entry.prdItems : []),
+    ...(Array.isArray(itemIds) ? itemIds : [itemId]),
+  ]);
+  const prNumber = getPrNumber(entry.prNumber ?? entry.id ?? entry.url);
+  const canonicalId = getCanonicalPrId(project, entry.prNumber ?? entry.id ?? entry.url ?? prNumber, entry.url || '');
+  if (!canonicalId) throw new Error('PR id required');
+  const normalizedEntry = {
+    ...entry,
+    id: canonicalId,
+    prNumber: prNumber ?? entry.prNumber ?? null,
+    prdItems: linkedItemIds,
+  };
+
+  let created = false;
+  let linked = false;
+  let skipped = false;
+  let record = null;
+
+  mutatePullRequests(prPath, (prs) => {
+    normalizePrRecords(prs, project);
+    let target = findPrRecord(prs, normalizedEntry, project);
+    if (!target && typeof beforeInsert === 'function' && beforeInsert(prs, normalizedEntry) === false) {
+      skipped = true;
+      return prs;
+    }
+    if (!target) {
+      target = normalizedEntry;
+      prs.push(target);
+      created = true;
+    } else {
+      target.id = canonicalId;
+      if (prNumber != null) target.prNumber = prNumber;
+      for (const key of ['url', 'title', 'description', 'agent', 'branch', 'reviewStatus', 'status', 'created', 'sourcePlan', 'itemType']) {
+        if (normalizedEntry[key] != null && normalizedEntry[key] !== '' && (target[key] == null || target[key] === '')) {
+          target[key] = normalizedEntry[key];
+        }
+      }
+      for (const key of ['_manual', '_contextOnly', '_autoObserve', '_context']) {
+        if (normalizedEntry[key] != null) target[key] = normalizedEntry[key];
+      }
+    }
+    target.prdItems = normalizePrLinkItems(target.prdItems || []);
+    for (const linkedItemId of linkedItemIds) {
+      if (!target.prdItems.includes(linkedItemId)) {
+        target.prdItems.push(linkedItemId);
+        linked = true;
+      }
+    }
+    record = { ...target, prdItems: [...target.prdItems] };
+    return prs;
+  });
+
+  if (!skipped) {
+    for (const linkedItemId of linkedItemIds) {
+      addPrLink(canonicalId, linkedItemId, { project, prNumber, url: normalizedEntry.url || '' });
+    }
+  }
+
+  return { id: canonicalId, prNumber, created, linked, skipped, record };
+}
+
 // ─── Cross-Platform Process Kill Helpers ─────────────────────────────────────
 
 function killGracefully(proc, graceMs = 5000) {
@@ -2214,6 +2280,7 @@ module.exports = {
   findPrRecord,
   normalizePrRecord,
   normalizePrRecords,
+  upsertPullRequestRecord,
   nextWorkItemId,
   getAdoOrgBase,
   sanitizePath,

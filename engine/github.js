@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, PR_PENDING_REASON, createThrottleTracker } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -284,7 +284,8 @@ async function forEachActiveGhPr(config, callback) {
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
             if (!pr.branch && prData.head?.ref) {
               pr.branch = prData.head.ref;
-              if (pr._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
+              if (pr._branchResolutionError) delete pr._branchResolutionError;
+              if (pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
             }
           }
         }
@@ -327,9 +328,11 @@ async function pollPrStatus(config) {
 
     let updated = false;
 
-    if (!pr.branch && prData.head?.ref) {
-      pr.branch = prData.head.ref;
-      if (pr._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
+    const headBranch = prData.head?.ref ? String(prData.head.ref).trim() : '';
+    if (headBranch && pr.branch !== headBranch) {
+      pr.branch = headBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
       updated = true;
     }
 
@@ -682,8 +685,8 @@ async function reconcilePrs(config) {
     const currentPrs = safeJson(prPath) || [];
     shared.normalizePrRecords(currentPrs, project);
     const existingIds = new Set(currentPrs.map(p => p.id));
-    let projectAdded = 0;
     let metadataUpdated = 0;
+    let projectAdded = 0;
 
     // Load work items to match branches
     const wiPath = projectWorkItemsPath(project);
@@ -709,11 +712,23 @@ async function reconcilePrs(config) {
         }
         if (existing && !existing.branch && branch) {
           existing.branch = branch;
-          if (existing._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete existing._pendingReason;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
+          if (existing._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete existing._pendingReason;
           metadataUpdated++;
         }
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
+          shared.upsertPullRequestRecord(prPath, existing || {
+            id: prId,
+            prNumber: ghPr.number,
+            title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
+            agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
+            branch,
+            reviewStatus: 'pending',
+            status: 'active',
+            created: ghPr.created_at || ts(),
+            url: prUrl,
+            prdItems: [],
+          }, { project, itemId: confirmedItemId });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -728,7 +743,7 @@ async function reconcilePrs(config) {
       // Only auto-track PRs linked to a minions work item — skip human-authored PRs
       if (!confirmedItemId && !isE2eBranch) continue;
 
-      currentPrs.push({
+      const entry = {
         id: prId,
         prNumber: ghPr.number,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
@@ -739,8 +754,9 @@ async function reconcilePrs(config) {
         created: ghPr.created_at || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],
-      });
-      addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
+      };
+      const upserted = shared.upsertPullRequestRecord(prPath, entry, { project, itemId: confirmedItemId });
+      currentPrs.push(upserted.record || entry);
       existingIds.add(prId);
       projectAdded++;
 
@@ -758,7 +774,7 @@ async function reconcilePrs(config) {
     // Backfill prdItems from pr-links for any PR with empty array
     const backfilled = backfillPrPrdItems(currentPrs, getPrLinks());
 
-    if (projectAdded > 0 || metadataUpdated > 0 || backfilled > 0) {
+    if (projectAdded > 0 || backfilled > 0 || metadataUpdated > 0) {
       mutateJsonFileLocked(prPath, (lockedPrs) => {
         for (const pr of currentPrs) {
           const idx = lockedPrs.findIndex(p => p.id === pr.id);
@@ -768,7 +784,6 @@ async function reconcilePrs(config) {
         return lockedPrs;
       }, { defaultValue: [] });
       totalAdded += projectAdded;
-      if (metadataUpdated > 0) log('info', `GitHub PR reconciliation: backfilled branch metadata for ${metadataUpdated} existing PR(s) in ${project.name}`);
     }
   }
 

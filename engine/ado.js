@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS, PR_PENDING_REASON, createThrottleTracker } = shared;
+const { exec, execAsync, getAdoOrgBase, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -357,6 +357,14 @@ async function pollPrStatus(config) {
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
+    const sourceBranch = stripRefsHeads(prData.sourceRefName);
+    if (sourceBranch && pr.branch !== sourceBranch) {
+      pr.branch = sourceBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
+      updated = true;
+    }
+
     let newStatus = pr.status;
     if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
     else if (prData.status === 'abandoned') newStatus = PR_STATUS.ABANDONED;
@@ -403,12 +411,6 @@ async function pollPrStatus(config) {
     const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
     if (sourceCommit && pr._adoSourceCommit !== sourceCommit) {
       pr._adoSourceCommit = sourceCommit;
-      updated = true;
-    }
-    const sourceBranch = stripRefsHeads(prData.sourceRefName);
-    if (!pr.branch && sourceBranch) {
-      pr.branch = sourceBranch;
-      if (pr._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
       updated = true;
     }
 
@@ -795,12 +797,24 @@ async function reconcilePrs(config) {
         }
         if (existing && !existing.branch && branch) {
           existing.branch = branch;
-          if (existing._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete existing._pendingReason;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
+          if (existing._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete existing._pendingReason;
           metadataUpdated++;
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
+          shared.upsertPullRequestRecord(prPath, existing || {
+            id: prId,
+            prNumber: adoPr.pullRequestId,
+            title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
+            agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
+            branch,
+            reviewStatus: 'pending',
+            status: 'active',
+            created: adoPr.creationDate || ts(),
+            url: prUrl,
+            prdItems: [],
+          }, { project, itemId: confirmedItemId });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -815,7 +829,7 @@ async function reconcilePrs(config) {
       // are human-authored and should not be auto-tracked or auto-reviewed.
       if (!confirmedItemId) continue;
 
-      existingPrs.push({
+      const entry = {
         id: prId,
         prNumber: adoPr.pullRequestId,
         title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
@@ -826,8 +840,9 @@ async function reconcilePrs(config) {
         created: adoPr.creationDate || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],
-      });
-      addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
+      };
+      const upserted = shared.upsertPullRequestRecord(prPath, entry, { project, itemId: confirmedItemId });
+      existingPrs.push(upserted.record || entry);
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
@@ -844,7 +859,7 @@ async function reconcilePrs(config) {
     // Backfill prdItems from pr-links for any PR with empty array
     const backfilled = shared.backfillPrPrdItems(existingPrs, shared.getPrLinks());
 
-    if (projectAdded > 0 || projectUpdated > 0 || metadataUpdated > 0 || backfilled > 0) {
+    if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0 || metadataUpdated > 0) {
       mutateJsonFileLocked(prPath, (currentPrs) => {
         // Merge reconciled PRs into the locked copy by ID
         for (const pr of existingPrs) {
@@ -856,7 +871,6 @@ async function reconcilePrs(config) {
       }, { defaultValue: [] });
       totalAdded += projectAdded;
       if (projectUpdated > 0) log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);
-      if (metadataUpdated > 0) log('info', `PR reconciliation: backfilled branch metadata for ${metadataUpdated} existing PR(s) in ${project.name}`);
     }
   }
 

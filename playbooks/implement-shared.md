@@ -66,7 +66,7 @@ Before publishing, prove the shared branch still works with your change included
 - Fix regressions you introduced. If failures are pre-existing or caused by earlier branch work, capture the evidence and say so clearly.
 - Do not push code with a broken build or failing tests that you introduced.
 
-> ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
+Long builds, dependency installs, and tests may be quiet for several minutes. Let the normal CLI command run naturally; do not add artificial heartbeat output or split commands just to show progress.
 
 ## Publish
 

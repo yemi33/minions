@@ -26,7 +26,7 @@ const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS,
-  FAILURE_CLASS, PR_PENDING_REASON } = shared;
+  FAILURE_CLASS } = shared;
 const { resolveRuntime } = require('./engine/runtimes');
 const queries = require('./engine/queries');
 
@@ -145,7 +145,7 @@ const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconci
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
-const realActivityMap = new Map(); // dispatchId → timestamp of last REAL agent output (not engine heartbeat)
+const realActivityMap = new Map(); // dispatchId → timestamp of last agent stdout/stderr
 // tempAgents imported from engine/routing.js
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 const engineRestartGraceExempt = new Set(); // dispatch IDs with confirmed-dead PIDs at restart — bypass grace period
@@ -983,17 +983,12 @@ async function spawnAgent(dispatchItem, config) {
     throw spawnErr;
   }
 
-  // Seed realActivityMap and stamp PID immediately — BEFORE any handlers or timers (#W-mo25loq8kjer).
+  // Seed realActivityMap and stamp PID immediately — BEFORE any handlers (#W-mo25loq8kjer).
   // Why NOW, not later in the function:
-  //  1. Heartbeat clock anchoring. timeout.js uses realActivityMap as the last-activity timestamp for
-  //     tracked processes; when the map has no entry, it falls back to item.started_at (dispatch time,
-  //     which is 20-60s before actual spawn for write tasks doing worktree setup). Read-only tasks
-  //     that produce no stdout for minutes (explore, security audit, large scans) were hitting
-  //     heartbeatTimeout prematurely — clock had already been running since dispatch.
-  //  2. Error-handler race. The `proc.on('error', ...)` handler below calls realActivityMap.delete(id)
+  //  1. Error-handler race. The `proc.on('error', ...)` handler below calls realActivityMap.delete(id)
   //     on synchronous spawn failures. Seeding before registering handlers ensures delete sees a value
   //     to clear rather than leaving an absent-then-absent no-op that downstream code must guard.
-  //  3. Orphan diagnostics. The PID line gives timeout.js a deterministic way to tell "spawn died
+  //  2. Orphan diagnostics. The PID line gives timeout.js a deterministic way to tell "spawn died
   //     before first write" (stub-only log) from "process started and is hung" (stub + pid line).
   realActivityMap.set(id, Date.now());
   try {
@@ -1003,24 +998,12 @@ async function spawnAgent(dispatchItem, config) {
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
-  let lastOutputAt = Date.now();
-  let heartbeatTimer = null;
   let _trustCheckDone = false;
   const _spawnTime = Date.now();
 
-  // Keep live log active even when the agent produces no stdout/stderr for long stretches.
-  // This makes "silent but running" states visible in the dashboard tail view.
-  heartbeatTimer = setInterval(() => {
-    const silentMs = Date.now() - lastOutputAt;
-    if (silentMs < 30000) return;
-    const silentSec = Math.round(silentMs / 1000);
-    try { fs.appendFileSync(liveOutputPath, `[heartbeat] running — no output for ${silentSec}s\n`); } catch { /* optional */ }
-  }, 30000);
-
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
-    lastOutputAt = Date.now();
-    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+    realActivityMap.set(id, Date.now());
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
 
@@ -1057,14 +1040,12 @@ async function spawnAgent(dispatchItem, config) {
 
   proc.stderr.on('data', (data) => {
     const chunk = data.toString();
-    lastOutputAt = Date.now();
-    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+    realActivityMap.set(id, Date.now());
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
   });
 
   async function onAgentClose(code) {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
 
     // Emit worker-state transition: FINISHED or FAILED
@@ -1180,33 +1161,22 @@ async function spawnAgent(dispatchItem, config) {
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
       stderr = '';
-      lastOutputAt = Date.now();
-
-      // Restart heartbeat for the resumed process
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      heartbeatTimer = setInterval(() => {
-        try { fs.appendFileSync(liveOutputPath, `\n[heartbeat] running — no output for ${Math.round((Date.now() - lastOutputAt) / 1000)}s\n`); } catch {}
-      }, 30000);
-
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {
         const chunk = data.toString();
-        lastOutputAt = Date.now();
-        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+        realActivityMap.set(id, Date.now());
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();
-        lastOutputAt = Date.now();
-        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
+        realActivityMap.set(id, Date.now());
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
         try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
       });
 
       // Re-wire close handler for the resumed process
       resumeProc.on('close', (resumeCode) => {
-        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         try { fs.unlinkSync(steerPromptPath); } catch { /* cleanup */ }
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
@@ -1262,7 +1232,7 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     activeProcesses.delete(id);
-    realActivityMap.delete(id); // Clean up real activity tracking
+    realActivityMap.delete(id);
 
     // If timeout checker already finalized this dispatch, don't overwrite work-item status again.
     // This avoids races where close-handler marks an auto-retried item as failed.
@@ -1298,15 +1268,19 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary, autoRecovered } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered, completionContractFailure } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
-    // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
-    const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
-    const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
+    // autoRecovered: agent failed after creating PRs — treat as success
+    const effectiveResult = completionContractFailure ? DISPATCH_RESULT.ERROR : ((code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+    const completeOpts = completionContractFailure
+      ? { processWorkItemFailure: false }
+      : (effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {});
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
     let errorReason = '';
-    if (effectiveResult === DISPATCH_RESULT.ERROR) {
+    if (completionContractFailure) {
+      errorReason = completionContractFailure.reason || 'PR attachment contract failed';
+    } else if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
       // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the
       // "silent crash" pattern seen during scheduled tasks when the box went to sleep
@@ -1379,10 +1353,9 @@ async function spawnAgent(dispatchItem, config) {
   proc.on('close', onAgentClose);
 
   proc.on('error', (err) => {
-    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
-    realActivityMap.delete(id); // Clean up real activity tracking
+    realActivityMap.delete(id);
     completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
   });
 
@@ -2011,74 +1984,100 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
-function normalizePrBranchRef(value) {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/^refs\/heads\//, '').trim();
+const PR_PENDING_MISSING_BRANCH = shared.PR_PENDING_REASON.MISSING_BRANCH;
+
+function normalizePrBranch(value) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return '';
+  return raw.replace(/^refs\/heads\//i, '');
 }
 
-function getPrDispatchBranch(pr) {
-  return normalizePrBranchRef(pr?.branch) ||
-    normalizePrBranchRef(pr?.sourceRefName) ||
-    normalizePrBranchRef(pr?.headRefName) ||
-    normalizePrBranchRef(pr?.sourceBranch) ||
-    normalizePrBranchRef(pr?.head?.ref);
-}
-
-function mutatePrDispatchMetadata(project, pr, mutator, reason) {
-  try {
-    let changed = false;
-    mutatePullRequests(projectPrPath(project), prs => {
-      const target = shared.findPrRecord(prs, pr, project);
-      if (!target) return prs;
-      changed = mutator(target) === true;
-      return prs;
-    });
-    return changed;
-  } catch (e) {
-    log('warn', `PR ${pr?.id || '(unknown)'}: failed to update dispatch metadata for ${reason}: ${e.message}`);
-    return false;
+function resolvePrBranch(pr) {
+  if (!pr || typeof pr !== 'object') return '';
+  const candidates = [
+    pr.branch,
+    pr.pr_branch,
+    pr.prBranch,
+    pr.sourceRefName,
+    pr.sourceBranch,
+    pr.sourceRef,
+    pr.headRefName,
+    pr.head?.ref,
+  ];
+  for (const candidate of candidates) {
+    const branch = normalizePrBranch(candidate);
+    if (branch) return branch;
   }
-}
-
-function backfillPrDispatchBranch(project, pr) {
-  const branch = getPrDispatchBranch(pr);
-  if (!branch) return '';
-
-  const needsWrite = pr.branch !== branch || pr._pendingReason === PR_PENDING_REASON.MISSING_BRANCH;
-  pr.branch = branch;
-  if (pr._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
-  if (needsWrite) {
-    mutatePrDispatchMetadata(project, pr, target => {
-      let changed = false;
-      if (target.branch !== branch) { target.branch = branch; changed = true; }
-      if (target._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) {
-        delete target._pendingReason;
-        changed = true;
-      }
-      return changed;
-    }, 'branch backfill');
-  }
-  return branch;
-}
-
-function markPrMissingDispatchBranch(project, pr, action) {
-  if (pr._pendingReason !== PR_PENDING_REASON.MISSING_BRANCH) {
-    pr._pendingReason = PR_PENDING_REASON.MISSING_BRANCH;
-    mutatePrDispatchMetadata(project, pr, target => {
-      if (target._pendingReason === PR_PENDING_REASON.MISSING_BRANCH) return false;
-      target._pendingReason = PR_PENDING_REASON.MISSING_BRANCH;
-      return true;
-    }, 'missing branch pending reason');
-    log('warn', `PR ${pr.id}: cannot dispatch ${action} — missing pr_branch; waiting for PR metadata enrichment`);
-  }
-}
-
-function ensurePrDispatchBranch(project, pr, action) {
-  const branch = backfillPrDispatchBranch(project, pr);
-  if (branch) return branch;
-  markPrMissingDispatchBranch(project, pr, action);
   return '';
 }
+
+// Unified branch-resolution state writer: when branch is found, persist it and
+// clear BOTH the structured _branchResolutionError (red-badge UI) and the
+// _pendingReason marker (dashboard pending-reason vocabulary). When branch is
+// missing, set BOTH fields so the dashboard can surface the gate via either
+// rendering path.
+function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' } = {}) {
+  let changed = false;
+  try {
+    mutatePullRequests(projectPrPath(project), prs => {
+      const target = shared.findPrRecord(prs, pr, project);
+      if (!target) return;
+      if (branch) {
+        if (target.branch !== branch) {
+          target.branch = branch;
+          changed = true;
+        }
+        if (target._branchResolutionError) {
+          delete target._branchResolutionError;
+          changed = true;
+        }
+        if (target._pendingReason === PR_PENDING_MISSING_BRANCH) {
+          delete target._pendingReason;
+          changed = true;
+        }
+        return;
+      }
+      if (reason) {
+        const currentReason = target._branchResolutionError?.reason || '';
+        if (currentReason !== reason) {
+          target._branchResolutionError = { reason, at: ts() };
+          changed = true;
+        }
+        if (target._pendingReason !== PR_PENDING_MISSING_BRANCH) {
+          target._pendingReason = PR_PENDING_MISSING_BRANCH;
+          changed = true;
+        }
+      }
+    });
+  } catch (e) {
+    log('warn', `mark PR branch resolution state for ${pr?.id || 'unknown PR'}: ${e.message}`);
+  }
+  if (branch) {
+    pr.branch = branch;
+    if (pr._branchResolutionError) delete pr._branchResolutionError;
+    if (pr._pendingReason === PR_PENDING_MISSING_BRANCH) delete pr._pendingReason;
+  } else if (reason && changed) {
+    pr._branchResolutionError = { reason, at: ts() };
+    pr._pendingReason = PR_PENDING_MISSING_BRANCH;
+  }
+  return changed;
+}
+
+function ensurePrBranchForDispatch(project, pr, automationType) {
+  const branch = resolvePrBranch(pr);
+  if (branch) {
+    if (pr.branch !== branch || pr._branchResolutionError || pr._pendingReason === PR_PENDING_MISSING_BRANCH) {
+      updatePrBranchResolutionState(project, pr, { branch });
+    }
+    return branch;
+  }
+  const reason = `Cannot dispatch ${automationType} for ${shared.getPrDisplayId(pr)}: missing pr_branch/source branch metadata. Link or refresh the PR so the source branch is known.`;
+  if (updatePrBranchResolutionState(project, pr, { reason })) {
+    log('warn', `PR ${pr.id}: ${reason}`);
+  }
+  return '';
+}
+
 
 /**
  * Scan pull-requests.json for PRs needing review or fixes
@@ -2121,10 +2120,10 @@ async function discoverFromPrs(config, project) {
     const prDisplayId = shared.getPrDisplayId(pr);
     const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
     if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
-    const resolvedPrBranch = backfillPrDispatchBranch(project, pr);
+    const prBranchForMutex = resolvePrBranch(pr);
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
-    if (resolvedPrBranch && isBranchActive(resolvedPrBranch)) {
-      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${resolvedPrBranch} locked by another agent`);
+    if (prBranchForMutex && isBranchActive(prBranchForMutex)) {
+      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${prBranchForMutex} locked by another agent`);
       continue;
     }
     // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
@@ -2162,8 +2161,6 @@ async function discoverFromPrs(config, project) {
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      const prBranch = ensurePrDispatchBranch(project, pr, 'review');
-      if (!prBranch) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
       try {
@@ -2188,6 +2185,8 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
@@ -2207,8 +2206,6 @@ async function discoverFromPrs(config, project) {
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (isOnCooldown(key, cooldownMs)) continue;
-      const prBranch = ensurePrDispatchBranch(project, pr, 're-review');
-      if (!prBranch) continue;
 
       // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
       try {
@@ -2231,6 +2228,8 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 're-review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
@@ -2245,10 +2244,10 @@ async function discoverFromPrs(config, project) {
     if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      const prBranch = ensurePrDispatchBranch(project, pr, 'fix');
-      if (!prBranch) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'fix');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
@@ -2286,10 +2285,10 @@ async function discoverFromPrs(config, project) {
         }
         continue;
       }
-      const prBranch = ensurePrDispatchBranch(project, pr, 'human-feedback fix');
-      if (!prBranch) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
+      if (!prBranch) continue;
 
       const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
       let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
@@ -2335,8 +2334,6 @@ async function discoverFromPrs(config, project) {
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      const prBranch = ensurePrDispatchBranch(project, pr, 'build fix');
-      if (!prBranch) continue;
 
       // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
       // recompute the merge commit when master moves and pollPrStatus deliberately
@@ -2372,6 +2369,8 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'build-fix');
+      if (!prBranch) continue;
 
       let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
       if (pr.buildErrorLog) {
@@ -2421,8 +2420,6 @@ async function discoverFromPrs(config, project) {
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
       if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
-        const prBranch = ensurePrDispatchBranch(project, pr, 'conflict fix');
-        if (!prBranch) continue;
         // Pre-dispatch live conflict check — cached `_mergeConflict` may be
         // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
         // so a successful upstream merge can leave the flag set even after the
@@ -2449,6 +2446,8 @@ async function discoverFromPrs(config, project) {
         if (!liveSkip) {
           const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
           if (agentId) {
+            const prBranch = ensurePrBranchForDispatch(project, pr, 'conflict-fix');
+            if (!prBranch) continue;
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
               pr_id: pr.id, pr_branch: prBranch,
               review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,

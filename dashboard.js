@@ -63,6 +63,91 @@ function reloadConfig() {
   PROJECTS = _getProjects(CONFIG);
 }
 
+function getWorkItemIdFromPrLinkContext(context, workItemId) {
+  if (typeof workItemId === 'string' && workItemId.trim()) return workItemId.trim();
+  if (!context) return null;
+  if (typeof context === 'object' && typeof context.workItemId === 'string' && context.workItemId.trim()) return context.workItemId.trim();
+  if (typeof context === 'string') {
+    const match = context.match(/\b(P-[a-z0-9]{6,}|W-[a-z0-9]{6,}|PL-[a-z0-9]{6,})\b/i);
+    return match ? match[1] : null;
+  }
+  return null;
+}
+
+function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG) {
+  if (!url) {
+    const err = new Error('url required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const projects = shared.getProjects(config);
+  const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
+  const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
+
+  const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
+  const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
+  const prId = shared.getCanonicalPrId(targetProject, prNum, url);
+  const linkedWorkItemId = getWorkItemIdFromPrLinkContext(context, workItemId);
+  const contextText = typeof context === 'string' ? context : (context == null ? '' : JSON.stringify(context));
+  const result = shared.upsertPullRequestRecord(prPath, {
+    id: prId,
+    prNumber: parseInt(prNum, 10) || null,
+    title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+    description: '',
+    agent: 'human',
+    branch: '',
+    reviewStatus: 'pending',
+    status: 'active',
+    created: new Date().toISOString(),
+    url,
+    prdItems: linkedWorkItemId ? [linkedWorkItemId] : [],
+    _manual: true,
+    _contextOnly: !autoObserve,
+    _autoObserve: !!autoObserve,
+    _context: contextText,
+  }, {
+    project: targetProject,
+    itemId: linkedWorkItemId,
+  });
+  return { ...result, prPath, targetProject, prNum };
+}
+
+function _normalizeSkillDirForCompare(dir) {
+  const resolved = path.resolve(String(dir || '').replace(/\//g, path.sep));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function _skillEntrySource(entry) {
+  if (!entry) return '';
+  if (entry.scope === 'claude-code') return 'claude-code';
+  if (entry.scope === 'plugin') return 'plugin';
+  if (entry.scope === 'project') return 'project:' + entry.projectName;
+  return entry.scope || '';
+}
+
+function _isValidSkillFileName(file) {
+  return !!file && !file.includes('..') && !file.includes('\0') && !file.includes('/') && !file.includes('\\');
+}
+
+function _resolveSkillReadPath({ file, dir, source, config, skillFiles } = {}) {
+  if (!_isValidSkillFileName(file)) return null;
+  const requestedDir = dir ? _normalizeSkillDirForCompare(dir) : null;
+  const requestedSource = source || '';
+  const entries = Array.isArray(skillFiles) ? skillFiles : queries.collectSkillFiles(config || CONFIG);
+  for (const entry of entries) {
+    if (!entry || entry.file !== file || !entry.dir) continue;
+    if (requestedDir && _normalizeSkillDirForCompare(entry.dir) !== requestedDir) continue;
+    if (requestedSource && _skillEntrySource(entry) !== requestedSource) continue;
+
+    const baseDir = path.resolve(entry.dir);
+    const fullPath = path.resolve(baseDir, entry.file);
+    const rel = path.relative(baseDir, fullPath);
+    if (rel && (rel.startsWith('..') || path.isAbsolute(rel))) continue;
+    return fullPath;
+  }
+  return null;
+}
+
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
@@ -4220,22 +4305,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
     const dir = params.get('dir');
-    if (!file || file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) { res.statusCode = 400; res.end('Invalid file'); return; }
+    const source = params.get('source') || '';
+    if (!_isValidSkillFileName(file)) { res.statusCode = 400; res.end('Invalid file'); return; }
 
     let content = '';
-    if (dir) {
-      // Direct path from collectSkillFiles — validate resolved path stays within expected dir
-      const resolvedDir = path.resolve(dir.replace(/\//g, path.sep));
-      const fullPath = path.join(resolvedDir, file);
-      if (fullPath.startsWith(resolvedDir)) content = safeRead(fullPath) || '';
-    }
-    if (!content) {
+    const skillPath = _resolveSkillReadPath({ file, dir, source, config: CONFIG });
+    if (skillPath) content = safeRead(skillPath) || '';
+    if (!content && !dir) {
       // Fallback: search Claude Code skills, then project skills
       const home = os.homedir();
       const claudePath = path.join(home, '.claude', 'skills', file.replace('.md', '').replace('SKILL', ''), 'SKILL.md');
       content = safeRead(claudePath) || '';
       if (!content) {
-        const source = params.get('source') || '';
         if (source.startsWith('project:')) {
           const proj = PROJECTS.find(p => p.name === source.replace('project:', ''));
           if (proj) content = safeRead(path.join(proj.localPath, '.claude', 'skills', file)) || '';
@@ -5806,49 +5887,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // /api/prd/regenerate removed — use /api/plans/approve which does diff-aware update
 
     // Agents
-    { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?', handler: async (req, res) => {
+    { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?, workItemId?', handler: async (req, res) => {
       const body = await readBody(req);
-      const { url, title, project: projectName, autoObserve, context } = body;
+      const { url } = body;
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
-      // Determine project
       reloadConfig();
-      const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
-      const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
-
-      // Extract PR number from URL
-      const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
-      const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
-      const prId = shared.getCanonicalPrId(targetProject, prNum, url);
-
-      // Atomic check-and-insert to prevent duplicates and races with polling loops
-      let duplicate = false;
-      mutateJsonFileLocked(prPath, (prs) => {
-        if (!Array.isArray(prs)) prs = [];
-        if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
-        prs.push({
-          id: prId,
-          prNumber: parseInt(prNum, 10) || null,
-          title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
-          description: '',
-          agent: 'human',
-          branch: '',
-          reviewStatus: 'pending',
-          status: 'active',
-          created: new Date().toISOString(),
-          url,
-          prdItems: [],
-          _manual: true,
-          _contextOnly: !autoObserve,
-          _autoObserve: !!autoObserve,
-          _context: context || '',
-        });
-        return prs;
-      }, { defaultValue: [] });
-      if (duplicate) return jsonReply(res, 400, { error: 'PR already tracked' });
+      const { id: prId, prPath, targetProject, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG);
       invalidateStatusCache();
-      jsonReply(res, 200, { ok: true, id: prId });
+      jsonReply(res, 200, { ok: true, id: prId, created, linked });
 
       // Async-enrich: fetch title, description, branch, author from GitHub/ADO API
       (async () => {
@@ -5876,6 +5923,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             if (prData.description) pr.description = prData.description.slice(0, 500);
             if (!pr.branch && prData.branch) {
               pr.branch = prData.branch;
+              if (pr._branchResolutionError) delete pr._branchResolutionError;
               if (pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
             }
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;
@@ -6374,6 +6422,8 @@ module.exports = {
   _parseDocChatResultText,
   _messageRequestsOrchestration,
   _formatDocChatContext,
+  _linkPullRequestForTracking: linkPullRequestForTracking,
+  _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
 };
 

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.1641 (2026-04-30)
+
+### Features
+- harden PR attachment contract (#1908)
+
+## 0.1.1640 (2026-04-30)
+
+### Fixes
+- surface unresolved pr branches
+
+## 0.1.1638 (2026-04-30)
+
+### Fixes
+-  Playbook 'fix' / 'review' gates items forever when pr_branch is unresolved (closes #1899) (#1901)
+
+## 0.1.1637 (2026-04-30)
+
+### Other
+- test(pipeline): add unit tests for evaluateCondition, resolveTemplate, isStageComplete, _findMeetingsInRun (#1902)
+
+## 0.1.1636 (2026-04-30)
+
+### Other
+- Harden dashboard skill file reads
+
+## 0.1.1635 (2026-04-30)
+
+### Other
+- Make agent liveness process-based
+
+## 0.1.1634 (2026-04-30)
+
+### Features
+- build-and-test CC action + docs playbook
+
 ## 0.1.1633 (2026-04-30)
 
 ### Features

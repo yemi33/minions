@@ -3837,6 +3837,158 @@ async function testPrLinks() {
   });
 }
 
+async function testPrAttachmentContract() {
+  console.log('\n── PR Attachment Contract ──');
+
+  await test('syncPrsFromOutput creates tracked PR with canonical prdItems link', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const count = lifecycle.syncPrsFromOutput(
+        JSON.stringify({ type: 'result', result: 'Created PR: https://github.com/octo/minions/pull/1902' }),
+        'dallas',
+        { branch: 'work/W-output123', item: { id: 'W-output123', title: 'Harden PR links', type: 'fix' }, project: { name: 'minions' } },
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(count, 1, 'sync should report the PR/link change');
+      assert.strictEqual(prs.length, 1, 'one PR record should be tracked');
+      assert.strictEqual(prs[0].id, 'github:octo/minions#1902');
+      assert.deepStrictEqual(prs[0].prdItems, ['W-output123']);
+      const links = testShared.getPrLinks();
+      assert.deepStrictEqual(links['github:octo/minions#1902'], ['W-output123']);
+    } finally { restore(); }
+  });
+
+  await test('/api/pull-requests/link path canonically attaches context.workItemId', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const result = testShared.upsertPullRequestRecord(prPath, {
+        id: 'github:octo/minions#1903',
+        prNumber: 1903,
+        title: 'Manual link',
+        agent: 'human',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1903',
+        _context: { workItemId: 'W-context123' },
+      }, { project, itemId: 'W-context123' });
+
+      const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+      assert.ok(dashSrc.includes('linkPullRequestForTracking(body, CONFIG)'),
+        'dashboard /api/pull-requests/link must route through the canonical link helper');
+      assert.ok(dashSrc.includes('context.workItemId'),
+        'manual PR link context.workItemId must feed the canonical attachment');
+      assert.strictEqual(result.id, 'github:octo/minions#1903');
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1);
+      assert.deepStrictEqual(prs[0].prdItems, ['W-context123']);
+      assert.deepStrictEqual(testShared.getPrLinks()['github:octo/minions#1903'], ['W-context123']);
+    } finally { restore(); }
+  });
+
+  await test('duplicate/manual re-link does not duplicate PR records or prdItems entries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+      const entry = {
+        id: 'github:octo/minions#1904',
+        prNumber: 1904,
+        title: 'Duplicate link',
+        agent: 'human',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1904',
+      };
+
+      testShared.upsertPullRequestRecord(prPath, entry, { project, itemId: 'W-dupe123' });
+      testShared.upsertPullRequestRecord(prPath, entry, { project, itemId: 'W-dupe123' });
+
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1, 'same PR should not be inserted twice');
+      assert.deepStrictEqual(prs[0].prdItems, ['W-dupe123']);
+      assert.deepStrictEqual(testShared.getPrLinks()['github:octo/minions#1904'], ['W-dupe123']);
+    } finally { restore(); }
+  });
+
+  await test('PR-producing success without canonical PR is needs-human-review, not done', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = { id: 'W-nopr123', title: 'No PR regression', type: 'implement', status: 'dispatched' };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-nopr123', type: 'implement', task: 'No PR regression', meta: { source: 'work-item', item, branch: 'work/W-nopr123', project: { name: 'minions', localPath: testDir } } },
+        'dallas',
+        0,
+        'Implemented the requested change without opening a pull request.\n'.repeat(20),
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
+      assert.strictEqual(updated.status, 'needs-human-review');
+      assert.ok(!updated.completedAt, 'missing PR contract must not persist a done completion timestamp');
+      assert.match(updated.failReason, /canonically attached PR record/);
+      const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      assert.ok(inboxFiles.some(f => f.includes('missing-pr-attachment-W-nopr123')),
+        'missing PR contract failure should leave a durable inbox note');
+    } finally { restore(); }
+  });
+}
+
 // ─── queries.js Tests ────────────────────────────────────────────────────────
 
 async function testQueriesCore() {
@@ -7627,12 +7779,12 @@ async function testStateIntegrity() {
       'dashboard dispatch mutations should normalize queue structure');
   });
 
-  await test('Hung timeout path uses normal auto-retry flow', () => {
+  await test('Stale-orphan timeout path uses normal auto-retry flow', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes("completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);"),
-      'Hung/orphan cleanup should route through normal completeDispatch retry handling');
+      'Stale-orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
-      'Hung/orphan cleanup should not bypass work item retry handling');
+      'Stale-orphan cleanup should not bypass work item retry handling');
   });
 
   await test('Auto-retry is gated by retryable failure reason classification', () => {
@@ -7694,14 +7846,12 @@ async function testStateIntegrity() {
       'close handler should verify dispatch is still active before completing');
   });
 
-  await test('Live log appends heartbeat during silent runs', () => {
+  await test('Live log does not append heartbeat during silent runs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('[heartbeat] running — no output for'),
-      'engine should append heartbeat lines to live-output when agent is silent');
-    assert.ok(src.includes('heartbeatTimer = setInterval('),
-      'engine should create a heartbeat timer for live-output');
-    assert.ok(src.includes('if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }'),
-      'engine should clear heartbeat timer on close/error');
+    assert.ok(!src.includes('[heartbeat] running — no output for'),
+      'engine should not append heartbeat lines to live-output when an agent is silent');
+    assert.ok(!src.includes('heartbeatTimer = setInterval('),
+      'engine should not create a heartbeat timer for live-output');
   });
 
   await test('Human feedback pendingFix is cleared only after dispatch enqueue', () => {
@@ -11687,10 +11837,6 @@ async function testDiscoverFromPrs() {
       const freshShared = require('../engine/shared');
       const freshQueries = require('../engine/queries');
       const testDir = process.env.MINIONS_TEST_DIR;
-      const playbookDir = path.join(testDir, 'playbooks');
-      fs.mkdirSync(playbookDir, { recursive: true });
-      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
-      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
       const project = {
         name: 'demo',
         localPath: testDir,
@@ -11973,9 +12119,8 @@ async function testDiscoverFromPrs() {
     }
   });
 
-  await test('discoverFromPrs marks pending review PRs with unresolved branch metadata (#1899)', async () => {
+  await test('discoverFromPrs surfaces unresolved pr_branch instead of silently gating fix dispatch (#1899)', async () => {
     const restore = createTestMinionsDir();
-    let githubPath = null;
     try {
       for (const mod of [
         '../engine/shared',
@@ -11987,15 +12132,169 @@ async function testDiscoverFromPrs() {
       ]) {
         try { delete require.cache[require.resolve(mod)]; } catch {}
       }
-      githubPath = require.resolve('../engine/github');
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'PR-43',
+        prNumber: 43,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Missing branch',
+        prdItems: ['W-impl-43'],
+        minionsReview: { note: 'Fix missing branch handling.' },
+        url: 'https://github.com/octo/repo/pull/43',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      const stored = freshShared.safeJson(freshShared.projectPrPath(project))[0];
+
+      assert.deepStrictEqual(discovered, []);
+      assert.ok(stored._branchResolutionError, 'PR should carry a visible branch-resolution error');
+      assert.ok(/pr_branch/i.test(stored._branchResolutionError.reason),
+        'Branch-resolution error should explain that pr_branch metadata is missing');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs resolves pr_branch from platform ref metadata before fix dispatch (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'PR-44',
+        prNumber: 44,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Source ref branch',
+        sourceRefName: 'refs/heads/feat/from-source-ref',
+        prdItems: ['W-impl-44'],
+        minionsReview: { note: 'Use sourceRefName.' },
+        _branchResolutionError: { reason: 'stale', at: '2026-04-01T00:00:00.000Z' },
+        url: 'https://github.com/octo/repo/pull/44',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      const stored = freshShared.safeJson(freshShared.projectPrPath(project))[0];
+
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta.branch, 'feat/from-source-ref');
+      assert.ok(discovered[0].prompt.includes('feat/from-source-ref'));
+      assert.strictEqual(stored.branch, 'feat/from-source-ref');
+      assert.ok(!stored._branchResolutionError, 'Resolved branch should clear stale branch-resolution errors');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs surfaces unresolved pr_branch instead of silently gating review dispatch (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const originalGithubCache = require.cache[githubPath];
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
       require.cache[githubPath] = {
         id: githubPath,
         filename: githubPath,
         loaded: true,
         exports: {
-          pollPrStatus: async () => 0,
-          pollPrHumanComments: async () => 0,
-          reconcilePrs: async () => 0,
+          pollPrStatus: async () => {},
+          pollPrHumanComments: async () => {},
+          reconcilePrs: async () => {},
           checkLiveReviewStatus: async () => 'pending',
           checkLiveBuildAndConflict: async () => null,
           isGhThrottled: () => false,
@@ -12007,7 +12306,7 @@ async function testDiscoverFromPrs() {
       const testDir = process.env.MINIONS_TEST_DIR;
       const playbookDir = path.join(testDir, 'playbooks');
       fs.mkdirSync(playbookDir, { recursive: true });
-      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
       fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
       const project = {
         name: 'demo',
@@ -12021,35 +12320,36 @@ async function testDiscoverFromPrs() {
         projects: [project],
         workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
         engine: { ghPollEnabled: true, evalLoop: true },
-        agents: { ripley: { name: 'Ripley', role: 'Reviewer' }, dallas: { name: 'Dallas', role: 'Engineer' } },
+        agents: { ripley: { name: 'Ripley', role: 'Reviewer' } },
       };
       const pr = {
-        id: 'github:octo/repo#1899',
-        prNumber: 1899,
+        id: 'PR-45',
+        prNumber: 45,
         status: 'active',
         reviewStatus: 'pending',
-        agent: 'dallas',
-        title: 'Branch metadata missing',
-        branch: '',
-        prdItems: ['W-review-1899'],
-        url: 'https://github.com/octo/repo/pull/1899',
+        agent: 'ripley',
+        title: 'Missing review branch',
+        prdItems: ['W-impl-45'],
+        url: 'https://github.com/octo/repo/pull/45',
       };
       freshShared.safeWrite(path.join(testDir, 'config.json'), config);
       freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
       freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
-      freshQueries.getPrs = () => [pr];
       freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
 
       const engineModule = require(path.join(MINIONS_DIR, 'engine'));
       const discovered = await engineModule.discoverFromPrs(config, project);
+      const stored = freshShared.safeJson(freshShared.projectPrPath(project))[0];
 
-      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable review dispatch');
-      const after = freshShared.safeJson(freshShared.projectPrPath(project));
-      assert.strictEqual(after[0]._pendingReason, freshShared.PR_PENDING_REASON.MISSING_BRANCH,
-        'The blocked review PR should carry a visible pending reason instead of silently gating');
+      assert.deepStrictEqual(discovered, []);
+      assert.ok(stored._branchResolutionError, 'PR should carry a visible branch-resolution error');
+      assert.ok(/review/i.test(stored._branchResolutionError.reason),
+        'Review branch-resolution error should name the blocked automation path');
     } finally {
       restore();
-      if (githubPath) delete require.cache[githubPath];
+      if (originalGithubCache) require.cache[githubPath] = originalGithubCache;
+      else delete require.cache[githubPath];
       for (const mod of [
         '../engine/shared',
         '../engine/queries',
@@ -12063,78 +12363,7 @@ async function testDiscoverFromPrs() {
     }
   });
 
-  await test('discoverFromPrs marks changes-requested fix PRs with unresolved branch metadata (#1899)', async () => {
-    const restore = createTestMinionsDir();
-    try {
-      for (const mod of [
-        '../engine/shared',
-        '../engine/queries',
-        '../engine/cooldown',
-        '../engine/routing',
-        '../engine/playbook',
-        '../engine',
-      ]) {
-        try { delete require.cache[require.resolve(mod)]; } catch {}
-      }
-
-      const freshShared = require('../engine/shared');
-      const freshQueries = require('../engine/queries');
-      const testDir = process.env.MINIONS_TEST_DIR;
-      const project = {
-        name: 'demo',
-        localPath: testDir,
-        repoHost: 'github',
-        adoOrg: 'octo',
-        repoName: 'repo',
-        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
-      };
-      const config = {
-        projects: [project],
-        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
-        engine: { ghPollEnabled: true, evalLoop: true },
-        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
-      };
-      const pr = {
-        id: 'github:octo/repo#1900',
-        prNumber: 1900,
-        status: 'active',
-        reviewStatus: 'changes-requested',
-        agent: 'dallas',
-        title: 'Needs fix but branch metadata is missing',
-        branch: '   ',
-        prdItems: ['W-fix-1899'],
-        minionsReview: { note: 'Please address the review.' },
-        url: 'https://github.com/octo/repo/pull/1900',
-      };
-      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
-      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
-      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
-      freshQueries.getPrs = () => [pr];
-      freshQueries.invalidateDispatchCache();
-
-      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
-      const discovered = await engineModule.discoverFromPrs(config, project);
-
-      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable fix dispatch');
-      const after = freshShared.safeJson(freshShared.projectPrPath(project));
-      assert.strictEqual(after[0]._pendingReason, freshShared.PR_PENDING_REASON.MISSING_BRANCH,
-        'The blocked fix PR should carry a visible pending reason instead of silently gating');
-    } finally {
-      restore();
-      for (const mod of [
-        '../engine/shared',
-        '../engine/queries',
-        '../engine/cooldown',
-        '../engine/routing',
-        '../engine/playbook',
-        '../engine',
-      ]) {
-        try { delete require.cache[require.resolve(mod)]; } catch {}
-      }
-    }
-  });
-
-  await test('discoverFromPrs backfills recoverable PR branch metadata before fix dispatch (#1899)', async () => {
+  await test('discoverFromPrs marks changes-requested PRs missing branch instead of rendering gated fix playbook (#1899)', async () => {
     const restore = createTestMinionsDir();
     try {
       for (const mod of [
@@ -12170,37 +12399,29 @@ async function testDiscoverFromPrs() {
         agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
       };
       const pr = {
-        id: 'github:octo/repo#1901',
-        prNumber: 1901,
+        id: 'github:octo/repo#42',
+        prNumber: 42,
         status: 'active',
         reviewStatus: 'changes-requested',
         agent: 'dallas',
-        title: 'Branch can be recovered',
+        title: 'Needs branch metadata',
         branch: '',
-        sourceRefName: 'refs/heads/feat/recovered-branch',
-        _pendingReason: freshShared.PR_PENDING_REASON.MISSING_BRANCH,
-        prdItems: ['W-fix-1901'],
-        minionsReview: { note: 'Please address the review.' },
-        url: 'https://github.com/octo/repo/pull/1901',
+        prdItems: ['W-42'],
+        minionsReview: { note: 'Please fix the API boundary.' },
+        url: 'https://github.com/octo/repo/pull/42',
       };
       freshShared.safeWrite(path.join(testDir, 'config.json'), config);
       freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
       freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
-      freshQueries.getPrs = () => [pr];
       freshQueries.invalidateDispatchCache();
 
       const engineModule = require(path.join(MINIONS_DIR, 'engine'));
       const discovered = await engineModule.discoverFromPrs(config, project);
 
-      assert.strictEqual(discovered.length, 1, 'Recoverable branch metadata should dispatch instead of being treated as missing');
-      assert.strictEqual(discovered[0].type, 'fix');
-      assert.strictEqual(discovered[0].meta.branch, 'feat/recovered-branch');
-      assert.strictEqual(discovered[0].meta.pr.branch, 'feat/recovered-branch');
+      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable fix dispatch');
       const after = freshShared.safeJson(freshShared.projectPrPath(project));
-      assert.strictEqual(after[0].branch, 'feat/recovered-branch',
-        'Recovered branch should be persisted for future dispatch decisions');
-      assert.strictEqual(after[0]._pendingReason, undefined,
-        'Recovered branch should clear the previous missing-branch pending reason');
+      assert.strictEqual(after[0]._pendingReason, 'missing_pr_branch',
+        'The blocked PR should carry a dashboard-visible pending reason instead of only logging a playbook validation error');
     } finally {
       restore();
       for (const mod of [
@@ -12940,9 +13161,11 @@ async function testCheckTimeouts() {
       'Should support per-item deadline override for fan-out tasks');
   });
 
-  await test('checkTimeouts detects blocking tools', () => {
-    assert.ok(src.includes('TaskOutput') || src.includes('blocking'),
-      'Should detect blocking tool patterns to extend timeout');
+  await test('checkTimeouts does not need blocking-tool detection for live processes', () => {
+    assert.ok(src.includes('isTrackedProcessAlive'),
+      'Should determine liveness from tracked process state');
+    assert.ok(src.includes('legacyAnnotationClears'),
+      'Should clear legacy blocking-tool annotations rather than depend on tool parsing');
   });
 
   await test('checkTimeouts WI-reconcile uses skipWriteIfUnchanged to avoid file-watch tick storm', () => {
@@ -12981,7 +13204,7 @@ async function testCheckTimeouts() {
     // result alone races with the close handler. Use the [process-exit] sentinel as
     // the authoritative gate so we only detect completion AFTER spawn-agent's close
     // handler stamps the exit code.
-    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Blocking tool annotations'));
     assert.ok(detectionBlock.includes('[process-exit]'),
       'Output completion detection must gate on [process-exit] sentinel');
     // The OR-trigger on "type":"result" alone is the original bug — must be removed
@@ -12997,259 +13220,85 @@ async function testCheckTimeouts() {
     // Substring-matching `"subtype":"success"` was the false-positive vector: a resumed
     // claude CLI turn emits subtype:success even when the agent did no real work and the
     // OS later returned exit code 1, leading to the dispatch being marked SUCCESS.
-    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Resolve per-type heartbeat'));
+    const detectionBlock = src.slice(src.indexOf('completedViaOutput'), src.indexOf('// Blocking tool annotations'));
     assert.ok(/process-exit\][^]*?code=/.test(detectionBlock) || /code=([^]*?)\\d/.test(detectionBlock),
       'Detection block must parse `code=N` from the [process-exit] sentinel for the exit code');
     assert.ok(!/isSuccess\s*=\s*liveLog\.includes\(\s*'"subtype":"success"'\s*\)/.test(detectionBlock),
       'isSuccess must NOT be derived from a "subtype":"success" substring match in the live log — that produces false positives on resumed --resume turns (#1792)');
   });
 
-  await test('blocking detection: tool_use lookback covers long sessions, not just last 30 lines (#1792)', () => {
-    // Long Monitor / Bash sessions accumulate engine heartbeat lines (one every 30s).
-    // After 15+ minutes of silence the original tool_use line gets pushed past the
-    // 30-line lookback window — the detector then misses Monitor and the agent gets
-    // killed at heartbeatTimeout despite legitimately waiting on a background process.
-    // Lookback must be generous enough to span hours of pure heartbeat noise.
-    const blockingBlock = src.slice(src.indexOf('Find the last tool_use call'), src.indexOf('break; // only check the most recent tool_use'));
-    // Look for the lookback constant or a numeric literal substracted from lines.length
-    // that isn't `lines.length - 1` (the iteration start). Accept either an explicit
-    // named constant (e.g. `const TOOL_USE_LOOKBACK = 1000`) or a direct numeric
-    // subtraction `lines.length - 1000`.
-    const constMatch = blockingBlock.match(/(?:const\s+)?TOOL_USE_LOOKBACK\s*=\s*(\d+)/);
-    const inlineMatch = blockingBlock.match(/lines\.length\s*-\s*(\d{2,})/); // 2+ digits → skip the `- 1` iterator
-    const lookback = constMatch ? parseInt(constMatch[1], 10)
-      : inlineMatch ? parseInt(inlineMatch[1], 10)
-      : null;
-    assert.ok(lookback != null,
-      'Blocking detection must define a TOOL_USE_LOOKBACK constant or a numeric (>= 10) subtraction from lines.length');
-    assert.ok(lookback >= 500,
-      `Tool_use lookback must be >= 500 lines to handle long Monitor sessions with heartbeat noise (got ${lookback}). With heartbeats every 30s, 30-line lookback misses Monitor after ~15 min of silence.`);
+  await test('checkTimeouts allows silent tracked live processes', () => {
+    assert.ok(src.includes('if (processAlive)'),
+      'Should explicitly branch on tracked process liveness');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
+      'Should document that stdout/stderr silence is not a failure while process is alive');
+    assert.ok(src.includes('continue;'),
+      'Live tracked processes should continue instead of entering orphan cleanup');
   });
 
-  await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
-    assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
+  await test('checkTimeouts has no command-specific blocking-tool parser', () => {
+    assert.ok(!src.includes("name === 'Bash'"), 'Should not special-case Bash');
+    assert.ok(!src.includes("name === 'PowerShell'"), 'Should not special-case PowerShell');
+    assert.ok(!src.includes("name === 'Monitor'"), 'Should not special-case Monitor');
+    assert.ok(!src.includes('TOOL_USE_LOOKBACK'), 'Should not scan tool_use history for liveness');
+  });
+
+  await test('Stale-orphan timeouts merge ENGINE_DEFAULTS and config overrides', () => {
+    assert.ok(src.includes('perTypeStaleOrphanTimeouts'), 'Should use named stale-orphan timeout overrides');
     assert.ok(src.includes('ENGINE_DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
-  });
-
-  await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
-    // Verify per-type resolution happens inside the dispatch loop
-    assert.ok(src.includes('perTypeTimeouts[item.type]') || src.includes("perTypeTimeouts[item.type] || heartbeatTimeout"),
-      'Should resolve per-type timeout from item.type with heartbeatTimeout fallback');
-  });
-
-  await test('Per-type heartbeat timeouts: config.engine.heartbeatTimeouts overrides defaults', () => {
     assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
       'Should read heartbeatTimeouts from config.engine for user overrides');
-    // Verify merge order: ENGINE_DEFAULTS ← config
-    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
-      'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
   });
 
-  await test('Per-type heartbeat timeouts: blocking tool uses Math.max(itemHeartbeat, blockingTimeout)', () => {
-    // The blocking tool extension should respect per-type timeout as minimum floor
-    assert.ok(src.includes('Math.max(itemHeartbeat,'),
-      'Blocking tool timeout should use Math.max(itemHeartbeat, ...) so per-type floor is respected');
-  });
-
-  await test('Per-type heartbeat timeouts: timeout.js imports from shared.js', () => {
+  await test('timeout.js imports from shared.js', () => {
     assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
-  await test('Heartbeat feedback loop fix: uses realActivityMap for tracked processes (#724)', () => {
-    // The timeout check must use realActivityMap (in-memory, tracks real agent output only)
-    // instead of file mtime for tracked processes. File mtime is polluted by engine heartbeat writes.
-    assert.ok(src.includes('realActivityMap'), 'timeout.js should reference realActivityMap');
-    assert.ok(src.includes('realActivityMap?.has(item.id)') || src.includes("realActivityMap.has(item.id)"),
-      'Should check realActivityMap for dispatch item');
-    assert.ok(src.includes('realActivityMap.get(item.id)') || src.includes("realActivityMap?.get(item.id)"),
-      'Should read lastRealActivity from realActivityMap');
+  await test('Stale-orphan detection uses live-output mtime only after process tracking is lost', () => {
+    assert.ok(src.includes('live-output.log mtime is only used for stale-orphan cleanup'),
+      'Should document that file mtime is for orphan cleanup, not live-process silence');
+    assert.ok(src.includes('!processAlive && silentMs > staleOrphanTimeout'),
+      'Should require no live tracked process before stale-orphan cleanup');
   });
 
-  await test('Heartbeat feedback loop fix: falls back to file mtime only for orphans (#724)', () => {
-    // For orphan detection (no tracked process), file mtime is still valid because
-    // no heartbeat timer is running. The fix only uses realActivityMap when hasProcess is true.
-    assert.ok(src.includes('hasProcess && realActivityMap'),
-      'Should only use realActivityMap when process is tracked (hasProcess)');
-    assert.ok(src.includes('Orphan case') || src.includes('orphan'),
-      'Should document the orphan fallback path');
-  });
-
-  await test('Heartbeat feedback loop fix: engine.js tracks real output in realActivityMap (#724)', () => {
-    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('realActivityMap.set(id, Date.now())'),
-      'engine.js should update realActivityMap on real stdout/stderr');
-    assert.ok(engineSrc.includes('realActivityMap.delete(id)'),
-      'engine.js should clean up realActivityMap on agent close/error');
-    assert.ok(engineSrc.includes('realActivityMap,'),
-      'engine.js should export realActivityMap');
-  });
-
-  await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
-    // The Bash tool default timeout in Claude Code is 120s, not 600s.
-    // Grace = max(heartbeatTimeout, bashTimeout + 60000) = max(300000, 120000+60000) = 300000 (5min)
-    // This ensures hung agents are killed within ~5min, not ~11min.
-    assert.ok(src.includes("input.timeout || 120000"),
-      'Bash default timeout should be 120000ms (120s) to match Claude Code actual default');
-    // Verify the Bash-specific block uses 120000, not 600000
-    const bashBlock = src.slice(src.indexOf("if (name === 'Bash')"), src.indexOf("if (name === 'Bash')") + 300);
-    assert.ok(bashBlock.includes('120000') && !bashBlock.includes('600000'),
-      'Bash blocking block should use 120000ms, not 600000ms');
-  });
-
-  // ── #1786: Playbook guidance for long-running silent commands ──
-  // shared-rules.md is auto-injected into every playbook by playbook.js. The
-  // Long-Running Build / Test Commands section must teach agents the two opt-in
-  // patterns (run_in_background + Monitor; or explicit timeout). Without it,
-  // agents default to bare Bash calls and get killed at heartbeatTimeout.
-  await test('playbooks/shared-rules.md teaches run_in_background + Monitor pattern (#1786)', () => {
+  // ── Process-based liveness / stale-orphan policy ──
+  await test('playbooks/shared-rules.md allows normal quiet CLI commands', () => {
     const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
-    assert.ok(sharedRules.includes('Long-Running Build') || sharedRules.includes('long-running'),
-      'shared-rules.md should have a section on long-running commands');
-    assert.ok(sharedRules.includes('run_in_background') && sharedRules.includes('Monitor'),
-      'shared-rules.md should teach the run_in_background + Monitor pattern');
-    assert.ok(sharedRules.includes('timeout') && sharedRules.includes('600000'),
-      'shared-rules.md should mention explicit timeout opt-in (max 600000ms)');
-    assert.ok(sharedRules.includes('heartbeatTimeout') || sharedRules.includes('heartbeat'),
-      'shared-rules.md should explain heartbeat semantics so agents understand the constraint');
+    assert.ok(sharedRules.includes('Long-Running Commands'),
+      'shared-rules.md should have a concise section on long-running commands');
+    assert.ok(sharedRules.includes('normal CLI commands') && sharedRules.includes('quiet for long periods'),
+      'shared-rules.md should say quiet commands can run normally');
+    assert.ok(!sharedRules.includes('run_in_background') && !sharedRules.includes('Monitor({'),
+      'shared-rules.md should not prescribe runtime/tool-specific heartbeat workarounds');
   });
 
-  // ── #1794: prohibit grep-filtered Monitor for long builds ──
-  // Agents reach for `Monitor({ command: "tail -F <file> | grep ..." })` to suppress
-  // noisy build output, but Gradle's startup phase doesn't match the filter terms,
-  // Monitor emits zero events, and the heartbeat fires at 300s. The playbook must
-  // explicitly prohibit this form so agents override the instinct to filter noise.
-  // Pattern C (ScheduleWakeup) is intentionally NOT added — re-initializes the full
-  // Claude session per wakeup, has a 270s polling gap, and is for idle waits, not
-  // active monitoring.
-  await test('playbooks/shared-rules.md prohibits grep-filtered Monitor for long builds (#1794)', () => {
-    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
-
-    // 1. Pattern A must carry a hard prohibition against grep-filtered Monitor —
-    //    not a soft note. The string `tail | grep` should appear with `Never` /
-    //    `Do NOT` framing so the warning is unmissable.
-    assert.ok(sharedRules.includes('tail | grep') || sharedRules.includes('tail -F'),
-      'shared-rules.md should call out the tail|grep Monitor anti-pattern by name');
-    assert.ok(/Never use `Monitor\({ command:|Do NOT use `?Monitor\({ command:/.test(sharedRules),
-      'shared-rules.md should hard-prohibit Monitor({ command: ... }) — soft notes get ignored');
-    assert.ok(sharedRules.includes('startup') || sharedRules.includes('dependency'),
-      'shared-rules.md should explain WHY: Gradle startup/dependency phase produces output that does not match typical filter terms');
-
-    // 2. The "What NOT to do" section must list the grep-filtered Monitor bullet
-    //    so agents see it next to the other anti-patterns (`tee`, `sleep` loops).
-    const notToDoIdx = sharedRules.indexOf('What NOT to do');
-    assert.ok(notToDoIdx !== -1, 'shared-rules.md should have a What NOT to do section');
-    const notToDoBlock = sharedRules.slice(notToDoIdx);
-    assert.ok(notToDoBlock.includes('Monitor({ command:') && notToDoBlock.includes('bash_id'),
-      '"What NOT to do" should call out Monitor({ command: ... }) and direct agents to Monitor({ bash_id }) instead');
-
-    // 3. Pattern C must NOT be added. ScheduleWakeup is for idle waits, not active
-    //    monitoring — re-initializes session per wake, 270s polling gap.
-    assert.ok(!/###\s+Pattern C\b/.test(sharedRules),
-      'shared-rules.md must NOT add Pattern C — ScheduleWakeup is wrong tool for active build monitoring');
-    assert.ok(!sharedRules.includes('ScheduleWakeup'),
-      'shared-rules.md must NOT recommend ScheduleWakeup for build monitoring');
-  });
-
-  // ── #1786: PowerShell tool blocking detection (Windows shell parity with Bash) ──
-  // The PowerShell tool is the Windows-native equivalent of Bash. It has the same
-  // explicit-timeout semantics (input.timeout, max 600000ms). The blocking-tool
-  // detector must recognize it so cold builds (gradlew.bat, MSBuild, dotnet test)
-  // don't get killed at heartbeatTimeout while a long-running explicit-timeout
-  // PowerShell call is still legitimately running.
-  await test('blocking detection: PowerShell tool with explicit timeout extends heartbeat (#1786)', () => {
-    assert.ok(src.includes("name === 'PowerShell'"),
-      'timeout.js should detect PowerShell tool_use to extend heartbeat');
-    // PowerShell block must read input.timeout (same shape as Bash) — agent opts in
-    // to extension by setting an explicit timeout on the tool call.
-    const psIdx = src.indexOf("name === 'PowerShell'");
-    const psBlock = src.slice(psIdx, psIdx + 400);
-    assert.ok(psBlock.includes('input.timeout'),
-      'PowerShell block should read explicit timeout from input.timeout');
-    assert.ok(psBlock.includes('blockingTimeout') && psBlock.includes('Math.max'),
-      'PowerShell block should compute blockingTimeout via Math.max(itemHeartbeat, ...)');
-    assert.ok(psBlock.includes("blockingTool = 'PowerShell'"),
-      'PowerShell block should annotate blockingTool for dashboard surfacing');
-  });
-
-  // ── #1786: Monitor tool blocking detection ──
-  // Monitor blocks waiting for stdout-line notifications from a background process.
-  // Between notifications it produces no output, so without explicit detection the
-  // heartbeat monitor would kill the agent. Monitor calls do not have a fixed
-  // timeout — extend to 30 min (parity with Agent subagent calls).
-  await test('blocking detection: Monitor tool extends heartbeat (#1786)', () => {
-    assert.ok(src.includes("name === 'Monitor'"),
-      'timeout.js should detect Monitor tool_use as a blocking call');
-    const monIdx = src.indexOf("name === 'Monitor'");
-    const monBlock = src.slice(monIdx, monIdx + 400);
-    assert.ok(monBlock.includes("blockingTool = 'Monitor'"),
-      'Monitor block should annotate blockingTool for dashboard surfacing');
-    assert.ok(monBlock.includes('blockingTimeout'),
-      'Monitor block should set blockingTimeout');
-  });
-
-  // ── #1786: explicit timeout above heartbeat actually extends ──
-  // The contract per the issue: "if an agent invokes a shell tool with an explicit
-  // timeout > heartbeatTimeout, temporarily raise the heartbeat threshold for that
-  // turn." Verify the formula does the right thing: blockingTimeout must equal
-  // input.timeout + 60s grace whenever that exceeds the heartbeat baseline.
-  await test('blocking detection: explicit timeout > heartbeatTimeout raises threshold (#1786)', () => {
-    // The formula `Math.max(itemHeartbeat, bashTimeout + 60000)` ensures any
-    // explicit timeout higher than heartbeat - 60s wins. The "+ 60000" grace
-    // covers tool teardown/cleanup time after the underlying command completes.
-    assert.ok(src.includes('+ 60000'),
-      'Blocking timeout should add 60s grace on top of explicit tool timeout');
-    // Same formula must appear in both Bash and PowerShell blocks.
-    const bashIdx = src.indexOf("if (name === 'Bash')");
-    const psIdx = src.indexOf("if (name === 'PowerShell')");
-    assert.ok(bashIdx > 0 && psIdx > 0, 'Both Bash and PowerShell branches must exist');
-    const bashBlock = src.slice(bashIdx, bashIdx + 400);
-    const psBlock = src.slice(psIdx, psIdx + 400);
-    assert.ok(bashBlock.includes('+ 60000') && psBlock.includes('+ 60000'),
-      'Both Bash and PowerShell branches should add the 60s grace');
-  });
-
-  // ── Per-type heartbeat timeout tests ──
-
-  await test('ENGINE_DEFAULTS.heartbeatTimeouts has explore, ask, review entries', () => {
+  await test('ENGINE_DEFAULTS.heartbeatTimeouts is empty by default', () => {
     const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
-    assert.ok(hbt, 'heartbeatTimeouts map should exist');
-    assert.strictEqual(hbt[shared.WORK_TYPE.EXPLORE], 600000, 'EXPLORE should be 600000ms (10min)');
-    assert.strictEqual(hbt[shared.WORK_TYPE.ASK], 600000, 'ASK should be 600000ms (10min)');
-    assert.strictEqual(hbt[shared.WORK_TYPE.REVIEW], 480000, 'REVIEW should be 480000ms (8min)');
+    assert.ok(hbt && typeof hbt === 'object', 'heartbeatTimeouts map should exist for user overrides');
+    assert.deepStrictEqual(Object.keys(hbt), [], 'No work type should get a built-in silence/orphan special case');
   });
 
-  await test('heartbeatTimeouts keys use WORK_TYPE constants, not raw strings', () => {
-    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
-    // Verify the keys are the actual WORK_TYPE values (not something else)
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.EXPLORE), 'Should use WORK_TYPE.EXPLORE as key');
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.ASK), 'Should use WORK_TYPE.ASK as key');
-    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.REVIEW), 'Should use WORK_TYPE.REVIEW as key');
-  });
-
-  await test('checkTimeouts resolves per-type heartbeat from dispatch item workType', () => {
+  await test('checkTimeouts resolves optional per-type stale-orphan timeout from dispatch workType', () => {
     assert.ok(src.includes('item.workType') || src.includes('item.meta?.item?.type'),
       'Should read work type from dispatch item');
-    assert.ok(src.includes('perTypeTimeouts'),
-      'Should look up per-type timeout from merged map');
-    assert.ok(src.includes('defaultHeartbeatTimeout'),
-      'Should fall back to default heartbeat timeout when work type has no override');
+    assert.ok(src.includes('perTypeStaleOrphanTimeouts'),
+      'Should look up optional stale-orphan timeout from merged map');
+    assert.ok(src.includes('defaultStaleOrphanTimeout'),
+      'Should fall back to default stale-orphan timeout when work type has no override');
   });
 
-  await test('checkTimeouts merges config.engine.heartbeatTimeouts with defaults', () => {
+  await test('checkTimeouts merges config.engine.heartbeatTimeouts as stale-orphan overrides', () => {
     assert.ok(src.includes('config.engine?.heartbeatTimeouts'),
       'Should read heartbeatTimeouts from config for user overrides');
     assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should spread default heartbeatTimeouts as base');
   });
 
-  await test('per-type heartbeat is base for blocking tool extension', () => {
-    // The per-type heartbeatTimeout is declared inside the per-item loop,
-    // so blocking tool detection (which uses heartbeatTimeout) naturally uses the per-type value.
-    // Verify heartbeatTimeout is scoped inside the item loop, not outside it.
+  await test('stale-orphan timeout is scoped inside the dispatch item loop', () => {
     const loopStart = src.indexOf('for (const item of (dispatchData.active');
-    const perTypeDecl = src.indexOf('const heartbeatTimeout = (workType && perTypeTimeouts');
+    const perTypeDecl = src.indexOf('const staleOrphanTimeout = (workType && perTypeStaleOrphanTimeouts');
     assert.ok(loopStart > 0 && perTypeDecl > loopStart,
-      'heartbeatTimeout should be declared inside the per-item loop (per-type scoping)');
+      'staleOrphanTimeout should be declared inside the per-item loop');
   });
 
   await test('implement/fix types fall back to default heartbeatTimeout (no override)', () => {
@@ -13272,14 +13321,14 @@ async function testCheckTimeouts() {
       'timeout.js must not rename ENGINE_DEFAULTS in destructuring — use it directly like every other engine file');
   });
 
-  await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
-    // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
+  await test('checkTimeouts perTypeStaleOrphanTimeouts construction does not throw (#721 regression)', () => {
+    // Behavioral: construct perTypeStaleOrphanTimeouts exactly as checkTimeouts does, proving no ReferenceError
     const { ENGINE_DEFAULTS } = require('../engine/shared');
     const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
     // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
-    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
-    assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
-    assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
+    const perTypeStaleOrphanTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    assert.ok(perTypeStaleOrphanTimeouts !== null, 'perTypeStaleOrphanTimeouts should be constructable without ReferenceError');
+    assert.strictEqual(perTypeStaleOrphanTimeouts.review, 600000, 'config overrides should merge correctly');
   });
 
   await test('checkTimeouts reads engineRestartGraceExempt from engine (#869)', () => {
@@ -13528,54 +13577,53 @@ async function testSyncPrsFromOutput() {
       'Should detect PR creation keywords in agent output');
   });
 
-  await test('syncPrsFromOutput adds PR links', () => {
-    assert.ok(src.includes('addPrLink'),
-      'Should record PR-to-work-item links via addPrLink');
+  await test('syncPrsFromOutput uses canonical PR upsert/link helper', () => {
+    assert.ok(src.includes('upsertPullRequestRecord'),
+      'Should record PR-to-work-item links through the canonical PR attachment helper');
   });
 
-  await test('syncPrsFromOutput orphaned PR fallback stores prdItems inline without addPrLink', () => {
+  await test('PR branch fallback uses canonical PR upsert/link helper', () => {
     const fallbackIdx = src.indexOf('Auto-linked existing PR ${fullId} on branch ${meta.branch}');
-    assert.ok(fallbackIdx > -1, 'Should have orphaned PR auto-link fallback logging');
-    const fallbackStart = src.lastIndexOf('if (found) {', fallbackIdx);
-    const fallbackBlock = src.slice(fallbackStart, fallbackIdx);
-    assert.ok(fallbackBlock.includes('const existingPr = prs.find'),
-      'Fallback should detect an already-tracked PR before creating a new entry');
-    assert.ok(fallbackBlock.includes('existingPr.prdItems'),
-      'Fallback should update prdItems on an existing tracked PR when the item link is missing');
-    assert.ok(fallbackBlock.includes('prdItems: meta.item?.id ? [meta.item.id] : []'),
-      'Fallback PR creation should persist prdItems directly on the PR record');
-    assert.ok(!fallbackBlock.includes('addPrLink('),
-      'Fallback PR creation should not redundantly call addPrLink after writing prdItems');
+    assert.strictEqual(fallbackIdx, -1, 'Old inline branch fallback logging should be removed');
+    const helperIdx = src.indexOf('async function enforcePrAttachmentContract');
+    assert.ok(helperIdx > -1, 'Should enforce the PR attachment contract before marking done');
+    const fallbackStart = src.indexOf('if (found) {', helperIdx);
+    const fallbackEnd = src.indexOf('const reason = `PR-producing work item', fallbackStart);
+    const helperBlock = src.slice(fallbackStart, fallbackEnd);
+    assert.ok(helperBlock.includes('shared.upsertPullRequestRecord'),
+      'Fallback should create/update the tracked PR and prdItems through the canonical helper');
+    assert.ok(!helperBlock.includes('mutateJsonFileLocked(prPath'),
+      'Fallback should not hand-roll PR record creation outside the canonical helper');
   });
 
-  await test('syncPrsFromOutput persists pr-links outside the pull-requests lock callback', () => {
-    const syncIdx = src.indexOf('const linksToPersist = [];');
-    assert.ok(syncIdx > -1, 'Should queue PR links for persistence after the PR file mutation');
-    const lockIdx = src.indexOf('mutateJsonFileLocked(prPath,', syncIdx);
-    const lockReturnIdx = src.indexOf('return prs;', lockIdx);
-    const addIdx = src.indexOf('addPrLink(prId, itemId, { project, prNumber, url });', syncIdx);
-    assert.ok(addIdx > lockReturnIdx,
-      'Should write pr-links only after releasing the pull-requests.json lock');
+  await test('syncPrsFromOutput does not hand-roll pr-links while holding pull-requests lock', () => {
+    const syncIdx = src.indexOf('function syncPrsFromOutput');
+    const syncEnd = src.indexOf('// ─── Post-Completion Hooks', syncIdx);
+    const syncBlock = src.slice(syncIdx, syncEnd);
+    assert.ok(syncBlock.includes('shared.upsertPullRequestRecord'),
+      'sync should delegate PR record + link persistence to the shared helper');
+    assert.ok(!syncBlock.includes('addPrLink('),
+      'sync should not separately mutate pr-links outside the canonical helper');
   });
 
-  await test('syncPrsFromOutput only uses ADO branch lookup for ADO hosts', () => {
+  await test('PR branch lookup only uses ADO lookup for ADO hosts', () => {
     assert.ok(src.includes("const host = projectObj.repoHost || 'ado'"),
       'Should normalize repoHost before branch lookup fallback');
-    assert.ok(src.includes("else if (host === 'ado')"),
+    assert.ok(src.includes("if (host === 'ado')"),
       'Should only call ADO branch lookup for explicit/defaulted ADO hosts');
     assert.ok(src.includes('unsupported repo host'),
       'Should log when branch lookup is skipped for an unsupported repo host');
   });
 
   await test('syncPrsFromOutput retries GitHub branch lookup when PR list is initially empty', () => {
-    assert.ok(src.includes('for (let attempt = 0; attempt < 3 && !found; attempt++)'),
+    assert.ok(src.includes('for (let attempt = 0; attempt < 3; attempt++)'),
       'Should retry GitHub branch lookup up to 3 times for freshly created PRs');
     assert.ok(src.includes("if (attempt > 0) await new Promise(r => setTimeout(r, 3000));"),
       'Should wait briefly between retry attempts so GitHub indexing can catch up');
   });
 
   await test('syncPrsFromOutput warns when GitHub branch lookup stays empty after retries', () => {
-    assert.ok(src.includes('else if (attempt === 2)'),
+    assert.ok(src.includes('if (attempt === 2)'),
       'Should only warn after the final empty GitHub branch lookup attempt');
     assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts'),
       'Should log a warning when GitHub branch lookup stays empty after all retries');
@@ -13584,9 +13632,9 @@ async function testSyncPrsFromOutput() {
   });
 
   await test('syncPrsFromOutput keeps retry loop alive when gh output is invalid JSON', () => {
-    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3 && !found; attempt++)');
+    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3; attempt++)');
     assert.ok(retryIdx > -1, 'Should have a GitHub branch lookup retry loop');
-    const retryBlock = src.slice(retryIdx, src.indexOf("} else if (host === 'ado')", retryIdx));
+    const retryBlock = src.slice(retryIdx, src.indexOf("if (host === 'ado')", retryIdx));
     assert.ok(retryBlock.includes("let raw = '';"),
       'Retry loop should preserve raw gh output for final-attempt diagnostics');
     assert.ok(retryBlock.includes('try {'),
@@ -13607,7 +13655,7 @@ async function testSyncPrsFromOutput() {
   await test('PR dedup uses strict equality, not substring includes', () => {
     assert.ok(!src.includes("String(p.id).includes(prId)"),
       'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
-    assert.ok(src.includes('p.id === fullId'),
+    assert.ok(src.includes('p.id !== normalizedEntry.id') || fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8').includes('pr?.id === canonicalId'),
       'Should use exact canonical PR ID equality for dedup');
   });
 }
@@ -17292,10 +17340,10 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  await test('checkTimeouts: hung TRACKED process past heartbeat — killGracefully + TIMED_OUT', () => {
+  await test('checkTimeouts: tracked live process past heartbeat is not killed for silence', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'hung-1';
+      const itemId = 'silent-live-1';
       writeDispatch(env.testDir, {
         active: [{
           id: itemId,
@@ -17313,15 +17361,14 @@ async function testTimeoutBehavioral() {
       });
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
-        'Hung detection should drop the process from activeProcesses');
-      assert.strictEqual(env.counters.killGracefully, 1,
-        'Hung detection should killGracefully the stuck process');
+      assert.ok(env.fakeEngine.activeProcesses.has(itemId),
+        'Silent live process should remain tracked');
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Silent live process should not be killed by heartbeatTimeout');
       const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 0, 'Hung item should leave the active list');
+      assert.strictEqual(dp.active.length, 1, 'Silent live item should remain active');
       const completed = dp.completed.find(d => d.id === itemId);
-      assert.ok(completed && completed.result === 'error',
-        'Hung item should be marked ERROR in completed');
+      assert.ok(!completed, 'Silent live item should not be marked completed/error');
     } finally { env.restore(); }
   });
 
@@ -17520,16 +17567,11 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  // ── #1786: Per-tool blocking detection — Bash explicit timeout > heartbeatTimeout ──
-  // Reproduces the issue: agent calls Bash with explicit `timeout: 900000` (15 min)
-  // for a cold Gradle build. silentMs grows past heartbeatTimeout (300s) but the
-  // agent must NOT be killed because the explicit timeout is much higher. The
-  // detector reads the live-output.log, finds the Bash tool_use, and extends
-  // effectiveTimeout to bashTimeout + 60s grace.
-  await test('checkTimeouts: Bash with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
+  // ── Process-based liveness: quiet tracked processes are healthy ──
+  await test('checkTimeouts: live tracked process past heartbeat remains active without tool parsing', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'bash-long';
+      const itemId = 'quiet-live';
       const startedAt = new Date(Date.now() - 600000).toISOString(); // 10 min ago
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
@@ -17538,141 +17580,74 @@ async function testTimeoutBehavioral() {
       env.fakeEngine.activeProcesses.set(itemId, {
         agentId: 'bot', proc: {}, startedAt, meta: {},
       });
-      // realActivityMap must reflect the silence — last real output 10min ago.
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
-
-      // Agent is mid-Bash call with explicit 15 min timeout — the cold gradle
-      // scenario from the issue. No result event yet (still running).
-      const agentDir = path.join(env.testDir, 'agents', 'bot');
-      fs.mkdirSync(agentDir, { recursive: true });
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        toolUseLine + '\n[heartbeat] running — no output for 30s\n[heartbeat] running — no output for 60s\n');
-
-      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
-
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Bash with explicit 15min timeout must not be killed at heartbeatTimeout — extension should win');
-      const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1,
-        'Item must remain active while explicit-timeout extension is in effect');
-    } finally { env.restore(); }
-  });
-
-  await test('checkTimeouts: PowerShell with explicit timeout > heartbeat does NOT kill agent (#1786)', () => {
-    const env = setupIsolated();
-    try {
-      const itemId = 'ps-long';
-      const startedAt = new Date(Date.now() - 600000).toISOString();
-      writeDispatch(env.testDir, {
-        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
-      });
-      env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
       const toolUseLine = JSON.stringify({
         type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'PowerShell', input: { command: 'gradlew.bat test', timeout: 900000 } }] },
+        message: { content: [{ type: 'tool_use', name: 'SomeTool', input: { command: 'long quiet command' } }] },
       });
       fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
       assert.strictEqual(env.counters.killGracefully, 0,
-        'PowerShell with explicit 15min timeout must not be killed at heartbeatTimeout');
+        'Live tracked process must not be killed because stdout/stderr were quiet');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Item must remain active while the tracked process is alive');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: clears legacy blocking-tool annotations without using them for liveness', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'legacy-blocking';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: startedAt,
+          workType: 'implement',
+          _blockingToolCall: { tool: 'Bash', silentMs: 600000 },
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId: 'bot', proc: {}, startedAt, meta: {},
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
       const dp = readDispatch(env.testDir);
       assert.strictEqual(dp.active.length, 1, 'Item must remain active');
+      assert.strictEqual(dp.active[0]._blockingToolCall, undefined,
+        'Legacy blocking tool annotation should be cleared');
     } finally { env.restore(); }
   });
 
-  await test('checkTimeouts: Monitor tool extends heartbeat (waiting for background events) (#1786)', () => {
+  await test('checkTimeouts: stale orphan without tracked process is completed as error', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'mon-blocking';
+      const itemId = 'stale-orphan';
       const startedAt = new Date(Date.now() - 600000).toISOString();
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
       });
       env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
-      // Monitor blocks waiting for stdout-line notifications from a background process.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), 'started\n');
+      const oldTime = new Date(Date.now() - 600000);
+      fs.utimesSync(path.join(agentDir, 'live-output.log'), oldTime, oldTime);
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Monitor tool must extend heartbeat — agent is legitimately waiting on a background process');
       const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1, 'Item must remain active during Monitor wait');
-    } finally { env.restore(); }
-  });
-
-  // ── #1792: Long Monitor sessions with heartbeat noise — tool_use lookback gap ──
-  // After 15+ minutes of silence the engine heartbeat (every 30s) accumulates 30+
-  // log lines AFTER the Monitor tool_use. The original 30-line lookback window
-  // misses the tool_use entirely, the detector treats it as a non-blocking silence,
-  // and the agent gets killed at heartbeatTimeout — exactly the scenario the user
-  // hit on a cold Gradle build. Lookback must scan deep enough to find Monitor.
-  await test('checkTimeouts: Monitor tool_use buried under heartbeat lines still extends heartbeat (#1792)', () => {
-    const env = setupIsolated();
-    try {
-      const itemId = 'mon-deep';
-      // Silent for 15 min — well past the 5-min heartbeatTimeout default but well
-      // under Monitor's 30-min effective extended timeout. If the lookback finds
-      // Monitor, the agent stays alive; if it misses Monitor, the agent gets killed.
-      const silentMs = 900000; // 15 min
-      const startedAt = new Date(Date.now() - silentMs).toISOString();
-      writeDispatch(env.testDir, {
-        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
-      });
-      env.freshQueries.invalidateDispatchCache();
-      env.fakeEngine.activeProcesses.set(itemId, {
-        agentId: 'bot', proc: {}, startedAt, meta: {},
-      });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - silentMs);
-
-      const agentDir = path.join(env.testDir, 'agents', 'bot');
-      fs.mkdirSync(agentDir, { recursive: true });
-      // Monitor was called 15 min ago. Since then, 30 heartbeat lines have been
-      // appended (one every 30s). The Monitor tool_use is now line 0; everything
-      // after is heartbeat noise. With a 30-line lookback, Monitor is at or beyond
-      // the boundary — exactly the edge case from the user's Gradle build report.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Monitor', input: { bash_id: 'bg-1' } }] },
-      });
-      const heartbeats = [];
-      for (let i = 1; i <= 30; i++) {
-        heartbeats.push(`[heartbeat] running — no output for ${i * 30}s`);
-      }
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'),
-        toolUseLine + '\n' + heartbeats.join('\n') + '\n');
-
-      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
-
-      assert.strictEqual(env.counters.killGracefully, 0,
-        'Monitor tool_use buried under heartbeat lines must still extend heartbeat — the lookback must be deep enough to find it');
-      const dp = readDispatch(env.testDir);
-      assert.strictEqual(dp.active.length, 1,
-        'Item must remain active during long Monitor wait, not get killed because tool_use was outside the lookback window');
+      assert.strictEqual(dp.active.length, 0, 'Stale orphan should leave active queue');
+      assert.strictEqual(dp.completed[0]?.result, 'error', 'Stale orphan should complete as error');
     } finally { env.restore(); }
   });
 
@@ -17785,14 +17760,10 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  // Negative case: Bash without explicit timeout (default 120s) should NOT extend
-  // — the agent had its chance to opt in and didn't. Verifies the contract that
-  // extension is opt-in, not automatic. Without this guard, agents that hang
-  // forever (e.g. interactive prompt) would never get killed.
-  await test('checkTimeouts: Bash with no explicit timeout uses default 120s — no extension beyond heartbeat (#1786)', () => {
+  await test('checkTimeouts: arbitrary live command stays active until hard timeout', () => {
     const env = setupIsolated();
     try {
-      const itemId = 'bash-default';
+      const itemId = 'quiet-command';
       const startedAt = new Date(Date.now() - 600000).toISOString();
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
@@ -17801,21 +17772,17 @@ async function testTimeoutBehavioral() {
       env.fakeEngine.activeProcesses.set(itemId, {
         agentId: 'bot', proc: {}, startedAt, meta: {},
       });
-      env.fakeEngine.realActivityMap.set(itemId, Date.now() - 600000);
 
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
-      // No explicit timeout in input — Bash defaults to 120s, blockingTimeout = max(300s, 180s) = 300s.
-      const toolUseLine = JSON.stringify({
-        type: 'assistant',
-        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'gradlew test' } }] },
-      });
-      fs.writeFileSync(path.join(agentDir, 'live-output.log'), toolUseLine + '\n');
+      fs.writeFileSync(path.join(agentDir, 'live-output.log'), 'command started\n');
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
 
-      assert.strictEqual(env.counters.killGracefully, 1,
-        'Bash without explicit timeout must NOT extend past heartbeatTimeout — kept opt-in semantics');
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Quiet live command must not be killed by heartbeatTimeout');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Tracked live process remains active');
     } finally { env.restore(); }
   });
 }
@@ -17885,6 +17852,16 @@ async function testRecentFeatures() {
         || /pr\.title\s*=\s*prData\.title/.test(linkHandler),
       'link handler must still assign pr.title from prData.title when remote returns a title'
     );
+  });
+
+  await test('PR link normalizes _context to a string before writing pull-requests.json (#1899)', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+      'link handler should route through the helper that normalizes context before persisting the PR');
+    assert.ok(dashSrc.includes('contextText') && dashSrc.includes('_context: contextText'),
+      'pull-requests.json should receive the normalized contextText, not the raw request body value');
   });
 
   // Plan creation from dashboard
@@ -21169,6 +21146,7 @@ async function main() {
     await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
+    await testPrAttachmentContract();
     await testSafeWriteBackupRestore();
 
     // queries.js tests
@@ -21519,6 +21497,9 @@ async function main() {
 
     // W-moczcvjl338u: engine.js pure helper coverage
     await testEngineHelperCoverage();
+
+    // W-molldo69p5rd: auto-link agent-created PRs to work items
+    await testAutoLinkAgentPrs();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -22145,11 +22126,11 @@ async function testSyncPrsFromOutputCentral() {
 }
 
 async function testNoRetryPrCompletion() {
-  await test('lifecycle handles implement tasks without PR — retry or mark done', () => {
+  await test('lifecycle handles implement tasks without PR as contract failure', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('no output, no PR') || src.includes('no PR created'), 'should auto-retry when no output and no PR');
-    assert.ok(src.includes('_noPr') || src.includes('noPr'), 'should flag items that completed without PR');
-    assert.ok(src.includes('hasOutput'), 'should distinguish meaningful output from MCP stall');
+    assert.ok(src.includes('enforcePrAttachmentContract'), 'should enforce PR attachment before marking done');
+    assert.ok(src.includes('WI_STATUS.NEEDS_REVIEW'), 'missing PR should surface as needs-human-review');
+    assert.ok(src.includes('_missingPrAttachment'), 'should flag missing canonical PR attachments');
   });
 }
 
@@ -23663,12 +23644,12 @@ async function testDashboardBugFixes() {
       'Should have startLivePolling to restart polling');
   });
 
-  await test('engine.js writes heartbeat to live-output.log during agent run', () => {
+  await test('engine.js does not write heartbeat to live-output.log during agent run', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('[heartbeat]') && engineSrc.includes('appendFileSync') && engineSrc.includes('liveOutputPath'),
-      'Should periodically append heartbeat lines to live-output.log');
-    assert.ok(engineSrc.includes('setInterval') && engineSrc.includes('30000'),
-      'Heartbeat should fire every 30 seconds');
+    assert.ok(!engineSrc.includes('[heartbeat] running'),
+      'Should not append heartbeat lines to live-output.log');
+    assert.ok(!engineSrc.includes('heartbeatTimer'),
+      'Should not create a live-output heartbeat timer');
   });
 
   await test('engine.js writes header to live-output.log at spawn', () => {
@@ -24089,17 +24070,17 @@ async function testPrWriteRaceConditions() {
   const shared = require('../engine/shared');
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
 
-  await test('syncPrsFromOutput uses mutateJsonFileLocked instead of safeWrite for PR files', () => {
+  await test('syncPrsFromOutput delegates PR file writes to canonical locked helper', () => {
     // The old pattern: safeWrite(entry.prPath, entry.prs) should be gone
-    // The new pattern: mutateJsonFileLocked(prPath, ...) should be present
+    // The new pattern: shared.upsertPullRequestRecord owns the locked PR write.
     const fnBody = lifecycleSrc.slice(
       lifecycleSrc.indexOf('function syncPrsFromOutput'),
       lifecycleSrc.indexOf('function updatePrAfterReview')
     );
     assert.ok(!fnBody.includes('shared.safeWrite(entry.prPath'),
       'syncPrsFromOutput should NOT use safeWrite for PR files');
-    assert.ok(fnBody.includes('mutateJsonFileLocked(prPath'),
-      'syncPrsFromOutput should use mutateJsonFileLocked for atomic PR writes');
+    assert.ok(fnBody.includes('shared.upsertPullRequestRecord'),
+      'syncPrsFromOutput should use the canonical helper for atomic PR writes');
   });
 
   await test('syncPrsFromOutput reads PR data inside lock callback, not before', () => {
@@ -26870,8 +26851,8 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('autoRecovered restricted to PR-creating work types', () => {
-    assert.ok(lifecycleSrc.includes('WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX'),
-      'prCreatingType must check IMPLEMENT, IMPLEMENT_LARGE, and FIX');
+    assert.ok(lifecycleSrc.includes('WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX || type === WORK_TYPE.TEST'),
+      'prCreatingType must check IMPLEMENT, IMPLEMENT_LARGE, FIX, and TEST');
     assert.ok(lifecycleSrc.includes('prCreatingType && !!meta?.item?.id'),
       'autoRecovered must require prCreatingType');
   });
@@ -26881,12 +26862,12 @@ async function testAutoRecoveryAndAtomicity() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion }'),
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion'),
       'runPostCompletionHooks must return autoRecovered and structuredCompletion in its result');
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
-    assert.ok(engineSrc.includes('const { resultSummary, autoRecovered } = await runPostCompletionHooks'),
+    assert.ok(engineSrc.includes('autoRecovered') && engineSrc.includes('await runPostCompletionHooks'),
       'engine.js must destructure autoRecovered from runPostCompletionHooks');
     assert.ok(engineSrc.includes('code === 0 || autoRecovered'),
       'engine.js must use autoRecovered to determine effectiveResult for completeDispatch');
@@ -26954,15 +26935,15 @@ async function testAutoRecoveryAndAtomicity() {
       'completeDispatch must have retry count guard');
   });
 
-  await test('no-PR detection uses resolveWorkItemPath and mutateJsonFileLocked', () => {
+  await test('PR attachment contract uses resolveWorkItemPath and mutateJsonFileLocked', () => {
     const hookBody = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Detect implement tasks that completed without creating a PR'),
-      lifecycleSrc.indexOf('if (type === WORK_TYPE.REVIEW)')
+      lifecycleSrc.indexOf('function markMissingPrAttachment'),
+      lifecycleSrc.indexOf('async function enforcePrAttachmentContract')
     );
     assert.ok(hookBody.includes('resolveWorkItemPath(meta)'),
-      'No-PR detection must use resolveWorkItemPath');
+      'PR attachment contract must use resolveWorkItemPath');
     assert.ok(hookBody.includes('mutateJsonFileLocked(noPrWiPath'),
-      'No-PR detection must use mutateJsonFileLocked');
+      'PR attachment contract must use mutateJsonFileLocked');
   });
 
   await test('syncPrdFromPrs uses module-scope imports, not lazy require', () => {
@@ -27031,7 +27012,7 @@ async function testAutoRecoveryAndAtomicity() {
         meta: { item: { id: 'W-100', title: 'Test' }, project: mockProject, source: 'work-item' }
       };
 
-      // code=1 simulates heartbeat timeout kill
+      // code=1 simulates a failed agent process
       const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, true,
         'autoRecovered should be true when failed implement agent created PR');
@@ -30695,9 +30676,9 @@ async function testAgentStatusEnum() {
   await test('timeout.js emits TIMED_OUT status', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes('AGENT_STATUS.TIMED_OUT'), 'timeout.js should emit TIMED_OUT status');
-    // Verify it's called for both hard timeout and heartbeat timeout
+    // Verify it's called for hard runtime timeout and stale-orphan cleanup
     const timedOutCount = (src.match(/AGENT_STATUS\.TIMED_OUT/g) || []).length;
-    assert.ok(timedOutCount >= 3, `TIMED_OUT should be emitted for hard timeout, orphan, and hung agent (found ${timedOutCount} occurrences)`);
+    assert.ok(timedOutCount >= 2, `TIMED_OUT should be emitted for hard timeout and stale-orphan cleanup (found ${timedOutCount} occurrences)`);
   });
 
   await test('trust gate detection checks first 30s of output', () => {
@@ -31246,7 +31227,7 @@ async function testStructuredCompletion() {
 
   await test('runPostCompletionHooks returns structuredCompletion in result', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('structuredCompletion }'),
+    assert.ok(src.includes('structuredCompletion'),
       'Return object should include structuredCompletion');
   });
 
@@ -31534,11 +31515,11 @@ async function testCCMultiTab() {
       'Should explicitly clear stale retry metadata from completed items');
   });
 
-  await test('timeout.js kills Unix process tree on hung agent timeout', () => {
-    // The hung agent branch should include pkill -P for Unix tree kill
-    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
-    assert.ok(hungMatch, 'Should have hung agent detection block');
-    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+  await test('timeout.js does not use output silence as a Unix process-tree kill trigger', () => {
+    assert.ok(!timeoutSrc.includes('Hung agent'),
+      'timeout.js should not have a hung-agent output-silence branch');
+    assert.ok(timeoutSrc.includes('Orphan detected'),
+      'timeout.js should keep stale-orphan cleanup');
   });
 
   await test('cleanup.js logs resource cleanup summary', () => {
@@ -32113,10 +32094,10 @@ async function testDashboardButtonConsistency() {
   });
 }
 
-// ─── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ────────────
+// ─── #716: Process liveness + max_turns lifecycle cleanup ───────────────────
 
 async function testIssue716HeartbeatFeedbackLoop() {
-  console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
+  console.log('\n── #716: Process liveness + max_turns lifecycle cleanup ──');
   const lifecycle = require('../engine/lifecycle');
 
   // 1. classifyFailure with exact Claude CLI error_max_turns output → MAX_TURNS (retryable)
@@ -32152,11 +32133,11 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'error_max_turns should take priority even when access denied text is also present');
   });
 
-  // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
+  // 2. realActivityMap tracked in engine.js for diagnostics/compatibility
   await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('realActivityMap'),
-      'engine.js should use realActivityMap for timeout detection');
+      'engine.js should keep realActivityMap for dispatch output activity diagnostics');
     // Must be updated on stdout data handler
     const marker = 'proc.stdout.on';
     const idx = src.indexOf(marker);
@@ -32168,20 +32149,20 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'realActivityMap should be initialized at spawn time');
   });
 
-  // 3. timeout.js uses realActivityMap instead of file mtime for tracked processes
-  await test('timeout.js uses realActivityMap for tracked processes (#716)', () => {
+  // 3. timeout.js uses process liveness instead of output-silence heuristics
+  await test('timeout.js uses tracked process liveness for live processes (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('realActivityMap'),
-      'timeout.js should check realActivityMap for tracked process');
-    assert.ok(src.includes('feedback loop'),
-      'timeout.js should comment about avoiding heartbeat feedback loop');
+    assert.ok(src.includes('isTrackedProcessAlive'),
+      'timeout.js should check process liveness for tracked processes');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
+      'timeout.js should document that live process silence is allowed');
   });
 
-  // 4. Output completion detection scans for result and process-exit
+  // 4. Output completion detection scans for process-exit sentinel
   await test('timeout.js detects completed agents from output (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
-      'timeout.js should scan for result events and process-exit sentinel');
+    assert.ok(src.includes('[process-exit]'),
+      'timeout.js should scan for the process-exit sentinel');
     assert.ok(src.includes('completedViaOutput'),
       'Should track completion via output detection');
     assert.ok(src.includes('completeDispatch(item.id'),
@@ -32197,13 +32178,13 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'Sentinel should be written to stdout (not stderr or file)');
   });
 
-  // 6. Blocking tool detection guard: don't extend timeout after agent completed
-  await test('timeout.js guards blocking tool detection against completed agents (#716)', () => {
+  // 6. Legacy blocking annotations are cleared instead of extending timeouts
+  await test('timeout.js clears legacy blocking-tool annotations (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    // The blocking tool detection section should check for result/process-exit before extending
-    const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
-    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
-      'Blocking tool detection should check for completed agent before extending timeout');
+    assert.ok(src.includes('legacyAnnotationClears'),
+      'timeout.js should clear legacy blocking-tool annotations');
+    assert.ok(!src.includes("name === 'Bash'") && !src.includes("name === 'PowerShell'"),
+      'timeout.js should not extend timeouts via shell-specific parsing');
   });
 
   // 7. Output completion detection is NOT gated by time cap
@@ -32218,16 +32199,13 @@ async function testIssue716HeartbeatFeedbackLoop() {
       'Should use tail reading for efficiency');
   });
 
-  // 8. Heartbeat timer does NOT update realActivityMap
-  await test('engine.js heartbeat timer does NOT update realActivityMap', () => {
+  // 8. No heartbeat timer writes to live-output.log
+  await test('engine.js has no live-output heartbeat timer', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // Find the heartbeat interval — it should NOT contain realActivityMap
-    const heartbeatMatches = src.match(/heartbeatTimer\s*=\s*setInterval\(\s*\(\)\s*=>\s*\{[^}]+\}/g);
-    assert.ok(heartbeatMatches, 'Should have heartbeat timer');
-    for (const match of heartbeatMatches) {
-      assert.ok(!match.includes('realActivityMap'),
-        'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
-    }
+    assert.ok(!src.includes('heartbeatTimer'),
+      'engine.js should not create a live-output heartbeat timer');
+    assert.ok(!src.includes('[heartbeat] running'),
+      'engine.js should not inject heartbeat output into agent logs');
   });
 
   // 9. #W-mo25loq8kjer — realActivityMap seeded BEFORE stdout/stderr handlers, immediately after runFile() returns.
@@ -32277,7 +32255,7 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     // The orphan log annotation should expose whether the log contains a pid line —
     // this is the signal that differentiates "spawn died before first write" (stub only)
-    // from "process started and is genuinely hung" (pid present, no later output).
+    // from "process started before the engine lost its handle" (pid present).
     assert.ok(src.includes('pidPresent') || src.includes('pid='),
       'timeout.js _logState should surface whether a pid line is present in the live-output log');
   });
@@ -32485,6 +32463,31 @@ async function testPrReviewFixFlows() {
     const reviewLine = cssSrc.split('\n').find(l => l.includes('.pr-badge.review-escalated'));
     assert.ok(reviewLine && !/\.build-escalated/.test(reviewLine),
       'review-escalated CSS rule should not be an alias of build-escalated');
+  });
+
+  await test('dashboard PR rendering surfaces unresolved branch metadata', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-1899',
+      title: 'Missing branch',
+      url: 'https://example.test/pr/1899',
+      agent: 'dallas',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      _branchResolutionError: {
+        reason: 'Cannot dispatch fix for PR-1899: missing pr_branch/source branch metadata.'
+      }
+    });
+
+    assert.ok(html.includes('branch-missing'), 'Missing branch should render with a distinct branch-missing class');
+    assert.ok(html.includes('missing branch'), 'Missing branch should be visible in the PR branch cell');
+    assert.ok(html.includes('missing pr_branch/source branch metadata'),
+      'Branch-resolution reason should be exposed as a tooltip');
+  });
+
+  await test('dashboard CSS includes branch-missing style', () => {
+    assert.ok(cssSrc.includes('.pr-branch.branch-missing'),
+      'CSS should style missing PR branches distinctly');
   });
 
   await test('eval escalation log message does not imply all automation stopped', () => {
@@ -39659,6 +39662,32 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('resolveTemplate resolves hyphenated stage and field names', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { 'build-step': { 'result-summary': 'ship it' } } };
+      assert.strictEqual(
+        pipeline.resolveTemplate('Summary: {{stages.build-step.result-summary}}', run),
+        'Summary: ship it'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate leaves unsupported deeper placeholders unchanged', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { build: { output: { text: 'nested' } } } };
+      assert.strictEqual(
+        pipeline.resolveTemplate('Value: {{stages.build.output.text}}', run),
+        'Value: {{stages.build.output.text}}'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
   // ── _findMeetingsInRun — pure function ──
 
   await test('_findMeetingsInRun returns empty array for empty stages', () => {
@@ -39727,6 +39756,26 @@ async function testPipelineBehavioral() {
       assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: null }), []);
       assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: undefined }), []);
       assert.deepStrictEqual(pipeline._findMeetingsInRun({}), []);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun extracts meetings from mixed stage artifact types', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          task: { type: 'task', artifacts: { workItems: ['W-1'], meetings: ['MTG-from-task'] } },
+          meeting: { type: 'meeting', artifacts: { meetings: ['MTG-main', 'MTG-from-task'] } },
+          api: { type: 'api', artifacts: { prs: ['PR-1'] } },
+          empty: { type: 'wait' },
+        },
+      };
+      assert.deepStrictEqual(
+        pipeline._findMeetingsInRun(run),
+        ['MTG-from-task', 'MTG-main']
+      );
     } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
@@ -39828,6 +39877,18 @@ async function testPipelineBehavioral() {
       // null condition → { check: undefined } → default case → false
       assert.strictEqual(pipeline.evaluateCondition(null, { run: {}, pipeline: {}, config: {} }), false);
       assert.strictEqual(pipeline.evaluateCondition(undefined, { run: {}, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition returns false for malformed condition values', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const ctx = { run: { stages: {} }, pipeline: {}, config: {} };
+      assert.strictEqual(pipeline.evaluateCondition({}, ctx), false);
+      assert.strictEqual(pipeline.evaluateCondition({ check: '' }, ctx), false);
+      assert.strictEqual(pipeline.evaluateCondition(123, ctx), false);
     } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
@@ -40518,6 +40579,62 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('isStageComplete: TASK follows work item terminal states', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
+      isolatedShared.safeWrite(wiPath, [
+        { id: 'W-pending', status: 'pending' },
+        { id: 'W-active', status: 'dispatched' },
+        { id: 'W-done', status: 'done' },
+        { id: 'W-failed', status: 'failed' },
+      ]);
+
+      const stage = { id: 'task', type: 'task' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-pending'] } }, run, { projects: [] }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-active'] } }, run, { projects: [] }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-done', 'W-failed', 'W-missing'] } }, run, { projects: [] }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('isStageComplete: MEETING waits until all meetings are completed or archived', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const meeting = require('../engine/meeting');
+      meeting.saveMeeting({ id: 'MTG-active', status: 'debating' });
+      meeting.saveMeeting({ id: 'MTG-complete', status: 'completed' });
+      meeting.saveMeeting({ id: 'MTG-archive', status: 'archived' });
+
+      const stage = { id: 'meet', type: 'meeting' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { meetings: ['MTG-active'] } }, run, {}),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { meetings: ['MTG-complete', 'MTG-archive'] } }, run, {}),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
   await test('isStageComplete: PARALLEL complete when all sub-stages done', () => {
     const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
     try {
@@ -40601,6 +40718,33 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('isStageComplete: MERGE_PRS waits for active PRs and accepts terminal PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-10', status: 'active' },
+        { id: 'PR-11', status: 'merged' },
+        { id: 'PR-12', status: 'abandoned' },
+      ]);
+
+      const stage = { id: 'merge', type: 'merge-prs' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { prs: ['PR-10'] } }, run, config),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { prs: ['PR-11', 'PR-12', 'PR-missing'] } }, run, config),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
   await test('evaluateCondition maxRuns checks run count', () => {
     const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
     const testPipelineId = '_test_maxruns_' + Date.now();
@@ -40659,6 +40803,170 @@ async function testPipelineBehavioral() {
         delete runs[testPipelineId];
         fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
       } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition noFailedItems returns true when no pipeline work items exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const run = { runId: 'run-no-items', stages: {} };
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run, pipeline: {}, config: { projects: [] } }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition noFailedItems detects failed central work items for the run', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
+      isolatedShared.safeWrite(wiPath, [
+        { id: 'W-ok', status: 'done', _pipelineRun: 'run-has-failure' },
+        { id: 'W-fail', status: 'failed', _pipelineRun: 'run-has-failure' },
+        { id: 'W-other-fail', status: 'failed', _pipelineRun: 'run-other' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-has-failure', stages: {} }, pipeline: {}, config: { projects: [] } }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-clean', stages: {} }, pipeline: {}, config: { projects: [] } }),
+        true,
+        'failed work items from another run should not affect this run'
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition noFailedItems includes project work items', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectWorkItemsPath(config.projects[0]), [
+        { id: 'W-project-fail', status: 'failed', _pipelineRun: 'run-project-failure' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-project-failure', stages: {} }, pipeline: {}, config }),
+        false
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition allBuildsGreen returns true when all monitored PRs pass', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-101', status: 'active', buildStatus: 'passing' },
+        { id: 'PR-102', status: 'active', buildStatus: 'passing' },
+        { id: 'PR-103', status: 'active', buildStatus: 'passing' },
+      ]);
+      const pipelineDef = {
+        id: 'pipe-green',
+        monitoredResources: ['PR-101'],
+        stages: [{ id: 'stage-green', monitoredResources: ['PR-102'] }],
+      };
+      const run = { runId: 'run-green', stages: { collect: { artifacts: { prs: ['PR-103'] } } } };
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', { run, pipeline: pipelineDef, config }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition allBuildsGreen returns false for missing or non-passing PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-201', status: 'active', buildStatus: 'failing' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-red', stages: {} },
+          pipeline: { id: 'pipe-red', monitoredResources: ['PR-201'] },
+          config,
+        }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-missing', stages: {} },
+          pipeline: { id: 'pipe-missing', monitoredResources: ['PR-999'] },
+          config,
+        }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-no-refs', stages: {} },
+          pipeline: { id: 'pipe-no-refs', stages: [] },
+          config,
+        }),
+        false,
+        'no monitored PR refs cannot prove builds are green'
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition can consume a condition name resolved from a template', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      // Compose the two pure functions: resolve a template into a condition name,
+      // then evaluate that condition. Every stage must carry a status (completed
+      // or pending) for runSucceeded to be true — gate carries both an output
+      // (the condition name to dispatch) and a completed status.
+      const run = {
+        stages: {
+          gate: { status: 'completed', output: 'runSucceeded' },
+          work: { status: 'completed' },
+        },
+      };
+      const check = pipeline.resolveTemplate('{{stages.gate.output}}', run);
+      assert.strictEqual(check, 'runSucceeded');
+      assert.strictEqual(
+        pipeline.evaluateCondition(check, { run, pipeline: {}, config: {} }),
+        true
+      );
+
+      // Negative path — a single failed stage flips runSucceeded to false even
+      // though resolveTemplate still produces the same condition name.
+      const failingRun = {
+        stages: {
+          gate: { status: 'completed', output: 'runSucceeded' },
+          work: { status: 'failed' },
+        },
+      };
+      const failingCheck = pipeline.resolveTemplate('{{stages.gate.output}}', failingRun);
+      assert.strictEqual(
+        pipeline.evaluateCondition(failingCheck, { run: failingRun, pipeline: {}, config: {} }),
+        false
+      );
+    } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
   });
@@ -41466,7 +41774,7 @@ async function testDashboardPureHelpers() {
   const { getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
           _parseWatchInterval, parsePinnedEntries, _parseDocChatResultText,
           _messageRequestsOrchestration, _formatDocChatContext,
-          DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
+          _resolveSkillReadPath, DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
   const queriesMod = require(path.join(MINIONS_DIR, 'engine', 'queries'));
   const osMod = require('os');
 
@@ -41604,6 +41912,34 @@ async function testDashboardPureHelpers() {
       'doc-chat context must label selected text as untrusted');
     assert.ok(context.includes(DOC_CHAT_DOCUMENT_DELIMITER),
       'edit instructions should use the high-entropy document delimiter');
+  });
+
+  // ── skill file resolution ────────────────────────────────────────────────
+
+  await test('_resolveSkillReadPath only resolves files from discovered skill dirs', () => {
+    const allowedDir = createTmpDir();
+    const outsideDir = createTmpDir();
+    fs.writeFileSync(path.join(allowedDir, 'SKILL.md'), '# Allowed');
+    fs.writeFileSync(path.join(outsideDir, 'SKILL.md'), '# Outside');
+    const skillFiles = [{ file: 'SKILL.md', dir: allowedDir, scope: 'project', projectName: 'demo' }];
+
+    assert.strictEqual(
+      _resolveSkillReadPath({ file: 'SKILL.md', dir: allowedDir.replace(/\\/g, '/'), source: 'project:demo', skillFiles }),
+      path.resolve(allowedDir, 'SKILL.md')
+    );
+    assert.strictEqual(
+      _resolveSkillReadPath({ file: 'SKILL.md', dir: outsideDir, source: 'project:demo', skillFiles }),
+      null,
+      'caller-supplied dirs must be checked against collectSkillFiles results'
+    );
+  });
+
+  await test('_resolveSkillReadPath rejects traversal filenames', () => {
+    const allowedDir = createTmpDir();
+    const skillFiles = [{ file: 'SKILL.md', dir: allowedDir, scope: 'project', projectName: 'demo' }];
+    assert.strictEqual(_resolveSkillReadPath({ file: '..\\secret.txt', dir: allowedDir, skillFiles }), null);
+    assert.strictEqual(_resolveSkillReadPath({ file: '../secret.txt', dir: allowedDir, skillFiles }), null);
+    assert.strictEqual(_resolveSkillReadPath({ file: 'secret\0.txt', dir: allowedDir, skillFiles }), null);
   });
 
   // ── parsePinnedEntries ──────────────────────────────────────────────────
@@ -42861,6 +43197,174 @@ async function testEngineRuntimeWiring() {
       .replace(/"[^"\n]*"/g, '""');
     assert.ok(!/claudeConfig[?]?\.permissionMode/.test(codeOnly),
       'engine.js code body must not read the deprecated claudeConfig.permissionMode field — adapter owns the permission flag');
+  });
+}
+
+// ─── W-molldo69p5rd: Auto-link agent-created PRs to work items ──────────────
+
+async function testAutoLinkAgentPrs() {
+  console.log('\n── W-molldo69p5rd: auto-link agent-created PRs to work items ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Source guard: inbox regex relaxed beyond mandatory bold markdown ──
+  await test('syncPrsFromOutput inbox regex no longer hard-requires bold "\\*\\*PR" prefix', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    const re = /const\s+prHeaderPattern\s*=\s*\/([^\n]+)\/[a-z]+;/;
+    const m = fnBody.match(re);
+    assert.ok(m, 'prHeaderPattern declaration must remain on a single line for source-guard inspection');
+    const literal = m[1];
+    assert.ok(!/^\\\*\\\*PR/.test(literal),
+      'inbox regex must not begin with mandatory \\*\\*PR — that misses plain "PR: <url>" lines (W-moljyu60wuzr / #1902 regression)');
+  });
+
+  await test('syncPrsFromOutput inbox regex declaration is anchored on line start', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Mid-line "see PR https://..." mentions are a false-positive risk;
+    // require the regex to anchor on either start-of-string or newline.
+    assert.ok(fnBody.includes('(?:^|\\n)'),
+      'inbox regex must anchor on (?:^|\\n) so mid-paragraph "see PR" mentions don\'t match');
+  });
+
+  await test('syncPrsFromOutput inbox regex accepts the "Pull Request" alternative spelling', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    assert.ok(fnBody.includes('Pull\\s+Request') || fnBody.includes('Pull Request'),
+      'inbox regex must also recognize the "Pull Request" spelling as a legitimate marker');
+  });
+
+  // ── Functional: regression coverage for the W-moljyu60wuzr / #1902 missed-link case ──
+  await test('syncPrsFromOutput detects plain "PR: <url>" in agent inbox file (W-moljyu60wuzr regression)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIso = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Mirror the actual project layout — minions PR file under projects/minions
+      const projectDir = path.join(testDir, 'projects', 'minions');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+      sharedIso.safeWrite(prFile, []);
+
+      // Drop the exact note shape Ripley wrote for #1902 — plain "PR: <url>".
+      const today = new Date().toISOString().slice(0, 10);
+      const inboxName = `ripley-W-moljyu60wuzr-${today}-1424.md`;
+      const inboxPath = path.join(testDir, 'notes', 'inbox', inboxName);
+      fs.writeFileSync(inboxPath,
+        `---\nid: NOTE-test\nagent: ripley\ndate: ${today}\n---\n\n` +
+        `# Pipeline.js test coverage — W-moljyu60wuzr\n\n` +
+        `PR: https://github.com/yemi33/minions/pull/1902 (auto-merge enabled, SQUASH)\n\n## What I did\n\nAdded tests.\n`
+      );
+
+      const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
+      const mockConfig = { projects: [mockProject], agents: { ripley: { name: 'Ripley' } } };
+
+      const origPrPath = sharedIso.projectPrPath;
+      const origGetProjects = sharedIso.getProjects;
+      sharedIso.projectPrPath = () => prFile;
+      sharedIso.getProjects = () => [mockProject];
+
+      try {
+        // Empty agent stdout — the URL only appears in the inbox note, exactly
+        // as it did for the real W-moljyu60wuzr dispatch.
+        const stdout = '';
+        const meta = { item: { id: 'W-moljyu60wuzr', title: 'Test pipeline coverage' }, project: mockProject, branch: 'work/W-moljyu60wuzr' };
+        const count = lifecycle.syncPrsFromOutput(stdout, 'ripley', meta, mockConfig);
+
+        const prs = sharedIso.safeJson(prFile) || [];
+        assert.ok(prs.length > 0, 'PR record must be created from the inbox-only URL');
+        const tracked = prs.find(p => String(p.prNumber) === '1902');
+        assert.ok(tracked, 'PR #1902 must be tracked from the agent inbox note');
+        assert.ok(Array.isArray(tracked.prdItems) && tracked.prdItems.includes('W-moljyu60wuzr'),
+          'tracked PR must list W-moljyu60wuzr in prdItems so the Work Items page can render the link');
+        assert.strictEqual(tracked.agent, 'Ripley', 'tracked PR must carry the originating agent name');
+        assert.strictEqual(tracked.branch, 'work/W-moljyu60wuzr', 'tracked PR must carry the originating branch');
+        // Self-review of PR #1904 caught this gap: detection-from-inbox must
+        // also propagate the URL so the Work Items page renders a clickable
+        // link, not a tracked-but-empty row.
+        assert.ok(tracked.url, 'tracked PR must carry a non-empty url');
+        assert.ok(/\/pull\/1902(?:[?#]|$)/.test(tracked.url),
+          `tracked PR url must end at /pull/1902 — got ${JSON.stringify(tracked.url)}`);
+        assert.ok(count >= 1, 'syncPrsFromOutput must report at least 1 added PR');
+      } finally {
+        sharedIso.projectPrPath = origPrPath;
+        sharedIso.getProjects = origGetProjects;
+      }
+    } finally { restore(); }
+  });
+
+  // ── Idempotency: re-running the dispatch must not duplicate the PR record ──
+  await test('syncPrsFromOutput inbox-only detection is idempotent across re-runs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIso = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      const projectDir = path.join(testDir, 'projects', 'minions');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+      sharedIso.safeWrite(prFile, []);
+
+      const today = new Date().toISOString().slice(0, 10);
+      const inboxName = `ripley-W-test-${today}.md`;
+      fs.writeFileSync(path.join(testDir, 'notes', 'inbox', inboxName),
+        `---\nid: NOTE-x\nagent: ripley\ndate: ${today}\n---\n\nPR: https://github.com/yemi33/minions/pull/4242\n`);
+
+      const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
+      const mockConfig = { projects: [mockProject], agents: { ripley: { name: 'Ripley' } } };
+      const origPrPath = sharedIso.projectPrPath;
+      const origGetProjects = sharedIso.getProjects;
+      sharedIso.projectPrPath = () => prFile;
+      sharedIso.getProjects = () => [mockProject];
+      try {
+        const meta = { item: { id: 'W-test', title: 't' }, project: mockProject, branch: 'work/W-test' };
+        lifecycle.syncPrsFromOutput('', 'ripley', meta, mockConfig);
+        lifecycle.syncPrsFromOutput('', 'ripley', meta, mockConfig);
+        const prs = sharedIso.safeJson(prFile) || [];
+        const matches = prs.filter(p => String(p.prNumber) === '4242');
+        assert.strictEqual(matches.length, 1, 'second sync must be a no-op — duplicate records would corrupt the tracker');
+      } finally {
+        sharedIso.projectPrPath = origPrPath;
+        sharedIso.getProjects = origGetProjects;
+      }
+    } finally { restore(); }
+  });
+
+  // ── Source guard: /api/pull-requests/link routes through canonical attachment helper ──
+  await test('/api/pull-requests/link uses the canonical PR attachment helper', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    assert.ok(start > 0, 'link handler must exist');
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+      'manual link handler must route through the canonical PR attachment helper');
+  });
+
+  await test('/api/pull-requests/link accepts workItemId as a top-level field', () => {
+    assert.ok(dashSrc.includes('function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }'),
+      'link helper must accept workItemId from the request body');
+  });
+
+  await test('/api/pull-requests/link falls back to context.workItemId for legacy CC payloads', () => {
+    assert.ok(dashSrc.includes('context.workItemId'),
+      'link handler must read context.workItemId so the CC link-pr action with a structured context still backfills prdItems');
+  });
+
+  await test('/api/pull-requests/link seeds prdItems with the resolved workItemId on insert', () => {
+    // The PR record literal must seed prdItems with the linkedItemId, not always [].
+    assert.ok(/prdItems\s*:\s*linkedWorkItemId\s*\?/.test(dashSrc),
+      'link handler must seed prdItems with [linkedItemId] when one is resolved, instead of hardcoding []');
   });
 }
 
