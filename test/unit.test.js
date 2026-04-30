@@ -4261,6 +4261,25 @@ async function testQueriesAgents() {
     assert.strictEqual(tail, content, 'tail should be full file content');
   });
 
+  await test('readHeadTail reads full file when exactly head plus tail size', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'exact.log');
+    const content = '0123456789abcdef';
+    fs.writeFileSync(fp, content);
+    const { head, tail } = queries.readHeadTail(fp, 8);
+    assert.strictEqual(head, content, 'exact-size file should be returned as full head');
+    assert.strictEqual(tail, content, 'exact-size file should be returned as full tail');
+  });
+
+  await test('readHeadTail returns empty strings for empty files', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'empty.log');
+    fs.writeFileSync(fp, '');
+    const { head, tail } = queries.readHeadTail(fp, 8);
+    assert.strictEqual(head, '', 'empty file head should be empty');
+    assert.strictEqual(tail, '', 'empty file tail should be empty');
+  });
+
   await test('readHeadTail returns empty strings for missing file', () => {
     const { head, tail } = queries.readHeadTail('/nonexistent/path/file.log', 1024);
     assert.strictEqual(head, '', 'head should be empty for missing file');
@@ -4530,6 +4549,38 @@ async function testQueriesHelpers() {
     const now = Date.now();
     assert.strictEqual(queries.timeSince(now - 7200000), '2h ago');
   });
+
+  await test('timeSince formats days for timestamps at least 24 hours old', () => {
+    const now = Date.now();
+    assert.strictEqual(queries.timeSince(now - (3 * 24 * 60 * 60 * 1000)), '3d ago');
+  });
+
+  await test('timeSince formats boundary values at second/minute/hour/day cutoffs', () => {
+    const origNow = Date.now;
+    const now = new Date('2026-04-30T12:00:00.000Z').getTime();
+    try {
+      Date.now = () => now;
+      assert.strictEqual(queries.timeSince(now - 59000), '59s ago');
+      assert.strictEqual(queries.timeSince(now - 60000), '1m ago');
+      assert.strictEqual(queries.timeSince(now - 3599000), '59m ago');
+      assert.strictEqual(queries.timeSince(now - 3600000), '1h ago');
+      assert.strictEqual(queries.timeSince(now - 86399000), '23h ago');
+      assert.strictEqual(queries.timeSince(now - 86400000), '1d ago');
+    } finally {
+      Date.now = origNow;
+    }
+  });
+
+  await test('timeSince clamps future timestamps to now', () => {
+    const now = Date.now();
+    assert.strictEqual(queries.timeSince(now + 10000), '0s ago');
+  });
+
+  await test('timeSince returns unknown for nullish or invalid timestamps', () => {
+    assert.strictEqual(queries.timeSince(null), 'unknown');
+    assert.strictEqual(queries.timeSince(undefined), 'unknown');
+    assert.strictEqual(queries.timeSince(Number.NaN), 'unknown');
+  });
 }
 
 async function testQueriesAdditionalCoverage() {
@@ -4591,6 +4642,32 @@ async function testQueriesAdditionalCoverage() {
   // NOTE: getInbox() takes no agentName argument — it returns every .md file
   // in notes/inbox/, sorted by mtime descending. Callers filter by agent on the
   // name string (e.g. getAgents() does `inboxFiles.filter(f => f.includes(a.id))`).
+
+  await test('getInboxFiles returns only markdown filenames from the inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'ralph-note.md'), 'keep');
+      fs.writeFileSync(path.join(inboxDir, 'dallas-note.MD'), 'skip uppercase extension');
+      fs.writeFileSync(path.join(inboxDir, 'scratch.txt'), 'skip');
+      fs.writeFileSync(path.join(inboxDir, 'data.json'), '{}');
+
+      const freshQueries = require('../engine/queries');
+      assert.deepStrictEqual(freshQueries.getInboxFiles(), ['ralph-note.md']);
+    } finally { restore(); }
+  });
+
+  await test('getInboxFiles returns [] when the inbox directory is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.rmSync(path.join(testDir, 'notes', 'inbox'), { recursive: true, force: true });
+
+      const freshQueries = require('../engine/queries');
+      assert.deepStrictEqual(freshQueries.getInboxFiles(), []);
+    } finally { restore(); }
+  });
 
   await test('getInbox returns [] for an empty inbox directory', () => {
     const restore = createTestMinionsDir();
@@ -4793,6 +4870,11 @@ async function testQueriesAdditionalCoverage() {
     assert.strictEqual(queries.detectInFlightTool(''), null);
     assert.strictEqual(queries.detectInFlightTool(null), null);
     assert.strictEqual(queries.detectInFlightTool(undefined), null);
+  });
+
+  await test('detectInFlightTool returns null for malformed non-string input', () => {
+    assert.strictEqual(queries.detectInFlightTool({ tail: 'not a string' }), null);
+    assert.strictEqual(queries.detectInFlightTool(['{"type":"system","subtype":"task_started"}']), null);
   });
 
   await test('detectInFlightTool returns null when there are no task events', () => {
