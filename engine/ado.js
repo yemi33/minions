@@ -357,6 +357,14 @@ async function pollPrStatus(config) {
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
+    const sourceBranch = stripRefsHeads(prData.sourceRefName);
+    if (sourceBranch && pr.branch !== sourceBranch) {
+      pr.branch = sourceBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
+      updated = true;
+    }
+
     let newStatus = pr.status;
     if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
     else if (prData.status === 'abandoned') newStatus = PR_STATUS.ABANDONED;
@@ -403,12 +411,6 @@ async function pollPrStatus(config) {
     const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
     if (sourceCommit && pr._adoSourceCommit !== sourceCommit) {
       pr._adoSourceCommit = sourceCommit;
-      updated = true;
-    }
-    const sourceBranch = stripRefsHeads(prData.sourceRefName);
-    if (!pr.branch && sourceBranch) {
-      pr.branch = sourceBranch;
-      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
       updated = true;
     }
 
@@ -795,6 +797,7 @@ async function reconcilePrs(config) {
         }
         if (existing && !existing.branch && branch) {
           existing.branch = branch;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
           if (existing._pendingReason === 'missing_pr_branch') delete existing._pendingReason;
           metadataUpdated++;
         }

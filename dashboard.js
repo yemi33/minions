@@ -5927,6 +5927,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             if (prData.description) pr.description = prData.description.slice(0, 500);
             if (!pr.branch && prData.branch) {
               pr.branch = prData.branch;
+              if (pr._branchResolutionError) delete pr._branchResolutionError;
               if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
             }
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;

@@ -1982,55 +1982,98 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
 
 const PR_PENDING_MISSING_BRANCH = 'missing_pr_branch';
 
-function getPrDispatchBranch(pr) {
-  return typeof pr?.branch === 'string' ? pr.branch.trim() : '';
+function normalizePrBranch(value) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return '';
+  return raw.replace(/^refs\/heads\//i, '');
 }
 
-function mutatePrPendingReason(project, pr, mutator) {
-  const prPath = projectPrPath(project);
+function resolvePrBranch(pr) {
+  if (!pr || typeof pr !== 'object') return '';
+  const candidates = [
+    pr.branch,
+    pr.pr_branch,
+    pr.prBranch,
+    pr.sourceRefName,
+    pr.sourceBranch,
+    pr.sourceRef,
+    pr.headRefName,
+    pr.head?.ref,
+  ];
+  for (const candidate of candidates) {
+    const branch = normalizePrBranch(candidate);
+    if (branch) return branch;
+  }
+  return '';
+}
+
+// Unified branch-resolution state writer: when branch is found, persist it and
+// clear BOTH the structured _branchResolutionError (red-badge UI) and the
+// _pendingReason marker (dashboard pending-reason vocabulary). When branch is
+// missing, set BOTH fields so the dashboard can surface the gate via either
+// rendering path.
+function updatePrBranchResolutionState(project, pr, { branch = '', reason = '' } = {}) {
   let changed = false;
-  mutatePullRequests(prPath, prs => {
-    const target = shared.findPrRecord(prs, pr, project);
-    if (!target) return prs;
-    changed = mutator(target) === true;
-    return prs;
-  });
-  return changed;
-}
-
-function markPrMissingBranch(project, pr, action) {
-  if (pr._pendingReason === PR_PENDING_MISSING_BRANCH) return false;
-  const changed = mutatePrPendingReason(project, pr, target => {
-    if (target._pendingReason === PR_PENDING_MISSING_BRANCH) return false;
-    target._pendingReason = PR_PENDING_MISSING_BRANCH;
-    return true;
-  });
-  if (changed) {
+  try {
+    mutatePullRequests(projectPrPath(project), prs => {
+      const target = shared.findPrRecord(prs, pr, project);
+      if (!target) return;
+      if (branch) {
+        if (target.branch !== branch) {
+          target.branch = branch;
+          changed = true;
+        }
+        if (target._branchResolutionError) {
+          delete target._branchResolutionError;
+          changed = true;
+        }
+        if (target._pendingReason === PR_PENDING_MISSING_BRANCH) {
+          delete target._pendingReason;
+          changed = true;
+        }
+        return;
+      }
+      if (reason) {
+        const currentReason = target._branchResolutionError?.reason || '';
+        if (currentReason !== reason) {
+          target._branchResolutionError = { reason, at: ts() };
+          changed = true;
+        }
+        if (target._pendingReason !== PR_PENDING_MISSING_BRANCH) {
+          target._pendingReason = PR_PENDING_MISSING_BRANCH;
+          changed = true;
+        }
+      }
+    });
+  } catch (e) {
+    log('warn', `mark PR branch resolution state for ${pr?.id || 'unknown PR'}: ${e.message}`);
+  }
+  if (branch) {
+    pr.branch = branch;
+    if (pr._branchResolutionError) delete pr._branchResolutionError;
+    if (pr._pendingReason === PR_PENDING_MISSING_BRANCH) delete pr._pendingReason;
+  } else if (reason && changed) {
+    pr._branchResolutionError = { reason, at: ts() };
     pr._pendingReason = PR_PENDING_MISSING_BRANCH;
-    log('warn', `PR ${pr.id}: cannot dispatch ${action} — missing pr_branch; waiting for PR metadata enrichment`);
   }
   return changed;
 }
 
-function clearPrMissingBranch(project, pr) {
-  if (pr._pendingReason !== PR_PENDING_MISSING_BRANCH) return false;
-  const changed = mutatePrPendingReason(project, pr, target => {
-    if (target._pendingReason !== PR_PENDING_MISSING_BRANCH) return false;
-    delete target._pendingReason;
-    return true;
-  });
-  if (changed) delete pr._pendingReason;
-  return changed;
+function ensurePrBranchForDispatch(project, pr, automationType) {
+  const branch = resolvePrBranch(pr);
+  if (branch) {
+    if (pr.branch !== branch || pr._branchResolutionError || pr._pendingReason === PR_PENDING_MISSING_BRANCH) {
+      updatePrBranchResolutionState(project, pr, { branch });
+    }
+    return branch;
+  }
+  const reason = `Cannot dispatch ${automationType} for ${shared.getPrDisplayId(pr)}: missing pr_branch/source branch metadata. Link or refresh the PR so the source branch is known.`;
+  if (updatePrBranchResolutionState(project, pr, { reason })) {
+    log('warn', `PR ${pr.id}: ${reason}`);
+  }
+  return '';
 }
 
-function canDispatchPrBranch(project, pr, action) {
-  if (getPrDispatchBranch(pr)) {
-    clearPrMissingBranch(project, pr);
-    return true;
-  }
-  markPrMissingBranch(project, pr, action);
-  return false;
-}
 
 /**
  * Scan pull-requests.json for PRs needing review or fixes
@@ -2073,10 +2116,10 @@ async function discoverFromPrs(config, project) {
     const prDisplayId = shared.getPrDisplayId(pr);
     const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
     if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
-    if (getPrDispatchBranch(pr)) clearPrMissingBranch(project, pr);
+    const prBranchForMutex = resolvePrBranch(pr);
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
-    if (pr.branch && isBranchActive(pr.branch)) {
-      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);
+    if (prBranchForMutex && isBranchActive(prBranchForMutex)) {
+      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${prBranchForMutex} locked by another agent`);
       continue;
     }
     // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
@@ -2114,7 +2157,6 @@ async function discoverFromPrs(config, project) {
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      if (!canDispatchPrBranch(project, pr, 'review')) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
       try {
@@ -2139,11 +2181,13 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); }
     }
 
@@ -2170,9 +2214,10 @@ async function discoverFromPrs(config, project) {
         }
         continue;
       }
-      if (!canDispatchPrBranch(project, pr, 'human-feedback fix')) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
+      if (!prBranch) continue;
 
       const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
       let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
@@ -2182,10 +2227,10 @@ async function discoverFromPrs(config, project) {
       }
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); fixDispatched = true; }
     }
 
@@ -2200,7 +2245,6 @@ async function discoverFromPrs(config, project) {
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (isOnCooldown(key, cooldownMs)) continue;
-      if (!canDispatchPrBranch(project, pr, 're-review')) continue;
 
       // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
       try {
@@ -2223,11 +2267,13 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 're-review');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); }
     }
 
@@ -2236,14 +2282,15 @@ async function discoverFromPrs(config, project) {
     if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated && !fixDispatched) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      if (!canDispatchPrBranch(project, pr, 'fix')) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'fix');
+      if (!prBranch) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_branch: prBranch,
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment review→fix cycle counter
@@ -2285,7 +2332,6 @@ async function discoverFromPrs(config, project) {
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      if (!canDispatchPrBranch(project, pr, 'build fix')) continue;
 
       // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
       // recompute the merge commit when master moves and pollPrStatus deliberately
@@ -2321,6 +2367,8 @@ async function discoverFromPrs(config, project) {
 
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'build-fix');
+      if (!prBranch) continue;
 
       let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
       if (pr.buildErrorLog) {
@@ -2328,9 +2376,9 @@ async function discoverFromPrs(config, project) {
       }
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_branch: pr.branch || '',
+        pr_id: pr.id, pr_branch: prBranch,
         review_note: reviewNote,
-      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment build fix attempts counter
@@ -2370,7 +2418,6 @@ async function discoverFromPrs(config, project) {
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
       if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
-        if (!canDispatchPrBranch(project, pr, 'conflict fix')) continue;
         // Pre-dispatch live conflict check — cached `_mergeConflict` may be
         // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
         // so a successful upstream merge can leave the flag set even after the
@@ -2397,10 +2444,12 @@ async function discoverFromPrs(config, project) {
         if (!liveSkip) {
           const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
           if (agentId) {
+            const prBranch = ensurePrBranchForDispatch(project, pr, 'conflict-fix');
+            if (!prBranch) continue;
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-              pr_id: pr.id, pr_branch: pr.branch || '',
+              pr_id: pr.id, pr_branch: prBranch,
               review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
-            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
             if (item) {
               newWork.push(item);
               setCooldown(key);

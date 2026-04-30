@@ -18,6 +18,9 @@ function prRow(pr) {
   const buildLabel = pr.buildFixEscalated ? 'escalated (' + (pr.buildFixAttempts || '?') + ' fixes)' : (pr.buildStatus || 'none') + (pr._buildStatusStale ? ' (stale)' : '');
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
   const statusLabel = pr.status || 'active';
+  const branchError = pr._branchResolutionError?.reason || '';
+  const branchLabel = pr.branch || (branchError ? 'missing branch' : '—');
+  const branchClass = 'pr-branch' + (branchError ? ' branch-missing' : '');
   const url = pr.url || '#';
   const prId = pr.id || '—';
   const pendingReason = pr._pendingReason ? String(pr._pendingReason) : '';
@@ -28,7 +31,7 @@ function prRow(pr) {
     '<td><span class="pr-id">' + escapeHtml(String(prId)) + '</span></td>' +
     '<td><a class="pr-title" href="' + escapeHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escapeHtml(pr.title || 'Untitled') + '</a>' + (pr.description ? '<div class="pr-desc">' + escapeHtml(pr.description.length > 120 ? pr.description.slice(0, 120) + '...' : pr.description) + '</div>' : '') + '</td>' +
     '<td><span class="pr-agent">' + escapeHtml(pr.agent || '—') + '</span></td>' +
-    '<td><span class="pr-branch">' + escapeHtml(pr.branch || '—') + '</span>' + pendingReasonHtml + '</td>' +
+    '<td><span class="' + branchClass + '"' + (branchError ? ' title="' + escapeHtml(branchError) + '"' : '') + '>' + escapeHtml(branchLabel) + '</span>' + pendingReasonHtml + '</td>' +
     '<td><span class="pr-badge ' + reviewClass + '"' + (reviewTitle ? ' title="' + escapeHtml(reviewTitle) + '"' : '') + '>' + escapeHtml(reviewLabel) + '</span></td>' +
     '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escapeHtml(sq.note || '') + '">' + escapeHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escapeHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escapeHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
     '<td><span class="pr-badge ' + buildClass + '">' + escapeHtml(buildLabel) + '</span></td>' +

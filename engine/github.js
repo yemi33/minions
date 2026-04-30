@@ -284,6 +284,7 @@ async function forEachActiveGhPr(config, callback) {
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
             if (!pr.branch && prData.head?.ref) {
               pr.branch = prData.head.ref;
+              if (pr._branchResolutionError) delete pr._branchResolutionError;
               if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
             }
           }
@@ -326,6 +327,14 @@ async function pollPrStatus(config) {
     }
 
     let updated = false;
+
+    const headBranch = prData.head?.ref ? String(prData.head.ref).trim() : '';
+    if (headBranch && pr.branch !== headBranch) {
+      pr.branch = headBranch;
+      if (pr._branchResolutionError) delete pr._branchResolutionError;
+      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
+      updated = true;
+    }
 
     // Map GitHub PR state to minions status
     let newStatus = pr.status;
@@ -703,6 +712,7 @@ async function reconcilePrs(config) {
         }
         if (existing && !existing.branch && branch) {
           existing.branch = branch;
+          if (existing._branchResolutionError) delete existing._branchResolutionError;
           if (existing._pendingReason === 'missing_pr_branch') delete existing._pendingReason;
           metadataUpdated++;
         }
