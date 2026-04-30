@@ -686,11 +686,30 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         if (evt.actions && evt.actions.length > 0) {
           _tagServerExecuted(evt.actions, evt.actionResults);
           for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
+          // Surface per-action errors/warnings inline alongside the prose so the user can see
+          // exactly which actions failed or completed with caveats. Previously these only
+          // appeared as a small "executed" pill which gave no detail.
+          if (evt.actionResults && Array.isArray(evt.actionResults)) {
+            var failures = evt.actionResults.filter(function(r) { return r && r.error; });
+            var warnings = evt.actionResults.filter(function(r) { return r && r.warning; });
+            if (failures.length > 0) {
+              var failHtml = failures.map(function(r) { return '<li>' + escHtml(r.type || 'action') + ': ' + escHtml(r.error) + '</li>'; }).join('');
+              addMsg('system', '<div style="padding:6px 12px;font-size:11px;color:var(--red);background:var(--surface2);border-radius:6px;margin:4px 0">⚠️ ' + failures.length + ' action' + (failures.length > 1 ? 's' : '') + ' failed:<ul style="margin:4px 0 0 16px;padding:0">' + failHtml + '</ul></div>', false, activeTabId);
+            }
+            if (warnings.length > 0) {
+              var warnHtml = warnings.map(function(r) { return '<li>' + escHtml(r.type || 'action') + ': ' + escHtml(r.warning) + '</li>'; }).join('');
+              addMsg('system', '<div style="padding:6px 12px;font-size:11px;color:var(--orange);background:var(--surface2);border-radius:6px;margin:4px 0">ℹ️ ' + warnings.length + ' action' + (warnings.length > 1 ? '' : '') + ' completed with warnings:<ul style="margin:4px 0 0 16px;padding:0">' + warnHtml + '</ul></div>', false, activeTabId);
+            }
+          }
         } else if (evt.actionParseError) {
           // Issue #1834: server saw ===ACTIONS=== but couldn't parse the JSON.
           // Surface as an inline warning so the user knows actions were dropped
           // (was previously silent — appeared as "actions failed" with no signal).
           addMsg('system', '<div style="padding:6px 12px;font-size:11px;color:var(--red);background:var(--surface2);border-radius:6px;margin:4px 0">⚠️ Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>', false, activeTabId);
+        } else if (evt.hallucinationWarning) {
+          // CC said it dispatched/queued/assigned something but emitted no actions block —
+          // surface the false-claim guard so the user knows nothing actually ran.
+          addMsg('system', '<div style="padding:6px 12px;font-size:11px;color:var(--orange);background:var(--surface2);border-radius:6px;margin:4px 0">⚠️ ' + escHtml(evt.hallucinationWarning) + '</div>', false, activeTabId);
         }
       } else if (evt.type === 'error') {
         terminalEventSeen = true;

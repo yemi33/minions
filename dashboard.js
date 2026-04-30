@@ -1312,17 +1312,100 @@ function _parseWatchInterval(val) {
   return Math.max(60000, Math.round(u === 's' ? n * 1000 : u === 'm' ? n * 60000 : n * 3600000));
 }
 
+// Required-field validator for CC actions. Returns null when valid, an error string when not.
+// Centralises field-required checks so the model can't quietly emit a malformed action and have
+// the server silently fall back to placeholder values (e.g. "Untitled"). The handler invokes this
+// before `try` to avoid filling `results` with cryptic per-handler error messages.
+function _ccValidateAction(action) {
+  if (!action || typeof action !== 'object' || !action.type) return 'action is missing required field: type';
+  switch (action.type) {
+    case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test':
+      if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return `${action.type} action missing required field: title`;
+      return null;
+    case 'build-and-test':
+      if (!action.pr) return 'build-and-test action missing required field: pr';
+      return null;
+    case 'note':
+      if (!action.title) return 'note action missing required field: title';
+      if (!action.content && !action.description) return 'note action missing required field: content (or description)';
+      return null;
+    case 'knowledge':
+      if (!action.title) return 'knowledge action missing required field: title';
+      if (!action.content) return 'knowledge action missing required field: content';
+      if (!action.category) return 'knowledge action missing required field: category';
+      return null;
+    case 'pin-to-pinned':
+      if (!action.title || !action.content) return 'pin-to-pinned action missing title or content';
+      return null;
+    case 'plan':
+      if (!action.title) return 'plan action missing required field: title';
+      return null;
+    default:
+      return null; // unknown types fall through to existing handler / generic fallback
+  }
+}
+
+// Hallucination guard: detect prose like "I dispatched ..." when no ===ACTIONS=== block was emitted.
+// The regex is intentionally narrow — we only want affirmative claims about completed work, not
+// hypotheticals like "I would dispatch this" or "consider dispatching X".
+function _detectClaimedActionWithoutBlock(displayText, actions) {
+  if (Array.isArray(actions) && actions.length > 0) return null; // there are actions, no false claim
+  const triggers = /\b(dispatched|enqueued|queued|created (?:a |the )?work item|assigned (?:this |it )?(?:to|for)|spun up|kicked off|i'?ll dispatch|i (?:have )?(?:just )?dispatched)\b/i;
+  if (!triggers.test(displayText || '')) return null;
+  return 'CC described an action ("dispatched", "assigned", etc.) but no ===ACTIONS=== block was emitted. No work was actually queued. Resend or rephrase the request.';
+}
+
 async function executeCCActions(actions) {
   const results = [];
   for (const action of actions) {
+    const validationError = _ccValidateAction(action);
+    if (validationError) {
+      results.push({ type: action?.type || 'unknown', error: validationError });
+      continue;
+    }
     try {
       switch (action.type) {
         case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {
           const workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
           const id = 'W-' + shared.uid();
           const project = action.project || '';
-          const targetProject = project ? PROJECTS.find(p => p.name?.toLowerCase() === project.toLowerCase()) : PROJECTS[0];
+
+          // Strict project resolution. Silent fallback to PROJECTS[0] when the model named an unknown
+          // project caused work items to land in the wrong repo. Now: unknown name → error; ambiguous
+          // (multiple projects + no field) → error; single-project deployments fall through; zero
+          // projects → root-level work-items.json (orchestration system standalone use).
+          let targetProject = null;
+          if (project) {
+            targetProject = PROJECTS.find(p => p.name?.toLowerCase() === project.toLowerCase());
+            if (!targetProject) {
+              const known = PROJECTS.map(p => p.name).join(', ') || '(none configured)';
+              results.push({ type: action.type, error: `Project "${project}" not found. Known projects: ${known}` });
+              break;
+            }
+          } else if (PROJECTS.length > 1) {
+            results.push({ type: action.type, error: `project field is required when ${PROJECTS.length} projects are configured: ${PROJECTS.map(p => p.name).join(', ')}` });
+            break;
+          } else if (PROJECTS.length === 1) {
+            targetProject = PROJECTS[0];
+          }
+          // PROJECTS.length === 0 → targetProject stays null, falls back to root work-items.json (existing behavior).
+
           const wiPath = targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json');
+
+          // Promote `agent` (singular) → `agents` (array). Models emit either shape and the prior code
+          // only read `action.agents`, silently dropping `agent: "lambert"` style hints.
+          const agentHints = (() => {
+            if (Array.isArray(action.agents) && action.agents.length > 0) return action.agents.map(String).filter(Boolean);
+            if (typeof action.agent === 'string' && action.agent) return [action.agent];
+            return [];
+          })();
+          const knownAgents = Object.keys(CONFIG.agents || {});
+          const unknownAgent = agentHints.find(a => !knownAgents.includes(a));
+          if (unknownAgent) {
+            results.push({ type: action.type, error: `Unknown agent "${unknownAgent}". Configured agents: ${knownAgents.join(', ') || '(none)'}` });
+            break;
+          }
+
           // Issue #1772: CC review/explore/test are human-initiated one-offs.
           // Mark oneShot so any discovered PR is tagged _contextOnly (skips eval loop).
           const ccOneShotTypes = new Set(['review', 'explore', 'test']);
@@ -1330,16 +1413,28 @@ async function executeCCActions(actions) {
           shared.mutateJsonFileLocked(wiPath, items => {
             if (!Array.isArray(items)) items = [];
             items.push({
-              id, title: action.title || 'Untitled', type: workType,
+              id, title: action.title, type: workType,
               priority: action.priority || 'medium', description: action.description || '',
               status: WI_STATUS.PENDING, created: new Date().toISOString(),
               createdBy: 'command-center', project,
-              ...(action.agents?.length ? { preferred_agent: action.agents[0], agents: action.agents } : {}),
+              ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
               ...(isOneShot ? { oneShot: true } : {}),
             });
             return items;
           }, { defaultValue: [] });
           results.push({ type: action.type, id, ok: true });
+
+          // Pre-flight routing check: warn the user if no agent is currently available so the new
+          // item won't sit pending invisibly. Routing failure is non-fatal — the WI was created.
+          try {
+            const resolvedAgent = routing.resolveAgent(workType, CONFIG, { agentHints });
+            if (!resolvedAgent) {
+              const lastResult = results[results.length - 1];
+              lastResult.warning = `Created ${id} but no agent is currently available to dispatch (routing returned no match for workType=${workType}${agentHints.length ? ', hints=' + agentHints.join(',') : ''}). Item will sit pending until an agent becomes available.`;
+            }
+          } catch (e) {
+            shared.log('warn', `CC dispatch routing pre-flight: ${e.message}`);
+          }
           break;
         }
         case 'build-and-test': {
@@ -4769,6 +4864,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const { _actionParseError, ...parsedReply } = parsed;
         const reply = { ...parsedReply, sessionId: ccSession.sessionId, newSession: !wasResume };
         if (_actionParseError) reply.actionParseError = _actionParseError;
+        const hallucinationWarning = _detectClaimedActionWithoutBlock(parsed.text, parsed.actions);
+        if (hallucinationWarning) reply.hallucinationWarning = hallucinationWarning;
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
@@ -5052,6 +5149,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Issue #1834: surface action JSON parse failures so the UI can warn
         // instead of silently dropping. Client renders this as a small notice.
         if (_actionParseError) donePayload.actionParseError = _actionParseError;
+        const hallucinationWarning = _detectClaimedActionWithoutBlock(displayText, actions);
+        if (hallucinationWarning) donePayload.hallucinationWarning = hallucinationWarning;
         if (sessionReset) donePayload.sessionReset = true;
         liveState.donePayload = donePayload;
         if (liveState.writer) liveState.writer(donePayload);
@@ -6450,6 +6549,9 @@ module.exports = {
   _linkPullRequestForTracking: linkPullRequestForTracking,
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
+  _ccValidateAction,
+  _detectClaimedActionWithoutBlock,
+  executeCCActions,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).

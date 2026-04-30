@@ -72,8 +72,17 @@ I'll dispatch dallas to fix that bug.
 
 **Generic fallback:** For any action not listed below, include `"endpoint": "/api/..."` and `"params": {...}` to call the API directly. Example: `{"type": "custom-op", "endpoint": "/api/some/endpoint", "params": {"key": "value"}}`.
 
+**Required fields per action type — server rejects with an error if missing:**
+
+- `dispatch` (and aliases: `fix`, `implement`, `explore`, `review`, `test`): `title` is REQUIRED. `description` recommended. `project` REQUIRED when multiple projects are configured (server returns the list of known names if you guess wrong). For agent hints emit either `agents: ["dallas"]` (array, preferred) or `agent: "dallas"` (string — auto-promoted server-side). Unknown agent names error.
+- `build-and-test`: `pr` REQUIRED (number, ID, or URL).
+- `note`: `title` and `content` (or `description`) REQUIRED.
+- `knowledge`: `title`, `content`, and `category` REQUIRED. Valid categories: architecture, conventions, project-notes, build-reports, reviews.
+
+If you describe an action in prose ("I'll dispatch this..."), you MUST emit a matching `===ACTIONS===` block. The server detects prose claims without action blocks and surfaces a warning to the user — i.e., your false claim becomes visible. Either dispatch or don't promise to.
+
 Core action types:
-- **dispatch**: title, workType, priority (low/medium/high), agents[] (optional), project, description
+- **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project), description
   workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
   If the user wants a design/architecture artifact committed through a PR, dispatch `implement` or `docs` rather than `explore`.
   When the user names a specific agent ("assign this to lambert"), put exactly that one name in `agents` (e.g. `"agents": ["lambert"]`). A single-agent assignment is hard-pinned by the server — it will queue for that agent only and skip the routing table. Use multi-agent arrays only when the user names multiple agents or asks for fan-out.

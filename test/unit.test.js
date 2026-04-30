@@ -11074,7 +11074,10 @@ async function testResolveAgent() {
 
   await test('Command Center dispatch persists agents[] hint for engine routing', () => {
     const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(dashboardSrc.includes('preferred_agent: action.agents[0], agents: action.agents'),
+    // Updated post agent/agents promotion (Fix 2 in CC action contract hardening): the dispatch
+    // case now reads from a normalized `agentHints` array that promotes singular `action.agent`
+    // strings into plural form before persisting both `preferred_agent` and `agents` on the WI.
+    assert.ok(dashboardSrc.includes('preferred_agent: agentHints[0], agents: agentHints'),
       'Command Center dispatch should persist both preferred_agent and agents so engine routing can honor the hint');
   });
 }
@@ -24609,9 +24612,10 @@ async function testPrWriteRaceConditions() {
 
   await test('CC review action sets oneShot on dispatched work item', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Find the executeCCActions dispatch case
-    const start = dashSrc.indexOf("case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test':");
-    assert.ok(start > 0, 'CC dispatch case must exist');
+    // Anchor on the dispatch case OPEN BRACE to skip past the _ccValidateAction switch which
+    // has the same `case 'dispatch': ... case 'test':` labels but no `{` body.
+    const start = dashSrc.indexOf("case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {");
+    assert.ok(start > 0, 'CC dispatch case body (with `{`) must exist in executeCCActions');
     const end = dashSrc.indexOf("case 'note':", start);
     assert.ok(end > start, 'CC note case must come after dispatch case');
     const dispatchCase = dashSrc.slice(start, end);
@@ -42616,6 +42620,262 @@ async function testDashboardPureHelpers() {
     } finally {
       osMod.homedir = origHome;
     }
+  });
+
+  // ── CC action contract hardening — _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions ──
+  // Closes 5 silent failure paths where CC could claim "I dispatched X" without anything being queued.
+
+  const { _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions } = dashboard;
+
+  await test('_ccValidateAction: returns null for valid dispatch action', () => {
+    assert.strictEqual(_ccValidateAction({ type: 'dispatch', title: 'Fix login bug' }), null);
+  });
+
+  await test('_ccValidateAction: rejects null/undefined/non-object', () => {
+    assert.ok(_ccValidateAction(null));
+    assert.ok(_ccValidateAction(undefined));
+    assert.ok(_ccValidateAction('string'));
+    assert.ok(_ccValidateAction({})); // missing type
+  });
+
+  await test('_ccValidateAction: dispatch missing title → error', () => {
+    const err = _ccValidateAction({ type: 'dispatch' });
+    assert.ok(err && /title/.test(err), 'must mention title field');
+  });
+
+  await test('_ccValidateAction: dispatch with empty/whitespace title → error', () => {
+    assert.ok(_ccValidateAction({ type: 'dispatch', title: '' }));
+    assert.ok(_ccValidateAction({ type: 'dispatch', title: '   ' }));
+  });
+
+  await test('_ccValidateAction: fix/implement/explore/review/test all require title', () => {
+    for (const t of ['fix', 'implement', 'explore', 'review', 'test']) {
+      assert.ok(_ccValidateAction({ type: t }), `${t} must require title`);
+      assert.strictEqual(_ccValidateAction({ type: t, title: 'x' }), null, `${t} with title must validate`);
+    }
+  });
+
+  await test('_ccValidateAction: build-and-test requires pr', () => {
+    assert.ok(_ccValidateAction({ type: 'build-and-test' }));
+    assert.strictEqual(_ccValidateAction({ type: 'build-and-test', pr: '1234' }), null);
+    assert.strictEqual(_ccValidateAction({ type: 'build-and-test', pr: 1234 }), null);
+  });
+
+  await test('_ccValidateAction: note requires title and content (or description)', () => {
+    assert.ok(_ccValidateAction({ type: 'note' }));
+    assert.ok(_ccValidateAction({ type: 'note', title: 'x' })); // missing content
+    assert.strictEqual(_ccValidateAction({ type: 'note', title: 'x', content: 'y' }), null);
+    assert.strictEqual(_ccValidateAction({ type: 'note', title: 'x', description: 'z' }), null);
+  });
+
+  await test('_ccValidateAction: knowledge requires title, content, category', () => {
+    assert.ok(_ccValidateAction({ type: 'knowledge' }));
+    assert.ok(_ccValidateAction({ type: 'knowledge', title: 'x' }));
+    assert.ok(_ccValidateAction({ type: 'knowledge', title: 'x', content: 'y' })); // missing category
+    assert.strictEqual(_ccValidateAction({ type: 'knowledge', title: 'x', content: 'y', category: 'architecture' }), null);
+  });
+
+  await test('_ccValidateAction: pin-to-pinned requires title and content', () => {
+    assert.ok(_ccValidateAction({ type: 'pin-to-pinned' }));
+    assert.ok(_ccValidateAction({ type: 'pin-to-pinned', title: 'x' }));
+    assert.strictEqual(_ccValidateAction({ type: 'pin-to-pinned', title: 'x', content: 'y' }), null);
+  });
+
+  await test('_ccValidateAction: plan requires title', () => {
+    assert.ok(_ccValidateAction({ type: 'plan' }));
+    assert.strictEqual(_ccValidateAction({ type: 'plan', title: 'My plan' }), null);
+  });
+
+  await test('_ccValidateAction: unknown action type passes through (handled by generic fallback)', () => {
+    assert.strictEqual(_ccValidateAction({ type: 'some-future-action' }), null);
+  });
+
+  await test('_detectClaimedActionWithoutBlock: returns warning when prose says "dispatched" with no actions', () => {
+    const w = _detectClaimedActionWithoutBlock('I dispatched a work item to fix that.', []);
+    assert.ok(w && /no work was actually queued|no .*?actions/i.test(w), 'must surface a warning string');
+  });
+
+  await test('_detectClaimedActionWithoutBlock: returns null when actions exist', () => {
+    assert.strictEqual(_detectClaimedActionWithoutBlock('I dispatched a work item.', [{ type: 'dispatch' }]), null);
+  });
+
+  await test('_detectClaimedActionWithoutBlock: returns null for innocuous prose', () => {
+    assert.strictEqual(_detectClaimedActionWithoutBlock('Here is the status of your queue.', []), null);
+    assert.strictEqual(_detectClaimedActionWithoutBlock('No items match.', []), null);
+    assert.strictEqual(_detectClaimedActionWithoutBlock('', []), null);
+  });
+
+  await test('_detectClaimedActionWithoutBlock: catches "queued" / "enqueued" / "kicked off"', () => {
+    assert.ok(_detectClaimedActionWithoutBlock('Just queued that for you.', []));
+    assert.ok(_detectClaimedActionWithoutBlock('Enqueued the task.', []));
+    assert.ok(_detectClaimedActionWithoutBlock('Kicked off a build.', []));
+  });
+
+  await test('_detectClaimedActionWithoutBlock: catches "created a work item" / "assigned to"', () => {
+    assert.ok(_detectClaimedActionWithoutBlock('Created a work item for that.', []));
+    assert.ok(_detectClaimedActionWithoutBlock('Assigned this to dallas.', []));
+  });
+
+  await test('_detectClaimedActionWithoutBlock: catches "I have just dispatched" affirmative variants', () => {
+    assert.ok(_detectClaimedActionWithoutBlock("I'll dispatch dallas right now.", []));
+    assert.ok(_detectClaimedActionWithoutBlock('I have just dispatched a fix agent.', []));
+  });
+
+  // Source-string assertions — verify the helpers are present in dashboard.js (they're not just exported stubs).
+  await test('dashboard.js source contains _detectClaimedActionWithoutBlock function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function _detectClaimedActionWithoutBlock'),
+      'dashboard.js must define _detectClaimedActionWithoutBlock');
+    assert.ok(src.includes('hallucinationWarning'),
+      'dashboard.js must reference hallucinationWarning in reply payloads');
+  });
+
+  await test('dashboard.js source contains _ccValidateAction function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function _ccValidateAction'),
+      'dashboard.js must define _ccValidateAction');
+  });
+
+  // ── executeCCActions behavioral tests for project & agent resolution ──
+  // These tests drive executeCCActions directly via a temp MINIONS_DIR with a controlled
+  // config + projects mix, asserting the results array matches the expected error/ok shape.
+
+  await test('executeCCActions: dispatch with unknown project returns error listing known projects', async () => {
+    // Use the live PROJECTS list — assert the error message format. We cannot easily mutate
+    // module-level PROJECTS but we can test the rejection path: an unknown name must always error.
+    const results = await executeCCActions([{ type: 'dispatch', title: 'X', project: '__definitely_not_a_real_project__' }]);
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].error, 'unknown project must produce an error result');
+    assert.ok(/not found/i.test(results[0].error), 'error must say "not found"');
+    assert.ok(/Known projects/i.test(results[0].error), 'error must list known projects');
+  });
+
+  await test('executeCCActions: dispatch with unknown agent returns error listing configured agents', async () => {
+    const results = await executeCCActions([{ type: 'dispatch', title: 'X', agent: '__not_a_real_agent__' }]);
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].error, 'unknown agent must produce an error');
+    assert.ok(/Unknown agent/i.test(results[0].error), 'error must say "Unknown agent"');
+  });
+
+  await test('executeCCActions: dispatch with empty title returns validation error (no Untitled fallback)', async () => {
+    const results = await executeCCActions([{ type: 'dispatch' }]);
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].error, 'missing title must produce an error');
+    assert.ok(/title/i.test(results[0].error), 'error must mention title');
+    // Critical: ensure no work item was actually created — the action must not silently fall back
+    // to the previous "Untitled" placeholder.
+    assert.ok(!results[0].id, 'no id should be returned for validation failure');
+    assert.ok(!results[0].ok, 'ok must not be set on validation failure');
+  });
+
+  await test('executeCCActions: build-and-test missing pr returns validation error', async () => {
+    const results = await executeCCActions([{ type: 'build-and-test' }]);
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].error, 'missing pr must produce an error');
+    assert.ok(/pr/i.test(results[0].error), 'error must mention pr field');
+  });
+
+  await test('executeCCActions: note missing content returns validation error', async () => {
+    const results = await executeCCActions([{ type: 'note', title: 'x' }]);
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].error && /content/i.test(results[0].error));
+  });
+
+  // Source-string assertions for executeCCActions internals (full behavior depends on globals).
+
+  await test('executeCCActions source: promotes singular `agent` to `agents` array', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function executeCCActions');
+    const fnEnd = src.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 12000);
+    assert.ok(fn.includes('agentHints'),
+      'executeCCActions must build an agentHints array combining `agent` + `agents`');
+    assert.ok(fn.includes("typeof action.agent === 'string'"),
+      'must check singular action.agent string shape');
+    assert.ok(fn.includes('preferred_agent: agentHints[0]'),
+      'must use agentHints[0] (not action.agents[0]) for preferred_agent');
+    assert.ok(fn.includes('agents: agentHints'),
+      'must store agentHints (not raw action.agents) on the work item');
+  });
+
+  await test('executeCCActions source: strict project resolution rejects unknown name', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function executeCCActions');
+    const fnEnd = src.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 12000);
+    assert.ok(fn.includes('Project "${project}" not found') || fn.includes("Project \"${project}\" not found") || fn.includes('Project \"'),
+      'must error with "Project ... not found" when unknown name supplied');
+    assert.ok(fn.includes('project field is required when'),
+      'must error when multi-project deployment + missing project field');
+  });
+
+  await test('executeCCActions source: validates agent hints against CONFIG.agents', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function executeCCActions');
+    const fnEnd = src.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 12000);
+    assert.ok(fn.includes('Unknown agent'),
+      'must error on unknown agent hint');
+    assert.ok(fn.includes('CONFIG.agents'),
+      'must read configured agents from CONFIG.agents');
+  });
+
+  await test('executeCCActions source: post-create routing pre-flight surfaces warning', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function executeCCActions');
+    const fnEnd = src.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 12000);
+    assert.ok(fn.includes('routing.resolveAgent(workType, CONFIG'),
+      'must call routing.resolveAgent with workType and CONFIG');
+    assert.ok(fn.includes('lastResult.warning'),
+      'must attach the warning to the last result entry (so client can render it)');
+    assert.ok(fn.includes('no agent is currently available'),
+      'warning must mention no agent available');
+  });
+
+  await test('executeCCActions source: removes the dead "Untitled" placeholder default', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function executeCCActions');
+    const fnEnd = src.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 12000);
+    // The dispatch-class case used to write `title: action.title || 'Untitled'`. Validation now
+    // rejects empty titles before the write, so the placeholder is dead code and must be gone.
+    assert.ok(!/title:\s*action\.title\s*\|\|\s*['"]Untitled['"]/.test(fn),
+      'dispatch-class case must not fall back to "Untitled" placeholder');
+  });
+
+  await test('executeCCActions source: hallucination warning plumbed into both reply paths', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Non-streaming reply
+    assert.ok(src.includes('reply.hallucinationWarning = hallucinationWarning'),
+      'non-streaming reply must include hallucinationWarning');
+    // Streaming donePayload
+    assert.ok(src.includes('donePayload.hallucinationWarning = hallucinationWarning'),
+      'streaming donePayload must include hallucinationWarning');
+  });
+
+  await test('command-center.js: renders failed-action list and warnings inline', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('actionResults') && src.includes("r && r.error"),
+      'must filter actionResults for errors and surface inline');
+    assert.ok(src.includes("r && r.warning"),
+      'must filter actionResults for warnings and surface inline');
+    assert.ok(src.includes('hallucinationWarning'),
+      'must render hallucinationWarning inline');
+  });
+
+  await test('prompts/cc-system.md: documents required fields per action type', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(md.includes('Required fields per action type'),
+      'must include "Required fields per action type" header');
+    assert.ok(md.includes('`title` is REQUIRED'),
+      'must explicitly mark title as REQUIRED for dispatch');
+    assert.ok(md.includes('`pr` REQUIRED'),
+      'must mark build-and-test pr as REQUIRED');
+    assert.ok(md.includes('Unknown agent names error'),
+      'must warn that unknown agents error');
+    assert.ok(md.includes('your false claim becomes visible') || md.includes('false claim'),
+      'must explain hallucination detection rule to the model');
   });
 }
 
