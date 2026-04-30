@@ -21102,6 +21102,9 @@ async function main() {
     // W-moczcvjl338u: engine.js pure helper coverage
     await testEngineHelperCoverage();
 
+    // W-molldo69p5rd: auto-link agent-created PRs to work items
+    await testAutoLinkAgentPrs();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -42773,6 +42776,183 @@ async function testEngineRuntimeWiring() {
       .replace(/"[^"\n]*"/g, '""');
     assert.ok(!/claudeConfig[?]?\.permissionMode/.test(codeOnly),
       'engine.js code body must not read the deprecated claudeConfig.permissionMode field — adapter owns the permission flag');
+  });
+}
+
+// ─── W-molldo69p5rd: Auto-link agent-created PRs to work items ──────────────
+
+async function testAutoLinkAgentPrs() {
+  console.log('\n── W-molldo69p5rd: auto-link agent-created PRs to work items ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Source guard: inbox regex relaxed beyond mandatory bold markdown ──
+  await test('syncPrsFromOutput inbox regex no longer hard-requires bold "\\*\\*PR" prefix', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    const re = /const\s+prHeaderPattern\s*=\s*\/([^\n]+)\/[a-z]+;/;
+    const m = fnBody.match(re);
+    assert.ok(m, 'prHeaderPattern declaration must remain on a single line for source-guard inspection');
+    const literal = m[1];
+    assert.ok(!/^\\\*\\\*PR/.test(literal),
+      'inbox regex must not begin with mandatory \\*\\*PR — that misses plain "PR: <url>" lines (W-moljyu60wuzr / #1902 regression)');
+  });
+
+  await test('syncPrsFromOutput inbox regex declaration is anchored on line start', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Mid-line "see PR https://..." mentions are a false-positive risk;
+    // require the regex to anchor on either start-of-string or newline.
+    assert.ok(fnBody.includes('(?:^|\\n)'),
+      'inbox regex must anchor on (?:^|\\n) so mid-paragraph "see PR" mentions don\'t match');
+  });
+
+  await test('syncPrsFromOutput inbox regex accepts the "Pull Request" alternative spelling', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    assert.ok(fnBody.includes('Pull\\s+Request') || fnBody.includes('Pull Request'),
+      'inbox regex must also recognize the "Pull Request" spelling as a legitimate marker');
+  });
+
+  // ── Functional: regression coverage for the W-moljyu60wuzr / #1902 missed-link case ──
+  await test('syncPrsFromOutput detects plain "PR: <url>" in agent inbox file (W-moljyu60wuzr regression)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIso = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Mirror the actual project layout — minions PR file under projects/minions
+      const projectDir = path.join(testDir, 'projects', 'minions');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+      sharedIso.safeWrite(prFile, []);
+
+      // Drop the exact note shape Ripley wrote for #1902 — plain "PR: <url>".
+      const today = new Date().toISOString().slice(0, 10);
+      const inboxName = `ripley-W-moljyu60wuzr-${today}-1424.md`;
+      const inboxPath = path.join(testDir, 'notes', 'inbox', inboxName);
+      fs.writeFileSync(inboxPath,
+        `---\nid: NOTE-test\nagent: ripley\ndate: ${today}\n---\n\n` +
+        `# Pipeline.js test coverage — W-moljyu60wuzr\n\n` +
+        `PR: https://github.com/yemi33/minions/pull/1902 (auto-merge enabled, SQUASH)\n\n## What I did\n\nAdded tests.\n`
+      );
+
+      const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
+      const mockConfig = { projects: [mockProject], agents: { ripley: { name: 'Ripley' } } };
+
+      const origPrPath = sharedIso.projectPrPath;
+      const origGetProjects = sharedIso.getProjects;
+      sharedIso.projectPrPath = () => prFile;
+      sharedIso.getProjects = () => [mockProject];
+
+      try {
+        // Empty agent stdout — the URL only appears in the inbox note, exactly
+        // as it did for the real W-moljyu60wuzr dispatch.
+        const stdout = '';
+        const meta = { item: { id: 'W-moljyu60wuzr', title: 'Test pipeline coverage' }, project: mockProject, branch: 'work/W-moljyu60wuzr' };
+        const count = lifecycle.syncPrsFromOutput(stdout, 'ripley', meta, mockConfig);
+
+        const prs = sharedIso.safeJson(prFile) || [];
+        assert.ok(prs.length > 0, 'PR record must be created from the inbox-only URL');
+        const tracked = prs.find(p => String(p.prNumber) === '1902');
+        assert.ok(tracked, 'PR #1902 must be tracked from the agent inbox note');
+        assert.ok(Array.isArray(tracked.prdItems) && tracked.prdItems.includes('W-moljyu60wuzr'),
+          'tracked PR must list W-moljyu60wuzr in prdItems so the Work Items page can render the link');
+        assert.strictEqual(tracked.agent, 'Ripley', 'tracked PR must carry the originating agent name');
+        assert.strictEqual(tracked.branch, 'work/W-moljyu60wuzr', 'tracked PR must carry the originating branch');
+        // Self-review of PR #1904 caught this gap: detection-from-inbox must
+        // also propagate the URL so the Work Items page renders a clickable
+        // link, not a tracked-but-empty row.
+        assert.ok(tracked.url, 'tracked PR must carry a non-empty url');
+        assert.ok(/\/pull\/1902(?:[?#]|$)/.test(tracked.url),
+          `tracked PR url must end at /pull/1902 — got ${JSON.stringify(tracked.url)}`);
+        assert.ok(count >= 1, 'syncPrsFromOutput must report at least 1 added PR');
+      } finally {
+        sharedIso.projectPrPath = origPrPath;
+        sharedIso.getProjects = origGetProjects;
+      }
+    } finally { restore(); }
+  });
+
+  // ── Idempotency: re-running the dispatch must not duplicate the PR record ──
+  await test('syncPrsFromOutput inbox-only detection is idempotent across re-runs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIso = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      const projectDir = path.join(testDir, 'projects', 'minions');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+      sharedIso.safeWrite(prFile, []);
+
+      const today = new Date().toISOString().slice(0, 10);
+      const inboxName = `ripley-W-test-${today}.md`;
+      fs.writeFileSync(path.join(testDir, 'notes', 'inbox', inboxName),
+        `---\nid: NOTE-x\nagent: ripley\ndate: ${today}\n---\n\nPR: https://github.com/yemi33/minions/pull/4242\n`);
+
+      const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
+      const mockConfig = { projects: [mockProject], agents: { ripley: { name: 'Ripley' } } };
+      const origPrPath = sharedIso.projectPrPath;
+      const origGetProjects = sharedIso.getProjects;
+      sharedIso.projectPrPath = () => prFile;
+      sharedIso.getProjects = () => [mockProject];
+      try {
+        const meta = { item: { id: 'W-test', title: 't' }, project: mockProject, branch: 'work/W-test' };
+        lifecycle.syncPrsFromOutput('', 'ripley', meta, mockConfig);
+        lifecycle.syncPrsFromOutput('', 'ripley', meta, mockConfig);
+        const prs = sharedIso.safeJson(prFile) || [];
+        const matches = prs.filter(p => String(p.prNumber) === '4242');
+        assert.strictEqual(matches.length, 1, 'second sync must be a no-op — duplicate records would corrupt the tracker');
+      } finally {
+        sharedIso.projectPrPath = origPrPath;
+        sharedIso.getProjects = origGetProjects;
+      }
+    } finally { restore(); }
+  });
+
+  // ── Source guard: /api/pull-requests/link routes through addPrLink ──
+  await test('/api/pull-requests/link calls shared.addPrLink when workItemId is provided', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    assert.ok(start > 0, 'link handler must exist');
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(linkHandler.includes('shared.addPrLink('),
+      'manual link handler must call shared.addPrLink so prdItems is populated alongside _context');
+  });
+
+  await test('/api/pull-requests/link accepts workItemId as a top-level field', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(/const\s*\{[^}]*\bworkItemId\b/.test(linkHandler),
+      'link handler must destructure workItemId from the request body');
+  });
+
+  await test('/api/pull-requests/link falls back to context.workItemId for legacy CC payloads', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(linkHandler.includes('context.workItemId'),
+      'link handler must read context.workItemId so the CC link-pr action with a structured context still backfills prdItems');
+  });
+
+  await test('/api/pull-requests/link seeds prdItems with the resolved workItemId on insert', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    // The PR record literal must seed prdItems with the linkedItemId, not always [].
+    assert.ok(/prdItems\s*:\s*linkedItemId\s*\?/.test(linkHandler),
+      'link handler must seed prdItems with [linkedItemId] when one is resolved, instead of hardcoding []');
   });
 }
 
