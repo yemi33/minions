@@ -1713,6 +1713,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
               w._lastRetryReason = 'no review verdict';
               delete w.dispatched_at;
               delete w.completedAt;
+              delete w._pendingReason;
               log('warn', `Review ${meta.item.id} completed without verdict — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
             } else {
               w.status = WI_STATUS.FAILED;

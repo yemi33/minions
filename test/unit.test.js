@@ -11155,6 +11155,53 @@ async function testRenderPlaybook() {
   });
 }
 
+// ─── engine/playbook.js — buildAgentContext Tests ───────────────────────────
+
+async function testBuildAgentContext() {
+  console.log('\n── engine/playbook.js — buildAgentContext ──');
+
+  await test('buildAgentContext tolerates and flags non-string PR _context values', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const playbook = require('../engine/playbook');
+      const minionsDir = freshShared.MINIONS_DIR;
+      const project = { name: 'minions', localPath: path.join(minionsDir, 'repo') };
+      fs.mkdirSync(project.localPath, { recursive: true });
+      const config = { projects: [project], agents: {}, engine: {} };
+      fs.writeFileSync(path.join(minionsDir, 'config.json'), JSON.stringify(config));
+      fs.writeFileSync(freshShared.projectPrPath(project), JSON.stringify([
+        { id: 'github:yemi33/minions#1886', status: freshShared.PR_STATUS.ACTIVE, title: 'Object context', _context: { issue: 1886 }, branch: 'work/object-context' },
+        { id: 'github:yemi33/minions#1887', status: freshShared.PR_STATUS.ACTIVE, title: 'Array context', _context: ['unexpected'], branch: 'work/array-context' },
+        { id: 'github:yemi33/minions#1888', status: freshShared.PR_STATUS.ACTIVE, title: 'Number context', _context: 42, branch: 'work/number-context' },
+        { id: 'github:yemi33/minions#1889', status: freshShared.PR_STATUS.ACTIVE, title: 'String context', _context: 'valid context stays readable', branch: 'work/string-context' },
+      ]));
+
+      const context = playbook.buildAgentContext('dallas', config, project);
+
+      assert.ok(context.includes('github:yemi33/minions#1886'), 'Active PR should still be included');
+      assert.ok(context.includes('[invalid _context: expected string, got object: {"issue":1886}]'),
+        'Object _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('[invalid _context: expected string, got array: ["unexpected"]]'),
+        'Array _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('[invalid _context: expected string, got number: 42]'),
+        'Number _context should be surfaced explicitly instead of throwing');
+      assert.ok(context.includes('valid context stays readable'),
+        'String _context values should keep their existing prompt formatting');
+      assert.ok(!context.includes('[object Object]'),
+        'Malformed object context must not be implicitly stringified');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+}
+
 // ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
 
 async function testValidatePlaybookVars() {
@@ -11487,6 +11534,61 @@ async function testCompleteDispatch() {
   await test('completeDispatch clears dedupe key for retried items', () => {
     assert.ok(src.includes('dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)'),
       'Should clear completed dedupe marker so retried item can redispatch');
+  });
+
+  await test('completeDispatch clears stale _pendingReason when retrying a work item (#1885)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/dispatch', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const testDir = freshShared.MINIONS_DIR;
+      const wiPath = path.join(testDir, 'work-items.json');
+      const workItem = {
+        id: 'W-hung-retry',
+        title: 'Hung retry should redispatch',
+        type: 'fix',
+        status: freshShared.WI_STATUS.DISPATCHED,
+        _pendingReason: 'already_dispatched',
+        dispatched_at: '2026-04-29T20:00:00.000Z',
+        dispatched_to: 'lambert',
+        failReason: 'stale failure',
+        failedAt: '2026-04-29T20:05:00.000Z',
+      };
+      freshShared.safeWrite(wiPath, [workItem]);
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({
+          id: 'D-hung-retry',
+          type: 'fix',
+          agent: 'lambert',
+          meta: {
+            source: 'central-work-item',
+            dispatchKey: 'central-work-W-hung-retry',
+            item: { id: workItem.id, title: workItem.title },
+          },
+        });
+        return dp;
+      });
+
+      testDispatch.completeDispatch('D-hung-retry', freshShared.DISPATCH_RESULT.ERROR, 'timed out waiting for agent');
+
+      const [result] = freshShared.safeJson(wiPath);
+      assert.strictEqual(result.status, freshShared.WI_STATUS.PENDING, 'retry reset should make the work item pending');
+      assert.strictEqual(result._retryCount, 1, 'retry reset should increment retry count');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, '_pendingReason'),
+        'retry reset must clear stale pending metadata so redispatch is not blocked by already_dispatched');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_at'), 'retry reset should clear dispatched_at');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_to'), 'retry reset should clear dispatched_to');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'failReason'), 'retry reset should clear failReason');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'failedAt'), 'retry reset should clear failedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/dispatch', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('completeDispatch restores pendingFix on failed human-feedback fix', () => {
@@ -20879,6 +20981,7 @@ async function main() {
     await testResolveAgent();
     await testTempAgentBudget();
     await testRenderPlaybook();
+    await testBuildAgentContext();
     await testValidatePlaybookVars();
     await testResolvePlaybookPath();
     await testSelectPlaybook();
@@ -21999,6 +22102,58 @@ async function testReviewReDispatchLoop() {
       src.includes('!pr.lastReviewedAt ||') &&
       src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
       'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('no-verdict review retry clears stale _pendingReason (#1885)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const lifecycle = require('../engine/lifecycle');
+      const testDir = freshShared.MINIONS_DIR;
+      const wiPath = path.join(testDir, 'work-items.json');
+      const workItem = {
+        id: 'W-review-no-verdict',
+        title: 'Review should retry',
+        type: 'review',
+        status: freshShared.WI_STATUS.DISPATCHED,
+        _pendingReason: 'already_dispatched',
+        dispatched_at: '2026-04-29T20:00:00.000Z',
+        dispatched_to: 'ripley',
+        completedAt: '2026-04-29T20:05:00.000Z',
+      };
+      freshShared.safeWrite(wiPath, [workItem]);
+      const dispatchItem = {
+        id: 'D-review-no-verdict',
+        type: 'review',
+        task: 'Review PR',
+        agent: 'ripley',
+        meta: {
+          source: 'central-work-item',
+          item: { id: workItem.id, title: workItem.title },
+          dispatchKey: 'central-work-W-review-no-verdict',
+        },
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'ripley', 0, 'Review finished without a verdict', { projects: [], agents: {} });
+
+      const [result] = freshShared.safeJson(wiPath);
+      assert.strictEqual(result.status, freshShared.WI_STATUS.PENDING, 'no-verdict review should reset to pending for retry');
+      assert.strictEqual(result._retryCount, 1, 'no-verdict review retry should increment retry count');
+      assert.strictEqual(result._lastRetryReason, 'no review verdict');
+      assert.ok(result._lastRetryAt, 'no-verdict review retry should stamp _lastRetryAt');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, '_pendingReason'),
+        'no-verdict review retry must clear stale pending metadata');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_at'), 'retry reset should clear dispatched_at');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'completedAt'), 'retry reset should clear completedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {

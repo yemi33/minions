@@ -570,7 +570,7 @@ function buildAgentContext(agentId, config, project) {
   } catch (e) { log('warn', 'read central pull-requests: ' + e.message); }
   if (allPrs.length > 0) {
     const prLines = allPrs.map(pr =>
-      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${(pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${pr._context ? ' — ' + pr._context.slice(0, 100) : ''}`
+      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${(pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${formatPrContextSuffix(pr)}`
     );
     context += `## Active Pull Requests\n\n${prLines.join('\n')}\n\n`;
   }
@@ -587,6 +587,18 @@ function buildAgentContext(agentId, config, project) {
   // Not duplicated here to avoid double-injection and token waste
 
   return context;
+}
+
+function formatPrContextSuffix(pr) {
+  if (!Object.prototype.hasOwnProperty.call(pr, '_context')) return '';
+  const value = pr._context;
+  if (value === undefined || value === '') return '';
+  if (typeof value === 'string') return ` — ${value.slice(0, 100)}`;
+
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const serialized = (value !== null && typeof value === 'object') ? JSON.stringify(value) : String(value);
+  const preview = serialized ? `: ${serialized.slice(0, 100)}` : '';
+  return ` — [invalid _context: expected string, got ${type}${preview}]`;
 }
 
 // ─── Work Discovery Helpers ──────────────────────────────────────────────────
