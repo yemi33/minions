@@ -200,6 +200,36 @@ function readLiveWorkItem(meta) {
   return Array.isArray(items) ? items.find(i => i.id === itemId) || null : null;
 }
 
+function writeFailedAgentReport(item, reason, resultSummary, failureClass) {
+  if (!item?.id) {
+    log('warn', 'Cannot write failed agent report without dispatch id');
+    return;
+  }
+  const agentId = item.agent || 'engine';
+  const itemId = item.meta?.item?.id || '';
+  const title = item.meta?.item?.title || item.task || item.id;
+  const metadata = {
+    dispatchId: item.id,
+    sourceItem: itemId || null,
+    result: DISPATCH_RESULT.ERROR,
+    failureClass: failureClass || null,
+  };
+  const content = [
+    `# Agent Failed: ${title}`,
+    '',
+    `**Agent:** ${agentId}`,
+    `**Dispatch:** \`${item.id}\``,
+    itemId ? `**Work Item:** \`${itemId}\`` : '',
+    `**Type:** ${item.type || 'unknown'}`,
+    `**Result:** ${DISPATCH_RESULT.ERROR}`,
+    failureClass ? `**Failure Class:** ${failureClass}` : '',
+    reason ? `**Reason:** ${reason}` : '',
+    '',
+    resultSummary ? `## Summary\n${resultSummary}` : '## Summary\n(no agent summary captured)',
+  ].filter(Boolean).join('\n');
+  shared.writeToInbox(agentId, `agent-failure-${item.id}`, content, null, metadata);
+}
+
 // ─── Complete Dispatch ───────────────────────────────────────────────────────
 
 function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
@@ -238,6 +268,9 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
 
   if (item) {
     log('info', `Completed dispatch: ${id} (${result}${reason ? ': ' + reason : ''})`);
+    if (result === DISPATCH_RESULT.ERROR) {
+      writeFailedAgentReport(item, reason, resultSummary, failureClass);
+    }
 
     // Update source work item status on failure + auto-retry with backoff
     const retryableFailure = isRetryableFailureReason(reason, failureClass);
