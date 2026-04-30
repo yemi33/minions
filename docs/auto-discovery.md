@@ -8,7 +8,7 @@ The engine runs a tick every 60 seconds (configurable via `config.json` → `eng
 
 ```
 tick()
-  1. checkTimeouts()            Kill stale/hung agents (>heartbeatTimeout)
+  1. checkTimeouts()            Enforce runtime limits and stale-orphan cleanup
   2. consolidateInbox()         Merge learnings into notes.md (Haiku-powered)
   2.5 runCleanup()              Periodic cleanup (every 10 ticks ≈ 10min)
   2.6 pollPrStatus()            Poll ADO + GitHub for build, review, merge status (wall-clock cadence from prPollStatusEvery × tickInterval, default ≈ 12min)
@@ -283,7 +283,7 @@ proc.on('close')
   ├─ Post-completion hooks:
   │    review     → update PR minionsReview in pull-requests.json, vote on ADO
   │    fix        → set PR minionsReview back to "waiting"
-  │    build-test → (agent auto-files fix work items on failure)
+  │    build-test → record verification result and findings
   │
   ├─ Check for learnings in notes/inbox/
   │    (warns if agent didn't write findings)
@@ -346,10 +346,10 @@ ADO + GitHub REST ── pollPrStatus() ──► pull-requests.json
                                             │
                         ┌───────────┬───────┼───────┬──────────┐
                         ▼           ▼       ▼       ▼          ▼
-                   output.log  notes/  PRs    work-items  localhost
-                   (per agent) inbox/*.md  .json  .json       (if webapp,
-                                    │             (auto-filed  from build
-                          consolidateInbox()       on failure)  & test)
+                    output.log  notes/  PRs    work-items  localhost
+                    (per agent) inbox/*.md  .json  .json       (if webapp,
+                                    │                         from build
+                          consolidateInbox()                  & test)
                           (at 5+ files)
                                     │
                                     ▼
@@ -359,18 +359,20 @@ ADO + GitHub REST ── pollPrStatus() ──► pull-requests.json
                                playbooks)
 ```
 
-## Timeout & Stale Detection
+## Timeout & Stale-Orphan Detection
 
 Two layers of protection:
 
 **Agent timeout** (`engine.agentTimeout`, default 5 hours / 18,000,000ms):
-- Checks `activeProcesses` Map for elapsed time
-- Sends SIGTERM, then SIGKILL after 5s
+- Applies to tracked live processes regardless of output activity
+- Sends SIGTERM, then SIGKILL after a short grace period
 
-**Stale detection** (`engine.heartbeatTimeout`, default 5 min / 300,000ms):
-- Scans `dispatch.active` for items where `started_at` exceeds threshold
-- Catches cases where the process exited but dispatch wasn't cleaned up
-- Kills process if still tracked, marks dispatch as error, resets agent to idle
+**Stale-orphan detection** (`engine.heartbeatTimeout`, default 5 min / 300,000ms):
+- Applies only when an active dispatch has no live tracked process
+- Uses `live-output.log` mtime as indirect evidence after engine restart or process-handle loss
+- Marks stale orphaned dispatches failed and resets the agent to idle
+
+Lack of stdout/stderr is not treated as a hang while the engine still has a live process handle. Long builds, dependency installs, and tests can legitimately run quietly.
 
 ## Cooldown Behavior
 
@@ -391,8 +393,8 @@ All discovery behavior is controlled via `config.json`:
   "engine": {
     "tickInterval": 60000,       // ms between ticks
     "maxConcurrent": 5,          // max agents running at once
-    "agentTimeout": 18000000,     // 5 hours — kill hung processes
-    "heartbeatTimeout": 300000,  // 5min — kill stale/silent agents
+    "agentTimeout": 18000000,     // 5 hours — hard runtime limit
+    "heartbeatTimeout": 300000,  // 5min — stale-orphan grace after process tracking is lost
     "maxTurns": 100,             // max claude CLI turns per agent
     "worktreeCreateTimeout": 300000, // timeout for git worktree add on large repos
     "worktreeCreateRetries": 1   // retry count for transient add failures

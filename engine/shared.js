@@ -699,8 +699,8 @@ const ENGINE_DEFAULTS = {
   maxConcurrent: 5,
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
-  heartbeatTimeout: 300000, // 5min — base heartbeat for most work types
-  heartbeatTimeouts: {}, // per-type overrides; merged with defaults at runtime (see timeout.js)
+  heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
+  heartbeatTimeouts: {}, // optional per-type stale-orphan overrides; merged at runtime (see timeout.js)
   maxTurns: 100,
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
@@ -758,7 +758,7 @@ const ENGINE_DEFAULTS = {
   copilotReasoningSummaries: false,  // Copilot --enable-reasoning-summaries (Anthropic-family models only)
   maxBudgetUsd: undefined,       // fleet USD ceiling for --max-budget-usd (per-agent override: agents.<id>.maxBudgetUsd). Honors 0 via ?? so a literal cap of $0 works
   disableModelDiscovery: false,  // skip runtime.listModels() REST calls fleet-wide (settings UI falls back to free-text)
-  heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
+  heartbeatTimeouts: {},
   maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
@@ -1063,14 +1063,6 @@ const WORK_TYPE = {
   MEETING: 'meeting', EXPLORE: 'explore', ASK: 'ask', TEST: 'test', DOCS: 'docs',
 };
 
-// Per-work-type heartbeat timeouts (ms) — read-heavy tasks need longer silence windows.
-// Keyed by WORK_TYPE constants; types not listed fall back to ENGINE_DEFAULTS.heartbeatTimeout.
-Object.assign(ENGINE_DEFAULTS.heartbeatTimeouts, {
-  [WORK_TYPE.EXPLORE]: 600000,   // 10 min — spends most time reading/analyzing, minimal stdout
-  [WORK_TYPE.ASK]:     600000,   // 10 min — research-heavy, long silent analysis periods
-  [WORK_TYPE.REVIEW]:  480000,   // 8 min — code review reads extensively before producing output
-});
-
 const PLAN_STATUS = {
   ACTIVE: 'active', AWAITING_APPROVAL: 'awaiting-approval', APPROVED: 'approved',
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
@@ -1161,7 +1153,7 @@ const FAILURE_CLASS = {
   PERMISSION_BLOCKED: 'permission-blocked', // Trust gate, permission denied, auth failure
   MERGE_CONFLICT: 'merge-conflict',       // Git merge conflict in worktree or dependency
   BUILD_FAILURE: 'build-failure',         // Compilation, lint, or test failure
-  TIMEOUT: 'timeout',                     // Hard timeout or heartbeat timeout
+  TIMEOUT: 'timeout',                     // Hard runtime timeout or stale-orphan timeout
   EMPTY_OUTPUT: 'empty-output',           // Agent produced no meaningful output
   SPAWN_ERROR: 'spawn-error',             // Process failed to start or crashed immediately
   NETWORK_ERROR: 'network-error',         // API rate limit, DNS, connectivity

@@ -20,15 +20,11 @@ Implement PRD item **{{item_id}}: {{item_name}}**
 
 {{checkpoint_context}}
 
-## Projects
+## Project Scope
 
 Primary repo: **{{repo_name}}** ({{ado_org}}/{{ado_project}}) at `{{project_path}}`
 
-If this feature spans multiple projects, you may need to:
-1. Read code from all listed project paths to understand integration points
-2. Make changes in the primary project (your worktree)
-3. If changes are needed in other projects, create separate worktrees and PRs for each
-4. Note cross-repo dependencies in PR descriptions (e.g., "Requires office-bohemia PR #123")
+If this feature spans multiple projects, inspect the relevant repos, make changes where they belong, and call out any cross-repo PR dependencies in PR descriptions.
 
 ## Health Check
 
@@ -62,7 +58,7 @@ Before publishing, prove the change with the repo's own documented checks:
 - Fix regressions you introduced. If failures are pre-existing or outside the task, capture the evidence and make that explicit in the PR.
 - Do not publish changes with a broken build or failing tests that you introduced.
 
-> ⚠️ **Long builds (Gradle, MSBuild, dotnet, fresh `npm install`)**: any command that may stay silent for more than ~4 minutes will be killed by the heartbeat monitor. Run it via `Bash(run_in_background: true)` then `Monitor` to stream stdout, OR pass an explicit `timeout` (max 600000 ms). See **Long-Running Build / Test Commands** below for the full pattern.
+Long builds, dependency installs, and tests may be quiet for several minutes. Let the normal CLI command run naturally; do not add artificial heartbeat output or split commands just to show progress.
 
 ## Publish
 
