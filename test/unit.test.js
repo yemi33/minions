@@ -11489,6 +11489,61 @@ async function testCompleteDispatch() {
       'Should clear completed dedupe marker so retried item can redispatch');
   });
 
+  await test('completeDispatch clears stale _pendingReason when retrying a work item (#1885)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/dispatch', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const testDir = freshShared.MINIONS_DIR;
+      const wiPath = path.join(testDir, 'work-items.json');
+      const workItem = {
+        id: 'W-hung-retry',
+        title: 'Hung retry should redispatch',
+        type: 'fix',
+        status: freshShared.WI_STATUS.DISPATCHED,
+        _pendingReason: 'already_dispatched',
+        dispatched_at: '2026-04-29T20:00:00.000Z',
+        dispatched_to: 'lambert',
+        failReason: 'stale failure',
+        failedAt: '2026-04-29T20:05:00.000Z',
+      };
+      freshShared.safeWrite(wiPath, [workItem]);
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({
+          id: 'D-hung-retry',
+          type: 'fix',
+          agent: 'lambert',
+          meta: {
+            source: 'central-work-item',
+            dispatchKey: 'central-work-W-hung-retry',
+            item: { id: workItem.id, title: workItem.title },
+          },
+        });
+        return dp;
+      });
+
+      testDispatch.completeDispatch('D-hung-retry', freshShared.DISPATCH_RESULT.ERROR, 'timed out waiting for agent');
+
+      const [result] = freshShared.safeJson(wiPath);
+      assert.strictEqual(result.status, freshShared.WI_STATUS.PENDING, 'retry reset should make the work item pending');
+      assert.strictEqual(result._retryCount, 1, 'retry reset should increment retry count');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, '_pendingReason'),
+        'retry reset must clear stale pending metadata so redispatch is not blocked by already_dispatched');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_at'), 'retry reset should clear dispatched_at');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_to'), 'retry reset should clear dispatched_to');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'failReason'), 'retry reset should clear failReason');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'failedAt'), 'retry reset should clear failedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/dispatch', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('completeDispatch restores pendingFix on failed human-feedback fix', () => {
     assert.ok(src.includes("item.meta?.source === 'pr-human-feedback'"),
       'Should check for pr-human-feedback source on error');
@@ -21928,6 +21983,58 @@ async function testReviewReDispatchLoop() {
       src.includes('!pr.lastReviewedAt ||') &&
       src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
       'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('no-verdict review retry clears stale _pendingReason (#1885)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const lifecycle = require('../engine/lifecycle');
+      const testDir = freshShared.MINIONS_DIR;
+      const wiPath = path.join(testDir, 'work-items.json');
+      const workItem = {
+        id: 'W-review-no-verdict',
+        title: 'Review should retry',
+        type: 'review',
+        status: freshShared.WI_STATUS.DISPATCHED,
+        _pendingReason: 'already_dispatched',
+        dispatched_at: '2026-04-29T20:00:00.000Z',
+        dispatched_to: 'ripley',
+        completedAt: '2026-04-29T20:05:00.000Z',
+      };
+      freshShared.safeWrite(wiPath, [workItem]);
+      const dispatchItem = {
+        id: 'D-review-no-verdict',
+        type: 'review',
+        task: 'Review PR',
+        agent: 'ripley',
+        meta: {
+          source: 'central-work-item',
+          item: { id: workItem.id, title: workItem.title },
+          dispatchKey: 'central-work-W-review-no-verdict',
+        },
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'ripley', 0, 'Review finished without a verdict', { projects: [], agents: {} });
+
+      const [result] = freshShared.safeJson(wiPath);
+      assert.strictEqual(result.status, freshShared.WI_STATUS.PENDING, 'no-verdict review should reset to pending for retry');
+      assert.strictEqual(result._retryCount, 1, 'no-verdict review retry should increment retry count');
+      assert.strictEqual(result._lastRetryReason, 'no review verdict');
+      assert.ok(result._lastRetryAt, 'no-verdict review retry should stamp _lastRetryAt');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, '_pendingReason'),
+        'no-verdict review retry must clear stale pending metadata');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'dispatched_at'), 'retry reset should clear dispatched_at');
+      assert.ok(!Object.prototype.hasOwnProperty.call(result, 'completedAt'), 'retry reset should clear completedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
