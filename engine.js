@@ -1268,15 +1268,19 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary, autoRecovered } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered, completionContractFailure } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
     // autoRecovered: agent failed after creating PRs — treat as success
-    const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
-    const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
+    const effectiveResult = completionContractFailure ? DISPATCH_RESULT.ERROR : ((code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+    const completeOpts = completionContractFailure
+      ? { processWorkItemFailure: false }
+      : (effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {});
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
     let errorReason = '';
-    if (effectiveResult === DISPATCH_RESULT.ERROR) {
+    if (completionContractFailure) {
+      errorReason = completionContractFailure.reason || 'PR attachment contract failed';
+    } else if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
       // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the
       // "silent crash" pattern seen during scheduled tasks when the box went to sleep

@@ -3889,6 +3889,158 @@ async function testPrLinks() {
   });
 }
 
+async function testPrAttachmentContract() {
+  console.log('\n── PR Attachment Contract ──');
+
+  await test('syncPrsFromOutput creates tracked PR with canonical prdItems link', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const count = lifecycle.syncPrsFromOutput(
+        JSON.stringify({ type: 'result', result: 'Created PR: https://github.com/octo/minions/pull/1902' }),
+        'dallas',
+        { branch: 'work/W-output123', item: { id: 'W-output123', title: 'Harden PR links', type: 'fix' }, project: { name: 'minions' } },
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(count, 1, 'sync should report the PR/link change');
+      assert.strictEqual(prs.length, 1, 'one PR record should be tracked');
+      assert.strictEqual(prs[0].id, 'github:octo/minions#1902');
+      assert.deepStrictEqual(prs[0].prdItems, ['W-output123']);
+      const links = testShared.getPrLinks();
+      assert.deepStrictEqual(links['github:octo/minions#1902'], ['W-output123']);
+    } finally { restore(); }
+  });
+
+  await test('/api/pull-requests/link path canonically attaches context.workItemId', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const result = testShared.upsertPullRequestRecord(prPath, {
+        id: 'github:octo/minions#1903',
+        prNumber: 1903,
+        title: 'Manual link',
+        agent: 'human',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1903',
+        _context: { workItemId: 'W-context123' },
+      }, { project, itemId: 'W-context123' });
+
+      const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+      assert.ok(dashSrc.includes('linkPullRequestForTracking(body, CONFIG)'),
+        'dashboard /api/pull-requests/link must route through the canonical link helper');
+      assert.ok(dashSrc.includes('context.workItemId'),
+        'manual PR link context.workItemId must feed the canonical attachment');
+      assert.strictEqual(result.id, 'github:octo/minions#1903');
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1);
+      assert.deepStrictEqual(prs[0].prdItems, ['W-context123']);
+      assert.deepStrictEqual(testShared.getPrLinks()['github:octo/minions#1903'], ['W-context123']);
+    } finally { restore(); }
+  });
+
+  await test('duplicate/manual re-link does not duplicate PR records or prdItems entries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+      const entry = {
+        id: 'github:octo/minions#1904',
+        prNumber: 1904,
+        title: 'Duplicate link',
+        agent: 'human',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1904',
+      };
+
+      testShared.upsertPullRequestRecord(prPath, entry, { project, itemId: 'W-dupe123' });
+      testShared.upsertPullRequestRecord(prPath, entry, { project, itemId: 'W-dupe123' });
+
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1, 'same PR should not be inserted twice');
+      assert.deepStrictEqual(prs[0].prdItems, ['W-dupe123']);
+      assert.deepStrictEqual(testShared.getPrLinks()['github:octo/minions#1904'], ['W-dupe123']);
+    } finally { restore(); }
+  });
+
+  await test('PR-producing success without canonical PR is needs-human-review, not done', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = { id: 'W-nopr123', title: 'No PR regression', type: 'implement', status: 'dispatched' };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-nopr123', type: 'implement', task: 'No PR regression', meta: { source: 'work-item', item, branch: 'work/W-nopr123', project: { name: 'minions', localPath: testDir } } },
+        'dallas',
+        0,
+        'Implemented the requested change without opening a pull request.\n'.repeat(20),
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
+      assert.strictEqual(updated.status, 'needs-human-review');
+      assert.ok(!updated.completedAt, 'missing PR contract must not persist a done completion timestamp');
+      assert.match(updated.failReason, /canonically attached PR record/);
+      const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      assert.ok(inboxFiles.some(f => f.includes('missing-pr-attachment-W-nopr123')),
+        'missing PR contract failure should leave a durable inbox note');
+    } finally { restore(); }
+  });
+}
+
 // ─── queries.js Tests ────────────────────────────────────────────────────────
 
 async function testQueriesCore() {
@@ -13477,54 +13629,53 @@ async function testSyncPrsFromOutput() {
       'Should require trusted PR-create command output or an explicit PR created protocol line');
   });
 
-  await test('syncPrsFromOutput adds PR links', () => {
-    assert.ok(src.includes('addPrLink'),
-      'Should record PR-to-work-item links via addPrLink');
+  await test('syncPrsFromOutput uses canonical PR upsert/link helper', () => {
+    assert.ok(src.includes('upsertPullRequestRecord'),
+      'Should record PR-to-work-item links through the canonical PR attachment helper');
   });
 
-  await test('syncPrsFromOutput orphaned PR fallback stores prdItems inline without addPrLink', () => {
+  await test('PR branch fallback uses canonical PR upsert/link helper', () => {
     const fallbackIdx = src.indexOf('Auto-linked existing PR ${fullId} on branch ${meta.branch}');
-    assert.ok(fallbackIdx > -1, 'Should have orphaned PR auto-link fallback logging');
-    const fallbackStart = src.lastIndexOf('if (found) {', fallbackIdx);
-    const fallbackBlock = src.slice(fallbackStart, fallbackIdx);
-    assert.ok(fallbackBlock.includes('const existingPr = prs.find'),
-      'Fallback should detect an already-tracked PR before creating a new entry');
-    assert.ok(fallbackBlock.includes('existingPr.prdItems'),
-      'Fallback should update prdItems on an existing tracked PR when the item link is missing');
-    assert.ok(fallbackBlock.includes('prdItems: meta.item?.id ? [meta.item.id] : []'),
-      'Fallback PR creation should persist prdItems directly on the PR record');
-    assert.ok(!fallbackBlock.includes('addPrLink('),
-      'Fallback PR creation should not redundantly call addPrLink after writing prdItems');
+    assert.strictEqual(fallbackIdx, -1, 'Old inline branch fallback logging should be removed');
+    const helperIdx = src.indexOf('async function enforcePrAttachmentContract');
+    assert.ok(helperIdx > -1, 'Should enforce the PR attachment contract before marking done');
+    const fallbackStart = src.indexOf('if (found) {', helperIdx);
+    const fallbackEnd = src.indexOf('const reason = `PR-producing work item', fallbackStart);
+    const helperBlock = src.slice(fallbackStart, fallbackEnd);
+    assert.ok(helperBlock.includes('shared.upsertPullRequestRecord'),
+      'Fallback should create/update the tracked PR and prdItems through the canonical helper');
+    assert.ok(!helperBlock.includes('mutateJsonFileLocked(prPath'),
+      'Fallback should not hand-roll PR record creation outside the canonical helper');
   });
 
-  await test('syncPrsFromOutput persists pr-links outside the pull-requests lock callback', () => {
-    const syncIdx = src.indexOf('const linksToPersist = [];');
-    assert.ok(syncIdx > -1, 'Should queue PR links for persistence after the PR file mutation');
-    const lockIdx = src.indexOf('mutateJsonFileLocked(prPath,', syncIdx);
-    const lockReturnIdx = src.indexOf('return prs;', lockIdx);
-    const addIdx = src.indexOf('addPrLink(prId, itemId, { project, prNumber, url });', syncIdx);
-    assert.ok(addIdx > lockReturnIdx,
-      'Should write pr-links only after releasing the pull-requests.json lock');
+  await test('syncPrsFromOutput does not hand-roll pr-links while holding pull-requests lock', () => {
+    const syncIdx = src.indexOf('function syncPrsFromOutput');
+    const syncEnd = src.indexOf('// ─── Post-Completion Hooks', syncIdx);
+    const syncBlock = src.slice(syncIdx, syncEnd);
+    assert.ok(syncBlock.includes('shared.upsertPullRequestRecord'),
+      'sync should delegate PR record + link persistence to the shared helper');
+    assert.ok(!syncBlock.includes('addPrLink('),
+      'sync should not separately mutate pr-links outside the canonical helper');
   });
 
-  await test('syncPrsFromOutput only uses ADO branch lookup for ADO hosts', () => {
+  await test('PR branch lookup only uses ADO lookup for ADO hosts', () => {
     assert.ok(src.includes("const host = projectObj.repoHost || 'ado'"),
       'Should normalize repoHost before branch lookup fallback');
-    assert.ok(src.includes("else if (host === 'ado')"),
+    assert.ok(src.includes("if (host === 'ado')"),
       'Should only call ADO branch lookup for explicit/defaulted ADO hosts');
     assert.ok(src.includes('unsupported repo host'),
       'Should log when branch lookup is skipped for an unsupported repo host');
   });
 
   await test('syncPrsFromOutput retries GitHub branch lookup when PR list is initially empty', () => {
-    assert.ok(src.includes('for (let attempt = 0; attempt < 3 && !found; attempt++)'),
+    assert.ok(src.includes('for (let attempt = 0; attempt < 3; attempt++)'),
       'Should retry GitHub branch lookup up to 3 times for freshly created PRs');
     assert.ok(src.includes("if (attempt > 0) await new Promise(r => setTimeout(r, 3000));"),
       'Should wait briefly between retry attempts so GitHub indexing can catch up');
   });
 
   await test('syncPrsFromOutput warns when GitHub branch lookup stays empty after retries', () => {
-    assert.ok(src.includes('else if (attempt === 2)'),
+    assert.ok(src.includes('if (attempt === 2)'),
       'Should only warn after the final empty GitHub branch lookup attempt');
     assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts'),
       'Should log a warning when GitHub branch lookup stays empty after all retries');
@@ -13533,9 +13684,9 @@ async function testSyncPrsFromOutput() {
   });
 
   await test('syncPrsFromOutput keeps retry loop alive when gh output is invalid JSON', () => {
-    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3 && !found; attempt++)');
+    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3; attempt++)');
     assert.ok(retryIdx > -1, 'Should have a GitHub branch lookup retry loop');
-    const retryBlock = src.slice(retryIdx, src.indexOf("} else if (host === 'ado')", retryIdx));
+    const retryBlock = src.slice(retryIdx, src.indexOf("if (host === 'ado')", retryIdx));
     assert.ok(retryBlock.includes("let raw = '';"),
       'Retry loop should preserve raw gh output for final-attempt diagnostics');
     assert.ok(retryBlock.includes('try {'),
@@ -13556,7 +13707,7 @@ async function testSyncPrsFromOutput() {
   await test('PR dedup uses strict equality, not substring includes', () => {
     assert.ok(!src.includes("String(p.id).includes(prId)"),
       'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
-    assert.ok(src.includes('p.id === fullId'),
+    assert.ok(src.includes('p.id !== normalizedEntry.id') || fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8').includes('pr?.id === canonicalId'),
       'Should use exact canonical PR ID equality for dedup');
   });
 }
@@ -17758,9 +17909,9 @@ async function testRecentFeatures() {
     const start = dashSrc.indexOf("/api/pull-requests/link'");
     const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
     const linkHandler = dashSrc.slice(start, next);
-    assert.ok(linkHandler.includes('contextText'),
-      'link handler should compute a normalized contextText before persisting the PR');
-    assert.ok(linkHandler.includes('_context: contextText'),
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+      'link handler should route through the helper that normalizes context before persisting the PR');
+    assert.ok(dashSrc.includes('contextText') && dashSrc.includes('_context: contextText'),
       'pull-requests.json should receive the normalized contextText, not the raw request body value');
   });
 
@@ -21046,6 +21197,7 @@ async function main() {
     await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
+    await testPrAttachmentContract();
     await testSafeWriteBackupRestore();
 
     // queries.js tests
@@ -22025,11 +22177,11 @@ async function testSyncPrsFromOutputCentral() {
 }
 
 async function testNoRetryPrCompletion() {
-  await test('lifecycle handles implement tasks without PR — retry or mark done', () => {
+  await test('lifecycle handles implement tasks without PR as contract failure', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('no output, no PR') || src.includes('no PR created'), 'should auto-retry when no output and no PR');
-    assert.ok(src.includes('_noPr') || src.includes('noPr'), 'should flag items that completed without PR');
-    assert.ok(src.includes('hasOutput'), 'should distinguish meaningful output from MCP stall');
+    assert.ok(src.includes('enforcePrAttachmentContract'), 'should enforce PR attachment before marking done');
+    assert.ok(src.includes('WI_STATUS.NEEDS_REVIEW'), 'missing PR should surface as needs-human-review');
+    assert.ok(src.includes('_missingPrAttachment'), 'should flag missing canonical PR attachments');
   });
 }
 
@@ -23981,17 +24133,17 @@ async function testPrWriteRaceConditions() {
   const shared = require('../engine/shared');
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
 
-  await test('syncPrsFromOutput uses mutateJsonFileLocked instead of safeWrite for PR files', () => {
+  await test('syncPrsFromOutput delegates PR file writes to canonical locked helper', () => {
     // The old pattern: safeWrite(entry.prPath, entry.prs) should be gone
-    // The new pattern: mutateJsonFileLocked(prPath, ...) should be present
+    // The new pattern: shared.upsertPullRequestRecord owns the locked PR write.
     const fnBody = lifecycleSrc.slice(
       lifecycleSrc.indexOf('function syncPrsFromOutput'),
       lifecycleSrc.indexOf('function updatePrAfterReview')
     );
     assert.ok(!fnBody.includes('shared.safeWrite(entry.prPath'),
       'syncPrsFromOutput should NOT use safeWrite for PR files');
-    assert.ok(fnBody.includes('mutateJsonFileLocked(prPath'),
-      'syncPrsFromOutput should use mutateJsonFileLocked for atomic PR writes');
+    assert.ok(fnBody.includes('shared.upsertPullRequestRecord'),
+      'syncPrsFromOutput should use the canonical helper for atomic PR writes');
   });
 
   await test('syncPrsFromOutput reads PR data inside lock callback, not before', () => {
@@ -26760,8 +26912,8 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('autoRecovered restricted to PR-creating work types', () => {
-    assert.ok(lifecycleSrc.includes('WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX'),
-      'prCreatingType must check IMPLEMENT, IMPLEMENT_LARGE, and FIX');
+    assert.ok(lifecycleSrc.includes('WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX || type === WORK_TYPE.TEST'),
+      'prCreatingType must check IMPLEMENT, IMPLEMENT_LARGE, FIX, and TEST');
     assert.ok(lifecycleSrc.includes('prCreatingType && !!meta?.item?.id'),
       'autoRecovered must require prCreatingType');
   });
@@ -26771,12 +26923,12 @@ async function testAutoRecoveryAndAtomicity() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion }'),
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion'),
       'runPostCompletionHooks must return autoRecovered and structuredCompletion in its result');
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
-    assert.ok(engineSrc.includes('const { resultSummary, autoRecovered } = await runPostCompletionHooks'),
+    assert.ok(engineSrc.includes('autoRecovered') && engineSrc.includes('await runPostCompletionHooks'),
       'engine.js must destructure autoRecovered from runPostCompletionHooks');
     assert.ok(engineSrc.includes('code === 0 || autoRecovered'),
       'engine.js must use autoRecovered to determine effectiveResult for completeDispatch');
@@ -26844,15 +26996,15 @@ async function testAutoRecoveryAndAtomicity() {
       'completeDispatch must have retry count guard');
   });
 
-  await test('no-PR detection uses resolveWorkItemPath and mutateJsonFileLocked', () => {
+  await test('PR attachment contract uses resolveWorkItemPath and mutateJsonFileLocked', () => {
     const hookBody = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Detect implement tasks that completed without creating a PR'),
-      lifecycleSrc.indexOf('if (type === WORK_TYPE.REVIEW)')
+      lifecycleSrc.indexOf('function markMissingPrAttachment'),
+      lifecycleSrc.indexOf('async function enforcePrAttachmentContract')
     );
     assert.ok(hookBody.includes('resolveWorkItemPath(meta)'),
-      'No-PR detection must use resolveWorkItemPath');
+      'PR attachment contract must use resolveWorkItemPath');
     assert.ok(hookBody.includes('mutateJsonFileLocked(noPrWiPath'),
-      'No-PR detection must use mutateJsonFileLocked');
+      'PR attachment contract must use mutateJsonFileLocked');
   });
 
   await test('syncPrdFromPrs uses module-scope imports, not lazy require', () => {
@@ -31136,7 +31288,7 @@ async function testStructuredCompletion() {
 
   await test('runPostCompletionHooks returns structuredCompletion in result', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('structuredCompletion }'),
+    assert.ok(src.includes('structuredCompletion'),
       'Return object should include structuredCompletion');
   });
 
@@ -43292,38 +43444,29 @@ async function testAutoLinkAgentPrs() {
     } finally { restore(); }
   });
 
-  // ── Source guard: /api/pull-requests/link routes through addPrLink ──
-  await test('/api/pull-requests/link calls shared.addPrLink when workItemId is provided', () => {
+  // ── Source guard: /api/pull-requests/link routes through canonical attachment helper ──
+  await test('/api/pull-requests/link uses the canonical PR attachment helper', () => {
     const start = dashSrc.indexOf("/api/pull-requests/link'");
     assert.ok(start > 0, 'link handler must exist');
     const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
     const linkHandler = dashSrc.slice(start, next);
-    assert.ok(linkHandler.includes('shared.addPrLink('),
-      'manual link handler must call shared.addPrLink so prdItems is populated alongside _context');
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+      'manual link handler must route through the canonical PR attachment helper');
   });
 
   await test('/api/pull-requests/link accepts workItemId as a top-level field', () => {
-    const start = dashSrc.indexOf("/api/pull-requests/link'");
-    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
-    const linkHandler = dashSrc.slice(start, next);
-    assert.ok(/const\s*\{[^}]*\bworkItemId\b/.test(linkHandler),
-      'link handler must destructure workItemId from the request body');
+    assert.ok(dashSrc.includes('function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }'),
+      'link helper must accept workItemId from the request body');
   });
 
   await test('/api/pull-requests/link falls back to context.workItemId for legacy CC payloads', () => {
-    const start = dashSrc.indexOf("/api/pull-requests/link'");
-    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
-    const linkHandler = dashSrc.slice(start, next);
-    assert.ok(linkHandler.includes('context.workItemId'),
+    assert.ok(dashSrc.includes('context.workItemId'),
       'link handler must read context.workItemId so the CC link-pr action with a structured context still backfills prdItems');
   });
 
   await test('/api/pull-requests/link seeds prdItems with the resolved workItemId on insert', () => {
-    const start = dashSrc.indexOf("/api/pull-requests/link'");
-    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
-    const linkHandler = dashSrc.slice(start, next);
     // The PR record literal must seed prdItems with the linkedItemId, not always [].
-    assert.ok(/prdItems\s*:\s*linkedItemId\s*\?/.test(linkHandler),
+    assert.ok(/prdItems\s*:\s*linkedWorkItemId\s*\?/.test(dashSrc),
       'link handler must seed prdItems with [linkedItemId] when one is resolved, instead of hardcoding []');
   });
 }
