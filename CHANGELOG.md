@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1642 (2026-04-30)
+
+### Features
+- fix PR comment auto-fix loop
+
 ## 0.1.1641 (2026-04-30)
 
 ### Features
