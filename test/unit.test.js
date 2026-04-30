@@ -39393,6 +39393,32 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('resolveTemplate resolves hyphenated stage and field names', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { 'build-step': { 'result-summary': 'ship it' } } };
+      assert.strictEqual(
+        pipeline.resolveTemplate('Summary: {{stages.build-step.result-summary}}', run),
+        'Summary: ship it'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate leaves unsupported deeper placeholders unchanged', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { build: { output: { text: 'nested' } } } };
+      assert.strictEqual(
+        pipeline.resolveTemplate('Value: {{stages.build.output.text}}', run),
+        'Value: {{stages.build.output.text}}'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
   // ── _findMeetingsInRun — pure function ──
 
   await test('_findMeetingsInRun returns empty array for empty stages', () => {
@@ -39461,6 +39487,26 @@ async function testPipelineBehavioral() {
       assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: null }), []);
       assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: undefined }), []);
       assert.deepStrictEqual(pipeline._findMeetingsInRun({}), []);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun extracts meetings from mixed stage artifact types', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          task: { type: 'task', artifacts: { workItems: ['W-1'], meetings: ['MTG-from-task'] } },
+          meeting: { type: 'meeting', artifacts: { meetings: ['MTG-main', 'MTG-from-task'] } },
+          api: { type: 'api', artifacts: { prs: ['PR-1'] } },
+          empty: { type: 'wait' },
+        },
+      };
+      assert.deepStrictEqual(
+        pipeline._findMeetingsInRun(run),
+        ['MTG-from-task', 'MTG-main']
+      );
     } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
@@ -39562,6 +39608,18 @@ async function testPipelineBehavioral() {
       // null condition → { check: undefined } → default case → false
       assert.strictEqual(pipeline.evaluateCondition(null, { run: {}, pipeline: {}, config: {} }), false);
       assert.strictEqual(pipeline.evaluateCondition(undefined, { run: {}, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition returns false for malformed condition values', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const ctx = { run: { stages: {} }, pipeline: {}, config: {} };
+      assert.strictEqual(pipeline.evaluateCondition({}, ctx), false);
+      assert.strictEqual(pipeline.evaluateCondition({ check: '' }, ctx), false);
+      assert.strictEqual(pipeline.evaluateCondition(123, ctx), false);
     } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
@@ -40252,6 +40310,62 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('isStageComplete: TASK follows work item terminal states', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
+      isolatedShared.safeWrite(wiPath, [
+        { id: 'W-pending', status: 'pending' },
+        { id: 'W-active', status: 'dispatched' },
+        { id: 'W-done', status: 'done' },
+        { id: 'W-failed', status: 'failed' },
+      ]);
+
+      const stage = { id: 'task', type: 'task' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-pending'] } }, run, { projects: [] }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-active'] } }, run, { projects: [] }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { workItems: ['W-done', 'W-failed', 'W-missing'] } }, run, { projects: [] }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('isStageComplete: MEETING waits until all meetings are completed or archived', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const meeting = require('../engine/meeting');
+      meeting.saveMeeting({ id: 'MTG-active', status: 'debating' });
+      meeting.saveMeeting({ id: 'MTG-complete', status: 'completed' });
+      meeting.saveMeeting({ id: 'MTG-archive', status: 'archived' });
+
+      const stage = { id: 'meet', type: 'meeting' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { meetings: ['MTG-active'] } }, run, {}),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { meetings: ['MTG-complete', 'MTG-archive'] } }, run, {}),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
   await test('isStageComplete: PARALLEL complete when all sub-stages done', () => {
     const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
     try {
@@ -40335,6 +40449,33 @@ async function testPipelineBehavioral() {
     }
   });
 
+  await test('isStageComplete: MERGE_PRS waits for active PRs and accepts terminal PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-10', status: 'active' },
+        { id: 'PR-11', status: 'merged' },
+        { id: 'PR-12', status: 'abandoned' },
+      ]);
+
+      const stage = { id: 'merge', type: 'merge-prs' };
+      const run = { stages: {} };
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { prs: ['PR-10'] } }, run, config),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.isStageComplete(stage, { status: 'running', artifacts: { prs: ['PR-11', 'PR-12', 'PR-missing'] } }, run, config),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
   await test('evaluateCondition maxRuns checks run count', () => {
     const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
     const testPipelineId = '_test_maxruns_' + Date.now();
@@ -40393,6 +40534,170 @@ async function testPipelineBehavioral() {
         delete runs[testPipelineId];
         fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
       } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition noFailedItems returns true when no pipeline work items exist', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const run = { runId: 'run-no-items', stages: {} };
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run, pipeline: {}, config: { projects: [] } }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition noFailedItems detects failed central work items for the run', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const wiPath = path.join(isolatedShared.MINIONS_DIR, 'work-items.json');
+      isolatedShared.safeWrite(wiPath, [
+        { id: 'W-ok', status: 'done', _pipelineRun: 'run-has-failure' },
+        { id: 'W-fail', status: 'failed', _pipelineRun: 'run-has-failure' },
+        { id: 'W-other-fail', status: 'failed', _pipelineRun: 'run-other' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-has-failure', stages: {} }, pipeline: {}, config: { projects: [] } }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-clean', stages: {} }, pipeline: {}, config: { projects: [] } }),
+        true,
+        'failed work items from another run should not affect this run'
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition noFailedItems includes project work items', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectWorkItemsPath(config.projects[0]), [
+        { id: 'W-project-fail', status: 'failed', _pipelineRun: 'run-project-failure' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('noFailedItems', { run: { runId: 'run-project-failure', stages: {} }, pipeline: {}, config }),
+        false
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition allBuildsGreen returns true when all monitored PRs pass', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-101', status: 'active', buildStatus: 'passing' },
+        { id: 'PR-102', status: 'active', buildStatus: 'passing' },
+        { id: 'PR-103', status: 'active', buildStatus: 'passing' },
+      ]);
+      const pipelineDef = {
+        id: 'pipe-green',
+        monitoredResources: ['PR-101'],
+        stages: [{ id: 'stage-green', monitoredResources: ['PR-102'] }],
+      };
+      const run = { runId: 'run-green', stages: { collect: { artifacts: { prs: ['PR-103'] } } } };
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', { run, pipeline: pipelineDef, config }),
+        true
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition allBuildsGreen returns false for missing or non-passing PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const config = { projects: [{ name: 'Proj', localPath: path.join(isolatedShared.MINIONS_DIR, 'repo') }] };
+      isolatedShared.safeWrite(isolatedShared.projectPrPath(config.projects[0]), [
+        { id: 'PR-201', status: 'active', buildStatus: 'failing' },
+      ]);
+
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-red', stages: {} },
+          pipeline: { id: 'pipe-red', monitoredResources: ['PR-201'] },
+          config,
+        }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-missing', stages: {} },
+          pipeline: { id: 'pipe-missing', monitoredResources: ['PR-999'] },
+          config,
+        }),
+        false
+      );
+      assert.strictEqual(
+        freshPipeline.evaluateCondition('allBuildsGreen', {
+          run: { runId: 'run-no-refs', stages: {} },
+          pipeline: { id: 'pipe-no-refs', stages: [] },
+          config,
+        }),
+        false,
+        'no monitored PR refs cannot prove builds are green'
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('evaluateCondition can consume a condition name resolved from a template', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      // Compose the two pure functions: resolve a template into a condition name,
+      // then evaluate that condition. Every stage must carry a status (completed
+      // or pending) for runSucceeded to be true — gate carries both an output
+      // (the condition name to dispatch) and a completed status.
+      const run = {
+        stages: {
+          gate: { status: 'completed', output: 'runSucceeded' },
+          work: { status: 'completed' },
+        },
+      };
+      const check = pipeline.resolveTemplate('{{stages.gate.output}}', run);
+      assert.strictEqual(check, 'runSucceeded');
+      assert.strictEqual(
+        pipeline.evaluateCondition(check, { run, pipeline: {}, config: {} }),
+        true
+      );
+
+      // Negative path — a single failed stage flips runSucceeded to false even
+      // though resolveTemplate still produces the same condition name.
+      const failingRun = {
+        stages: {
+          gate: { status: 'completed', output: 'runSucceeded' },
+          work: { status: 'failed' },
+        },
+      };
+      const failingCheck = pipeline.resolveTemplate('{{stages.gate.output}}', failingRun);
+      assert.strictEqual(
+        pipeline.evaluateCondition(failingCheck, { run: failingRun, pipeline: {}, config: {} }),
+        false
+      );
+    } finally {
       delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
     }
   });
