@@ -1984,7 +1984,7 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
-const PR_PENDING_MISSING_BRANCH = 'missing_pr_branch';
+const PR_PENDING_MISSING_BRANCH = shared.PR_PENDING_REASON.MISSING_BRANCH;
 
 function normalizePrBranch(value) {
   const raw = value == null ? '' : String(value).trim();

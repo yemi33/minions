@@ -1073,6 +1073,9 @@ const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.UPD
 const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
 // PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
 const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
+const PR_PENDING_REASON = {
+  MISSING_BRANCH: 'missing_pr_branch',
+};
 
 // Watch statuses — engine-level persistent watches that survive restarts
 const WATCH_STATUS = { ACTIVE: 'active', PAUSED: 'paused', TRIGGERED: 'triggered', EXPIRED: 'expired' };
@@ -2255,7 +2258,7 @@ module.exports = {
   resolveAgentMaxBudget, resolveAgentBareMode,
   applyLegacyCcModelMigration, _resetLegacyCcModelMigrationFlag,
   runtimeConfigWarnings,
-  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, PR_PENDING_REASON, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
   WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,

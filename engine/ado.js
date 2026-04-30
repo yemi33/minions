@@ -798,7 +798,7 @@ async function reconcilePrs(config) {
         if (existing && !existing.branch && branch) {
           existing.branch = branch;
           if (existing._branchResolutionError) delete existing._branchResolutionError;
-          if (existing._pendingReason === 'missing_pr_branch') delete existing._pendingReason;
+          if (existing._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete existing._pendingReason;
           metadataUpdated++;
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
