@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1645 (2026-04-30)
+
+### Other
+- test(queries): add unit tests for timeSince, readHeadTail, detectInFlightTool, getInboxFiles (#1903)
+
 ## 0.1.1644 (2026-04-30)
 
 ### Fixes
