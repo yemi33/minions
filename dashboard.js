@@ -28,6 +28,7 @@ const watchesMod = require('./engine/watches');
 const routing = require('./engine/routing');
 const playbook = require('./engine/playbook');
 const dispatchMod = require('./engine/dispatch');
+const steering = require('./engine/steering');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
@@ -146,6 +147,21 @@ function _resolveSkillReadPath({ file, dir, source, config, skillFiles } = {}) {
     return fullPath;
   }
   return null;
+}
+
+function _agentSessionIsDraining(agentId) {
+  const activeForAgent = (getDispatchQueue().active || []).some(d => d.agent === agentId);
+  if (!activeForAgent) return false;
+  const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+  const tail = (safeRead(liveLogPath) || '').slice(-65536);
+  if (!tail) return false;
+  const lastSteer = tail.lastIndexOf('[human-steering]');
+  const terminalIdx = Math.max(
+    tail.lastIndexOf('[process-exit]'),
+    tail.lastIndexOf('"type":"session.task_complete"'),
+    tail.lastIndexOf('"type":"result"')
+  );
+  return terminalIdx >= 0 && terminalIdx > lastSteer;
 }
 
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
@@ -6002,21 +6018,30 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
     { method: 'POST', path: '/api/agents/steer', desc: 'Inject steering message into a running agent', params: 'agent, message', handler: async (req, res) => {
       const body = await readBody(req);
-      const { agent: agentId, message } = body;
-      if (!agentId || !message) return jsonReply(res, 400, { error: 'agent and message required' });
+      const { agent, message } = body;
+      if (!agent || !message) return jsonReply(res, 400, { error: 'agent and message required' });
+      const agentId = String(agent).replace(/[^a-zA-Z0-9_-]/g, '');
+      const text = String(message).trim();
+      if (!agentId || !text) return jsonReply(res, 400, { error: 'agent and message required' });
 
-      const steerPath = path.join(MINIONS_DIR, 'agents', agentId, 'steer.md');
       const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
       if (!fs.existsSync(agentDir)) return jsonReply(res, 404, { error: 'Agent not found' });
+      if (_agentSessionIsDraining(agentId)) {
+        return jsonReply(res, 409, { error: 'Agent session is finishing; retry when the next session starts' });
+      }
 
-      // Write steering file
-      safeWrite(steerPath, message);
+      const entry = steering.writeSteeringMessage(agentId, text);
 
       // Also append to live-output.log so it shows in the chat view
       const liveLogPath = path.join(agentDir, 'live-output.log');
-      try { fs.appendFileSync(liveLogPath, '\n[human-steering] ' + message + '\n'); } catch { /* optional */ }
+      try { fs.appendFileSync(liveLogPath, '\n[human-steering] ' + text + '\n'); } catch { /* optional */ }
 
-      return jsonReply(res, 200, { ok: true, message: 'Steering message sent' });
+      return jsonReply(res, 200, {
+        ok: true,
+        message: 'Steering message queued',
+        file: entry?.file || null,
+        inboxCount: steering.listUnreadSteeringMessages(agentId).length,
+      });
     }},
     { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
     { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },

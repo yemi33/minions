@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
+const steering = require('./steering');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
   ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
@@ -78,25 +79,20 @@ function checkSteering(config) {
     // Skip if already being steered (prevents double-kill race)
     if (info._steeringMessage || info._steeringAt) continue;
 
-    const steerPath = path.join(AGENTS_DIR, info.agentId, 'steer.md');
-    let steerMtime;
-    try { steerMtime = fs.statSync(steerPath).mtimeMs; } catch { continue; } // ENOENT = no steering message
-
-    // Read and consume the message immediately — always delete to prevent stale messages
-    const message = safeRead(steerPath);
-    try { fs.unlinkSync(steerPath); } catch { /* cleanup */ }
-    if (!message) continue;
+    const alreadyPending = new Set((info._pendingSteeringFiles || []).map(entry => entry.path || entry));
+    const unread = steering.listUnreadSteeringMessages(info.agentId);
+    for (const empty of unread.filter(entry => !entry.message.trim())) {
+      shared.safeUnlink(empty.path);
+    }
+    const steerEntry = unread.find(entry => entry.message.trim() && !alreadyPending.has(entry.path));
+    if (!steerEntry) continue; // ENOENT/no agents/<id>/inbox/steering-*.md message
+    const message = steerEntry.message.trim();
 
     const sessionId = info.sessionId;
     if (!sessionId) {
-      // No session to resume — kill agent and deliver message via inbox for retry.
+      // No session to resume — kill agent and leave message unread in inbox for retry.
       // Previously this silently skipped for up to 5m then deleted the message (#627).
-      log('info', `Steering: no sessionId for ${info.agentId} (${id}) — killing and forwarding message to inbox`);
-
-      // Write steering message to agent inbox so it survives the retry
-      const inboxDir = path.join(AGENTS_DIR, info.agentId, 'inbox');
-      try { fs.mkdirSync(inboxDir, { recursive: true }); } catch {}
-      safeWrite(path.join(inboxDir, `steering-${Date.now()}.md`), `# Steering Message (Forwarded)\n\nOriginal steering from human:\n\n${message}\n`);
+      log('info', `Steering: no sessionId for ${info.agentId} (${id}) — killing and keeping unread message in inbox`);
 
       // Append to live output so user sees confirmation in the dashboard
       try {
@@ -115,6 +111,7 @@ function checkSteering(config) {
     // Set steering state BEFORE kill — close event may fire synchronously on some platforms
     info._steeringMessage = message;
     info._steeringSessionId = sessionId;
+    info._steeringEntry = steerEntry;
     info._steeringAt = Date.now();
 
     shared.killImmediate(info.proc);
