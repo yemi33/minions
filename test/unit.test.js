@@ -36934,10 +36934,12 @@ async function testWatchesModule() {
 
   await test('create-watch CC action in executeCCActions creates a watch', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Find executeCCActions function — create-watch case may be far into the switch
+    // Find executeCCActions function — create-watch case may be far into the switch.
+    // Use the next top-level helper as an end marker so the window scales with the function.
     const fnStart = dashSrc.indexOf('async function executeCCActions');
     assert.ok(fnStart > -1, 'executeCCActions must exist in dashboard.js');
-    const fnSlice = dashSrc.slice(fnStart, fnStart + 8000);
+    const fnEnd = dashSrc.indexOf('// ── Shared LLM call core', fnStart);
+    const fnSlice = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 30000);
     assert.ok(fnSlice.includes("case 'create-watch'"),
       'executeCCActions must handle create-watch action type');
     assert.ok(fnSlice.includes('watchesMod.createWatch') || fnSlice.includes('createWatch('),
@@ -36967,9 +36969,11 @@ async function testWatchesModule() {
 
   await test('build-and-test CC action falls back to action.agent when provided', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const fnStart = dashSrc.indexOf("case 'build-and-test'");
-    assert.ok(fnStart > -1, 'build-and-test case must exist');
-    const fnEnd = dashSrc.indexOf("case 'note'", fnStart);
+    // The handler case opens a block ("{") — the validator's case label does not.
+    // Anchor on "case 'build-and-test': {" to skip past the validator switch.
+    const fnStart = dashSrc.indexOf("case 'build-and-test': {");
+    assert.ok(fnStart > -1, 'build-and-test handler case must exist');
+    const fnEnd = dashSrc.indexOf("case 'note': {", fnStart);
     const fn = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
     // The agent branch must check action.agent BEFORE invoking routing
     assert.ok(fn.includes('action.agent'),
@@ -36983,8 +36987,8 @@ async function testWatchesModule() {
 
   await test('build-and-test CC action returns error when PR is not found', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const fnStart = dashSrc.indexOf("case 'build-and-test'");
-    const fnEnd = dashSrc.indexOf("case 'note'", fnStart);
+    const fnStart = dashSrc.indexOf("case 'build-and-test': {");
+    const fnEnd = dashSrc.indexOf("case 'note': {", fnStart);
     const fn = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
     assert.ok(/PR not found/.test(fn),
       'build-and-test must return an error result when the PR cannot be resolved');
