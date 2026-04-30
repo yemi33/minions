@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1632 (2026-04-30)
+
+### Features
+- guard malformed PR context
+- clear stale pending reason on retry
+
 ## 0.1.1629 (2026-04-29)
 
 ### Other
