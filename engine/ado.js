@@ -268,7 +268,8 @@ async function forEachActivePr(config, token, callback) {
     if (!project.adoOrg || !project.adoProject) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status));
+    const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status)
+      && shared.isPrCompatibleWithProject(project, pr, pr.url || ''));
     if (activePrs.length === 0) continue;
 
     const adoRepositoryId = getAdoRepositoryId(project);

@@ -206,7 +206,8 @@ async function forEachActiveGhPr(config, callback) {
     if (isSlugInBackoff(slug)) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status));
+    const activePrs = prs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status)
+      && shared.isPrCompatibleWithProject(project, pr, pr.url || ''));
     if (activePrs.length === 0) continue;
 
     // Probe repo accessibility before iterating PRs — avoids N warnings per inaccessible repo

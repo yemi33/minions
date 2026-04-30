@@ -3571,6 +3571,58 @@ async function testPrLinks() {
     assert.strictEqual(shared.getPrDisplayId('github:octo/alpha#123'), 'PR-123');
   });
 
+  await test('getCanonicalPrId prefers ADO URL scope over incompatible GitHub project', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const adoUrl = 'https://office.visualstudio.com/DefaultCollection/office/_git/Office/pullrequest/5134010';
+    const id = shared.getCanonicalPrId(ghProject, 5134010, adoUrl);
+    assert.strictEqual(id, 'ado:office/office/office#5134010');
+    assert.notStrictEqual(id, 'github:yemi33/minions#5134010');
+  });
+
+  await test('getCanonicalPrId prefers GitHub URL scope over incompatible ADO project', () => {
+    const adoProject = { repoHost: 'ado', adoOrg: 'office', adoProject: 'office', repoName: 'Office' };
+    const ghUrl = 'https://github.com/yemi33/minions/pull/1910';
+    const id = shared.getCanonicalPrId(adoProject, 1910, ghUrl);
+    assert.strictEqual(id, 'github:yemi33/minions#1910');
+    assert.notStrictEqual(id, 'ado:office/office/office#1910');
+  });
+
+  await test('normalizePrRecord quarantines PR records whose URL scope conflicts with project scope', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const pr = {
+      id: 'github:yemi33/minions#5134010',
+      prNumber: 5134010,
+      url: 'https://office.visualstudio.com/DefaultCollection/office/_git/Office/pullrequest/5134010',
+      status: 'active'
+    };
+    assert.strictEqual(shared.normalizePrRecord(pr, ghProject), true);
+    assert.strictEqual(pr.id, 'ado:office/office/office#5134010');
+    assert.deepStrictEqual(pr._invalidProjectScope, {
+      reason: 'pr_scope_mismatch',
+      projectScope: 'github:yemi33/minions',
+      prScope: 'ado:office/office/office'
+    });
+    assert.strictEqual(shared.isPrCompatibleWithProject(ghProject, pr, pr.url), false);
+  });
+
+  await test('normalizePrRecord clears quarantine when PR scope matches project scope', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const pr = {
+      id: 'github:yemi33/minions#1910',
+      prNumber: 1910,
+      url: 'https://github.com/yemi33/minions/pull/1910',
+      _invalidProjectScope: {
+        reason: 'pr_scope_mismatch',
+        projectScope: 'ado:office/office/office',
+        prScope: 'github:yemi33/minions'
+      }
+    };
+    assert.strictEqual(shared.normalizePrRecord(pr, ghProject), true);
+    assert.strictEqual(pr.id, 'github:yemi33/minions#1910');
+    assert.ok(!Object.prototype.hasOwnProperty.call(pr, '_invalidProjectScope'));
+    assert.strictEqual(shared.isPrCompatibleWithProject(ghProject, pr, pr.url), true);
+  });
+
   await test('findPrRecord matches canonical PR entries from legacy refs', () => {
     const project = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
     const prs = [{
@@ -3860,7 +3912,7 @@ async function testPrAttachmentContract() {
       fs.writeFileSync(prPath, '[]');
 
       const count = lifecycle.syncPrsFromOutput(
-        JSON.stringify({ type: 'result', result: 'Created PR: https://github.com/octo/minions/pull/1902' }),
+        JSON.stringify({ type: 'result', result: 'PR created: https://github.com/octo/minions/pull/1902' }),
         'dallas',
         { branch: 'work/W-output123', item: { id: 'W-output123', title: 'Harden PR links', type: 'fix' }, project: { name: 'minions' } },
         { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
@@ -13768,9 +13820,9 @@ async function testSyncPrsFromOutput() {
       'Should match GitHub PR URL patterns');
   });
 
-  await test('syncPrsFromOutput detects PR creation patterns', () => {
-    assert.ok(src.includes('created') || src.includes('opened') || src.includes('submitted'),
-      'Should detect PR creation keywords in agent output');
+  await test('syncPrsFromOutput detects explicit PR-created evidence only', () => {
+    assert.ok(src.includes('trustedPrCreateToolIds') && src.includes('PR created'),
+      'Should require trusted PR-create command output or an explicit PR created protocol line');
   });
 
   await test('syncPrsFromOutput uses canonical PR upsert/link helper', () => {
@@ -15633,12 +15685,11 @@ async function testVerifyWorkflow() {
       'Should trigger PRD re-render when pullRequests count changes');
   });
 
-  await test('syncPrsFromOutput scans assistant text blocks for PR URLs', () => {
+  await test('syncPrsFromOutput scans assistant text blocks for explicit PR-created protocol lines', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.slice(src.indexOf('function syncPrsFromOutput'));
     assert.ok(fn.includes("block.type === 'text'"), 'Should scan text blocks, not just tool_result');
-    assert.ok(fn.includes('PR created') && fn.includes('E2E PR'), 'Should match PR created and E2E PR patterns');
-    assert.ok(fn.includes('textCreatedPattern'), 'Should have textCreatedPattern regex');
+    assert.ok(fn.includes('PR created') && fn.includes('explicitPrCreatedPattern'), 'Should match explicit PR created protocol lines');
   });
 
   await test('verify playbook requires PR URL in final message', () => {
@@ -22606,6 +22657,18 @@ async function testReviewReDispatchLoop() {
       'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
   });
 
+  await test('PR automation skips records whose canonical scope conflicts with the project scope', () => {
+    const engineSrc = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    const adoSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'ado.js'), 'utf8');
+    assert.ok(engineSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'discoverFromPrs must skip mismatched PR records before creating review/fix/build work');
+    assert.ok(ghSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'GitHub poller must skip records that do not belong to the GitHub project scope');
+    assert.ok(adoSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'ADO poller must skip records that do not belong to the ADO project scope');
+  });
+
   await test('no-verdict review retry clears stale _pendingReason (#1885)', async () => {
     const restore = createTestMinionsDir();
     try {
@@ -24389,8 +24452,8 @@ async function testPrWriteRaceConditions() {
     try {
       // Simulate agent1 found PR 100 and agent2 found PR 200
       // Output must be JSONL with type:result for PR matching to work
-      const output1 = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/100 — Feature A"}';
-      const output2 = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/200 — Feature B"}';
+      const output1 = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/100 — Feature A"}';
+      const output2 = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/200 — Feature B"}';
       const meta1 = { item: { id: 'W-001', title: 'Feature A' }, project: mockProject };
       const meta2 = { item: { id: 'W-002', title: 'Feature B' }, project: mockProject };
 
@@ -24427,7 +24490,7 @@ async function testPrWriteRaceConditions() {
     shared.getProjects = () => [mockProject];
 
     try {
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/300 — Feature C"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/300 — Feature C"}';
       const meta = { item: { id: 'W-003', title: 'Feature C' }, project: mockProject };
 
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
@@ -24461,9 +24524,7 @@ async function testPrWriteRaceConditions() {
     shared.getProjects = () => [mockProject];
 
     try {
-      // Realistic one-off: human asks "review PR 777" — agent fetches the PR via gh,
-      // tool_result contains the PR URL. syncPrsFromOutput picks it up from output.
-      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at https://github.com/org/repo/pull/777 — let me review it."}]}}';
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/777"}]}}';
       // Simulate a human-initiated one-off review — work item has oneShot flag
       const meta = { item: { id: 'W-777', title: 'Review PR 777', oneShot: true }, project: mockProject };
 
@@ -24497,7 +24558,7 @@ async function testPrWriteRaceConditions() {
     shared.getProjects = () => [mockProject];
 
     try {
-      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"Created PR https://github.com/org/repo/pull/888 — Regular feature"}]}}';
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/888 — Regular feature"}]}}';
       // Normal implement dispatch — no oneShot flag, eval loop should run as usual
       const meta = { item: { id: 'W-888', title: 'Regular feature' }, project: mockProject };
 
@@ -27255,7 +27316,7 @@ async function testAutoRecoveryAndAtomicity() {
     shared.getProjects = () => [mockProject];
 
     try {
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/42 — Feature"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/42 — Feature"}';
       const dispatchItem = {
         id: 'D-1', type: 'implement', task: 'Test task',
         meta: { item: { id: 'W-100', title: 'Test' }, project: mockProject, source: 'work-item' }
@@ -29476,7 +29537,7 @@ async function testAutoRecoveryAndAtomicity() {
     shared.getProjects = () => [mockProject];
 
     try {
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/77"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/77"}';
       const dispatchItem = {
         id: 'D-3', type: 'implement', task: 'Test task',
         meta: { item: { id: 'W-300', title: 'Test' }, project: mockProject, source: 'work-item' }
@@ -37978,24 +38039,66 @@ async function testSyncPrsToolResultInUserMessages() {
       'syncPrsFromOutput must include "type":"user" in its message-type filter so tool_result blocks are scanned');
   });
 
-  await test('syncPrsFromOutput tool_result URL scan is not gated on keywords', () => {
+  await test('syncPrsFromOutput tool_result URL scan requires a trusted PR-create command', () => {
     const fnBody = lifecycleSrc.slice(
       lifecycleSrc.indexOf('function syncPrsFromOutput'),
       lifecycleSrc.indexOf('function updatePrAfterReview')
     );
-    // Find the tool_result block handling — the URL regex should NOT be inside a keyword guard
     const toolResultBlock = fnBody.slice(
       fnBody.indexOf("block.type === 'tool_result'"),
       fnBody.indexOf("block.type === 'text'")
     );
-    // The old code gated URL scanning on pullRequestId/create_pull_request keywords
-    assert.ok(!toolResultBlock.includes("text.includes('pullRequestId') || text.includes('create_pull_request')"),
-      'tool_result URL scan should NOT be gated on pullRequestId/create_pull_request keywords — gh pr create output may not contain these');
+    assert.ok(fnBody.includes('trustedPrCreateToolIds'),
+      'syncPrsFromOutput must track tool_use IDs for trusted PR-create commands');
+    assert.ok(toolResultBlock.includes('trustedPrCreateToolIds.has(block.tool_use_id)'),
+      'tool_result URL scan must only accept output from a trusted PR-create tool_use');
   });
 
   // ── Functional: PR URL in type:user tool_result is detected ──
 
-  await test('syncPrsFromOutput detects GitHub PR URL in type:user tool_result block', () => {
+  await test('syncPrsFromOutput ignores PR URLs from gh issue view/list tool_result output', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = [
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool_issue","name":"Bash","input":{"command":"gh issue view 123 --json body,url"}}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_issue","content":"{\\"body\\":\\"Related regression: https://github.com/org/repo/pull/555\\",\\"url\\":\\"https://github.com/org/repo/issues/123\\"}"}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-100', title: 'Issue context should not create PR' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      assert.strictEqual(count, 0, 'gh issue output is command context, not PR-created evidence');
+      assert.strictEqual(result.length, 0, 'No PR record should be created from an unrelated issue body URL');
+
+      const listOutput = [
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool_issue_list","name":"Bash","input":{"command":"gh issue list --search regression --json body,url"}}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_issue_list","content":"[{\\"body\\":\\"Prior art: https://github.com/org/repo/pull/556\\",\\"url\\":\\"https://github.com/org/repo/issues/124\\"}]"}]}}'
+      ].join('\n');
+      const listCount = lifecycle.syncPrsFromOutput(listOutput, 'agent1', meta, mockConfig);
+      const afterList = shared.safeJson(prFile) || [];
+      assert.strictEqual(listCount, 0, 'gh issue list output is command context, not PR-created evidence');
+      assert.strictEqual(afterList.length, 0, 'No PR record should be created from unrelated issue list URLs');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput detects GitHub PR URL from gh pr create tool_result block', () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -38012,10 +38115,10 @@ async function testSyncPrsToolResultInUserMessages() {
     shared.getProjects = () => [mockProject];
 
     try {
-      // Simulate JSONL where PR URL appears ONLY in a type:user tool_result block
-      // (this is how gh pr create output actually appears in Claude API JSONL)
+      // Simulate JSONL where the PR URL appears ONLY in a type:user tool_result block
+      // associated with a preceding gh pr create tool_use.
       const output = [
-        '{"type":"assistant","message":{"content":[{"type":"text","text":"I will create a PR now."}]}}',
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool_1","name":"Bash","input":{"command":"gh pr create --base main --head work/branch --title Test --body-file pr.md --repo org/repo"}}]}}',
         '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"https://github.com/org/repo/pull/555\\nCreating pull request for work/branch into master..."}]}}'
       ].join('\n');
       const meta = { item: { id: 'W-100', title: 'Test PR in tool_result' }, project: mockProject };
@@ -38031,7 +38134,7 @@ async function testSyncPrsToolResultInUserMessages() {
     }
   });
 
-  await test('syncPrsFromOutput detects ADO PR URL in type:user tool_result block', () => {
+  await test('syncPrsFromOutput detects ADO PR URL from trusted create tool_result block', () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -38048,8 +38151,8 @@ async function testSyncPrsToolResultInUserMessages() {
     shared.getProjects = () => [mockProject];
 
     try {
-      // ADO PR URL in a tool_result block
       const output = [
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool_2","name":"Bash","input":{"command":"az repos pr create --source-branch work/branch --target-branch main --title Test"}}]}}',
         '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"Created PR: https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/777"}]}}'
       ].join('\n');
       const meta = { item: { id: 'W-101', title: 'ADO PR in tool_result' }, project: mockProject };
@@ -38064,9 +38167,9 @@ async function testSyncPrsToolResultInUserMessages() {
     }
   });
 
-  // ── Regression: existing assistant text-block and result-message paths still work ──
+  // ── Regression: explicit protocol lines in assistant text/result still work ──
 
-  await test('syncPrsFromOutput still detects PR URL in assistant text blocks (regression)', () => {
+  await test('syncPrsFromOutput detects explicit PR-created protocol line in assistant text blocks', () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -38089,14 +38192,14 @@ async function testSyncPrsToolResultInUserMessages() {
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('github:org/repo#888'), 'repo-scoped PR 888 from assistant text block should still be detected');
+      assert.ok(ids.includes('github:org/repo#888'), 'repo-scoped PR 888 from explicit assistant text protocol should be detected');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
     }
   });
 
-  await test('syncPrsFromOutput still detects PR URL in type:result messages (regression)', () => {
+  await test('syncPrsFromOutput detects explicit PR-created protocol line in type:result messages', () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -38113,13 +38216,13 @@ async function testSyncPrsToolResultInUserMessages() {
     shared.getProjects = () => [mockProject];
 
     try {
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/999 — Feature done"}';
       const meta = { item: { id: 'W-103', title: 'Result message PR' }, project: mockProject };
 
       lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
       const result = shared.safeJson(prFile) || [];
       const ids = result.map(p => p.id);
-      assert.ok(ids.includes('github:org/repo#999'), 'repo-scoped PR 999 from type:result message should still be detected');
+      assert.ok(ids.includes('github:org/repo#999'), 'repo-scoped PR 999 from explicit type:result protocol should be detected');
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
@@ -38280,7 +38383,7 @@ async function testDuplicatePrPrevention() {
       const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
 
       // Agent output contains a NEW PR (999) on the same branch
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/999 — Feature done"}';
       const meta = { item: { id: 'W-8eobrosn', title: 'Same branch work' }, project: mockProject, branch: 'work/W-8eobrosn' };
 
       testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
@@ -38320,7 +38423,7 @@ async function testDuplicatePrPrevention() {
       const mockProject = { name: 'TestProject', localPath: projectDir, mainBranch: 'main' };
       const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
 
-      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/999 — Feature done"}';
       const meta = { item: { id: 'W-8eobrosn', title: 'Retry after abandon' }, project: mockProject, branch: 'work/W-8eobrosn' };
 
       testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
@@ -43457,8 +43560,8 @@ async function testAutoLinkAgentPrs() {
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
   const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
 
-  // ── Source guard: inbox regex relaxed beyond mandatory bold markdown ──
-  await test('syncPrsFromOutput inbox regex no longer hard-requires bold "\\*\\*PR" prefix', () => {
+  // ── Source guard: inbox regex accepts explicit PR-created protocol variants ──
+  await test('syncPrsFromOutput inbox regex no longer hard-requires bold "\\*\\*PR created" prefix', () => {
     const fnBody = lifecycleSrc.slice(
       lifecycleSrc.indexOf('function syncPrsFromOutput'),
       lifecycleSrc.indexOf('function updatePrAfterReview')
@@ -43468,7 +43571,7 @@ async function testAutoLinkAgentPrs() {
     assert.ok(m, 'prHeaderPattern declaration must remain on a single line for source-guard inspection');
     const literal = m[1];
     assert.ok(!/^\\\*\\\*PR/.test(literal),
-      'inbox regex must not begin with mandatory \\*\\*PR — that misses plain "PR: <url>" lines (W-moljyu60wuzr / #1902 regression)');
+      'inbox regex must not begin with mandatory \\*\\*PR created — that misses plain "PR created: <url>" protocol lines');
   });
 
   await test('syncPrsFromOutput inbox regex declaration is anchored on line start', () => {
@@ -43492,7 +43595,7 @@ async function testAutoLinkAgentPrs() {
   });
 
   // ── Functional: regression coverage for the W-moljyu60wuzr / #1902 missed-link case ──
-  await test('syncPrsFromOutput detects plain "PR: <url>" in agent inbox file (W-moljyu60wuzr regression)', () => {
+  await test('syncPrsFromOutput detects "PR created: <url>" in agent inbox file', () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -43505,14 +43608,14 @@ async function testAutoLinkAgentPrs() {
       const prFile = path.join(projectDir, 'pull-requests.json');
       sharedIso.safeWrite(prFile, []);
 
-      // Drop the exact note shape Ripley wrote for #1902 — plain "PR: <url>".
+      // Drop the explicit PR-created protocol line that qualifies as creation evidence.
       const today = new Date().toISOString().slice(0, 10);
       const inboxName = `ripley-W-moljyu60wuzr-${today}-1424.md`;
       const inboxPath = path.join(testDir, 'notes', 'inbox', inboxName);
       fs.writeFileSync(inboxPath,
         `---\nid: NOTE-test\nagent: ripley\ndate: ${today}\n---\n\n` +
         `# Pipeline.js test coverage — W-moljyu60wuzr\n\n` +
-        `PR: https://github.com/yemi33/minions/pull/1902 (auto-merge enabled, SQUASH)\n\n## What I did\n\nAdded tests.\n`
+        `PR created: https://github.com/yemi33/minions/pull/1902 (auto-merge enabled, SQUASH)\n\n## What I did\n\nAdded tests.\n`
       );
 
       const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
@@ -43568,7 +43671,7 @@ async function testAutoLinkAgentPrs() {
       const today = new Date().toISOString().slice(0, 10);
       const inboxName = `ripley-W-test-${today}.md`;
       fs.writeFileSync(path.join(testDir, 'notes', 'inbox', inboxName),
-        `---\nid: NOTE-x\nagent: ripley\ndate: ${today}\n---\n\nPR: https://github.com/yemi33/minions/pull/4242\n`);
+        `---\nid: NOTE-x\nagent: ripley\ndate: ${today}\n---\n\nPR created: https://github.com/yemi33/minions/pull/4242\n`);
 
       const mockProject = { name: 'minions', localPath: testDir, mainBranch: 'master', repoHost: 'github' };
       const mockConfig = { projects: [mockProject], agents: { ripley: { name: 'Ripley' } } };
