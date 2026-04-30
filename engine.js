@@ -2195,12 +2195,55 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); }
     }
 
+    let fixDispatched = false;
+
+    // Fresh reviewer comments are actionable fixes, even while the PR is otherwise
+    // awaiting a stale-vote re-review or has build-fix retries escalated.
+    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
+    const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
+    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+      const key = humanFixKey;
+      let staleCoalesced = [];
+      const alreadyDispatched = isAlreadyDispatched(key);
+      const blockedByCooldown = isOnCooldown(key, cooldownMs);
+      if (blockedByCooldown && !alreadyDispatched) {
+        staleCoalesced = getCoalescedContexts(key);
+        clearCooldown(key);
+        log('info', `Cleared stale cooldown for ${key} — no matching dispatch history`);
+      }
+      if (alreadyDispatched || isOnCooldown(key, cooldownMs)) {
+        // Coalesce: save feedback for next dispatch
+        if (pr.humanFeedback?.feedbackContent) {
+          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: ts() });
+        }
+        continue;
+      }
+      const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
+      if (!agentId) continue;
+      const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
+      if (!prBranch) continue;
+
+      const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
+      let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
+      if (coalesced.length > 0) {
+        const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
+        if (earlier) reviewNote = earlier + '\n\n---\n\n' + reviewNote;
+      }
+
+      const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
+        reviewer: 'Human Reviewer',
+        review_note: reviewNote,
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
+      if (item) { newWork.push(item); fixDispatched = true; }
+    }
+
     // Re-review after fix: trigger when a fix was pushed after the last minions review,
     // or when no minions review has completed yet (e.g. human-feedback-only fix path).
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
     const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
-      fixedAfterReview && !evalEscalated;
+      fixedAfterReview && !evalEscalated && !fixDispatched;
     if (needsReReview) {
       const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
@@ -2240,8 +2283,7 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix
     // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
-    let fixDispatched = false;
-    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
+    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated && !fixDispatched) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
@@ -2263,46 +2305,6 @@ async function discoverFromPrs(config, project) {
           });
         } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
       }
-    }
-
-    // PRs with pending human feedback (skip if review-fix already dispatched above)
-    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
-    const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
-      const key = humanFixKey;
-      let staleCoalesced = [];
-      const alreadyDispatched = isAlreadyDispatched(key);
-      const blockedByCooldown = isOnCooldown(key, cooldownMs);
-      if (blockedByCooldown && !alreadyDispatched) {
-        staleCoalesced = getCoalescedContexts(key);
-        clearCooldown(key);
-        log('info', `Cleared stale cooldown for ${key} — no matching dispatch history`);
-      }
-      if (alreadyDispatched || isOnCooldown(key, cooldownMs)) {
-        // Coalesce: save feedback for next dispatch
-        if (pr.humanFeedback?.feedbackContent) {
-          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: ts() });
-        }
-        continue;
-      }
-      const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
-      if (!agentId) continue;
-      const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
-      if (!prBranch) continue;
-
-      const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
-      let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
-      if (coalesced.length > 0) {
-        const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
-        if (earlier) reviewNote = earlier + '\n\n---\n\n' + reviewNote;
-      }
-
-      const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
-        reviewer: 'Human Reviewer',
-        review_note: reviewNote,
-      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
-      if (item) { newWork.push(item); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
