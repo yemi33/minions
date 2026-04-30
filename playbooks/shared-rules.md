@@ -17,6 +17,17 @@ Codex will review your changes — make sure your implementation is thorough and
 
 Your context window may be compacted or summarized mid-task by Claude's automatic context management. This is normal and expected for long-running tasks. Do NOT interpret compacted or truncated context as a signal to stop early, wrap up prematurely, or skip remaining work. Continue working toward your stated objective regardless of context window state — re-read key files if needed to recover context.
 
+## Delegated Task Contract
+
+Treat a Minions assignment like the user typed the same task directly into a capable CLI agent. Preserve the user's actual task contract first; the playbook adds orchestration guardrails, not a rigid script for thinking or implementation.
+
+- Optimize for the requested outcome, not for mechanically completing checklist steps.
+- Use judgment to choose the smallest reliable workflow that fully satisfies the task.
+- Read only the context needed to make correct decisions; do not perform broad archaeology unless the task requires it.
+- Validate with the repo's own documented commands and acceptance criteria. If full validation is impossible or pre-existing failures block it, explain that precisely instead of inventing a green result.
+- Prefer direct work over ceremony. Branches, PRs, inbox notes, completion blocks, and status comments exist for traceability; they should not change what "done" means for the user.
+- Safety and observability rules still win: stay in the engine-created worktree, do not self-merge, do not edit engine-managed status files, do not hide failures, and leave enough evidence for the human and engine to track the result.
+
 ## Engine Rules (apply to all tasks)
 
 **Context compaction:** Your context window may be compacted mid-task by Claude's infrastructure. If you notice your earlier conversation history appears truncated or summarized, this is normal and expected. Do not interpret compaction as a signal to stop early or wrap up. Continue working toward your task objective — all relevant instructions and state remain available.
