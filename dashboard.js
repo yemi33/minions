@@ -25,6 +25,9 @@ const ado = require('./engine/ado');
 const gh = require('./engine/github');
 const issues = require('./engine/issues');
 const watchesMod = require('./engine/watches');
+const routing = require('./engine/routing');
+const playbook = require('./engine/playbook');
+const dispatchMod = require('./engine/dispatch');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
@@ -1236,6 +1239,49 @@ async function executeCCActions(actions) {
             return items;
           }, { defaultValue: [] });
           results.push({ type: action.type, id, ok: true });
+          break;
+        }
+        case 'build-and-test': {
+          // Resolve PR by number, ID, or URL — same lookup that drives the link-pr / PR-row paths.
+          const allPrs = getPullRequests().filter(p => !p._ghost);
+          const pr = shared.findPrRecord(allPrs, action.pr) || null;
+          if (!pr) {
+            results.push({ type: 'build-and-test', error: `PR not found: ${action.pr}` });
+            break;
+          }
+          // Resolve project: explicit param wins, else PR's _project, else first configured project as last resort.
+          const projectName = action.project || pr._project || null;
+          const project = projectName
+            ? PROJECTS.find(p => p.name?.toLowerCase() === String(projectName).toLowerCase())
+            : null;
+          if (!project) {
+            results.push({ type: 'build-and-test', error: `Project not found for PR ${pr.id}: ${projectName || '(none)'}` });
+            break;
+          }
+          // Pick agent: explicit param wins; else routing for 'test' work type.
+          let agentId = action.agent && CONFIG.agents?.[action.agent] ? action.agent : null;
+          if (!agentId) {
+            agentId = routing.resolveAgent('test', CONFIG, { authorAgent: pr.agent });
+          }
+          if (!agentId) {
+            results.push({ type: 'build-and-test', error: 'No available agent for test routing' });
+            break;
+          }
+          const prNumber = shared.getPrNumber(pr);
+          const dispatchKey = `cc-bt-${project.name}-${pr.id}`;
+          const item = playbook.buildPrDispatch(agentId, CONFIG, project, pr, 'test', {
+            pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+            pr_author: pr.agent || '', pr_url: pr.url || '',
+            project_path: project.localPath || '',
+            task: `Build & test ${pr.id}: ${pr.title || ''}`,
+          }, `Build & test ${pr.id}: ${pr.title || ''}`,
+          { dispatchKey, source: 'cc-build-and-test', pr, branch: pr.branch, project: { name: project.name, localPath: project.localPath } });
+          if (!item) {
+            results.push({ type: 'build-and-test', error: 'Failed to render build-and-test playbook' });
+            break;
+          }
+          const id = dispatchMod.addToDispatch(item);
+          results.push({ type: 'build-and-test', id, agent: agentId, pr: pr.id, ok: true });
           break;
         }
         case 'note': {

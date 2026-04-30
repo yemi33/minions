@@ -6873,7 +6873,7 @@ async function testConfigAndPlaybooks() {
 
   await test('All required playbooks exist', () => {
     const required = ['implement', 'implement-shared', 'review', 'fix', 'explore',
-      'test', 'build-and-test', 'plan', 'plan-to-prd', 'ask', 'verify', 'work-item'];
+      'test', 'build-and-test', 'plan', 'plan-to-prd', 'ask', 'verify', 'docs', 'work-item'];
     for (const pb of required) {
       const pbPath = path.join(MINIONS_DIR, 'playbooks', `${pb}.md`);
       assert.ok(fs.existsSync(pbPath), `Missing playbook: ${pb}.md`);
@@ -11124,6 +11124,25 @@ async function testRenderPlaybook() {
       'Should explain that minions-scoped skills become user-level Claude skills');
   });
 
+  await test('renderPlaybook renders docs playbook successfully with typical vars', () => {
+    const result = renderPlaybook('docs', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      repo_name: 'TestRepo', ado_org: 'TestOrg', ado_project: 'TestProject',
+      item_id: 'W042', item_name: 'Update README architecture diagram',
+      item_description: 'Refresh the diagram so it matches the current adapter contract.',
+      additional_context: '', references: '', acceptance_criteria: '',
+      branch_name: 'docs/W042-readme', commit_message: 'docs: refresh README diagram',
+      team_root: MINIONS_DIR, date: '2024-01-01', notes_content: '',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'docs playbook should render to a non-empty string');
+    assert.ok(result.includes('Update README architecture diagram'),
+      'docs playbook should substitute item_name into the template');
+    assert.ok(result.includes('docs/W042-readme'),
+      'docs playbook should substitute branch_name into the template');
+  });
+
   await test('renderPlaybook appends pinned.md and notes.md after template rendering as inert data', () => {
     const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
     const notesPath = path.join(MINIONS_DIR, 'notes.md');
@@ -11268,7 +11287,7 @@ async function testValidatePlaybookVars() {
     const expectedTypes = [
       'implement', 'implement-shared', 'fix', 'review', 'build-and-test',
       'explore', 'ask', 'plan', 'plan-to-prd', 'decompose', 'verify',
-      'test', 'work-item', 'meeting-investigate', 'meeting-debate', 'meeting-conclude',
+      'test', 'docs', 'work-item', 'meeting-investigate', 'meeting-debate', 'meeting-conclude',
     ];
     for (const t of expectedTypes) {
       assert.ok(PLAYBOOK_REQUIRED_VARS[t], `Should define required vars for "${t}"`);
@@ -11489,6 +11508,12 @@ async function testSelectPlaybook() {
     const result = selectPlaybook('unknown-type', {});
     assert.strictEqual(result, 'work-item',
       'Unknown types should fall back to work-item');
+  });
+
+  await test('selectPlaybook routes docs type to docs playbook (no silent fallback)', () => {
+    const result = selectPlaybook('docs', {});
+    assert.strictEqual(result, 'docs',
+      'docs work type must route to docs playbook, not silently fall back to work-item');
   });
 }
 
@@ -36336,6 +36361,85 @@ async function testWatchesModule() {
       'create-watch action must call createWatch');
     assert.ok(fnSlice.includes('_parseWatchInterval'),
       'create-watch action must parse interval');
+  });
+
+  // ── build-and-test CC action ─────────────────────────────────────────────
+  await test('build-and-test CC action exists in executeCCActions', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = dashSrc.indexOf('async function executeCCActions');
+    assert.ok(fnStart > -1, 'executeCCActions must exist in dashboard.js');
+    const fnEnd = dashSrc.indexOf('// ── Shared LLM call core', fnStart);
+    const fn = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 20000);
+    assert.ok(fn.includes("case 'build-and-test'"),
+      'executeCCActions must handle build-and-test action type');
+    assert.ok(fn.includes("buildPrDispatch") && fn.includes("'test'"),
+      'build-and-test action must call playbook.buildPrDispatch with type "test"');
+    assert.ok(fn.includes("addToDispatch"),
+      'build-and-test action must enqueue via addToDispatch');
+    assert.ok(fn.includes("findPrRecord"),
+      'build-and-test action must resolve PR via shared.findPrRecord');
+    assert.ok(fn.includes("resolveAgent('test'") || fn.includes('resolveAgent("test"'),
+      'build-and-test action must route via routing.resolveAgent for "test" work type');
+  });
+
+  await test('build-and-test CC action falls back to action.agent when provided', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = dashSrc.indexOf("case 'build-and-test'");
+    assert.ok(fnStart > -1, 'build-and-test case must exist');
+    const fnEnd = dashSrc.indexOf("case 'note'", fnStart);
+    const fn = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
+    // The agent branch must check action.agent BEFORE invoking routing
+    assert.ok(fn.includes('action.agent'),
+      'build-and-test must honor an explicit action.agent param');
+    // Pattern: if explicit agent, use it; else routing
+    const agentLineIdx = fn.indexOf('action.agent');
+    const routingLineIdx = fn.indexOf('resolveAgent');
+    assert.ok(agentLineIdx > -1 && routingLineIdx > -1 && agentLineIdx < routingLineIdx,
+      'action.agent must be checked before routing.resolveAgent fallback');
+  });
+
+  await test('build-and-test CC action returns error when PR is not found', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = dashSrc.indexOf("case 'build-and-test'");
+    const fnEnd = dashSrc.indexOf("case 'note'", fnStart);
+    const fn = dashSrc.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
+    assert.ok(/PR not found/.test(fn),
+      'build-and-test must return an error result when the PR cannot be resolved');
+    assert.ok(fn.includes('Project not found'),
+      'build-and-test must return an error result when no project can be resolved');
+  });
+
+  await test('build-and-test CC action does not enqueue dispatch on missing PR', () => {
+    // Behavioral: simulate the resolution by calling shared.findPrRecord with an empty list
+    const result = shared.findPrRecord([], 'PR-99999');
+    assert.strictEqual(result, null,
+      'findPrRecord on an empty PR list must return null — the action handler treats this as an error path');
+  });
+
+  await test('build-and-test PR resolution: number, ID, and URL all map via findPrRecord', () => {
+    const prs = [
+      { id: 'MyProject#1234', prNumber: 1234, url: 'https://github.com/me/repo/pull/1234', branch: 'feat/x', title: 'Add feature x' },
+    ];
+    shared.normalizePrRecords(prs, { name: 'MyProject' });
+    // The canonical ID after normalization (matches what getPullRequests stores on disk)
+    const canonicalId = prs[0].id;
+    // by bare number
+    const byNumber = shared.findPrRecord(prs, '1234');
+    assert.ok(byNumber && byNumber.prNumber === 1234, 'must resolve PR by bare number');
+    // by canonical ID
+    const byId = shared.findPrRecord(prs, canonicalId);
+    assert.ok(byId && byId.prNumber === 1234, 'must resolve PR by canonical ID');
+    // by URL
+    const byUrl = shared.findPrRecord(prs, 'https://github.com/me/repo/pull/1234');
+    assert.ok(byUrl && byUrl.prNumber === 1234, 'must resolve PR by URL');
+  });
+
+  await test('build-and-test CC action documented in cc-system.md prompt', () => {
+    const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(ccPrompt.includes('build-and-test'),
+      'cc-system.md must document the build-and-test action');
+    assert.ok(/build-and-test.*pr/i.test(ccPrompt),
+      'cc-system.md must describe the pr param for build-and-test');
   });
 
   await test('updateWatch updates interval, onNotMet, and stopAfter fields', () => {

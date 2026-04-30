@@ -77,6 +77,8 @@ Core action types:
   workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
   If the user wants a design/architecture artifact committed through a PR, dispatch `implement` or `docs` rather than `explore`.
   When the user names a specific agent ("assign this to lambert"), put exactly that one name in `agents` (e.g. `"agents": ["lambert"]`). A single-agent assignment is hard-pinned by the server — it will queue for that agent only and skip the routing table. Use multi-agent arrays only when the user names multiple agents or asks for fan-out.
+- **build-and-test**: pr, project (optional), agent (optional) — Run the build-and-test playbook against a PR. The agent will checkout the PR branch, run the project's build/test commands, and report results. Use when the user asks to "run tests on PR X" or "build PR X" or after a fix to verify nothing regressed.
+  Example: user says "run build and test on PR 1834" → `{"type":"build-and-test","pr":"1834"}`
 - **note**: title, content — save to inbox
 - **knowledge**: title, content, category (architecture/conventions/project-notes/build-reports/reviews) — create new KB entry or copy existing doc to KB
 - **pin-to-pinned**: title, content, level (critical/warning) — write to pinned.md, force-injected into ALL agent prompts (rarely needed)

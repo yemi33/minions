@@ -278,6 +278,7 @@ const PLAYBOOK_REQUIRED_VARS = {
   'decompose':            ['item_id', 'item_description', 'project_path'],
   'verify':               ['task_description'],
   'test':                 ['item_name'],
+  'docs':                 ['item_id', 'item_name'],
   'work-item':            ['item_id', 'item_name'],
   'meeting-investigate':  ['meeting_title', 'agenda'],
   'meeting-debate':       ['meeting_title', 'agenda'],
@@ -630,7 +631,7 @@ function selectPlaybook(workType, item) {
   if (workType === WORK_TYPE.REVIEW && !item?._pr && !item?.pr_id) {
     return 'work-item';
   }
-  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];
+  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'docs', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];
   return typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
 }
 
