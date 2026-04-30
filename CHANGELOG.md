@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1644 (2026-04-30)
+
+### Fixes
+- harden action contracts so CC can't claim work it didn't do
+
 ## 0.1.1642 (2026-04-30)
 
 ### Features
