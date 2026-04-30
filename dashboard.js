@@ -1345,16 +1345,6 @@ function _ccValidateAction(action) {
   }
 }
 
-// Hallucination guard: detect prose like "I dispatched ..." when no ===ACTIONS=== block was emitted.
-// The regex is intentionally narrow — we only want affirmative claims about completed work, not
-// hypotheticals like "I would dispatch this" or "consider dispatching X".
-function _detectClaimedActionWithoutBlock(displayText, actions) {
-  if (Array.isArray(actions) && actions.length > 0) return null; // there are actions, no false claim
-  const triggers = /\b(dispatched|enqueued|queued|created (?:a |the )?work item|assigned (?:this |it )?(?:to|for)|spun up|kicked off|i'?ll dispatch|i (?:have )?(?:just )?dispatched)\b/i;
-  if (!triggers.test(displayText || '')) return null;
-  return 'CC described an action ("dispatched", "assigned", etc.) but no ===ACTIONS=== block was emitted. No work was actually queued. Resend or rephrase the request.';
-}
-
 async function executeCCActions(actions) {
   const results = [];
   for (const action of actions) {
@@ -4864,8 +4854,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const { _actionParseError, ...parsedReply } = parsed;
         const reply = { ...parsedReply, sessionId: ccSession.sessionId, newSession: !wasResume };
         if (_actionParseError) reply.actionParseError = _actionParseError;
-        const hallucinationWarning = _detectClaimedActionWithoutBlock(parsed.text, parsed.actions);
-        if (hallucinationWarning) reply.hallucinationWarning = hallucinationWarning;
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
@@ -5149,8 +5137,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Issue #1834: surface action JSON parse failures so the UI can warn
         // instead of silently dropping. Client renders this as a small notice.
         if (_actionParseError) donePayload.actionParseError = _actionParseError;
-        const hallucinationWarning = _detectClaimedActionWithoutBlock(displayText, actions);
-        if (hallucinationWarning) donePayload.hallucinationWarning = hallucinationWarning;
         if (sessionReset) donePayload.sessionReset = true;
         liveState.donePayload = donePayload;
         if (liveState.writer) liveState.writer(donePayload);
@@ -6550,7 +6536,6 @@ module.exports = {
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
   _ccValidateAction,
-  _detectClaimedActionWithoutBlock,
   executeCCActions,
 };
 

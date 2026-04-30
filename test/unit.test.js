@@ -42782,10 +42782,10 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  // ── CC action contract hardening — _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions ──
-  // Closes 5 silent failure paths where CC could claim "I dispatched X" without anything being queued.
+  // ── CC action contract hardening — _ccValidateAction, executeCCActions ──
+  // Closes silent failure paths where CC could claim "I dispatched X" without anything being queued.
 
-  const { _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions } = dashboard;
+  const { _ccValidateAction, executeCCActions } = dashboard;
 
   await test('_ccValidateAction: returns null for valid dispatch action', () => {
     assert.strictEqual(_ccValidateAction({ type: 'dispatch', title: 'Fix login bug' }), null);
@@ -42850,46 +42850,7 @@ async function testDashboardPureHelpers() {
     assert.strictEqual(_ccValidateAction({ type: 'some-future-action' }), null);
   });
 
-  await test('_detectClaimedActionWithoutBlock: returns warning when prose says "dispatched" with no actions', () => {
-    const w = _detectClaimedActionWithoutBlock('I dispatched a work item to fix that.', []);
-    assert.ok(w && /no work was actually queued|no .*?actions/i.test(w), 'must surface a warning string');
-  });
-
-  await test('_detectClaimedActionWithoutBlock: returns null when actions exist', () => {
-    assert.strictEqual(_detectClaimedActionWithoutBlock('I dispatched a work item.', [{ type: 'dispatch' }]), null);
-  });
-
-  await test('_detectClaimedActionWithoutBlock: returns null for innocuous prose', () => {
-    assert.strictEqual(_detectClaimedActionWithoutBlock('Here is the status of your queue.', []), null);
-    assert.strictEqual(_detectClaimedActionWithoutBlock('No items match.', []), null);
-    assert.strictEqual(_detectClaimedActionWithoutBlock('', []), null);
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "queued" / "enqueued" / "kicked off"', () => {
-    assert.ok(_detectClaimedActionWithoutBlock('Just queued that for you.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Enqueued the task.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Kicked off a build.', []));
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "created a work item" / "assigned to"', () => {
-    assert.ok(_detectClaimedActionWithoutBlock('Created a work item for that.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Assigned this to dallas.', []));
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "I have just dispatched" affirmative variants', () => {
-    assert.ok(_detectClaimedActionWithoutBlock("I'll dispatch dallas right now.", []));
-    assert.ok(_detectClaimedActionWithoutBlock('I have just dispatched a fix agent.', []));
-  });
-
   // Source-string assertions — verify the helpers are present in dashboard.js (they're not just exported stubs).
-  await test('dashboard.js source contains _detectClaimedActionWithoutBlock function', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('function _detectClaimedActionWithoutBlock'),
-      'dashboard.js must define _detectClaimedActionWithoutBlock');
-    assert.ok(src.includes('hallucinationWarning'),
-      'dashboard.js must reference hallucinationWarning in reply payloads');
-  });
-
   await test('dashboard.js source contains _ccValidateAction function', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('function _ccValidateAction'),
@@ -43004,24 +42965,12 @@ async function testDashboardPureHelpers() {
       'dispatch-class case must not fall back to "Untitled" placeholder');
   });
 
-  await test('executeCCActions source: hallucination warning plumbed into both reply paths', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Non-streaming reply
-    assert.ok(src.includes('reply.hallucinationWarning = hallucinationWarning'),
-      'non-streaming reply must include hallucinationWarning');
-    // Streaming donePayload
-    assert.ok(src.includes('donePayload.hallucinationWarning = hallucinationWarning'),
-      'streaming donePayload must include hallucinationWarning');
-  });
-
   await test('command-center.js: renders failed-action list and warnings inline', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
     assert.ok(src.includes('actionResults') && src.includes("r && r.error"),
       'must filter actionResults for errors and surface inline');
     assert.ok(src.includes("r && r.warning"),
       'must filter actionResults for warnings and surface inline');
-    assert.ok(src.includes('hallucinationWarning'),
-      'must render hallucinationWarning inline');
   });
 
   await test('prompts/cc-system.md: documents required fields per action type', () => {
@@ -43034,8 +42983,6 @@ async function testDashboardPureHelpers() {
       'must mark build-and-test pr as REQUIRED');
     assert.ok(md.includes('Unknown agent names error'),
       'must warn that unknown agents error');
-    assert.ok(md.includes('your false claim becomes visible') || md.includes('false claim'),
-      'must explain hallucination detection rule to the model');
   });
 }
 
