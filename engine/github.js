@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -717,7 +717,18 @@ async function reconcilePrs(config) {
           metadataUpdated++;
         }
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
+          shared.upsertPullRequestRecord(prPath, existing || {
+            id: prId,
+            prNumber: ghPr.number,
+            title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
+            agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
+            branch,
+            reviewStatus: 'pending',
+            status: 'active',
+            created: ghPr.created_at || ts(),
+            url: prUrl,
+            prdItems: [],
+          }, { project, itemId: confirmedItemId });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -732,7 +743,7 @@ async function reconcilePrs(config) {
       // Only auto-track PRs linked to a minions work item — skip human-authored PRs
       if (!confirmedItemId && !isE2eBranch) continue;
 
-      currentPrs.push({
+      const entry = {
         id: prId,
         prNumber: ghPr.number,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
@@ -743,8 +754,9 @@ async function reconcilePrs(config) {
         created: ghPr.created_at || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],
-      });
-      addPrLink(prId, confirmedItemId, { project, prNumber: ghPr.number, url: prUrl });
+      };
+      const upserted = shared.upsertPullRequestRecord(prPath, entry, { project, itemId: confirmedItemId });
+      currentPrs.push(upserted.record || entry);
       existingIds.add(prId);
       projectAdded++;
 
