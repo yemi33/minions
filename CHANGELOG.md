@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1637 (2026-04-30)
+
+### Other
+- test(pipeline): add unit tests for evaluateCondition, resolveTemplate, isStageComplete, _findMeetingsInRun (#1902)
+
 ## 0.1.1636 (2026-04-30)
 
 ### Other
