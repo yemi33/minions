@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1631 (2026-04-30)
+
+### Features
+- clear stale pending reason on retry
+
 ## 0.1.1629 (2026-04-29)
 
 ### Other
