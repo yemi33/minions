@@ -107,6 +107,7 @@ const { mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatc
 // ─── Timeout / Steering / Idle (extracted to engine/timeout.js) ──────────────
 
 const { checkTimeouts, checkSteering, checkIdleThreshold } = require('./engine/timeout');
+const steering = require('./engine/steering');
 
 // ─── Cleanup (extracted to engine/cleanup.js) ────────────────────────────────
 
@@ -295,6 +296,17 @@ function _buildAgentSpawnFlags(runtime, opts = {}) {
   return flags;
 }
 
+function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Date.now()) {
+  if (!procInfo?._pendingSteeringFiles?.length || !rawOutput) return;
+  const acked = steering.ackProcessedSteeringMessages(agentId, procInfo._pendingSteeringFiles, rawOutput, { observedAtMs });
+  if (acked.length === 0) return;
+
+  const ackedPaths = new Set(acked.map(entry => entry.path));
+  procInfo._pendingSteeringFiles = procInfo._pendingSteeringFiles.filter(entry => !ackedPaths.has(entry.path));
+  if (procInfo._pendingSteeringFiles.length === 0) delete procInfo._pendingSteeringFiles;
+  log('info', `Steering: ACKed ${acked.length} processed message(s) for ${agentId}`);
+}
+
 // Resolve dependency plan item IDs to their PR branches
 function resolveDependencyBranches(depIds, sourcePlan, project, config) {
   const results = []; // [{ branch, prId }]
@@ -436,9 +448,13 @@ async function spawnAgent(dispatchItem, config) {
   // and this avoids blocking 200ms of file reads behind 20-60s of git operations
   const systemPrompt = buildSystemPrompt(agentId, config, project);
   const agentContext = buildAgentContext(agentId, config, project);
-  const fullTaskPrompt = agentContext
-    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPrompt}`
+  const pendingSteering = steering.buildPendingSteeringPrompt(agentId);
+  const taskPromptWithSteering = pendingSteering.prompt
+    ? `${pendingSteering.prompt}\n\n---\n\n${taskPrompt}`
     : taskPrompt;
+  const fullTaskPrompt = agentContext
+    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPromptWithSteering}`
+    : taskPromptWithSteering;
   const tmpDir = path.join(ENGINE_DIR, 'tmp');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
   const safeId = id.replace(/[:\\/*?"<>|]/g, '-');
@@ -1036,6 +1052,8 @@ async function spawnAgent(dispatchItem, config) {
         }
       } catch { /* JSON parse — output may not be valid JSON */ }
     }
+
+    ackPendingSteeringFiles(agentId, procInfo, chunk);
   });
 
   proc.stderr.on('data', (data) => {
@@ -1058,13 +1076,17 @@ async function spawnAgent(dispatchItem, config) {
       try { shared.safeUnlink(path.join(AGENTS_DIR, agentId, 'session.json')); } catch {}
     }
 
-    // Check if this was a steering kill — re-spawn with resume
     const procInfo = activeProcesses.get(id);
+    ackPendingSteeringFiles(agentId, procInfo, stdout);
+
+    // Check if this was a steering kill — re-spawn with resume
     if (procInfo?._steeringMessage) {
       const steerMsg = procInfo._steeringMessage;
       const steerSessionId = procInfo._steeringSessionId;
+      const steerEntry = procInfo._steeringEntry;
       delete procInfo._steeringMessage;
       delete procInfo._steeringSessionId;
+      delete procInfo._steeringEntry;
 
       // Guard: can't resume without a session
       if (!steerSessionId) {
@@ -1156,7 +1178,14 @@ async function spawnAgent(dispatchItem, config) {
       // into the resumed process, it kills the resumed session. The kill watcher only exists
       // to handle cases where the original kill didn't take effect — once the process has
       // exited and the resume is spawned, _steeringAt must not be present.
-      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, lastRealOutputAt: Date.now() });
+      activeProcesses.set(id, {
+        proc: resumeProc,
+        agentId,
+        startedAt: procInfo.startedAt,
+        sessionId: steerSessionId,
+        lastRealOutputAt: Date.now(),
+        _pendingSteeringFiles: steerEntry ? [steerEntry] : (procInfo._pendingSteeringFiles || []),
+      });
 
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
@@ -1167,6 +1196,7 @@ async function spawnAgent(dispatchItem, config) {
         realActivityMap.set(id, Date.now());
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
+        ackPendingSteeringFiles(agentId, activeProcesses.get(id), chunk);
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();
@@ -1366,7 +1396,13 @@ async function spawnAgent(dispatchItem, config) {
   // realActivityMap was already seeded immediately after runFile() returned (#W-mo25loq8kjer);
   // don't re-seed here — the stdout/stderr handlers above can already have updated it with
   // a fresher timestamp, and overwriting would clobber the real "last activity" signal.
-  activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
+  activeProcesses.set(id, {
+    proc,
+    agentId,
+    startedAt,
+    sessionId: cachedSessionId,
+    _pendingSteeringFiles: pendingSteering.entries,
+  });
 
   updateAgentStatus(id, AGENT_STATUS.RUNNING, `Process spawned for ${agentId}`);
 

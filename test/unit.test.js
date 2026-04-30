@@ -25,6 +25,7 @@ const ISOLATED_MODULES = [
   '../engine/dispatch',
   '../engine/cleanup',
   '../engine/timeout',
+  '../engine/steering',
   '../engine/pipeline',
   '../engine/meeting',
   '../engine/consolidation',
@@ -16373,8 +16374,9 @@ async function testAgentSteering() {
     assert.ok(dashSrc.includes('/api/agents/steer'), 'Should have steering endpoint');
   });
 
-  await test('steer endpoint writes steer.md file', () => {
-    assert.ok(dashSrc.includes('steer.md'), 'Should write steer.md for engine to pick up');
+  await test('steer endpoint writes agent-scoped inbox steering file', () => {
+    assert.ok(dashSrc.includes('writeSteeringMessage'),
+      'Should write unread steering into agents/<id>/inbox via writeSteeringMessage');
   });
 
   await test('steer endpoint appends to live-output.log', () => {
@@ -16385,9 +16387,11 @@ async function testAgentSteering() {
     assert.ok(engineSrc.includes('function checkSteering'), 'Should have checkSteering function');
   });
 
-  await test('checkSteering reads and deletes steer.md', () => {
-    assert.ok(engineSrc.includes('steer.md') && engineSrc.includes('unlinkSync'),
-      'Should read steer.md and delete it after consumption');
+  await test('checkSteering ACKs inbox steering only after process output', () => {
+    assert.ok(engineSrc.includes('ackProcessedSteeringMessages'),
+      'Should ACK unread steering from stdout/stderr processing, not at injection time');
+    assert.ok(engineSrc.includes('_pendingSteeringFiles'),
+      'Should track pending steering files until an agent turn/tool event processes them');
   });
 
   await test('steering stores message for close handler re-spawn', () => {
@@ -16435,13 +16439,12 @@ async function testAgentSteering() {
       'checkSteering should skip agents already being steered');
   });
 
-  await test('checkSteering deletes steer.md before setting flags (race prevention)', () => {
+  await test('checkSteering preserves unread steering file before setting flags', () => {
     const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    const unlinkIdx = timeoutSrc.indexOf('unlinkSync(steerPath)');
-    // Find the killImmediate that follows the unlink (not the stale-recovery kill at top of loop)
-    const killIdx = timeoutSrc.indexOf('killImmediate(info.proc)', unlinkIdx);
-    assert.ok(unlinkIdx > 0 && killIdx > 0 && unlinkIdx < killIdx,
-      'steer.md should be deleted before killing the process to prevent re-read on next poll');
+    const killIdx = timeoutSrc.indexOf('killImmediate(info.proc)');
+    const ackIdx = timeoutSrc.indexOf('ackProcessedSteeringMessages');
+    assert.ok(killIdx > 0 && ackIdx < 0,
+      'checkSteering should not delete/ack unread steering before killing the process');
   });
 
   await test('steering close handler re-spawns with steering prompt content', () => {
@@ -16470,13 +16473,13 @@ async function testAgentSteering() {
       'Should use a named constant for the retry timeout');
   });
 
-  // No-sessionId handling: kill agent and forward message to inbox
-  await test('checkSteering handles no-sessionId by killing and forwarding to inbox', () => {
+  // No-sessionId handling: kill agent and leave message in inbox for retry
+  await test('checkSteering handles no-sessionId by killing and keeping inbox message unread', () => {
     const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(timeoutSrc.includes('_steeringNoSession'),
       'Should flag no-session kills for close handler differentiation');
     assert.ok(timeoutSrc.includes('inbox') && timeoutSrc.includes('steering-'),
-      'Should write steering message to agent inbox for retry delivery');
+      'Should read steering message from agent inbox for retry delivery');
     assert.ok(timeoutSrc.includes('no session to resume'),
       'Should write confirmation to live-output.log so user sees it in dashboard');
   });
@@ -16555,6 +16558,51 @@ async function testAgentSteering() {
       'Spawn error should mark dispatch as ERROR so work item retries');
     assert.ok(!spawnErrorBlock.includes('DISPATCH_RESULT.SUCCESS'),
       'Spawn error should NOT mark dispatch as SUCCESS');
+  });
+
+  await test('steering helper keeps unread file until assistant/tool event after steering timestamp', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const steering = require('../engine/steering');
+      const agentId = 'testbot';
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'agents', agentId, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-1000.md');
+      fs.writeFileSync(steerPath, 'please respond before exiting');
+
+      const pending = steering.listUnreadSteeringMessages(agentId);
+      assert.strictEqual(pending.length, 1, 'Expected one unread steering entry');
+      assert.strictEqual(
+        steering.ackProcessedSteeringMessages(agentId, pending, '{"type":"assistant.message_delta","timestamp":"1970-01-01T00:00:00.999Z"}\n').length,
+        0,
+        'Event before steering timestamp must not ACK the file'
+      );
+      assert.ok(fs.existsSync(steerPath), 'Unread steering file must remain before process evidence');
+
+      const acked = steering.ackProcessedSteeringMessages(agentId, pending, '{"type":"tool.execution_start","timestamp":"1970-01-01T00:00:01.001Z"}\n');
+      assert.strictEqual(acked.length, 1, 'Tool event after steering timestamp should ACK the file');
+      assert.ok(!fs.existsSync(steerPath), 'Processed steering file should be removed only after ACK');
+    } finally { restore(); }
+  });
+
+  await test('steering helper builds carry-over prompt without deleting unread files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const steering = require('../engine/steering');
+      const agentId = 'testbot';
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'agents', agentId, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-2000.md');
+      fs.writeFileSync(steerPath, 'carry this into the next session');
+
+      const { entries, prompt } = steering.buildPendingSteeringPrompt(agentId);
+      assert.strictEqual(entries.length, 1, 'Expected one carry-over steering entry');
+      assert.ok(prompt.includes('Pending instructions from prior session'),
+        'Carry-over prompt should clearly identify prior-session instructions');
+      assert.ok(prompt.includes('carry this into the next session'),
+        'Carry-over prompt should include the unread steering message');
+      assert.ok(fs.existsSync(steerPath), 'Carry-over must not delete the inbox file before processing');
+    } finally { restore(); }
   });
 
   // ── Fast poll interval ─────────────────────────────────────────────────────
@@ -16649,14 +16697,15 @@ async function testAgentSteering() {
       'spawn-agent should close stdin after writing prompt');
   });
 
-  // Functional test: checkSteering with mock activeProcesses
-  await test('checkSteering functional: finds steer.md and sets flags', () => {
+  // Functional smoke test: checkSteering with mock activeProcesses
+  await test('checkSteering functional: exported for active process steering checks', () => {
     const restore = createTestMinionsDir();
     const testMinionsDir = process.env.MINIONS_TEST_DIR;
-    // Create agent dir with steer.md
+    // Create agent dir with unread steering inbox file
     const agentDir = path.join(testMinionsDir, 'agents', 'testbot');
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(path.join(agentDir, 'steer.md'), 'Please focus on the API endpoint');
+    const inboxDir = path.join(agentDir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    fs.writeFileSync(path.join(inboxDir, 'steering-1000.md'), 'Please focus on the API endpoint');
     // Mock activeProcesses
     const mockProc = { pid: 99999, kill: () => {} };
     const mockInfo = { agentId: 'testbot', proc: mockProc, sessionId: 'sess-123' };
@@ -16922,7 +16971,7 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
-  await test('checkSteering: agent without steer.md — untouched', () => {
+  await test('checkSteering: agent without unread inbox steering — untouched', () => {
     const env = setupIsolated();
     try {
       const agentId = 'bot1';
@@ -16931,18 +16980,19 @@ async function testTimeoutBehavioral() {
       env.fakeEngine.activeProcesses.set('disp-1', info);
       env.timeout.checkSteering({});
       assert.strictEqual(env.counters.killImmediate, 0);
-      assert.strictEqual(info._steeringMessage, undefined, 'No steer.md should mean no state mutation');
+      assert.strictEqual(info._steeringMessage, undefined, 'No unread steering should mean no state mutation');
       assert.strictEqual(info._steeringAt, undefined);
     } finally { env.restore(); }
   });
 
-  await test('checkSteering: agent with steer.md AND sessionId — sets flags, kills, deletes steer.md', () => {
+  await test('checkSteering: agent with inbox steering AND sessionId — sets flags, kills, preserves unread file', () => {
     const env = setupIsolated();
     try {
       const agentId = 'bot2';
       const agentDir = path.join(env.testDir, 'agents', agentId);
-      fs.mkdirSync(agentDir, { recursive: true });
-      const steerPath = path.join(agentDir, 'steer.md');
+      const inboxDir = path.join(agentDir, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-1000.md');
       fs.writeFileSync(steerPath, 'please focus on the API endpoint');
       const info = { agentId, proc: {}, sessionId: 'sess-abc' };
       env.fakeEngine.activeProcesses.set('disp-2', info);
@@ -16958,19 +17008,23 @@ async function testTimeoutBehavioral() {
       assert.ok(info._steeringAt >= tBefore && info._steeringAt <= tAfter,
         '_steeringAt should be a fresh timestamp in [tBefore, tAfter]');
       assert.strictEqual(env.counters.killImmediate, 1, 'Should invoke killImmediate exactly once');
-      assert.ok(!fs.existsSync(steerPath), 'steer.md should be deleted after consumption');
+      assert.ok(fs.existsSync(steerPath), 'Inbox steering file must remain unread until process evidence ACKs it');
+      assert.strictEqual(info._steeringEntry?.path, steerPath,
+        'Steering entry should be carried to the resumed process for delayed ACK');
       assert.strictEqual(info._steeringNoSession, undefined,
         'Session-present path must NOT set _steeringNoSession');
     } finally { env.restore(); }
   });
 
-  await test('checkSteering: agent with steer.md but NO sessionId — inbox forward path', () => {
+  await test('checkSteering: agent with inbox steering but NO sessionId — keep unread for retry', () => {
     const env = setupIsolated();
     try {
       const agentId = 'bot3';
       const agentDir = path.join(env.testDir, 'agents', agentId);
-      fs.mkdirSync(agentDir, { recursive: true });
-      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'try a smaller model');
+      const inboxDir = path.join(agentDir, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-1000.md');
+      fs.writeFileSync(steerPath, 'try a smaller model');
       const info = { agentId, proc: {} /* no sessionId */ };
       env.fakeEngine.activeProcesses.set('disp-3', info);
 
@@ -16981,33 +17035,32 @@ async function testTimeoutBehavioral() {
       assert.ok(typeof info._steeringAt === 'number' && info._steeringAt > 0,
         '_steeringAt must be set even on the no-session path');
       assert.strictEqual(info._steeringMessage, undefined,
-        'No-session path does NOT stash _steeringMessage — it forwards via inbox instead');
+        'No-session path does NOT stash _steeringMessage — it leaves inbox unread instead');
       assert.strictEqual(env.counters.killImmediate, 1, 'Should still killImmediate the agent');
 
-      // Inbox file should exist with the forwarded message
-      const inboxDir = path.join(agentDir, 'inbox');
       const inboxFiles = fs.readdirSync(inboxDir).filter(f => f.startsWith('steering-'));
-      assert.strictEqual(inboxFiles.length, 1, 'Expected exactly one forwarded steering file');
+      assert.strictEqual(inboxFiles.length, 1, 'Expected exactly one unread steering file');
       const body = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
-      assert.ok(body.includes('try a smaller model'), 'Forwarded inbox file should carry original message');
-      assert.ok(body.includes('Forwarded'), 'Forwarded inbox file should be clearly labeled');
+      assert.ok(body.includes('try a smaller model'), 'Unread inbox file should carry original message');
+      assert.ok(fs.existsSync(steerPath), 'No-session path should not ACK/delete the steering file');
     } finally { env.restore(); }
   });
 
-  await test('checkSteering: empty steer.md contents — deleted but flags stay clear', () => {
+  await test('checkSteering: empty inbox steering contents — deleted but flags stay clear', () => {
     const env = setupIsolated();
     try {
       const agentId = 'bot4';
       const agentDir = path.join(env.testDir, 'agents', agentId);
-      fs.mkdirSync(agentDir, { recursive: true });
-      const steerPath = path.join(agentDir, 'steer.md');
+      const inboxDir = path.join(agentDir, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-1000.md');
       fs.writeFileSync(steerPath, '');
       const info = { agentId, proc: {}, sessionId: 'sess-zzz' };
       env.fakeEngine.activeProcesses.set('disp-4', info);
 
       env.timeout.checkSteering({});
 
-      assert.ok(!fs.existsSync(steerPath), 'Empty steer.md should still be deleted to prevent stale reads');
+      assert.ok(!fs.existsSync(steerPath), 'Empty steering file should still be deleted to prevent stale reads');
       assert.strictEqual(info._steeringMessage, undefined,
         'Empty message must not arm the steering state');
       assert.strictEqual(env.counters.killImmediate, 0,
@@ -17020,8 +17073,9 @@ async function testTimeoutBehavioral() {
     try {
       const agentId = 'bot5';
       const agentDir = path.join(env.testDir, 'agents', agentId);
-      fs.mkdirSync(agentDir, { recursive: true });
-      fs.writeFileSync(path.join(agentDir, 'steer.md'), 'ignored — guard blocks re-entry');
+      const inboxDir = path.join(agentDir, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      fs.writeFileSync(path.join(inboxDir, 'steering-1000.md'), 'ignored — guard blocks re-entry');
       const info = {
         agentId, proc: {}, sessionId: 'sess-abc',
         _steeringMessage: 'prior',

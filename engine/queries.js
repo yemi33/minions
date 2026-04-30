@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
+const steering = require('./steering');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects, mutateJsonFileLocked,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
@@ -418,12 +419,18 @@ function getAgents(config) {
     // runtime tag next to the agent name.
     const runtime = shared.resolveAgentCli(a, config.engine || {});
     const inboxFiles = allInboxFiles.filter(f => f.includes(a.id));
+    let steeringInboxFiles = [];
+    try { steeringInboxFiles = steering.listUnreadSteeringMessages(a.id); } catch { steeringInboxFiles = []; }
     const s = getAgentStatus(a.id); // derives from dispatch.json
 
     let lastAction = 'Waiting for assignment';
     if (s.status === 'working') lastAction = s._runningToolDescription ? `Running: ${s._runningToolDescription}` : `Working: ${s.task}`;
     else if (s.status === 'done') lastAction = `Done: ${s.task}`;
     else if (s.status === 'error') lastAction = `Error: ${s.task}`;
+    else if (steeringInboxFiles.length > 0) {
+      const lastSteer = steeringInboxFiles[steeringInboxFiles.length - 1];
+      lastAction = `Pending steering: ${lastSteer.file} (${timeSince(lastSteer.createdAtMs)})`;
+    }
     else if (inboxFiles.length > 0) {
       const lastOutput = path.join(INBOX_DIR, inboxFiles[inboxFiles.length - 1]);
       try { lastAction = `Output: ${path.basename(lastOutput)} (${timeSince(fs.statSync(lastOutput).mtimeMs)})`; } catch { /* optional */ }
@@ -440,7 +447,7 @@ function getAgents(config) {
       _blockingToolCall: s._blockingToolCall || null,
       _warning: s._warning || null,
       _permissionMode: s._permissionMode || null,
-      chartered, inboxCount: inboxFiles.length
+      chartered, inboxCount: inboxFiles.length + steeringInboxFiles.length
     };
   });
 }
@@ -458,6 +465,11 @@ function getAgentDetail(id) {
   const inboxContents = safeReadDir(INBOX_DIR)
     .filter(f => f.includes(id))
     .map(f => ({ name: f, content: safeRead(path.join(INBOX_DIR, f)) || '' }));
+  try {
+    for (const entry of steering.listUnreadSteeringMessages(id)) {
+      inboxContents.push({ name: entry.file, content: entry.raw || '', type: 'steering' });
+    }
+  } catch { /* optional */ }
 
   let recentDispatches = [];
   try {
