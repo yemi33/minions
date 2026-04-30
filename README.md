@@ -545,7 +545,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `autoDecompose` | true | Auto-decompose `implement:large` items into sub-tasks before dispatch |
 | `autoApprovePlans` | false | Auto-approve PRDs without waiting for human approval |
 | `evalLoop` | true | Auto-dispatch review → fix cycles after implementation completes |
-| `evalMaxIterations` | 3 | Max review → fix cycles before escalating to human |
+| `evalMaxIterations` | 3 | Max minion review → fix cycles before pausing minion review automation; human feedback, build fixes, and conflict fixes continue |
 | `evalMaxCost` | null | USD ceiling per work item across all eval iterations (null = no limit) |
 | `meetingRoundTimeout` | 600000 (10min) | Timeout per meeting round before auto-advance |
 | `ccModel` | `sonnet` | Model for Command Center and doc-chat (sonnet/haiku/opus) |

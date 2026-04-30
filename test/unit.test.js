@@ -32745,6 +32745,20 @@ async function testPrReviewFixFlows() {
     assert.ok(!humanBlock.includes('evalEscalated'), 'Human feedback should NOT be gated by evalEscalated');
   });
 
+  await test('build failure fix NOT gated by evalEscalated', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.length > 10, 'Should locate build-fix block');
+    assert.ok(!buildBlock.includes('evalEscalated') && !buildBlock.includes('_evalEscalated'),
+      'Build failure fixes must not be gated by review-loop escalation');
+  });
+
+  await test('merge conflict fix NOT gated by evalEscalated', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.length > 10, 'Should locate conflict-fix block');
+    assert.ok(!conflictBlock.includes('evalEscalated') && !conflictBlock.includes('_evalEscalated'),
+      'Merge conflict fixes must not be gated by review-loop escalation');
+  });
+
   await test('human feedback fix does NOT increment _reviewFixCycles', () => {
     const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(!humanBlock.includes('_reviewFixCycles'), 'Human feedback should NOT increment cycle counter');
