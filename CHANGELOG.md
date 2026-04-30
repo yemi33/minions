@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1633 (2026-04-30)
+
+### Features
+- prevent completed stderr redispatch
+
+### Fixes
+- yemi33/minions#1890
+
+### Other
+- docs: relax minions playbook contracts
+
 ## 0.1.1631 (2026-04-30)
 
 ### Features
