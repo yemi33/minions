@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1636 (2026-04-30)
+
+### Other
+- Harden dashboard skill file reads
+
 ## 0.1.1635 (2026-04-30)
 
 ### Other
