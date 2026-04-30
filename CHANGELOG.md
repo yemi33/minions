@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1638 (2026-04-30)
+
+### Fixes
+-  Playbook 'fix' / 'review' gates items forever when pr_branch is unresolved (closes #1899) (#1901)
+
 ## 0.1.1637 (2026-04-30)
 
 ### Other
