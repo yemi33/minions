@@ -5821,6 +5821,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
       const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
       const prId = shared.getCanonicalPrId(targetProject, prNum, url);
+      const contextText = typeof context === 'string' ? context : (context == null ? '' : JSON.stringify(context));
 
       // Atomic check-and-insert to prevent duplicates and races with polling loops
       let duplicate = false;
@@ -5842,7 +5843,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           _manual: true,
           _contextOnly: !autoObserve,
           _autoObserve: !!autoObserve,
-          _context: context || '',
+          _context: contextText,
         });
         return prs;
       }, { defaultValue: [] });
@@ -5874,7 +5875,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             // Remote title always wins — any user-supplied title is a placeholder (closes #1283)
             if (prData.title) pr.title = prData.title.slice(0, 120);
             if (prData.description) pr.description = prData.description.slice(0, 500);
-            if (!pr.branch && prData.branch) pr.branch = prData.branch;
+            if (!pr.branch && prData.branch) {
+              pr.branch = prData.branch;
+              if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
+            }
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;
             return prs;
           }, { defaultValue: [] });

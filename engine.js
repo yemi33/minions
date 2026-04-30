@@ -2011,6 +2011,58 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+const PR_PENDING_MISSING_BRANCH = 'missing_pr_branch';
+
+function getPrDispatchBranch(pr) {
+  return typeof pr?.branch === 'string' ? pr.branch.trim() : '';
+}
+
+function mutatePrPendingReason(project, pr, mutator) {
+  const prPath = projectPrPath(project);
+  let changed = false;
+  mutatePullRequests(prPath, prs => {
+    const target = shared.findPrRecord(prs, pr, project);
+    if (!target) return prs;
+    changed = mutator(target) === true;
+    return prs;
+  });
+  return changed;
+}
+
+function markPrMissingBranch(project, pr, action) {
+  if (pr._pendingReason === PR_PENDING_MISSING_BRANCH) return false;
+  const changed = mutatePrPendingReason(project, pr, target => {
+    if (target._pendingReason === PR_PENDING_MISSING_BRANCH) return false;
+    target._pendingReason = PR_PENDING_MISSING_BRANCH;
+    return true;
+  });
+  if (changed) {
+    pr._pendingReason = PR_PENDING_MISSING_BRANCH;
+    log('warn', `PR ${pr.id}: cannot dispatch ${action} — missing pr_branch; waiting for PR metadata enrichment`);
+  }
+  return changed;
+}
+
+function clearPrMissingBranch(project, pr) {
+  if (pr._pendingReason !== PR_PENDING_MISSING_BRANCH) return false;
+  const changed = mutatePrPendingReason(project, pr, target => {
+    if (target._pendingReason !== PR_PENDING_MISSING_BRANCH) return false;
+    delete target._pendingReason;
+    return true;
+  });
+  if (changed) delete pr._pendingReason;
+  return changed;
+}
+
+function canDispatchPrBranch(project, pr, action) {
+  if (getPrDispatchBranch(pr)) {
+    clearPrMissingBranch(project, pr);
+    return true;
+  }
+  markPrMissingBranch(project, pr, action);
+  return false;
+}
+
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
@@ -2052,6 +2104,7 @@ async function discoverFromPrs(config, project) {
     const prDisplayId = shared.getPrDisplayId(pr);
     const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
     if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
+    if (getPrDispatchBranch(pr)) clearPrMissingBranch(project, pr);
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
       log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);
@@ -2092,6 +2145,7 @@ async function discoverFromPrs(config, project) {
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (!canDispatchPrBranch(project, pr, 'review')) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
       try {
@@ -2135,6 +2189,7 @@ async function discoverFromPrs(config, project) {
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (isOnCooldown(key, cooldownMs)) continue;
+      if (!canDispatchPrBranch(project, pr, 're-review')) continue;
 
       // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
       try {
@@ -2171,6 +2226,7 @@ async function discoverFromPrs(config, project) {
     if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (!canDispatchPrBranch(project, pr, 'fix')) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
 
@@ -2210,6 +2266,7 @@ async function discoverFromPrs(config, project) {
         }
         continue;
       }
+      if (!canDispatchPrBranch(project, pr, 'human-feedback fix')) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
 
@@ -2257,6 +2314,7 @@ async function discoverFromPrs(config, project) {
 
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (!canDispatchPrBranch(project, pr, 'build fix')) continue;
 
       // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
       // recompute the merge commit when master moves and pollPrStatus deliberately
@@ -2341,6 +2399,7 @@ async function discoverFromPrs(config, project) {
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
       if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+        if (!canDispatchPrBranch(project, pr, 'conflict fix')) continue;
         // Pre-dispatch live conflict check — cached `_mergeConflict` may be
         // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
         // so a successful upstream merge can leave the flag set even after the

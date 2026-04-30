@@ -11969,6 +11969,80 @@ async function testDiscoverFromPrs() {
     }
   });
 
+  await test('discoverFromPrs marks changes-requested PRs missing branch instead of rendering gated fix playbook (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'github:octo/repo#42',
+        prNumber: 42,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Needs branch metadata',
+        branch: '',
+        prdItems: ['W-42'],
+        minionsReview: { note: 'Please fix the API boundary.' },
+        url: 'https://github.com/octo/repo/pull/42',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable fix dispatch');
+      const after = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.strictEqual(after[0]._pendingReason, 'missing_pr_branch',
+        'The blocked PR should carry a dashboard-visible pending reason instead of only logging a playbook validation error');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('discoverFromPrs reads normalized PRs via queries.getPrs', () => {
     assert.ok(src.includes('const prs = queries.getPrs(project);'),
       'discoverFromPrs should read PRs through queries.getPrs so IDs are canonicalized before dispatch decisions');
@@ -17638,6 +17712,16 @@ async function testRecentFeatures() {
         || /pr\.title\s*=\s*prData\.title/.test(linkHandler),
       'link handler must still assign pr.title from prData.title when remote returns a title'
     );
+  });
+
+  await test('PR link normalizes _context to a string before writing pull-requests.json (#1899)', () => {
+    const start = dashSrc.indexOf("/api/pull-requests/link'");
+    const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
+    const linkHandler = dashSrc.slice(start, next);
+    assert.ok(linkHandler.includes('contextText'),
+      'link handler should compute a normalized contextText before persisting the PR');
+    assert.ok(linkHandler.includes('_context: contextText'),
+      'pull-requests.json should receive the normalized contextText, not the raw request body value');
   });
 
   // Plan creation from dashboard
@@ -32182,6 +32266,25 @@ async function testPrReviewFixFlows() {
       'Non-escalated PRs should not show the review-escalated badge class');
     assert.ok(!html.includes('review loop escalated'),
       'Non-escalated PRs should not show the review-loop-escalated label');
+  });
+
+  await test('dashboard PR rendering surfaces missing PR branch pending reason (#1899)', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-1899',
+      title: 'Metadata still resolving',
+      url: 'https://example.test/pr/1899',
+      agent: 'dallas',
+      branch: '',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      _pendingReason: 'missing_pr_branch'
+    });
+
+    assert.ok(html.includes('missing pr branch'),
+      'PR table should make unresolved branch metadata visible instead of showing only an empty branch cell');
+    assert.ok(html.includes('Pending reason: missing_pr_branch'),
+      'Pending reason should be available as a tooltip for diagnostics');
   });
 
   await test('dashboard PR rendering: build-fix and review-loop escalation render as independent badges', () => {
