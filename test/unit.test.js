@@ -31627,6 +31627,41 @@ async function testStructuredCompletion() {
       'Return object should include structuredCompletion');
   });
 
+  await test('runPostCompletionHooks writes an inbox report for partial structured completion', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const inboxDir = path.join(sharedInner.MINIONS_DIR, 'notes', 'inbox');
+      const output = 'Implemented the safe subset.\n```completion\nstatus: partial\nfiles_changed: engine/lifecycle.js\ntests: pass\npr: N/A\nfailure_class: N/A\npending: remaining manual verification\n```\n';
+      const dispatchItem = {
+        id: 'D-partial-note',
+        type: 'fix',
+        task: 'Fix partial note coverage',
+        agent: 'dallas',
+        meta: {
+          item: { id: 'W-partial-note', title: 'Partial outcome should be durable', skipPr: true },
+          source: 'central-work-item'
+        }
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'dallas', 0, output, { agents: { dallas: {} }, projects: [] });
+
+      const files = fs.readdirSync(inboxDir).filter(f => f.includes('agent-partial-D-partial-note'));
+      assert.strictEqual(files.length, 1, 'Partial structured completion should create one durable inbox report');
+      const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+      assert.ok(content.includes('status: partial'), 'Report should preserve structured partial status');
+      assert.ok(content.includes('remaining manual verification'), 'Report should include pending work');
+      assert.ok(content.includes('dispatchId: D-partial-note'), 'Report frontmatter should link the dispatch');
+      assert.ok(content.includes('sourceItem: W-partial-note'), 'Report frontmatter should link the work item');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('parseStructuredCompletion: keys are lowercased', () => {
     const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
     const result = lifecycle.parseStructuredCompletion(stdout);
@@ -38780,6 +38815,45 @@ async function testDispatchQueueHelpers() {
       assert.strictEqual(files.length, 1, 'Same slug/date should not create duplicate alerts');
       const content = fs.readFileSync(path.join(testQueries.INBOX_DIR, files[0]), 'utf8');
       assert.strictEqual(content, 'first', 'Deduped alert should preserve first content');
+    } finally { restore(); }
+  });
+
+  await test('completeDispatch writes an inbox report for failed agent runs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({
+          id: 'D-failure-note',
+          type: 'fix',
+          agent: 'dallas',
+          task: 'Fix failure note coverage',
+          meta: {
+            source: 'central-work-item',
+            item: { id: 'W-failure-note', title: 'Failed outcome should be durable' }
+          }
+        });
+        return dp;
+      });
+
+      testDispatch.completeDispatch(
+        'D-failure-note',
+        testShared.DISPATCH_RESULT.ERROR,
+        'unit-test failure reason',
+        'Agent stopped after creating diagnostics.',
+        { processWorkItemFailure: false, failureClass: testShared.FAILURE_CLASS.BUILD_FAILURE }
+      );
+
+      const files = fs.readdirSync(testQueries.INBOX_DIR).filter(f => f.includes('agent-failure-D-failure-note'));
+      assert.strictEqual(files.length, 1, 'Failed dispatch should create one durable inbox report');
+      const content = fs.readFileSync(path.join(testQueries.INBOX_DIR, files[0]), 'utf8');
+      assert.ok(content.includes('unit-test failure reason'), 'Report should include failure reason');
+      assert.ok(content.includes('Agent stopped after creating diagnostics.'), 'Report should include result summary');
+      assert.ok(content.includes('dispatchId: D-failure-note'), 'Report frontmatter should link the dispatch');
+      assert.ok(content.includes('sourceItem: W-failure-note'), 'Report frontmatter should link the work item');
+      assert.ok(content.includes('failureClass: build-failure'), 'Report frontmatter should include failure class');
     } finally { restore(); }
   });
 

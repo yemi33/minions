@@ -1688,6 +1688,44 @@ function parseStructuredCompletion(stdout, runtimeName) {
   return result;
 }
 
+function normalizeCompletionStatus(status) {
+  return String(status || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+}
+
+function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
+  if (!dispatchItem?.id || !outcome) {
+    log('warn', 'Cannot write non-clean agent report without dispatch id and outcome');
+    return;
+  }
+  const itemId = dispatchItem.meta?.item?.id || '';
+  const title = dispatchItem.meta?.item?.title || dispatchItem.task || dispatchItem.id;
+  const metadata = {
+    dispatchId: dispatchItem.id,
+    sourceItem: itemId || null,
+    result: outcome,
+    completionStatus: structuredCompletion?.status || null,
+  };
+  const structuredLines = structuredCompletion
+    ? Object.entries(structuredCompletion).map(([key, value]) => `- ${key}: ${value}`).join('\n')
+    : '- none';
+  const content = [
+    `# Agent ${outcome === 'partial' ? 'Partially Completed' : 'Reported Failure'}: ${title}`,
+    '',
+    `**Agent:** ${agentId}`,
+    `**Dispatch:** \`${dispatchItem.id}\``,
+    itemId ? `**Work Item:** \`${itemId}\`` : '',
+    `**Type:** ${dispatchItem.type || 'unknown'}`,
+    `**Exit Code:** ${exitCode}`,
+    `**Outcome:** ${outcome}`,
+    '',
+    `## Structured Completion`,
+    structuredLines,
+    '',
+    resultSummary ? `## Summary\n${resultSummary}` : '## Summary\n(no agent summary captured)',
+  ].filter(Boolean).join('\n');
+  shared.writeToInbox(agentId || 'engine', `agent-${outcome}-${dispatchItem.id}`, content, null, metadata);
+}
+
 /**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
@@ -1826,6 +1864,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('info', `Auto-recovery: agent failed but created ${prsCreatedCount} PR(s) — upgrading ${meta.item.id} to done`);
   }
   const effectiveSuccess = isSuccess || autoRecovered;
+
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (completionStatus.startsWith('partial') || autoRecovered || (completionStatus.startsWith('fail') && isSuccess)) {
+    const outcome = completionStatus.startsWith('fail') ? 'failure' : 'partial';
+    writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, code);
+  }
 
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;
