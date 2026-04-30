@@ -1904,6 +1904,80 @@ function addPrLink(prId, itemId, { project = null, url = '', prNumber = null } =
   });
 }
 
+/**
+ * Canonical PR-producing work contract helper.
+ *
+ * Dashboard rendering derives work-item PR columns from PR.prdItems (with
+ * engine/pr-links.json as a compatibility fallback). Any path that discovers or
+ * manually records a PR for a work item must use this helper so the PR record
+ * and the canonical work-item attachment are created together and idempotently.
+ */
+function upsertPullRequestRecord(prPath, entry, { project = null, itemId = null, itemIds = null, beforeInsert = null } = {}) {
+  if (!prPath) throw new Error('prPath required');
+  if (!entry || typeof entry !== 'object') throw new Error('entry required');
+
+  const linkedItemIds = normalizePrLinkItems([
+    ...(Array.isArray(entry.prdItems) ? entry.prdItems : []),
+    ...(Array.isArray(itemIds) ? itemIds : [itemId]),
+  ]);
+  const prNumber = getPrNumber(entry.prNumber ?? entry.id ?? entry.url);
+  const canonicalId = getCanonicalPrId(project, entry.prNumber ?? entry.id ?? entry.url ?? prNumber, entry.url || '');
+  if (!canonicalId) throw new Error('PR id required');
+  const normalizedEntry = {
+    ...entry,
+    id: canonicalId,
+    prNumber: prNumber ?? entry.prNumber ?? null,
+    prdItems: linkedItemIds,
+  };
+
+  let created = false;
+  let linked = false;
+  let skipped = false;
+  let record = null;
+
+  mutatePullRequests(prPath, (prs) => {
+    normalizePrRecords(prs, project);
+    let target = findPrRecord(prs, normalizedEntry, project);
+    if (!target && typeof beforeInsert === 'function' && beforeInsert(prs, normalizedEntry) === false) {
+      skipped = true;
+      return prs;
+    }
+    if (!target) {
+      target = normalizedEntry;
+      prs.push(target);
+      created = true;
+    } else {
+      target.id = canonicalId;
+      if (prNumber != null) target.prNumber = prNumber;
+      for (const key of ['url', 'title', 'description', 'agent', 'branch', 'reviewStatus', 'status', 'created', 'sourcePlan', 'itemType']) {
+        if (normalizedEntry[key] != null && normalizedEntry[key] !== '' && (target[key] == null || target[key] === '')) {
+          target[key] = normalizedEntry[key];
+        }
+      }
+      for (const key of ['_manual', '_contextOnly', '_autoObserve', '_context']) {
+        if (normalizedEntry[key] != null) target[key] = normalizedEntry[key];
+      }
+    }
+    target.prdItems = normalizePrLinkItems(target.prdItems || []);
+    for (const linkedItemId of linkedItemIds) {
+      if (!target.prdItems.includes(linkedItemId)) {
+        target.prdItems.push(linkedItemId);
+        linked = true;
+      }
+    }
+    record = { ...target, prdItems: [...target.prdItems] };
+    return prs;
+  });
+
+  if (!skipped) {
+    for (const linkedItemId of linkedItemIds) {
+      addPrLink(canonicalId, linkedItemId, { project, prNumber, url: normalizedEntry.url || '' });
+    }
+  }
+
+  return { id: canonicalId, prNumber, created, linked, skipped, record };
+}
+
 // ─── Cross-Platform Process Kill Helpers ─────────────────────────────────────
 
 function killGracefully(proc, graceMs = 5000) {
@@ -2211,6 +2285,7 @@ module.exports = {
   findPrRecord,
   normalizePrRecord,
   normalizePrRecords,
+  upsertPullRequestRecord,
   nextWorkItemId,
   getAdoOrgBase,
   sanitizePath,

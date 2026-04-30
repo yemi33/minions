@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks, addPrLink,
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
@@ -830,51 +830,170 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   const entryBranch = meta?.branch || '';
 
   for (const [prPath, { name, project: targetProject, entries }] of newPrsByPath) {
-    const linksToPersist = [];
-    mutateJsonFileLocked(prPath, (data) => {
-      const prs = Array.isArray(data) ? data : [];
-      // Normalize legacy YYYY-MM-DD created dates to ISO
-      for (const p of prs) {
-        if (p.created && p.created.length === 10) p.created = p.created + 'T00:00:00.000Z';
-      }
-      for (const { prId, fullId, entry } of entries) {
-        if (prs.some(p => p.id === fullId || (p.url && p.url === entry.url))) continue;
-
-        // Branch-level dedup: skip if an active PR already exists on the same branch.
-        // This prevents duplicate PRs when an agent retries and calls `gh pr create` again
-        // on the same branch (GitHub allows multiple PRs from one branch).
-        // Only block when the existing PR is active — abandoned/merged PRs don't conflict.
-        const branch = entry.branch || entryBranch;
-        if (branch) {
-          const existingOnBranch = prs.find(p => p.branch === branch && p.status === PR_STATUS.ACTIVE && p.id !== fullId);
-          if (existingOnBranch) {
-            log('warn', `Duplicate PR detected: ${fullId} on branch ${branch} — already tracked as ${existingOnBranch.id}. Skipping.`);
-            // Best-effort close the duplicate on GitHub (non-blocking, fire-and-forget)
-            try {
-              const ghSlug = output.match(/github\.com\/([^/]+\/[^/]+)/)?.[1];
-              if (ghSlug) {
-                execAsync(`gh pr close ${prId} --repo ${ghSlug} --comment "Closing duplicate — ${existingOnBranch.id} already tracks this branch."`, { timeout: 15000 })
-                  .catch(() => {});
-              }
-            } catch { /* best-effort */ }
-            continue;
+    for (const { prId, fullId, entry } of entries) {
+      let duplicateOnBranch = null;
+      const result = shared.upsertPullRequestRecord(prPath, entry, {
+        project: targetProject,
+        itemId: meta?.item?.id || null,
+        beforeInsert: (prs, normalizedEntry) => {
+          // Normalize legacy YYYY-MM-DD created dates to ISO while the file is locked.
+          for (const p of prs) {
+            if (p.created && p.created.length === 10) p.created = p.created + 'T00:00:00.000Z';
           }
-        }
-
-        prs.push(entry);
-        if (meta?.item?.id) {
-          linksToPersist.push({ prId: fullId, itemId: meta.item.id, project: targetProject, prNumber: entry.prNumber, url: entry.url });
-        }
-        added++;
+          // Branch-level dedup: skip if an active PR already exists on the same branch.
+          // This prevents duplicate PRs when an agent retries and calls `gh pr create` again
+          // on the same branch (GitHub allows multiple PRs from one branch).
+          // Only block when the existing PR is active — abandoned/merged PRs don't conflict.
+          const branch = normalizedEntry.branch || entryBranch;
+          if (!branch) return true;
+          duplicateOnBranch = prs.find(p => p.branch === branch && p.status === PR_STATUS.ACTIVE && p.id !== normalizedEntry.id) || null;
+          return !duplicateOnBranch;
+        },
+      });
+      if (duplicateOnBranch) {
+        log('warn', `Duplicate PR detected: ${fullId} on branch ${entry.branch || entryBranch} — already tracked as ${duplicateOnBranch.id}. Skipping.`);
+        // Best-effort close the duplicate on GitHub (non-blocking, fire-and-forget)
+        try {
+          const ghSlug = output.match(/github\.com\/([^/]+\/[^/]+)/)?.[1];
+          if (ghSlug) {
+            execAsync(`gh pr close ${prId} --repo ${ghSlug} --comment "Closing duplicate — ${duplicateOnBranch.id} already tracks this branch."`, { timeout: 15000 })
+              .catch(() => {});
+          }
+        } catch { /* best-effort */ }
+        continue;
       }
-      return prs;
-    });
-    for (const { prId, itemId, project, prNumber, url } of linksToPersist) {
-      addPrLink(prId, itemId, { project, prNumber, url });
+      if (result.created || result.linked) added++;
     }
     log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
   return added;
+}
+
+function isPrAttachmentRequired(type, item, meta = {}) {
+  if (!item?.id || item.skipPr) return false;
+  const explicit = item.requiresPr === true
+    || item.prRequired === true
+    || item.requiresPullRequest === true
+    || item.itemType === 'pr';
+  if (meta.branchStrategy === 'shared-branch' && item.itemType !== 'pr' && !explicit) return false;
+  return explicit
+    || type === WORK_TYPE.IMPLEMENT
+    || type === WORK_TYPE.IMPLEMENT_LARGE
+    || type === WORK_TYPE.FIX
+    || type === WORK_TYPE.TEST;
+}
+
+function hasCanonicalPrAttachment(itemId, config) {
+  if (!itemId) return false;
+  if (Object.values(getPrLinks()).some(linkedIds => (linkedIds || []).includes(itemId))) return true;
+  const projects = shared.getProjects(config);
+  for (const p of projects) {
+    const prs = safeJson(shared.projectPrPath(p)) || [];
+    if (prs.some(pr => (pr.prdItems || []).includes(itemId))) return true;
+  }
+  const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json')) || [];
+  return centralPrs.some(pr => (pr.prdItems || []).includes(itemId));
+}
+
+async function findOpenPrForBranch(meta, config) {
+  if (!meta?.branch) return null;
+  const projectObj = shared.getProjects(config).find(p => p.name === meta?.project?.name);
+  if (!projectObj) return null;
+  const host = projectObj.repoHost || 'ado';
+  if (host === 'github') {
+    const ghSlug = projectObj.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
+    if (!ghSlug) return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+      let raw = '';
+      try {
+        raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
+        const parsed = JSON.parse(raw || '[]');
+        const hits = Array.isArray(parsed) ? parsed : [];
+        if (hits.length > 0 && hits[0].state === 'OPEN') {
+          return { project: projectObj, prNumber: hits[0].number, url: hits[0].url };
+        }
+        if (attempt === 2) {
+          log('warn', `Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts (raw: ${(raw || '').slice(0, 200)})`);
+        }
+      } catch (err) {
+        if (attempt === 2) {
+          const rawSuffix = raw ? ` (raw: ${raw.slice(0, 200)})` : '';
+          log('warn', `Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}${rawSuffix}`);
+        }
+      }
+    }
+    return null;
+  }
+  if (host === 'ado') {
+    const found = await require('./ado').findOpenPrOnBranch(projectObj, meta.branch);
+    return found ? { project: projectObj, prNumber: found.prNumber, url: found.url } : null;
+  }
+  log('debug', `Skipping branch PR lookup for unsupported repo host "${host}" on ${projectObj.name}`);
+  return null;
+}
+
+function markMissingPrAttachment(meta, agentId, reason, resultSummary) {
+  const noPrWiPath = resolveWorkItemPath(meta);
+  if (noPrWiPath) {
+    mutateJsonFileLocked(noPrWiPath, data => {
+      if (!Array.isArray(data)) return data;
+      const w = data.find(i => i.id === meta.item.id);
+      if (!w) return data;
+      w.status = WI_STATUS.NEEDS_REVIEW;
+      w._missingPrAttachment = true;
+      w.failReason = reason;
+      w._lastReviewReason = reason;
+      delete w.completedAt;
+      delete w._noPr;
+      delete w._noPrReason;
+      return data;
+    }, { skipWriteIfUnchanged: true });
+  }
+  shared.writeToInbox('engine', `missing-pr-attachment-${meta.item.id}`,
+    `# PR attachment missing for ${meta.item.id}\n\n` +
+    `**Agent:** ${agentId}\n` +
+    `**Work item:** \`${meta.item.id}\` — ${meta.item.title || ''}\n` +
+    `**Type:** ${meta.item.type || 'unknown'}\n` +
+    `**Branch:** ${meta.branch || '(none)'}\n\n` +
+    `${reason}\n` +
+    (resultSummary ? `\n## Agent summary\n${resultSummary}\n` : ''),
+    null,
+    { sourceItem: meta.item.id, reason: 'missing-pr-attachment' });
+}
+
+async function enforcePrAttachmentContract(type, meta, agentId, config, resultSummary) {
+  if (!isPrAttachmentRequired(type, meta?.item, meta)) return null;
+  if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+
+  const found = await findOpenPrForBranch(meta, config);
+  if (found) {
+    const entry = {
+      id: shared.getCanonicalPrId(found.project, found.prNumber, found.url),
+      prNumber: found.prNumber,
+      title: meta.item?.title || `PR #${found.prNumber}`,
+      agent: agentId,
+      branch: meta.branch || '',
+      reviewStatus: 'pending',
+      status: PR_STATUS.ACTIVE,
+      created: ts(),
+      url: found.url,
+      prdItems: [meta.item.id],
+      sourcePlan: meta.item?.sourcePlan || '',
+      itemType: meta.item?.itemType || '',
+    };
+    shared.upsertPullRequestRecord(shared.projectPrPath(found.project), entry, {
+      project: found.project,
+      itemId: meta.item.id,
+    });
+    log('info', `Auto-linked existing PR ${entry.id} on branch ${meta.branch} for ${meta.item.id}`);
+    if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+  }
+
+  const reason = `PR-producing work item ${meta.item.id} completed without a canonically attached PR record. Successful completion requires PR.prdItems/pr-links.json to include the work item; branch names, note URLs, and _context.workItemId metadata are not sufficient.`;
+  markMissingPrAttachment(meta, agentId, reason, resultSummary);
+  log('warn', reason);
+  return { reason, itemId: meta.item.id };
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
@@ -1666,7 +1785,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   }
 
   // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
-  const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
+  const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX || type === WORK_TYPE.TEST;
   const autoRecovered = !isSuccess && prsCreatedCount > 0 && prCreatingType && !!meta?.item?.id;
   if (autoRecovered) {
     log('info', `Auto-recovery: agent failed but created ${prsCreatedCount} PR(s) — upgrading ${meta.item.id} to done`);
@@ -1776,6 +1895,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
+  let completionContractFailure = null;
+  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
+    completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary);
+    if (completionContractFailure) skipDoneStatus = true;
+  }
+
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
     updateWorkItemStatus(meta, WI_STATUS.DONE, '');
@@ -1875,131 +2000,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  // Detect implement tasks that completed without creating a PR
-  if (effectiveSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
-    // Check if a PR already exists linked to this work item (from a previous attempt)
-    let existingPrFound = Object.values(getPrLinks()).some(linkedIds => (linkedIds || []).includes(meta.item.id));
-    // Also check pull-requests.json for PRs with matching prdItems or branch
-    if (!existingPrFound) {
-      const allProjects = shared.getProjects(config);
-      for (const p of allProjects) {
-        const prs = safeJson(shared.projectPrPath(p)) || [];
-        if (prs.some(pr => (pr.prdItems || []).includes(meta.item.id) || (pr.branch && pr.branch.includes(meta.item.id)))) {
-          existingPrFound = true;
-          break;
-        }
-      }
-    }
-    // Last resort: query the platform directly for an open PR on this branch.
-    // Handles the case where a prior orphaned dispatch created a PR but the engine
-    // never processed its output — so the PR exists on the platform but not in pull-requests.json.
-    if (!existingPrFound && meta?.branch) {
-      const projectObj = shared.getProjects(config).find(p => p.name === meta?.project?.name);
-      if (projectObj) {
-        try {
-          let found = null;
-          const host = projectObj.repoHost || 'ado';
-          if (host === 'github') {
-            const ghSlug = projectObj.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
-            if (ghSlug) {
-              // Retry up to 3 times — newly created PRs can take a few seconds to appear in the API
-              for (let attempt = 0; attempt < 3 && !found; attempt++) {
-                if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
-                let raw = '';
-                try {
-                  raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
-                  const parsed = JSON.parse(raw || '[]');
-                  const hits = Array.isArray(parsed) ? parsed : [];
-                  if (hits.length > 0 && hits[0].state === 'OPEN') {
-                    found = { prNumber: hits[0].number, url: hits[0].url };
-                  } else if (attempt === 2) {
-                    log('warn', `Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts (raw: ${(raw || '').slice(0, 200)})`);
-                  }
-                } catch (err) {
-                  if (attempt === 2) {
-                    const rawSuffix = raw ? ` (raw: ${raw.slice(0, 200)})` : '';
-                    log('warn', `Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}${rawSuffix}`);
-                  }
-                }
-              }
-            }
-          } else if (host === 'ado') {
-            found = await require('./ado').findOpenPrOnBranch(projectObj, meta.branch);
-          } else {
-            log('debug', `Skipping branch PR lookup for unsupported repo host "${host}" on ${projectObj.name}`);
-          }
-          if (found) {
-            const fullId = shared.getCanonicalPrId(projectObj, found.prNumber, found.url);
-            const prPath = shared.projectPrPath(projectObj);
-            mutateJsonFileLocked(prPath, prs => {
-              if (!Array.isArray(prs)) prs = [];
-              const existingPr = prs.find(p => p.id === fullId);
-              if (existingPr) {
-                if (meta.item?.id) {
-                  if (!Array.isArray(existingPr.prdItems)) existingPr.prdItems = [];
-                  if (!existingPr.prdItems.includes(meta.item.id)) existingPr.prdItems.push(meta.item.id);
-                }
-                return prs;
-              }
-              prs.push({
-                id: fullId, prNumber: found.prNumber, title: meta.item?.title || '',
-                agent: agentId, branch: meta.branch, reviewStatus: 'pending',
-                status: PR_STATUS.ACTIVE, created: ts(), url: found.url,
-                prdItems: meta.item?.id ? [meta.item.id] : [],
-                sourcePlan: meta.item?.sourcePlan || '', itemType: meta.item?.itemType || '',
-              });
-              return prs;
-            });
-            log('info', `Auto-linked existing PR ${fullId} on branch ${meta.branch} for ${meta.item?.id}`);
-            existingPrFound = true;
-          }
-        } catch (e) { log('warn', `PR lookup for branch ${meta.branch}: ${e.message}`); }
-      }
-    }
-    if (!existingPrFound) {
-      const noPrWiPath = resolveWorkItemPath(meta);
-      if (noPrWiPath) {
-        const hasOutput = stdout && stdout.length > 500;
-        let action = null;
-        mutateJsonFileLocked(noPrWiPath, data => {
-          if (!Array.isArray(data)) return data;
-          const w = data.find(i => i.id === meta.item.id);
-          if (!w) return data;
-          const retries = w._retryCount || 0;
-          if (!hasOutput && retries < ENGINE_DEFAULTS.maxRetries) {
-            w.status = WI_STATUS.PENDING;
-            w._retryCount = retries + 1;
-            delete w.dispatched_at;
-            delete w.dispatched_to;
-            delete w.failReason;
-            delete w.noPr;
-            action = { type: 'retry', retries: retries + 1 };
-          } else if (hasOutput) {
-            w.status = WI_STATUS.DONE;
-            w.completedAt = ts();
-            w._noPr = true;
-            w._noPrReason = 'Agent completed without creating a PR (changes may already exist or not be needed)';
-            delete w.failReason;
-            action = { type: 'done' };
-          } else {
-            w.status = WI_STATUS.NEEDS_REVIEW;
-            w._noPr = true;
-            w.failReason = 'Completed without output or PR after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
-            action = { type: 'needs-review' };
-          }
-          return data;
-        }, { skipWriteIfUnchanged: true });
-        if (action?.type === 'retry') {
-          log('info', `Auto-retry ${action.retries}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
-        } else if (action?.type === 'done') {
-          log('info', `${meta.item.id} completed without PR — marking done (agent produced output)`);
-        } else if (action?.type === 'needs-review') {
-          log('warn', `${meta.item.id} needs review — no output after ${ENGINE_DEFAULTS.maxRetries} retries`);
-        }
-      }
-    }
-  }
-
   // Old plan-to-prd PRD check removed — moved before updateWorkItemStatus(DONE) to fix #893
   // (retryCount was being deleted by done-marking before the check could read it)
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
@@ -2023,7 +2023,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  if (effectiveSuccess) {
+  const finalResult = completionContractFailure ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+  if (finalResult === DISPATCH_RESULT.SUCCESS) {
     extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
     // Also scan inbox notes for skill blocks — agents often write skills to inbox, not stdout
     try {
@@ -2038,7 +2039,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
       }
     } catch {}
   }
-  const finalResult = effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   updateAgentHistory(agentId, dispatchItem, finalResult);
   // Don't count auto-retries as errors in metrics — only count final outcomes
   const isAutoRetry = !effectiveSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
@@ -2051,7 +2051,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     teams.teamsNotifyCompletion(dispatchItem, finalResult, agentId).catch(() => {});
   } catch {}
 
-  return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
+  return { resultSummary, taskUsage, autoRecovered, structuredCompletion, completionContractFailure };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────

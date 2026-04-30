@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
+const { exec, execAsync, getAdoOrgBase, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -788,7 +788,18 @@ async function reconcilePrs(config) {
         }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
+          shared.upsertPullRequestRecord(prPath, existing || {
+            id: prId,
+            prNumber: adoPr.pullRequestId,
+            title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
+            agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
+            branch,
+            reviewStatus: 'pending',
+            status: 'active',
+            created: adoPr.creationDate || ts(),
+            url: prUrl,
+            prdItems: [],
+          }, { project, itemId: confirmedItemId });
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -803,7 +814,7 @@ async function reconcilePrs(config) {
       // are human-authored and should not be auto-tracked or auto-reviewed.
       if (!confirmedItemId) continue;
 
-      existingPrs.push({
+      const entry = {
         id: prId,
         prNumber: adoPr.pullRequestId,
         title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
@@ -814,8 +825,9 @@ async function reconcilePrs(config) {
         created: adoPr.creationDate || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],
-      });
-      addPrLink(prId, confirmedItemId, { project, prNumber: adoPr.pullRequestId, url: prUrl });
+      };
+      const upserted = shared.upsertPullRequestRecord(prPath, entry, { project, itemId: confirmedItemId });
+      existingPrs.push(upserted.record || entry);
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);

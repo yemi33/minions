@@ -63,6 +63,53 @@ function reloadConfig() {
   PROJECTS = _getProjects(CONFIG);
 }
 
+function getWorkItemIdFromPrLinkContext(context) {
+  if (!context) return null;
+  if (typeof context === 'object' && typeof context.workItemId === 'string') return context.workItemId;
+  if (typeof context === 'string') {
+    const match = context.match(/\b(P-[a-z0-9]{6,}|W-[a-z0-9]{6,}|PL-[a-z0-9]{6,})\b/i);
+    return match ? match[1] : null;
+  }
+  return null;
+}
+
+function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context }, config = CONFIG) {
+  if (!url) {
+    const err = new Error('url required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const projects = shared.getProjects(config);
+  const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
+  const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
+
+  const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
+  const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
+  const prId = shared.getCanonicalPrId(targetProject, prNum, url);
+  const workItemId = getWorkItemIdFromPrLinkContext(context);
+  const result = shared.upsertPullRequestRecord(prPath, {
+    id: prId,
+    prNumber: parseInt(prNum, 10) || null,
+    title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+    description: '',
+    agent: 'human',
+    branch: '',
+    reviewStatus: 'pending',
+    status: 'active',
+    created: new Date().toISOString(),
+    url,
+    prdItems: workItemId ? [workItemId] : [],
+    _manual: true,
+    _contextOnly: !autoObserve,
+    _autoObserve: !!autoObserve,
+    _context: context || '',
+  }, {
+    project: targetProject,
+    itemId: workItemId,
+  });
+  return { ...result, prPath, targetProject, prNum };
+}
+
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
@@ -5808,47 +5855,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Agents
     { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?', handler: async (req, res) => {
       const body = await readBody(req);
-      const { url, title, project: projectName, autoObserve, context } = body;
+      const { url } = body;
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
-      // Determine project
       reloadConfig();
-      const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
-      const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
-
-      // Extract PR number from URL
-      const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
-      const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
-      const prId = shared.getCanonicalPrId(targetProject, prNum, url);
-
-      // Atomic check-and-insert to prevent duplicates and races with polling loops
-      let duplicate = false;
-      mutateJsonFileLocked(prPath, (prs) => {
-        if (!Array.isArray(prs)) prs = [];
-        if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
-        prs.push({
-          id: prId,
-          prNumber: parseInt(prNum, 10) || null,
-          title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
-          description: '',
-          agent: 'human',
-          branch: '',
-          reviewStatus: 'pending',
-          status: 'active',
-          created: new Date().toISOString(),
-          url,
-          prdItems: [],
-          _manual: true,
-          _contextOnly: !autoObserve,
-          _autoObserve: !!autoObserve,
-          _context: context || '',
-        });
-        return prs;
-      }, { defaultValue: [] });
-      if (duplicate) return jsonReply(res, 400, { error: 'PR already tracked' });
+      const { id: prId, prPath, targetProject, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG);
       invalidateStatusCache();
-      jsonReply(res, 200, { ok: true, id: prId });
+      jsonReply(res, 200, { ok: true, id: prId, created, linked });
 
       // Async-enrich: fetch title, description, branch, author from GitHub/ADO API
       (async () => {
@@ -6371,6 +6384,7 @@ module.exports = {
   _parseDocChatResultText,
   _messageRequestsOrchestration,
   _formatDocChatContext,
+  _linkPullRequestForTracking: linkPullRequestForTracking,
   DOC_CHAT_DOCUMENT_DELIMITER,
 };
 
