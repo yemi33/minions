@@ -5838,9 +5838,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // /api/prd/regenerate removed — use /api/plans/approve which does diff-aware update
 
     // Agents
-    { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?', handler: async (req, res) => {
+    { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?, workItemId?', handler: async (req, res) => {
       const body = await readBody(req);
-      const { url, title, project: projectName, autoObserve, context } = body;
+      const { url, title, project: projectName, autoObserve, context, workItemId } = body;
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
       // Determine project
@@ -5853,6 +5853,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
       const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
       const prId = shared.getCanonicalPrId(targetProject, prNum, url);
+
+      // Resolve a work-item association from either the top-level workItemId
+      // field (preferred) or context.workItemId (legacy CC payload shape).
+      // Without this, manually-linked PRs end up with prdItems=[] and the
+      // Work Items page renders no PR even though _context records the ID.
+      const linkedItemId = (typeof workItemId === 'string' && workItemId.trim())
+        || (context && typeof context === 'object' && typeof context.workItemId === 'string' && context.workItemId.trim())
+        || '';
 
       // Atomic check-and-insert to prevent duplicates and races with polling loops
       let duplicate = false;
@@ -5870,7 +5878,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           status: 'active',
           created: new Date().toISOString(),
           url,
-          prdItems: [],
+          prdItems: linkedItemId ? [linkedItemId] : [],
           _manual: true,
           _contextOnly: !autoObserve,
           _autoObserve: !!autoObserve,
@@ -5879,6 +5887,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return prs;
       }, { defaultValue: [] });
       if (duplicate) return jsonReply(res, 400, { error: 'PR already tracked' });
+      // Persist the work-item ↔ PR association in pr-links.json so
+      // queries.getWorkItems() can render item._pr / item._prUrl. addPrLink
+      // is idempotent and handles the central / project-scoped split.
+      if (linkedItemId) {
+        try {
+          shared.addPrLink(prId, linkedItemId, { project: targetProject, prNumber: parseInt(prNum, 10) || null, url });
+        } catch (e) {
+          shared.log('warn', `PR link addPrLink failed for ${prId} → ${linkedItemId}: ${e.message}`);
+        }
+      }
       invalidateStatusCache();
       jsonReply(res, 200, { ok: true, id: prId });
 

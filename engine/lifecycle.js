@@ -749,7 +749,12 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   for (const f of inboxFiles) {
     const content = safeRead(path.join(INBOX_DIR, f));
     if (!content) continue;
-    const prHeaderPattern = /\*\*PR[:\*]*\*?\s*[#-]*\s*(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
+    // Match a PR declaration line in the agent's findings note: optional bold,
+    // optional "Pull Request" spelling, line-anchored so "see PR https://..."
+    // mid-paragraph mentions don't trigger a false-positive. The protocol
+    // and host prefix is optional so "PR: https://github.com/..." ,
+    // "**PR:** github.com/...", etc. all match.
+    const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request)[:\*]*\*?\s*[#-]*\s*(?:https?:\/\/)?[^\s"]*?(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
     while ((match = prHeaderPattern.exec(content)) !== null) prMatches.add(match[1] || match[2]);
   }
 
