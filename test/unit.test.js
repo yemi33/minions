@@ -11687,6 +11687,10 @@ async function testDiscoverFromPrs() {
       const freshShared = require('../engine/shared');
       const freshQueries = require('../engine/queries');
       const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
       const project = {
         name: 'demo',
         localPath: testDir,
@@ -11954,6 +11958,249 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered[0].agent, 'dallas');
       assert.strictEqual(discovered[0].meta.branch, 'feat/live-pr-42');
       assert.strictEqual(discovered[0].meta.pr.branch, 'feat/live-pr-42');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs marks pending review PRs with unresolved branch metadata (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    let githubPath = null;
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      githubPath = require.resolve('../engine/github');
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: {
+          pollPrStatus: async () => 0,
+          pollPrHumanComments: async () => 0,
+          reconcilePrs: async () => 0,
+          checkLiveReviewStatus: async () => 'pending',
+          checkLiveBuildAndConflict: async () => null,
+          isGhThrottled: () => false,
+        },
+      };
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { ripley: { name: 'Ripley', role: 'Reviewer' }, dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'github:octo/repo#1899',
+        prNumber: 1899,
+        status: 'active',
+        reviewStatus: 'pending',
+        agent: 'dallas',
+        title: 'Branch metadata missing',
+        branch: '',
+        prdItems: ['W-review-1899'],
+        url: 'https://github.com/octo/repo/pull/1899',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.getPrs = () => [pr];
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable review dispatch');
+      const after = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.strictEqual(after[0]._pendingReason, freshShared.PR_PENDING_REASON.MISSING_BRANCH,
+        'The blocked review PR should carry a visible pending reason instead of silently gating');
+    } finally {
+      restore();
+      if (githubPath) delete require.cache[githubPath];
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs marks changes-requested fix PRs with unresolved branch metadata (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'github:octo/repo#1900',
+        prNumber: 1900,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Needs fix but branch metadata is missing',
+        branch: '   ',
+        prdItems: ['W-fix-1899'],
+        minionsReview: { note: 'Please address the review.' },
+        url: 'https://github.com/octo/repo/pull/1900',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.getPrs = () => [pr];
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.deepStrictEqual(discovered, [], 'A PR with no branch must not create an unspawnable fix dispatch');
+      const after = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.strictEqual(after[0]._pendingReason, freshShared.PR_PENDING_REASON.MISSING_BRANCH,
+        'The blocked fix PR should carry a visible pending reason instead of silently gating');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('discoverFromPrs backfills recoverable PR branch metadata before fix dispatch (#1899)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+      };
+      const pr = {
+        id: 'github:octo/repo#1901',
+        prNumber: 1901,
+        status: 'active',
+        reviewStatus: 'changes-requested',
+        agent: 'dallas',
+        title: 'Branch can be recovered',
+        branch: '',
+        sourceRefName: 'refs/heads/feat/recovered-branch',
+        _pendingReason: freshShared.PR_PENDING_REASON.MISSING_BRANCH,
+        prdItems: ['W-fix-1901'],
+        minionsReview: { note: 'Please address the review.' },
+        url: 'https://github.com/octo/repo/pull/1901',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(freshShared.projectPrPath(project), [pr]);
+      freshQueries.getPrs = () => [pr];
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+
+      assert.strictEqual(discovered.length, 1, 'Recoverable branch metadata should dispatch instead of being treated as missing');
+      assert.strictEqual(discovered[0].type, 'fix');
+      assert.strictEqual(discovered[0].meta.branch, 'feat/recovered-branch');
+      assert.strictEqual(discovered[0].meta.pr.branch, 'feat/recovered-branch');
+      const after = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.strictEqual(after[0].branch, 'feat/recovered-branch',
+        'Recovered branch should be persisted for future dispatch decisions');
+      assert.strictEqual(after[0]._pendingReason, undefined,
+        'Recovered branch should clear the previous missing-branch pending reason');
     } finally {
       restore();
       for (const mod of [
@@ -32182,6 +32429,25 @@ async function testPrReviewFixFlows() {
       'Non-escalated PRs should not show the review-escalated badge class');
     assert.ok(!html.includes('review loop escalated'),
       'Non-escalated PRs should not show the review-loop-escalated label');
+  });
+
+  await test('dashboard PR rendering surfaces missing PR branch pending reason (#1899)', () => {
+    const prApi = loadPrApi();
+    const html = prApi.prRow({
+      id: 'PR-1899',
+      title: 'Metadata still resolving',
+      url: 'https://example.test/pr/1899',
+      agent: 'dallas',
+      branch: '',
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      _pendingReason: 'missing_pr_branch'
+    });
+
+    assert.ok(html.includes('missing pr branch'),
+      'PR table should make unresolved branch metadata visible instead of showing only an empty branch cell');
+    assert.ok(html.includes('Pending reason: missing_pr_branch'),
+      'Pending reason should be available as a tooltip for diagnostics');
   });
 
   await test('dashboard PR rendering: build-fix and review-loop escalation render as independent badges', () => {

@@ -5874,7 +5874,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             // Remote title always wins — any user-supplied title is a placeholder (closes #1283)
             if (prData.title) pr.title = prData.title.slice(0, 120);
             if (prData.description) pr.description = prData.description.slice(0, 500);
-            if (!pr.branch && prData.branch) pr.branch = prData.branch;
+            if (!pr.branch && prData.branch) {
+              pr.branch = prData.branch;
+              if (pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
+            }
             if (pr.agent === 'human' && prData.author) pr.agent = prData.author;
             return prs;
           }, { defaultValue: [] });
