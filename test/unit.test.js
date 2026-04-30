@@ -3570,6 +3570,58 @@ async function testPrLinks() {
     assert.strictEqual(shared.getPrDisplayId('github:octo/alpha#123'), 'PR-123');
   });
 
+  await test('getCanonicalPrId prefers ADO URL scope over incompatible GitHub project', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const adoUrl = 'https://office.visualstudio.com/DefaultCollection/office/_git/Office/pullrequest/5134010';
+    const id = shared.getCanonicalPrId(ghProject, 5134010, adoUrl);
+    assert.strictEqual(id, 'ado:office/office/office#5134010');
+    assert.notStrictEqual(id, 'github:yemi33/minions#5134010');
+  });
+
+  await test('getCanonicalPrId prefers GitHub URL scope over incompatible ADO project', () => {
+    const adoProject = { repoHost: 'ado', adoOrg: 'office', adoProject: 'office', repoName: 'Office' };
+    const ghUrl = 'https://github.com/yemi33/minions/pull/1910';
+    const id = shared.getCanonicalPrId(adoProject, 1910, ghUrl);
+    assert.strictEqual(id, 'github:yemi33/minions#1910');
+    assert.notStrictEqual(id, 'ado:office/office/office#1910');
+  });
+
+  await test('normalizePrRecord quarantines PR records whose URL scope conflicts with project scope', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const pr = {
+      id: 'github:yemi33/minions#5134010',
+      prNumber: 5134010,
+      url: 'https://office.visualstudio.com/DefaultCollection/office/_git/Office/pullrequest/5134010',
+      status: 'active'
+    };
+    assert.strictEqual(shared.normalizePrRecord(pr, ghProject), true);
+    assert.strictEqual(pr.id, 'ado:office/office/office#5134010');
+    assert.deepStrictEqual(pr._invalidProjectScope, {
+      reason: 'pr_scope_mismatch',
+      projectScope: 'github:yemi33/minions',
+      prScope: 'ado:office/office/office'
+    });
+    assert.strictEqual(shared.isPrCompatibleWithProject(ghProject, pr, pr.url), false);
+  });
+
+  await test('normalizePrRecord clears quarantine when PR scope matches project scope', () => {
+    const ghProject = { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+    const pr = {
+      id: 'github:yemi33/minions#1910',
+      prNumber: 1910,
+      url: 'https://github.com/yemi33/minions/pull/1910',
+      _invalidProjectScope: {
+        reason: 'pr_scope_mismatch',
+        projectScope: 'ado:office/office/office',
+        prScope: 'github:yemi33/minions'
+      }
+    };
+    assert.strictEqual(shared.normalizePrRecord(pr, ghProject), true);
+    assert.strictEqual(pr.id, 'github:yemi33/minions#1910');
+    assert.ok(!Object.prototype.hasOwnProperty.call(pr, '_invalidProjectScope'));
+    assert.strictEqual(shared.isPrCompatibleWithProject(ghProject, pr, pr.url), true);
+  });
+
   await test('findPrRecord matches canonical PR entries from legacy refs', () => {
     const project = { repoHost: 'github', adoOrg: 'octo', repoName: 'alpha' };
     const prs = [{
@@ -22203,6 +22255,18 @@ async function testReviewReDispatchLoop() {
       src.includes('!pr.lastReviewedAt ||') &&
       src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
       'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('PR automation skips records whose canonical scope conflicts with the project scope', () => {
+    const engineSrc = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    const adoSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'ado.js'), 'utf8');
+    assert.ok(engineSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'discoverFromPrs must skip mismatched PR records before creating review/fix/build work');
+    assert.ok(ghSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'GitHub poller must skip records that do not belong to the GitHub project scope');
+    assert.ok(adoSrc.includes('shared.isPrCompatibleWithProject(project, pr, pr.url || \'\')'),
+      'ADO poller must skip records that do not belong to the ADO project scope');
   });
 
   await test('no-verdict review retry clears stale _pendingReason (#1885)', async () => {

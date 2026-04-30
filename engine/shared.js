@@ -1661,6 +1661,10 @@ function parseAdoPrUrl(url) {
   };
 }
 
+function parsePrUrl(url) {
+  return parseGitHubPrUrl(url) || parseAdoPrUrl(url);
+}
+
 function getProjectPrScope(project) {
   if (!project) return '';
   const host = String(project.repoHost || '').toLowerCase();
@@ -1705,16 +1709,47 @@ function getPrDisplayId(value, fallbackPrNumber = null) {
   return typeof value === 'object' ? String(value?.id || '') : String(value || '');
 }
 
+function getPrScopeInfo(prRef, url = '') {
+  const isObjectRef = !!prRef && typeof prRef === 'object';
+  const rawUrl = url || (isObjectRef ? prRef.url || '' : String(prRef || ''));
+  const parsedUrl = parsePrUrl(rawUrl);
+  if (parsedUrl) return { ...parsedUrl, source: 'url' };
+  const rawId = isObjectRef ? (prRef.id || '') : String(prRef || '');
+  const canonical = parseCanonicalPrId(rawId);
+  return canonical ? { ...canonical, source: 'id' } : null;
+}
+
+function getPrProjectScopeMismatch(project, prRef, url = '') {
+  const projectScope = getProjectPrScope(project);
+  if (!projectScope) return null;
+  const refScope = getPrScopeInfo(prRef, url)?.scope || '';
+  if (!refScope) return null;
+  if (refScope === projectScope) return null;
+  const [projectHost, projectRest = ''] = projectScope.split(':');
+  const [refHost, refRest = ''] = refScope.split(':');
+  if (projectHost === refHost && projectHost === 'ado' && !project.prUrlBase) {
+    const projectParts = projectRest.split('/');
+    const refParts = refRest.split('/');
+    if (projectParts[0] === refParts[0] && projectParts[1] === refParts[1]) return null;
+  }
+  return { reason: 'pr_scope_mismatch', projectScope, prScope: refScope };
+}
+
+function isPrCompatibleWithProject(project, prRef, url = '') {
+  return !getPrProjectScopeMismatch(project, prRef, url);
+}
+
 function getCanonicalPrId(project, prRef, url = '') {
   const isObjectRef = !!prRef && typeof prRef === 'object';
   const rawId = isObjectRef ? (prRef.id || '') : String(prRef || '');
+  const rawUrl = url || (isObjectRef ? prRef.url || '' : String(prRef || ''));
+  const parsedUrl = parsePrUrl(rawUrl);
+  if (parsedUrl) return `${parsedUrl.scope}#${parsedUrl.prNumber}`;
   const canonical = parseCanonicalPrId(rawId);
   if (canonical) return `${canonical.scope}#${canonical.prNumber}`;
-  const parsedUrl = parseGitHubPrUrl(url || (isObjectRef ? prRef.url || '' : ''))
-    || parseAdoPrUrl(url || (isObjectRef ? prRef.url || '' : ''));
   const prNumber = getPrNumber(isObjectRef ? (prRef.prNumber ?? prRef.id ?? prRef.url) : prRef);
   if (prNumber == null) return rawId;
-  const scope = getProjectPrScope(project) || parsedUrl?.scope || '';
+  const scope = getProjectPrScope(project) || '';
   return scope ? `${scope}#${prNumber}` : `PR-${prNumber}`;
 }
 
@@ -1753,6 +1788,17 @@ function normalizePrRecord(pr, project = null) {
   const canonicalId = getCanonicalPrId(project, pr, pr.url || '');
   if (canonicalId && pr.id !== canonicalId) {
     pr.id = canonicalId;
+    changed = true;
+  }
+  const mismatch = getPrProjectScopeMismatch(project, pr, pr.url || '');
+  if (mismatch) {
+    const current = pr._invalidProjectScope || {};
+    if (current.reason !== mismatch.reason || current.projectScope !== mismatch.projectScope || current.prScope !== mismatch.prScope) {
+      pr._invalidProjectScope = mismatch;
+      changed = true;
+    }
+  } else if (Object.prototype.hasOwnProperty.call(pr, '_invalidProjectScope')) {
+    delete pr._invalidProjectScope;
     changed = true;
   }
   return changed;
@@ -2199,6 +2245,9 @@ module.exports = {
   getProjectPrScope,
   getPrNumber,
   getPrDisplayId,
+  getPrScopeInfo,
+  getPrProjectScopeMismatch,
+  isPrCompatibleWithProject,
   getCanonicalPrId,
   findPrRecord,
   normalizePrRecord,

@@ -2113,6 +2113,7 @@ async function discoverFromPrs(config, project) {
   const knownAgents = new Set(Object.keys(config.agents || {}));
   for (const pr of prs) {
     if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
+    if (!shared.isPrCompatibleWithProject(project, pr, pr.url || '')) continue;
     const prDisplayId = shared.getPrDisplayId(pr);
     const prCanonicalId = shared.getCanonicalPrId(project, pr, pr.url || '');
     if (activePrIds.has(prCanonicalId)) continue; // Skip PRs with active dispatch (prevent race)
