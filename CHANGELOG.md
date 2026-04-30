@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1643 (2026-04-30)
+
+### Features
+- harden PR canonicalization
+- fix PR comment auto-fix loop
+
+### Fixes
+- yemi33/minions#1918
+- require explicit PR-created evidence
+-  steering messages lost when session is winding down
+- surface missing PR branches
+
 ## 0.1.1641 (2026-04-30)
 
 ### Features
