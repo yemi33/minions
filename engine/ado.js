@@ -372,6 +372,7 @@ async function forEachActivePr(config, token, callback) {
     }
 
     let projectUpdated = 0;
+    const updatedRecords = [];
     const orgBase = getAdoOrgBase(project);
 
     // Parallelize PR polling within each project (max 5 concurrent to avoid rate limits)
@@ -381,31 +382,36 @@ async function forEachActivePr(config, token, callback) {
       const results = await Promise.allSettled(batch.map(async (pr) => {
         const prNum = shared.getPrNumber(pr);
         if (!prNum) return false;
-        return callback(project, pr, prNum, orgBase, adoRepositoryId);
+        const before = shared.snapshotPrRecord(pr);
+        const updated = await callback(project, pr, prNum, orgBase, adoRepositoryId);
+        if (updated) return { before, after: shared.snapshotPrRecord(pr) };
+        return false;
       }));
       for (const r of results) {
-        if (r.status === 'fulfilled' && r.value) projectUpdated++;
+        if (r.status === 'fulfilled' && r.value) {
+          projectUpdated++;
+          updatedRecords.push(r.value);
+        }
         if (r.status === 'rejected') log('warn', `PR poll error: ${r.reason?.message || r.reason}`);
       }
     }
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(shared.projectPrPath(project), (currentPrs) => {
-        // Merge back updated PRs — preserve disk values that may have been changed
-        // by other writers between poll start and this write
-        for (const updatedPr of activePrs) {
-          const updatedPrNumber = shared.getPrNumber(updatedPr);
+        // Merge back only fields changed by callbacks; preserve concurrent disk updates.
+        for (const { before, after } of updatedRecords) {
+          const updatedPrNumber = shared.getPrNumber(after);
           const idx = currentPrs.findIndex(p =>
-            p.id === updatedPr.id
+            p.id === after.id
             || (updatedPrNumber != null && shared.getPrNumber(p) === updatedPrNumber)
           );
           if (idx >= 0) {
             // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
             // The disk version may have been set to 'approved' by another writer after we read
-            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
-              updatedPr.reviewStatus = 'approved';
+            if (currentPrs[idx].reviewStatus === 'approved' && after.reviewStatus !== 'approved') {
+              after.reviewStatus = 'approved';
             }
-            currentPrs[idx] = updatedPr;
+            shared.applyPrFieldDelta(currentPrs[idx], before, after);
           }
           // Don't push if not found — it was deleted by another writer, respect that
         }
@@ -579,7 +585,6 @@ async function pollPrStatus(config) {
     const mergeCommitId = prData.lastMergeCommit?.commitId;
     let buildStatus = pr.buildStatus || 'none';
     let buildFailReason = pr.buildFailReason || '';
-    let buildStatuses = []; // for error log fetching
     let buildStatusResolved = true;
     let buildStatusStaleDetail = '';
 
@@ -603,11 +608,6 @@ async function pollPrStatus(config) {
             if (buildStatus === 'failing') {
               const failed = prBuilds.find(b => b.result === 'failed');
               buildFailReason = failed?.definition?.name || 'Build failed';
-              // Build fake status objects for error log fetching
-              buildStatuses = prBuilds.filter(b => b.result === 'failed').map(b => ({
-                state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
-                _buildId: String(b.id),
-              }));
             }
           } else if (allBuilds.length > 0 && pr.buildStatus) {
             // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
@@ -674,20 +674,7 @@ async function pollPrStatus(config) {
         }
         updated = true;
 
-        // Fetch actual compiler/build error logs when transitioning to failing
         if (buildStatus === 'failing') {
-          const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
-          const logParts = [];
-          const seenBuildIds = new Set();
-          for (const failedStatusObj of failedStatusObjs) {
-            const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
-            if (errorLog) logParts.push(errorLog);
-          }
-          if (logParts.length > 0) {
-            pr.buildErrorLog = logParts.join('\n\n');
-            log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
-          }
-
           // Teams notification for build failure — non-blocking
           try {
             const teams = require('./teams');
@@ -810,7 +797,7 @@ async function pollPrHumanComments(config) {
     const allNewDates = allHumanComments.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
     if (allNewDates.length > 0 && newHumanComments.length === 0) {
       pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
-      return false;
+      return true;
     }
     if (newHumanComments.length === 0) return false;
 

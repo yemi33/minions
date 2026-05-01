@@ -45,7 +45,7 @@ engine.js spawnAgent()
   → node engine/spawn-agent.js <prompt> <sysprompt> --runtime <name> [opts...]
     → adapter.resolveBinary() returns { bin, native, leadingArgs }
     → spawn(bin, [...leadingArgs, ...adapter.buildArgs(opts)])
-    → prompt delivered via stdin OR --prompt arg per adapter.capabilities.promptViaArg
+    → prompt delivered using the runtime adapter's delivery mode
 ```
 
 The CLI runtime is fully pluggable — see **Runtime Adapters** below for the
@@ -86,7 +86,7 @@ Primary modules (the ones you'll touch most often):
 | `engine/cleanup.js` | Worktree, temp file, and zombie process cleanup (every 10 ticks) |
 | `engine/routing.js` | `routing.md` parsing, agent resolution, temp agent spawning |
 | `engine/playbook.js` | Playbook loading, template variable substitution, project-local overrides |
-| `engine/recovery.js` | Per-FAILURE_CLASS retry recipes consumed by `dispatch.js` to gate per-class retry budgets (`maxAttempts` only — escalation/description metadata is not consumed) |
+| `engine/recovery.js` | Legacy recovery recipe metadata; dispatch retryability now prefers agent/runtime completion reports plus a global safety cap |
 | `engine/projects.js` | Project lifecycle (`removeProject`): cancel WIs, drain dispatch, kill agents, clean worktrees, archive data dir. Shared by `minions remove` CLI and `POST /api/projects/remove` |
 
 Support scripts (rarely edited directly):
@@ -341,7 +341,6 @@ When a project is removed, in order:
     "autoFixBuilds": true,
     "autoFixConflicts": true,
     "evalLoop": true,
-    "evalMaxIterations": 3,
     "adoPollEnabled": true,
     "ghPollEnabled": true,
     "defaultCli": "claude",          // fleet runtime — must be a key registered in engine/runtimes/index.js
@@ -368,7 +367,7 @@ When a project is removed, in order:
 Key engine config flags:
 - `autoFixBuilds` — gates build-failure auto-fix dispatch (when `false`, failing builds are notified but not auto-fixed)
 - `autoFixConflicts` — gates merge-conflict auto-fix dispatch
-- `evalLoop` — controls the entire review→fix cycle: auto-review dispatch after implementation, and re-review dispatch after fix. Replaces the now-removed `autoReview` flag. When `false`, no automatic review or fix-cycle dispatch occurs
+- `evalLoop` — controls the review→fix cycle: auto-review dispatch after implementation, and re-review dispatch after fix. When `false`, no automatic review or fix-cycle dispatch occurs. The engine no longer enforces review-loop attempt caps; agents report retryability/escalation through completion reports.
 - `adoPollEnabled` / `ghPollEnabled` — engine-level toggles that gate all ADO/GitHub PR status and comment polling; when `false`, `reviewStatus` is stale and review dispatch is also suppressed
 - `workSources` (per-project) — per-project toggles for which discovery sources are active (`pullRequests.enabled`, `workItems.enabled`) and their cooldown windows
 

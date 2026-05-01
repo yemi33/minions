@@ -219,14 +219,19 @@ async function forEachActiveGhPr(config, callback) {
     resetSlugBackoff(slug);
 
     let projectUpdated = 0;
+    const updatedRecords = [];
 
     for (const pr of activePrs) {
       const prNum = shared.getPrNumber(pr);
       if (!prNum) continue;
 
       try {
+        const before = shared.snapshotPrRecord(pr);
         const updated = await callback(project, pr, prNum, slug);
-        if (updated) projectUpdated++;
+        if (updated) {
+          projectUpdated++;
+          updatedRecords.push({ before, after: shared.snapshotPrRecord(pr) });
+        }
       } catch (err) {
         log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`);
       }
@@ -234,15 +239,15 @@ async function forEachActiveGhPr(config, callback) {
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(projectPrPath(project), (currentPrs) => {
-        // Merge back updated PRs and deduplicate
-        for (const updatedPr of activePrs) {
-          const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
+        // Merge back only fields changed by callbacks; preserve concurrent disk updates.
+        for (const { before, after } of updatedRecords) {
+          const idx = currentPrs.findIndex(p => p.id === after.id);
           if (idx >= 0) {
             // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
-            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
-              updatedPr.reviewStatus = 'approved';
+            if (currentPrs[idx].reviewStatus === 'approved' && after.reviewStatus !== 'approved') {
+              after.reviewStatus = 'approved';
             }
-            currentPrs[idx] = updatedPr;
+            shared.applyPrFieldDelta(currentPrs[idx], before, after);
           }
         }
         // Remove duplicates — prefer merged/abandoned over active
@@ -265,6 +270,7 @@ async function forEachActiveGhPr(config, callback) {
   const centralPrs = safeJson(centralPath) || [];
   const activeCentral = centralPrs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status) && pr.url);
   let centralUpdated = 0;
+  const updatedCentralRecords = [];
   for (const pr of activeCentral) {
     const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
     if (!ghMatch) continue;
@@ -272,14 +278,17 @@ async function forEachActiveGhPr(config, callback) {
     if (isSlugInBackoff(slug)) continue;
     const prNum = ghMatch[2];
     try {
+      const before = shared.snapshotPrRecord(pr);
       const updated = await callback(null, pr, prNum, slug);
       if (updated) {
         // Also update title/author/branch if still placeholder
-        if (pr.title.includes('polling...') || pr.agent === 'human' || pr.description === undefined) {
+        const currentTitle = pr.title || '';
+        if (!currentTitle || currentTitle.includes('polling...') || pr.agent === 'human' || pr.description === undefined) {
           const prData = await ghApi(`/pulls/${prNum}`, slug);
           if (prData) {
-            if (pr.title.includes('polling...') || /[{}"\[\]]/.test(pr.title) || /^[0-9a-f-]{8,}$/i.test(pr.title)) {
-              pr.title = (prData.title || pr.title).slice(0, 120);
+            const latestTitle = pr.title || '';
+            if (!latestTitle || latestTitle.includes('polling...') || /[{}"\[\]]/.test(latestTitle) || /^[0-9a-f-]{8,}$/i.test(latestTitle)) {
+              pr.title = (prData.title || latestTitle).slice(0, 120);
             }
             if (pr.description === undefined) pr.description = (prData.body || '').slice(0, 500);
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
@@ -291,6 +300,7 @@ async function forEachActiveGhPr(config, callback) {
           }
         }
         centralUpdated++;
+        updatedCentralRecords.push({ before, after: shared.snapshotPrRecord(pr) });
       }
     } catch (err) {
       log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`);
@@ -299,9 +309,9 @@ async function forEachActiveGhPr(config, callback) {
   if (centralUpdated > 0) {
     mutateJsonFileLocked(centralPath, (currentPrs) => {
       // Only merge back central PRs that the callback actually modified
-      for (const updatedPr of activeCentral) {
-        const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
-        if (idx >= 0) currentPrs[idx] = updatedPr;
+      for (const { before, after } of updatedCentralRecords) {
+        const idx = currentPrs.findIndex(p => p.id === after.id);
+        if (idx >= 0) shared.applyPrFieldDelta(currentPrs[idx], before, after);
       }
       return currentPrs;
     }, { defaultValue: [] });
@@ -487,15 +497,7 @@ async function pollPrStatus(config) {
           }
           updated = true;
 
-          // Fetch actual compiler/build error logs when transitioning to failing
           if (buildStatus === 'failing') {
-            const failedRuns = runs.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
-            const errorLog = await fetchGhBuildErrorLog(slug, failedRuns);
-            if (errorLog) {
-              pr.buildErrorLog = errorLog;
-              log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
-            }
-
             // Teams notification for build failure — non-blocking
             try {
               const teams = require('./teams');
@@ -611,7 +613,7 @@ async function pollPrHumanComments(config) {
     const allNewDates = allCommentEntries.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
     if (allNewDates.length > 0 && newComments.length === 0) {
       pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
-      return false; // agent comments only — don't trigger fix
+      return true; // agent comments only — persist cutoff without triggering fix
     }
     if (newComments.length === 0) return false;
 

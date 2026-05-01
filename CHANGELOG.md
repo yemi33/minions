@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1652 (2026-05-01)
+
+### Other
+- Harden agent steering reliability
+
+## 0.1.1651 (2026-05-01)
+
+### Other
+- refactor: delegate orchestration policy
+
 ## 0.1.1649 (2026-05-01)
 
 ### Features

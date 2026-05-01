@@ -23,8 +23,8 @@ Minions is a zero-dependency Node.js orchestration engine for autonomous coding 
 - `engine/queries.js` is the read-side aggregation layer used by both the engine and dashboard. Add common read/aggregation behavior there instead of duplicating scans in callers.
 - `engine/dispatch.js` owns queue mutation, deduplication, completion, retries, failure reports, and dispatch prompt sidecars.
 - `engine/lifecycle.js` owns post-completion work: parsing agent output, syncing PRs from output, updating PR/work-item status, plan completion, verification flow, and skill extraction.
-- `engine/ado.js` and `engine/github.js` are parallel PR integrations for status polling, comment polling, reconciliation, and build log collection. Keep schema behavior aligned for shared `pull-requests.json` fields.
-- Runtime CLI behavior goes through `engine/runtimes/`. Engine code must resolve adapters via `resolveRuntime()` and branch on `runtime.capabilities.*`, not on runtime names.
+- `engine/ado.js` and `engine/github.js` are parallel PR integrations for status polling, comment polling, and reconciliation. Keep schema behavior aligned for shared `pull-requests.json` fields; build-fix agents inspect live CI logs themselves.
+- Runtime CLI behavior goes through `engine/runtimes/`. Engine code must resolve adapters via `resolveRuntime()` and prefer adapter methods for spawn flags, session persistence, permission gates, and failure classification.
 - Playbooks in `playbooks/` define agent prompts. `engine/playbook.js` renders playbooks, injects project context, and contains host-specific PR command guidance.
 - Work routing is data-driven by `routing.md`; preserve its table format because the engine parses it.
 
@@ -35,10 +35,10 @@ Minions is a zero-dependency Node.js orchestration engine for autonomous coding 
 - Treat runtime state files as live shared state. The engine, dashboard, CLI commands, and agents may update them concurrently; check `git status` before editing and do not revert unrelated live/user/agent changes.
 - Agent processes are independent of the engine daemon. The daemon tracks live processes in memory and re-attaches on restart using PID files and `live-output.log`; avoid running dispatch/tick logic from a separate process that lacks the daemon's `activeProcesses` map.
 - `minions dispatch`/`node engine.js dispatch` should wake the running daemon through `control.json._wakeupAt`; do not call `tick()` from ad-hoc scripts to force dispatch while active agents exist.
-- The PR review/fix loop has distinct gates: `evalMaxIterations` gates only minion review/re-review/review-feedback automation. Human-feedback fixes, build-failure fixes, and merge-conflict fixes have separate gates and must continue after minion review escalation.
+- The engine should coordinate PR review/fix/build/conflict dispatch but should not enforce semantic review-loop or build-fix attempt caps; agents/runtime completion reports own retryability and escalation recommendations.
 - Build-failure state is intentionally conservative. Cached failing statuses may be marked stale (`_buildStatusStale`); do not dispatch build fixes from stale cached failures unless a live check confirms the failure.
 - Human PR comments do not require an `@minions` mention. Pollers filter bots/CI/minions comments, coalesce human feedback, and must persist comment cutoffs even when only agent/minions comments were new.
-- GitHub PR reviews cannot self-approve with shared credentials. Review agents should submit comments whose body starts with `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`; the engine parses those verdicts.
+- GitHub PR reviews cannot self-approve with shared credentials. Review agents should submit comments whose body starts with `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES` and write a completion report with `verdict: "approved"` or `verdict: "changes-requested"`.
 - For Azure DevOps PR operations, prefer `az` CLI commands first and use ADO MCP tools only as fallback. Do not use `gh` for ADO repositories.
 - Prefer `ENGINE_DEFAULTS` for retry/timeout/limit values and write only canonical statuses such as `WI_STATUS.DONE`; legacy aliases are read-compatible only.
 - Tests often assert source-level invariants with string checks. When changing architecture-sensitive logic, add or update regression tests near related sections in `test/unit.test.js`.

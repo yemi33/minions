@@ -14,7 +14,7 @@ Treat a Minions assignment like the user typed the same task directly into a cap
 - Use judgment to choose the smallest reliable workflow that fully satisfies the task.
 - Read only the context needed to make correct decisions; do not perform broad archaeology unless the task requires it.
 - Validate with the repo's own documented commands and acceptance criteria. If full validation is impossible or pre-existing failures block it, explain that precisely instead of inventing a green result.
-- Prefer direct work over ceremony. Branches, PRs, inbox notes, completion blocks, and status comments exist for traceability; they should not change what "done" means for the user.
+- Prefer direct work over ceremony. Branches, PRs, inbox notes, completion reports/blocks, and status comments exist for traceability; they should not change what "done" means for the user.
 - Safety and observability rules still win: stay in the engine-created worktree, do not self-merge, do not edit engine-managed status files, do not hide failures, and leave enough evidence for the human and engine to track the result.
 
 ## Engine Rules (apply to all tasks)
@@ -50,6 +50,16 @@ Treat a Minions assignment like the user typed the same task directly into a cap
   Do **not** create a skill for one-off bug fixes, isolated command outputs, obvious repo facts, or anything already covered by existing docs/playbooks/skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
 
+## Completion Reports
+
+The engine provides a completion report path in the prompt and in `MINIONS_COMPLETION_REPORT`. Before exiting, write JSON there with the actual outcome:
+
+```json
+{"status":"success","summary":"what changed and how it was validated","verdict":null,"pr":"PR id/url or N/A","failure_class":"N/A","retryable":false,"needs_rerun":false}
+```
+
+Use `status: "failed"` plus an accurate `failure_class`, `retryable`, and `needs_rerun` when the task could not be completed. For PR reviews, set `verdict` to `approved` or `changes-requested`. Fenced `completion` blocks are still accepted as a fallback, but the JSON report is the primary signal.
+
 ## Long-Running Commands
 
 Builds, dependency installs, tests, and local servers can be quiet for long periods. Run the repo's normal CLI commands and let them finish; do not add artificial progress output, heartbeat loops, or command-specific workarounds just to keep Minions active.
@@ -61,7 +71,7 @@ When asked to check build status, CI results, or review state for a PR:
 **Preferred — read cached state (refreshed every `prPollStatusEvery` ticks, default ~12 min when engine is running):**
 Find the PR in `projects/<project-name>/pull-requests.json` by `prNumber`. Key fields:
 - `buildStatus` — `passing` | `failing` | `running` | `none`
-- `buildErrorLog` — compiler/pipeline errors when `buildStatus` is `failing`
+- `buildFailReason` — failing check/pipeline name when `buildStatus` is `failing`; inspect live CI logs yourself for details
 - `reviewStatus` — `approved` | `changes-requested` | `waiting` | `pending`
 - `status` — `active` | `merged` | `abandoned`
 - `url` — link to the PR in ADO

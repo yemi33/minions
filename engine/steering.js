@@ -162,6 +162,27 @@ function _processEvidenceTimes(rawOutput, observedAtMs) {
   return times;
 }
 
+function sessionIdFromEvent(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const candidates = [
+    obj.session_id,
+    obj.sessionId,
+    obj.data?.session_id,
+    obj.data?.sessionId,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  if (obj.raw && obj.raw !== obj) return sessionIdFromEvent(obj.raw);
+  return null;
+}
+
+function sessionIdFromOutputLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('{')) return null;
+  try { return sessionIdFromEvent(JSON.parse(trimmed)); } catch { return null; }
+}
+
 function ackProcessedSteeringMessages(agentId, pendingEntries, rawOutput, opts = {}) {
   const entries = Array.isArray(pendingEntries) ? pendingEntries : [];
   if (entries.length === 0) return [];
@@ -183,5 +204,7 @@ module.exports = {
   writeSteeringMessage,
   listUnreadSteeringMessages,
   buildPendingSteeringPrompt,
+  sessionIdFromEvent,
+  sessionIdFromOutputLine,
   ackProcessedSteeringMessages,
 };

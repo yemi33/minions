@@ -11,6 +11,7 @@ const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, ex
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
+const { resolveRuntime } = require('./runtimes');
 const queries = require('./queries');
 const { isBranchActive } = require('./cooldown');
 const { worktreeDirMatchesBranch } = require('./cleanup');
@@ -980,36 +981,72 @@ async function findOpenPrForBranch(meta, config) {
   return null;
 }
 
-function markMissingPrAttachment(meta, agentId, reason, resultSummary) {
+// Lightweight probe for "did the agent's output contain ANY PR URL?". Used by
+// the PR-attachment contract to distinguish silent-failure (no URL anywhere)
+// from auto-link-miss (URL present but engine couldn't canonically attach it).
+// Keep this regex roughly in sync with the gated detection in syncPrsFromOutput
+// — this is yes/no only; no capture groups required.
+function _outputContainsPrUrl(output) {
+  if (!output || typeof output !== 'string') return false;
+  const prUrlPattern = /https?:\/\/(?:github\.com\/[^\s"'\\)\]]+\/[^\s"'\\)\]]+\/pull\/\d+|(?:dev\.azure\.com|[^/\s"'\\)\]]+\.visualstudio\.com)[^\s"'\\)\]]*?pullrequest\/\d+)/i;
+  return prUrlPattern.test(output);
+}
+
+function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity) {
   const noPrWiPath = resolveWorkItemPath(meta);
+  const isHard = severity !== 'soft';
   if (noPrWiPath) {
     mutateJsonFileLocked(noPrWiPath, data => {
       if (!Array.isArray(data)) return data;
       const w = data.find(i => i.id === meta.item.id);
       if (!w) return data;
-      w.status = WI_STATUS.NEEDS_REVIEW;
-      w._missingPrAttachment = true;
-      w.failReason = reason;
-      w._lastReviewReason = reason;
-      delete w.completedAt;
-      delete w._noPr;
-      delete w._noPrReason;
+      if (isHard) {
+        w.status = WI_STATUS.NEEDS_REVIEW;
+        w._missingPrAttachment = true;
+        w.failReason = reason;
+        w._lastReviewReason = reason;
+        delete w.completedAt;
+        delete w._noPr;
+        delete w._noPrReason;
+      } else {
+        // Soft: don't change status or failReason — the agent did the work,
+        // we just couldn't auto-attach the PR. Surface a flag for the dashboard
+        // so the dispatch row can render a yellow "verify" badge.
+        w._unverifiedPrAttachment = true;
+        w._lastReviewReason = reason;
+      }
       return data;
     }, { skipWriteIfUnchanged: true });
   }
-  shared.writeToInbox('engine', `missing-pr-attachment-${meta.item.id}`,
-    `# PR attachment missing for ${meta.item.id}\n\n` +
-    `**Agent:** ${agentId}\n` +
-    `**Work item:** \`${meta.item.id}\` — ${meta.item.title || ''}\n` +
-    `**Type:** ${meta.item.type || 'unknown'}\n` +
-    `**Branch:** ${meta.branch || '(none)'}\n\n` +
-    `${reason}\n` +
-    (resultSummary ? `\n## Agent summary\n${resultSummary}\n` : ''),
-    null,
-    { sourceItem: meta.item.id, reason: 'missing-pr-attachment' });
+  if (isHard) {
+    shared.writeToInbox('engine', `missing-pr-attachment-${meta.item.id}`,
+      `# PR attachment missing for ${meta.item.id}\n\n` +
+      `**Agent:** ${agentId}\n` +
+      `**Work item:** \`${meta.item.id}\` — ${meta.item.title || ''}\n` +
+      `**Type:** ${meta.item.type || 'unknown'}\n` +
+      `**Branch:** ${meta.branch || '(none)'}\n\n` +
+      `${reason}\n` +
+      (resultSummary ? `\n## Agent summary\n${resultSummary}\n` : ''),
+      null,
+      { sourceItem: meta.item.id, reason: 'missing-pr-attachment' });
+  } else {
+    shared.writeToInbox('engine', `pr-auto-link-unverified-${meta.item.id}`,
+      `# PR auto-link unverified for ${meta.item.id}\n\n` +
+      `**Agent:** ${agentId}\n` +
+      `**Work item:** \`${meta.item.id}\` — ${meta.item.title || ''}\n` +
+      `**Type:** ${meta.item.type || 'unknown'}\n` +
+      `**Branch:** ${meta.branch || '(none)'}\n\n` +
+      `${reason}\n\n` +
+      `The agent's output mentioned a PR URL but the engine couldn't canonically attach it ` +
+      `(URL detection regex miss, branch lookup race, untrusted tool_use signature, etc.). ` +
+      `The work likely succeeded — verify against the project's PR list.\n` +
+      (resultSummary ? `\n## Agent summary\n${resultSummary}\n` : ''),
+      null,
+      { sourceItem: meta.item.id, reason: 'pr-auto-link-unverified' });
+  }
 }
 
-async function enforcePrAttachmentContract(type, meta, agentId, config, resultSummary) {
+async function enforcePrAttachmentContract(type, meta, agentId, config, resultSummary, output) {
   if (!isPrAttachmentRequired(type, meta?.item, meta)) return null;
   if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
 
@@ -1037,10 +1074,16 @@ async function enforcePrAttachmentContract(type, meta, agentId, config, resultSu
     if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
   }
 
-  const reason = `PR-producing work item ${meta.item.id} completed without a canonically attached PR record. Successful completion requires PR.prdItems/pr-links.json to include the work item; branch names, note URLs, and _context.workItemId metadata are not sufficient.`;
-  markMissingPrAttachment(meta, agentId, reason, resultSummary);
-  log('warn', reason);
-  return { reason, itemId: meta.item.id, processWorkItemFailure: false };
+  // Distinguish "agent never claimed a PR" (hard — silent failure the contract
+  // was designed to catch) from "agent claimed a PR but engine couldn't attach
+  // it canonically" (soft — verification gap, not a failure).
+  const severity = _outputContainsPrUrl(output) ? 'soft' : 'hard';
+  const reason = severity === 'hard'
+    ? `${meta.item.id} completed but no PR URL was detected in the agent's output. Expected a PR — verify the agent didn't fail silently. (Branch: ${meta.branch || '(none)'}, agent: ${agentId})`
+    : `${meta.item.id} completed and a PR URL was found in the agent's output, but it couldn't be canonically attached. The work likely succeeded — verify by checking the PR list. (Branch: ${meta.branch || '(none)'}, agent: ${agentId})`;
+  markMissingPrAttachment(meta, agentId, reason, resultSummary, severity);
+  log(severity === 'hard' ? 'warn' : 'info', reason);
+  return { reason, itemId: meta.item.id, severity };
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
@@ -1059,9 +1102,7 @@ function parseReviewVerdict(text) {
   // Match "VERDICT: APPROVE" or "VERDICT: REQUEST_CHANGES" (case-insensitive, optional markdown bold)
   const verdictMatch = text.match(/VERDICT[:\s]+\*{0,2}(APPROVE|REQUEST[_\s-]?CHANGES)\*{0,2}/i);
   if (verdictMatch) {
-    const v = verdictMatch[1].toUpperCase().replace(/[\s-]/g, '_');
-    if (v === 'APPROVE') return 'approved';
-    if (v.includes('CHANGES')) return 'changes-requested';
+    return normalizeReviewVerdict(verdictMatch[1]);
   }
   return null;
 }
@@ -1083,7 +1124,7 @@ function isReviewBailout(text) {
   return /bail(ing)?\s+out/i.test(text) || /already\s+posted/i.test(text);
 }
 
-async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null) {
 
   if (!pr?.id) return;
 
@@ -1108,12 +1149,12 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
 
-  // Fallback: if live check returned pending (e.g., GitHub self-approval blocked), parse verdict from agent output
+  // Fallback: if live check returned pending (e.g., GitHub self-approval blocked), use the agent's completion report.
   if (!postReviewStatus) {
-    const verdict = parseReviewVerdict(resultSummary);
+    const verdict = reviewVerdictFromCompletion(structuredCompletion) || parseReviewVerdict(resultSummary);
     if (verdict) {
       postReviewStatus = verdict;
-      log('info', `Parsed review verdict from agent output for ${pr.id}: ${verdict}`);
+      log('info', `Read review verdict from agent completion for ${pr.id}: ${verdict}`);
     }
   }
 
@@ -1700,6 +1741,24 @@ function parseStructuredCompletion(stdout, runtimeName) {
   return result;
 }
 
+function parseCompletionReportFile(dispatchItem) {
+  const reportPath = dispatchItem?.meta?.completionReportPath || shared.dispatchCompletionReportPath(dispatchItem?.id);
+  if (!reportPath || !fs.existsSync(reportPath)) return null;
+  const report = safeJson(reportPath);
+  if (!report || typeof report !== 'object' || Array.isArray(report)) {
+    log('warn', `Ignoring malformed completion report for ${dispatchItem?.id || 'unknown'}: ${reportPath}`);
+    return null;
+  }
+  if (!report.status && report.outcome) report.status = report.outcome;
+  if (!report.status) {
+    log('warn', `Ignoring completion report without status for ${dispatchItem?.id || 'unknown'}: ${reportPath}`);
+    return null;
+  }
+  report._source = 'report-file';
+  report._path = reportPath;
+  return report;
+}
+
 function normalizeCompletionStatus(status) {
   return String(status || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
 }
@@ -1815,6 +1874,28 @@ function deferNonTerminalCompletion(meta, detection) {
     log('warn', `nonterminal completion gate: ${err.message}`);
   }
   return reason;
+}
+
+function parseCompletionBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', '1'].includes(normalized)) return true;
+    if (['false', 'no', '0'].includes(normalized)) return false;
+  }
+  return undefined;
+}
+
+function normalizeReviewVerdict(verdict) {
+  const value = String(verdict || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (value === 'approve' || value === 'approved') return 'approved';
+  if (value === 'request_changes' || value === 'changes_requested' || value === 'changes-requested') return 'changes-requested';
+  return null;
+}
+
+function reviewVerdictFromCompletion(completion) {
+  if (!completion || typeof completion !== 'object') return null;
+  return normalizeReviewVerdict(completion.verdict || completion.review_verdict || completion.reviewVerdict);
 }
 
 function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
@@ -1952,22 +2033,31 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // and for the foundation-only state of this plan item; downstream items
   // (P-2a6d9c4f, P-9c4f2d6a) populate dispatchItem.meta.runtimeName at spawn time.
   const runtimeName = dispatchItem.meta?.runtimeName || dispatchItem.runtimeName || 'claude';
-  const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout, runtimeName);
-  const completionGateSummary = resultSummary || (typeof stdout === 'string' && !stdout.includes('"type":') ? stdout : '');
+  let { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout, runtimeName);
 
-  // Try structured completion protocol first (```completion block from agent output)
-  const structuredCompletion = parseStructuredCompletion(stdout, runtimeName);
+  // Prefer the sidecar completion report; keep fenced output as a compatibility fallback.
+  const reportCompletion = parseCompletionReportFile(dispatchItem);
+  const structuredCompletion = reportCompletion || parseStructuredCompletion(stdout, runtimeName);
   if (structuredCompletion) {
-    log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}`);
+    if (structuredCompletion.summary) resultSummary = String(structuredCompletion.summary);
+    log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}${structuredCompletion._source ? ` (${structuredCompletion._source})` : ''}`);
   }
+  const completionGateSummary = resultSummary || (typeof stdout === 'string' && !stdout.includes('"type":') ? stdout : '');
 
   // Save session for potential resume on next dispatch
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
-      shared.safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
-        sessionId, dispatchId: dispatchItem.id, savedAt: ts(),
-        branch: dispatchItem.meta?.branch || null,
-      });
+      const runtime = resolveRuntime(runtimeName);
+      if (runtime && typeof runtime.saveSession === 'function') {
+        runtime.saveSession({
+          agentId,
+          dispatchId: dispatchItem.id,
+          branch: dispatchItem.meta?.branch || null,
+          sessionId,
+          agentsDir: AGENTS_DIR,
+          logger: { warn: (msg) => log('warn', msg) },
+        });
+      }
     } catch (err) { log('warn', `Session save: ${err.message}`); }
   }
 
@@ -1983,15 +2073,19 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('info', `Structured completion reports PR (${structuredCompletion.pr}) but regex sync found none — PR may already be tracked`);
   }
 
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  const agentNeedsRerun = parseCompletionBoolean(structuredCompletion?.needs_rerun ?? structuredCompletion?.needsRerun) === true;
+  const agentReportedFailure = completionStatus.startsWith('fail') || agentNeedsRerun;
+  const agentRetryable = parseCompletionBoolean(structuredCompletion?.retryable);
+
   // Auto-recover: if a failed implement/fix/test agent created PRs, it likely succeeded before the failure surfaced.
   const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX || type === WORK_TYPE.TEST;
-  const autoRecovered = !isSuccess && prsCreatedCount > 0 && prCreatingType && !!meta?.item?.id;
+  const autoRecovered = !agentReportedFailure && !isSuccess && prsCreatedCount > 0 && prCreatingType && !!meta?.item?.id;
   if (autoRecovered) {
     log('info', `Auto-recovery: agent failed but created ${prsCreatedCount} PR(s) — upgrading ${meta.item.id} to done`);
   }
-  const effectiveSuccess = isSuccess || autoRecovered;
+  const effectiveSuccess = (isSuccess && !agentReportedFailure) || autoRecovered;
 
-  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
   let nonCleanReportWritten = false;
   if (completionStatus.startsWith('partial') || autoRecovered || (completionStatus.startsWith('fail') && isSuccess)) {
     const outcome = completionStatus.startsWith('fail') ? 'failure' : 'partial';
@@ -2019,7 +2113,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // and after 3 such bailouts the WI flips to status=failed even though the
   // original review was posted on the first run.
   if (effectiveSuccess && type === WORK_TYPE.REVIEW && meta?.item?.id) {
-    const verdict = parseReviewVerdict(resultSummary);
+    const verdict = reviewVerdictFromCompletion(structuredCompletion) || parseReviewVerdict(resultSummary);
     if (!verdict && isReviewBailout(resultSummary)) {
       log('info', `Review ${meta.item.id} bailed out (review already posted) — treating as DONE without retry`);
     } else if (!verdict) {
@@ -2116,9 +2210,11 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   }
 
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
-    completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary);
+    completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary, stdout);
+    if (completionContractFailure?.severity === 'hard' || completionContractFailure?.nonTerminal) {
+      skipDoneStatus = true;
+    }
   }
-  if (completionContractFailure) skipDoneStatus = true;
 
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
@@ -2223,7 +2319,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // (retryCount was being deleted by done-marking before the check could read it)
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
+  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion);
   if (type === WORK_TYPE.FIX) {
     updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
@@ -2242,7 +2338,9 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  const finalResult = completionContractFailure ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+  const hardContractFail = completionContractFailure?.severity === 'hard'
+    || completionContractFailure?.nonTerminal === true;
+  const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
   if (finalResult === DISPATCH_RESULT.SUCCESS) {
     extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
     // Also scan inbox notes for skill blocks — agents often write skills to inbox, not stdout
@@ -2270,7 +2368,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     teams.teamsNotifyCompletion(dispatchItem, finalResult, agentId).catch(() => {});
   } catch {}
 
-  return { resultSummary, taskUsage, autoRecovered, structuredCompletion, completionContractFailure };
+  return { resultSummary, taskUsage, autoRecovered, structuredCompletion, completionContractFailure, agentReportedFailure, agentRetryable };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
@@ -2451,6 +2549,7 @@ module.exports = {
   isReviewBailout,
   parseStructuredCompletion,
   detectNonTerminalResultSummary,
+  parseCompletionReportFile,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,

@@ -84,7 +84,7 @@ Your task is complete when the requested implementation is delivered, the valida
 
 ## Completion
 
-After finishing, output a structured completion block so the engine can parse your results:
+After finishing, write the JSON completion report described in the shared rules. Also output this structured completion block as a compatibility fallback:
 
 ```completion
 status: done | partial | failed
@@ -95,4 +95,4 @@ failure_class: N/A
 pending: <any remaining work, or none>
 ```
 
-Replace the values with your actual results. This block MUST appear in your final output.
+Replace the values with your actual results.

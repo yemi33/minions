@@ -230,6 +230,12 @@ function dispatchPromptSidecarPath(dispatchId) {
   return path.join(_promptContextsDir(), `${safeId}.md`);
 }
 
+function dispatchCompletionReportPath(dispatchId) {
+  if (!dispatchId) return null;
+  const safeId = String(dispatchId).replace(/[^a-zA-Z0-9._-]/g, '-');
+  return path.join(MINIONS_DIR, 'engine', 'completions', `${safeId}.json`);
+}
+
 /**
  * If the dispatch item's prompt exceeds thresholdBytes, write the full prompt
  * to engine/contexts/<id>.md and replace `item.prompt` with a short stub
@@ -716,7 +722,7 @@ const ENGINE_DEFAULTS = {
   autoFixBuilds: true, // auto-dispatch fix agents when a PR build fails
   meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
-  evalMaxIterations: 3, // max review→fix cycles before escalating to human
+  evalMaxIterations: 3, // legacy UI/config field; engine discovery no longer enforces review→fix cycle caps
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
   maxRetries: 3, // max dispatch retries before marking work item as failed
   minRetryGapMs: 120000, // 2min — minimum gap between retry dispatches for the same work item; prevents tight retry loops when an idempotent agent (e.g. review bailing out on a duplicate) cannot produce the expected output (#1770)
@@ -727,7 +733,7 @@ const ENGINE_DEFAULTS = {
   logBufferSize: 50, // flush immediately when buffer exceeds this many entries
   lockRetries: 0, // no retries — single 5s timeout window with 25ms polling (200 attempts) is sufficient; stale lock recovery at 60s handles crashes
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
-  maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
+  maxBuildFixAttempts: 3, // legacy UI/config field; engine discovery no longer enforces build-fix attempt caps
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
   adoPollEnabled: true, // poll ADO PR status, comments, and reconciliation on each tick cycle
   ghPollEnabled: true, // poll GitHub PR status, comments, and reconciliation on each tick cycle
@@ -1171,7 +1177,7 @@ const ESCALATION_POLICY = {
 };
 
 // Structured completion protocol — fields agents must produce in ```completion blocks
-const COMPLETION_FIELDS = ['status', 'files_changed', 'tests', 'pr', 'pending', 'failure_class'];
+const COMPLETION_FIELDS = ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict'];
 
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
@@ -1778,6 +1784,39 @@ function findPrRecord(prs, prRef, project = null) {
   return numberMatches.length === 1 ? numberMatches[0] : null;
 }
 
+function snapshotPrRecord(pr) {
+  if (pr === undefined) return undefined;
+  return JSON.parse(JSON.stringify(pr));
+}
+
+function _jsonEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function _isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function applyPrFieldDelta(target, before, after) {
+  if (!target || typeof target !== 'object' || !after || typeof after !== 'object') return target;
+  before = before && typeof before === 'object' ? before : {};
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    const beforeValue = before[key];
+    const afterHas = Object.prototype.hasOwnProperty.call(after, key);
+    const afterValue = after[key];
+    if (_jsonEqual(beforeValue, afterValue)) continue;
+    if (!afterHas) {
+      delete target[key];
+    } else if (_isPlainObject(beforeValue) && _isPlainObject(afterValue) && _isPlainObject(target[key])) {
+      applyPrFieldDelta(target[key], beforeValue, afterValue);
+    } else {
+      target[key] = snapshotPrRecord(afterValue);
+    }
+  }
+  return target;
+}
+
 function normalizePrRecord(pr, project = null) {
   if (!pr || typeof pr !== 'object') return false;
   let changed = false;
@@ -2271,6 +2310,7 @@ module.exports = {
   safeUnlink,
   PROMPT_CONTEXTS_DIR,
   dispatchPromptSidecarPath,
+  dispatchCompletionReportPath,
   sidecarDispatchPrompt,
   resolveDispatchPrompt,
   deleteDispatchPromptSidecar,
@@ -2325,6 +2365,8 @@ module.exports = {
   isPrCompatibleWithProject,
   getCanonicalPrId,
   findPrRecord,
+  snapshotPrRecord,
+  applyPrFieldDelta,
   normalizePrRecord,
   normalizePrRecords,
   upsertPullRequestRecord,

@@ -20,8 +20,6 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 // Lazy require to break circular dependency with engine.js
 let _lifecycle = null;
 function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); return _lifecycle; }
-let _recovery = null;
-function recovery() { if (!_recovery) _recovery = require('./recovery'); return _recovery; }
 
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 
@@ -184,6 +182,16 @@ function isRetryableFailureReason(reason = '', failureClass = '') {
   return !nonRetryable.some(s => r.includes(s));
 }
 
+function normalizeRetryableDecision(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', '1'].includes(normalized)) return true;
+    if (['false', 'no', '0'].includes(normalized)) return false;
+  }
+  return undefined;
+}
+
 function isCompletedWorkItemForFailure(item) {
   return !!item && (
     item.status === WI_STATUS.DONE ||
@@ -234,6 +242,7 @@ function writeFailedAgentReport(item, reason, resultSummary, failureClass) {
 
 function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
   const { processWorkItemFailure = true, failureClass } = opts;
+  const agentRetryable = normalizeRetryableDecision(opts.agentRetryable ?? opts.retryable);
   let item = null;
 
   mutateDispatch((dispatch) => {
@@ -273,7 +282,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     }
 
     // Update source work item status on failure + auto-retry with backoff
-    const retryableFailure = isRetryableFailureReason(reason, failureClass);
+    const retryableFailure = agentRetryable !== undefined ? agentRetryable : isRetryableFailureReason(reason, failureClass);
     let completedWorkItemFailure = false;
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
       // If the live item cannot be resolved, keep the existing retry path.
@@ -295,9 +304,8 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           if (wi) retries = wi._retryCount || 0;
         } catch (e) { log('warn', 'read retry count: ' + e.message); }
         const maxRetries = ENGINE_DEFAULTS.maxRetries;
-        // Use per-class retry limits from recovery.js when failureClass is available
-        const classAllowsRetry = failureClass ? recovery().shouldRetry(failureClass, retries) : (retries < maxRetries);
-        if (retryableFailure && classAllowsRetry) {
+        const withinSafetyCap = retries < maxRetries;
+        if (retryableFailure && withinSafetyCap) {
           log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}${failureClass ? ' [' + failureClass + ']' : ''}`);
           lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
           // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.

@@ -31,6 +31,7 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const { execSync } = require('child_process');
+const { FAILURE_CLASS, safeWrite, ts } = require('../shared');
 
 const ENGINE_DIR = __dirname.replace(/[\\/]runtimes$/, '');
 const isWin = process.platform === 'win32';
@@ -252,6 +253,88 @@ function buildArgs(opts = {}) {
   if (sessionId) args.push(`--resume=${sessionId}`);
 
   return args;
+}
+
+function buildSpawnFlags(opts = {}) {
+  const flags = ['--runtime', 'copilot'];
+  if (opts.maxTurns != null) flags.push('--max-turns', String(opts.maxTurns));
+  if (opts.model) flags.push('--model', String(opts.model));
+  if (opts.allowedTools) flags.push('--allowedTools', String(opts.allowedTools));
+  if (module.exports.capabilities.effortLevels && opts.effort) flags.push('--effort', String(opts.effort));
+  if (module.exports.capabilities.sessionResume && opts.sessionId) flags.push('--resume', String(opts.sessionId));
+  if (module.exports.capabilities.budgetCap && opts.maxBudget != null) flags.push('--max-budget-usd', String(opts.maxBudget));
+  if (module.exports.capabilities.bareMode && opts.bare === true) flags.push('--bare');
+  if (module.exports.capabilities.fallbackModel && opts.fallbackModel) flags.push('--fallback-model', String(opts.fallbackModel));
+  if (opts.stream != null && opts.stream !== '') flags.push('--stream', String(opts.stream));
+  if (opts.disableBuiltinMcps === true) flags.push('--disable-builtin-mcps');
+  if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
+  if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
+  return flags;
+}
+
+function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
+  if (!agentId || agentId.startsWith('temp-') || !agentsDir) return null;
+  try {
+    const sessionPath = path.join(agentsDir, agentId, 'session.json');
+    const sessionFile = _safeJson(sessionPath);
+    if (!sessionFile?.sessionId || !sessionFile.savedAt) return null;
+    const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
+    const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
+    if (sessionAge < maxAgeMs && sameBranch) {
+      if (logger && typeof logger.info === 'function') {
+        logger.info(`Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
+      }
+      return sessionFile.sessionId;
+    }
+  } catch (e) {
+    if (logger && typeof logger.warn === 'function') logger.warn('session resume lookup: ' + e.message);
+  }
+  return null;
+}
+
+function saveSession({ agentId, dispatchId, branch, sessionId, agentsDir, now = ts, writeJson = safeWrite, logger = console } = {}) {
+  if (!sessionId || !agentId || agentId.startsWith('temp-') || !agentsDir) return false;
+  try {
+    writeJson(path.join(agentsDir, agentId, 'session.json'), {
+      sessionId,
+      dispatchId,
+      savedAt: typeof now === 'function' ? now() : new Date().toISOString(),
+      branch: branch || null,
+    });
+    return true;
+  } catch (err) {
+    if (logger && typeof logger.warn === 'function') logger.warn(`Session save: ${err.message}`);
+    return false;
+  }
+}
+
+function detectPermissionGate() {
+  return false;
+}
+
+function getPromptDeliveryMode() {
+  return 'stdin';
+}
+
+function usesSystemPromptFile() {
+  return false;
+}
+
+function _runtimeFailureClass(code) {
+  if (code === 'auth-failure' || code === 'budget-exceeded') return FAILURE_CLASS.PERMISSION_BLOCKED;
+  if (code === 'unknown-model') return FAILURE_CLASS.CONFIG_ERROR;
+  if (code === 'rate-limit') return FAILURE_CLASS.NETWORK_ERROR;
+  if (code === 'crash') return FAILURE_CLASS.SPAWN_ERROR;
+  return null;
+}
+
+function classifyFailure({ code, stdout = '', stderr = '', fallback } = {}) {
+  if (code === 78) return { failureClass: FAILURE_CLASS.CONFIG_ERROR, retryable: false, message: 'Copilot configuration error' };
+  const parsed = parseError(`${stdout || ''}\n${stderr || ''}`);
+  const runtimeClass = parsed.code ? _runtimeFailureClass(parsed.code) : null;
+  if (runtimeClass) return { failureClass: runtimeClass, retryable: parsed.retriable !== false, message: parsed.message || '' };
+  const fallbackClass = typeof fallback === 'function' ? fallback(code, stdout, stderr) : FAILURE_CLASS.UNKNOWN;
+  return { failureClass: fallbackClass, retryable: parsed.retriable !== false, message: parsed.message || '' };
 }
 
 // ── Prompt Construction ─────────────────────────────────────────────────────
@@ -681,8 +764,15 @@ module.exports = {
   // Use the same wrapper as Claude — spawn-agent.js is runtime-agnostic per P-9c4f2d6a
   spawnScript: path.join(ENGINE_DIR, 'spawn-agent.js'),
   installHint: INSTALL_HINT,
+  buildSpawnFlags,
   buildArgs,
   buildPrompt,
+  getResumeSessionId,
+  saveSession,
+  detectPermissionGate,
+  getPromptDeliveryMode,
+  usesSystemPromptFile,
+  classifyFailure,
   resolveModel,
   parseOutput,
   parseStreamChunk,
