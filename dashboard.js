@@ -75,7 +75,42 @@ function getWorkItemIdFromPrLinkContext(context, workItemId) {
   return null;
 }
 
-function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG) {
+function decodeUrlSegment(segment) {
+  try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+function parseAdoPrMetadataTarget(url) {
+  const raw = String(url || '');
+  const devAzure = raw.match(/https?:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/i);
+  if (devAzure) {
+    return {
+      adoOrg: decodeUrlSegment(devAzure[1]),
+      adoProj: decodeUrlSegment(devAzure[2]),
+      adoRepo: decodeUrlSegment(devAzure[3]),
+      prNum: devAzure[4],
+    };
+  }
+  const visualStudio = raw.match(/https?:\/\/([^/.]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/i);
+  if (!visualStudio) return null;
+  return {
+    adoOrg: `${decodeUrlSegment(visualStudio[1])}.visualstudio.com`,
+    adoProj: decodeUrlSegment(visualStudio[2]),
+    adoRepo: decodeUrlSegment(visualStudio[3]),
+    prNum: visualStudio[4],
+  };
+}
+
+function normalizePrMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  return {
+    title: typeof metadata.title === 'string' ? metadata.title.trim() : '',
+    description: typeof metadata.description === 'string' ? metadata.description : '',
+    branch: typeof metadata.branch === 'string' ? metadata.branch.trim().replace(/^refs\/heads\//i, '') : '',
+    author: typeof metadata.author === 'string' ? metadata.author.trim() : '',
+  };
+}
+
+function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
     err.statusCode = 400;
@@ -90,13 +125,14 @@ function linkPullRequestForTracking({ url, title, project: projectName, autoObse
   const prId = shared.getCanonicalPrId(targetProject, prNum, url);
   const linkedWorkItemId = getWorkItemIdFromPrLinkContext(context, workItemId);
   const contextText = typeof context === 'string' ? context : (context == null ? '' : JSON.stringify(context));
+  const metadata = normalizePrMetadata(options.metadata);
   const result = shared.upsertPullRequestRecord(prPath, {
     id: prId,
     prNumber: parseInt(prNum, 10) || null,
-    title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
-    description: '',
-    agent: 'human',
-    branch: '',
+    title: (metadata?.title || title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+    description: metadata?.description ? metadata.description.slice(0, 500) : '',
+    agent: metadata?.author || 'human',
+    branch: metadata?.branch || '',
     reviewStatus: 'pending',
     status: 'active',
     created: new Date().toISOString(),
@@ -5994,7 +6030,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
       reloadConfig();
-      const { id: prId, prPath, targetProject, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG);
+      const adoTarget = parseAdoPrMetadataTarget(url);
+      let initialPrData = null;
+      if (adoTarget) {
+        try {
+          initialPrData = await ado.fetchAdoPrMetadata(adoTarget.prNum, adoTarget.adoOrg, adoTarget.adoProj, adoTarget.adoRepo);
+        } catch (e) {
+          shared.log('warn', `ADO PR link metadata fetch failed for ${url}: ${e.message}`);
+        }
+      }
+      const { id: prId, prPath, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData });
       invalidateStatusCache();
       jsonReply(res, 200, { ok: true, id: prId, created, linked });
 
@@ -6003,16 +6048,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         try {
           let prData = null;
           const ghMatch = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-          const adoMatch = url.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/);
           if (ghMatch) {
             const slug = ghMatch[1];
             const result = await shared.execAsync(`gh api "repos/${slug}/pulls/${prNum}"`, { timeout: 15000, encoding: 'utf-8' });
             const d = JSON.parse(result);
             prData = { title: d.title, description: d.body, branch: d.head?.ref, author: d.user?.login };
-          } else if (adoMatch) {
-            const [, adoOrg, adoProj, adoRepo] = adoMatch;
+          } else if (adoTarget && !initialPrData) {
             try {
-              prData = await ado.fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo);
+              prData = await ado.fetchAdoPrMetadata(adoTarget.prNum, adoTarget.adoOrg, adoTarget.adoProj, adoTarget.adoRepo);
             } catch { /* ADO token may not be available */ }
           }
           if (!prData) return;

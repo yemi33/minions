@@ -138,6 +138,48 @@ function clearBuildStatusStale(pr) {
   if (pr._buildStatusDetail) delete pr._buildStatusDetail;
 }
 
+function isPlaceholderPrTitle(title, prNum) {
+  const text = String(title || '').trim();
+  if (!text) return true;
+  if (/\bpolling\.\.\./i.test(text)) return true;
+  if (String(prNum || '') && (text === `PR #${prNum}` || text === `PR-${prNum}`)) return true;
+  if (/[{}"\[\]]/.test(text)) return true;
+  return /^[0-9a-f-]{8,}$/i.test(text);
+}
+
+function applyAdoPrMetadata(pr, prData, prNum) {
+  if (!pr || !prData) return false;
+  let updated = false;
+
+  const sourceBranch = stripRefsHeads(prData.sourceRefName);
+  if (sourceBranch && (pr.branch !== sourceBranch || pr._branchResolutionError || pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH)) {
+    pr.branch = sourceBranch;
+    if (pr._branchResolutionError) delete pr._branchResolutionError;
+    if (pr._pendingReason === shared.PR_PENDING_REASON.MISSING_BRANCH) delete pr._pendingReason;
+    updated = true;
+  }
+
+  const title = String(prData.title || '').trim();
+  if (title && isPlaceholderPrTitle(pr.title, prNum) && pr.title !== title.slice(0, 120)) {
+    pr.title = title.slice(0, 120);
+    updated = true;
+  }
+
+  const description = typeof prData.description === 'string' ? prData.description : '';
+  if (description && (pr.description == null || pr.description === '')) {
+    pr.description = description.slice(0, 500);
+    updated = true;
+  }
+
+  const author = String(prData.createdBy?.displayName || '').trim();
+  if (author && pr.agent === 'human') {
+    pr.agent = author;
+    updated = true;
+  }
+
+  return updated;
+}
+
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
 
 /** Classify an array of ADO build records into a single status string. */
@@ -454,13 +496,7 @@ async function pollPrStatus(config) {
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
-    const sourceBranch = stripRefsHeads(prData.sourceRefName);
-    if (sourceBranch && pr.branch !== sourceBranch) {
-      pr.branch = sourceBranch;
-      if (pr._branchResolutionError) delete pr._branchResolutionError;
-      if (pr._pendingReason === 'missing_pr_branch') delete pr._pendingReason;
-      updated = true;
-    }
+    if (applyAdoPrMetadata(pr, prData, prNum)) updated = true;
 
     let newStatus = pr.status;
     if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
@@ -1121,7 +1157,8 @@ async function checkLiveBuildAndConflict(pr, project) {
 async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
   const token = await getAdoToken();
   if (!token) return null;
-  const url = `https://dev.azure.com/${adoOrg}/${adoProj}/_apis/git/repositories/${adoRepo}/pullrequests/${prNum}?api-version=7.1`;
+  const orgBase = getAdoOrgBase({ adoOrg });
+  const url = `${orgBase}/${encodeURIComponent(adoProj)}/_apis/git/repositories/${encodeURIComponent(adoRepo)}/pullrequests/${encodeURIComponent(String(prNum))}?api-version=7.1`;
   const pr = await adoFetch(url, token);
   if (!pr) return null;
   return {
