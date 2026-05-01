@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1660 (2026-05-01)
+
+### Fixes
+- less rigid agent orphan detection
+
 ## 0.1.1659 (2026-05-01)
 
 ### Other
