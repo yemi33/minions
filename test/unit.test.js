@@ -21998,11 +21998,34 @@ async function testSchedulerAdditionalCoverage() {
     assert.strictEqual(matcher(15), false);
   });
 
+  await test('parseCronField: step syntax with negative step returns always-false matcher', () => {
+    const matcher = scheduler.parseCronField('*/-5', 0, 59);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(5), false);
+    assert.strictEqual(matcher(55), false);
+  });
+
+  await test('parseCronField: empty and whitespace-only fields return always-false matcher', () => {
+    for (const field of ['', '   ', '\t\n']) {
+      const matcher = scheduler.parseCronField(field, 0, 59);
+      assert.strictEqual(matcher(0), false, `${JSON.stringify(field)} should not match min`);
+      assert.strictEqual(matcher(30), false, `${JSON.stringify(field)} should not match middle`);
+      assert.strictEqual(matcher(59), false, `${JSON.stringify(field)} should not match max`);
+    }
+  });
+
   await test('parseCronField: list syntax drops non-numeric entries silently', () => {
     const matcher = scheduler.parseCronField('1,abc,3', 0, 6);
     assert.strictEqual(matcher(1), true);
     assert.strictEqual(matcher(3), true);
     assert.strictEqual(matcher(2), false);
+  });
+
+  await test('parseCronField: all-NaN comma list returns always-false matcher', () => {
+    const matcher = scheduler.parseCronField('abc,xyz', 0, 6);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(3), false);
+    assert.strictEqual(matcher(6), false);
   });
 
   await test('parseCronField: list syntax tolerates whitespace around entries', () => {
@@ -22024,6 +22047,16 @@ async function testSchedulerAdditionalCoverage() {
     const matcher = scheduler.parseCronField('  7  ', 0, 59);
     assert.strictEqual(matcher(7), true);
     assert.strictEqual(matcher(0), false);
+  });
+
+  await test('parseCronField: trims surrounding whitespace on wildcard and step fields', () => {
+    const wildcard = scheduler.parseCronField('  *  ', 0, 59);
+    const step = scheduler.parseCronField('  */20  ', 0, 59);
+    assert.strictEqual(wildcard(0), true);
+    assert.strictEqual(wildcard(59), true);
+    assert.strictEqual(step(0), true);
+    assert.strictEqual(step(20), true);
+    assert.strictEqual(step(21), false);
   });
 
   // ─── parseCronExpr ────────────────────────────────────────────────────────
@@ -22061,6 +22094,28 @@ async function testSchedulerAdditionalCoverage() {
     const cron = scheduler.parseCronExpr('0   9   1');
     assert.ok(cron, 'multi-space expression should parse via \\s+ split');
     assert.strictEqual(cron.matches(new Date(2026, 2, 30, 9, 0)), true);
+  });
+
+  await test('parseCronExpr: rejects whitespace-only expression', () => {
+    assert.strictEqual(scheduler.parseCronExpr('   '), null);
+    assert.strictEqual(scheduler.parseCronExpr('\t\n'), null);
+  });
+
+  await test('parseCronExpr: combined field types match the manual minute/hour/day check', () => {
+    const cron = scheduler.parseCronExpr('*/15 * 1,3,5');
+    assert.ok(cron, 'combined step/wildcard/list expression should parse');
+    for (const date of [
+      new Date(2026, 2, 30, 0, 0),   // Monday, minute divisible by 15
+      new Date(2026, 2, 30, 23, 45), // Monday, wildcard hour
+      new Date(2026, 3, 1, 12, 30),  // Wednesday
+      new Date(2026, 3, 3, 8, 15),   // Friday
+      new Date(2026, 2, 31, 8, 15),  // Tuesday
+      new Date(2026, 3, 3, 8, 14),   // Friday, wrong minute
+    ]) {
+      const expected = date.getMinutes() % 15 === 0 &&
+        [1, 3, 5].includes(date.getDay());
+      assert.strictEqual(cron.matches(date), expected, date.toString());
+    }
   });
 
   await test('parseCronExpr: rejects non-string inputs', () => {
@@ -22121,6 +22176,34 @@ async function testSchedulerAdditionalCoverage() {
       assert.strictEqual(result, true,
         'a prior-minute lastRunAt must not suppress a fresh fire');
     });
+  });
+
+  await test('shouldRunNow: adjacent calendar minutes fire when exact cron matches the new minute', () => {
+    const now = new Date(2026, 2, 30, 5, 0, 0).getTime();      // 05:00:00
+    const lastMs = new Date(2026, 2, 30, 4, 59, 58).getTime(); // 04:59:58
+    withFixedNow(now, () => {
+      const result = scheduler.shouldRunNow(
+        { cron: '0 5 *' },
+        new Date(lastMs).toISOString()
+      );
+      assert.strictEqual(result, true,
+        'crossing from 04:59 to an exact 05:00 cron window must be allowed');
+    });
+  });
+
+  await test('shouldRunNow: previous hour/day lastRunAt does not suppress a matching cron', () => {
+    const now = new Date(2026, 2, 30, 9, 0, 0).getTime(); // Monday 09:00
+    for (const lastMs of [
+      new Date(2026, 2, 30, 8, 0, 0).getTime(), // same day, different hour
+      new Date(2026, 2, 29, 9, 0, 0).getTime(), // previous day, same hour/minute
+    ]) {
+      withFixedNow(now, () => {
+        assert.strictEqual(
+          scheduler.shouldRunNow({ cron: '0 9 1' }, new Date(lastMs).toISOString()),
+          true
+        );
+      });
+    }
   });
 
   await test('shouldRunNow: returns false when lastRunAt is in the same calendar minute', () => {
@@ -22272,6 +22355,8 @@ async function testSchedulerAdditionalCoverage() {
       assert.strictEqual(wi.project, null);
       assert.strictEqual(wi._scheduleId, 'W-mo5u52v2aabv-defaults');
       assert.ok(wi.created, 'created timestamp must be populated');
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(wi, 'agentLock'), false,
+        'agentLock field should be omitted unless agentLock or hardAgent is true');
     } finally {
       restoreFiles();
     }
@@ -22305,6 +22390,53 @@ async function testSchedulerAdditionalCoverage() {
     }
   });
 
+  await test('discoverScheduledWork: agentLock and hardAgent both set work item agentLock', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [
+          {
+            id: 'W-mo5u52v2aabv-agent-lock',
+            cron: '* * *',
+            title: 'agent lock',
+            agentLock: true,
+          },
+          {
+            id: 'W-mo5u52v2aabv-hard-agent',
+            cron: '* * *',
+            title: 'hard agent',
+            hardAgent: true,
+          },
+        ],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 2);
+      assert.strictEqual(work.find(w => w._scheduleId === 'W-mo5u52v2aabv-agent-lock').agentLock, true);
+      assert.strictEqual(work.find(w => w._scheduleId === 'W-mo5u52v2aabv-hard-agent').agentLock, true);
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: blank type falls back to implement', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const config = {
+        schedules: [{
+          id: 'W-mo5u52v2aabv-bad-type',
+          cron: '* * *',
+          title: 'bad type',
+          type: '   ',
+        }],
+      };
+      const work = scheduler.discoverScheduledWork(config);
+      assert.strictEqual(work.length, 1);
+      assert.strictEqual(work[0].type, shared.WORK_TYPE.IMPLEMENT);
+    } finally {
+      restoreFiles();
+    }
+  });
+
   await test('discoverScheduledWork: legacy string lastRun entry is honored for same-minute dedup', () => {
     const restoreFiles = snapshotAndClearScheduleRuns();
     try {
@@ -22326,6 +22458,35 @@ async function testSchedulerAdditionalCoverage() {
         const work = scheduler.discoverScheduledWork(config);
         assert.strictEqual(work.length, 0,
           'a legacy string-format lastRun in the current minute must dedupe');
+      });
+    } finally {
+      restoreFiles();
+    }
+  });
+
+  await test('discoverScheduledWork: object lastRun entry is honored for same-minute dedup', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const nowMs = new Date(2026, 2, 30, 9, 0, 30).getTime();
+      const sameMinuteIso = new Date(2026, 2, 30, 9, 0, 1).toISOString();
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-object-same-minute': {
+          lastRun: sameMinuteIso,
+          lastWorkItemId: 'sched-W-mo5u52v2aabv-object-same-minute-prev',
+        },
+      }));
+      withFixedNow(nowMs, () => {
+        const config = {
+          schedules: [{
+            id: 'W-mo5u52v2aabv-object-same-minute',
+            cron: '* * *',
+            title: 'object same-minute format',
+          }],
+        };
+        const work = scheduler.discoverScheduledWork(config);
+        assert.strictEqual(work.length, 0,
+          'an object-format lastRun in the current minute must dedupe');
       });
     } finally {
       restoreFiles();
