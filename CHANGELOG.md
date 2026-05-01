@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1663 (2026-05-01)
+
+### Other
+- test(shared): add unit tests for PR URL parsing & scope helpers (#1949)
+- test(scheduler): add unit tests for cron parsing edge cases & discovery flow (#1948)
+
 ## 0.1.1661 (2026-05-01)
 
 ### Other
