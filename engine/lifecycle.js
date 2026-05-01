@@ -2260,7 +2260,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     if (nonTerminalCompletion) {
       skipDoneStatus = true;
       const reason = deferNonTerminalCompletion(meta, nonTerminalCompletion);
-      completionContractFailure = { reason, itemId: meta.item.id, nonTerminal: true };
+      completionContractFailure = { reason, itemId: meta.item.id, nonTerminal: true, processWorkItemFailure: false };
       if (!nonCleanReportWritten) {
         writeNonCleanAgentReport(dispatchItem, agentId, 'partial', structuredCompletion, completionGateSummary, code);
       }

@@ -4058,6 +4058,133 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  await test('non-terminal task_complete summaries are retried instead of marked done', async () => {
+    const summaries = [
+      'Builds still running. I will check later.',
+      'Validation is pending; will check later before calling this complete.',
+      'I will wake up in about 10 minutes to check the build.',
+    ];
+
+    for (let i = 0; i < summaries.length; i++) {
+      const restore = createTestMinionsDir();
+      try {
+        const lifecycle = require('../engine/lifecycle');
+        const testDispatch = require('../engine/dispatch');
+        const testQueries = require('../engine/queries');
+        const testShared = require('../engine/shared');
+        const testDir = process.env.MINIONS_TEST_DIR;
+        const project = { name: 'minions', localPath: testDir };
+        const config = { projects: [project], agents: { lambert: { name: 'Lambert' } }, engine: {} };
+        testShared.safeWrite(path.join(testDir, 'config.json'), config);
+        const wiPath = testShared.projectWorkItemsPath(project);
+        fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+        const item = {
+          id: `W-task-complete-gate-${i}`,
+          title: 'Reject premature completion',
+          type: 'docs',
+          status: testShared.WI_STATUS.DISPATCHED,
+          dispatched_to: 'lambert',
+        };
+        testShared.safeWrite(wiPath, [item]);
+        const dispatchItem = {
+          id: `D-task-complete-gate-${i}`,
+          type: testShared.WORK_TYPE.DOCS,
+          agent: 'lambert',
+          task: 'Reject premature completion',
+          meta: {
+            source: 'work-item',
+            dispatchKey: `work-minions-${item.id}`,
+            item,
+            project: { name: project.name, localPath: testDir },
+            runtimeName: 'copilot',
+          },
+        };
+        testDispatch.mutateDispatch(dp => {
+          dp.active.push(dispatchItem);
+          return dp;
+        });
+
+        const stdout = [
+          JSON.stringify({ type: 'session.task_complete', data: { summary: summaries[i], success: true } }),
+          JSON.stringify({ type: 'result', sessionId: `sess-gate-${i}`, exitCode: 0, usage: { premiumRequests: 1 } }),
+        ].join('\n');
+        const hook = await lifecycle.runPostCompletionHooks(dispatchItem, 'lambert', 0, stdout, config);
+        const result = hook.completionContractFailure
+          ? testShared.DISPATCH_RESULT.ERROR
+          : testShared.DISPATCH_RESULT.SUCCESS;
+        const reason = hook.completionContractFailure?.reason || '';
+        const opts = hook.completionContractFailure?.processWorkItemFailure === false
+          ? { processWorkItemFailure: false }
+          : {};
+        testDispatch.completeDispatch(dispatchItem.id, result, reason, hook.resultSummary, opts);
+
+        const [updated] = testShared.safeJson(wiPath);
+        assert.ok(hook.completionContractFailure, 'non-terminal summary should be rejected by completion gate');
+        assert.strictEqual(updated.status, testShared.WI_STATUS.PENDING,
+          `summary should be retried, not done: ${summaries[i]}`);
+        assert.strictEqual(updated._retryCount, 1, 'rejected completion should use normal retry ownership');
+        assert.ok(!updated.completedAt, 'rejected completion must not persist a completion timestamp');
+        assert.ok(!testQueries.getDispatch().active.some(d => d.id === dispatchItem.id),
+          'rejected dispatch should be removed from active after completion handling');
+      } finally { restore(); }
+    }
+  });
+
+  await test('terminal task_complete summary still completes normally', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testDispatch = require('../engine/dispatch');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', localPath: testDir };
+      const config = { projects: [project], agents: { lambert: { name: 'Lambert' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-task-complete-accepted',
+        title: 'Accept terminal completion',
+        type: 'docs',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'lambert',
+      };
+      testShared.safeWrite(wiPath, [item]);
+      const dispatchItem = {
+        id: 'D-task-complete-accepted',
+        type: testShared.WORK_TYPE.DOCS,
+        agent: 'lambert',
+        task: 'Accept terminal completion',
+        meta: {
+          source: 'work-item',
+          dispatchKey: `work-minions-${item.id}`,
+          item,
+          project: { name: project.name, localPath: testDir },
+          runtimeName: 'copilot',
+        },
+      };
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push(dispatchItem);
+        return dp;
+      });
+
+      const stdout = [
+        JSON.stringify({ type: 'session.task_complete', data: { summary: 'Documentation update complete. Tests passed.', success: true } }),
+        JSON.stringify({ type: 'result', sessionId: 'sess-accepted', exitCode: 0, usage: { premiumRequests: 1 } }),
+      ].join('\n');
+      const hook = await lifecycle.runPostCompletionHooks(dispatchItem, 'lambert', 0, stdout, config);
+      const result = hook.completionContractFailure
+        ? testShared.DISPATCH_RESULT.ERROR
+        : testShared.DISPATCH_RESULT.SUCCESS;
+      testDispatch.completeDispatch(dispatchItem.id, result, hook.completionContractFailure?.reason || '', hook.resultSummary);
+
+      const [updated] = testShared.safeJson(wiPath);
+      assert.strictEqual(hook.completionContractFailure, null, 'terminal summary should not be rejected');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.DONE);
+      assert.ok(updated.completedAt, 'terminal summary should persist completion timestamp');
+    } finally { restore(); }
+  });
+
   await test('PR-producing success with PR URL but no canonical attach is SOFT — stays SUCCESS', async () => {
     const restore = createTestMinionsDir();
     try {
