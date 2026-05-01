@@ -1365,8 +1365,13 @@ async function spawnAgent(dispatchItem, config) {
     let errorReason = '';
     if (hardContractFail) {
       errorReason = completionContractFailure.reason || 'PR attachment contract failed';
-    } else if (agentReportedFailure && structuredCompletion?.summary) {
-      errorReason = String(structuredCompletion.summary).slice(0, 300);
+    } else if (agentReportedFailure && structuredCompletion) {
+      errorReason = String(
+        structuredCompletion.summary
+        || structuredCompletion.pending
+        || structuredCompletion.failure_class
+        || `Agent reported ${structuredCompletion.status || 'failure'}`
+      ).slice(0, 300);
     } else if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
       // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the

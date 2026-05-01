@@ -1752,20 +1752,67 @@ function parseStructuredCompletion(stdout, runtimeName) {
   while ((m = blockPattern.exec(text)) !== null) {
     lastMatch = m[1];
   }
-  if (!lastMatch) return null;
+  if (!lastMatch) {
+    const taskCompleteSummary = extractTaskCompleteSummary(stdout);
+    return taskCompleteSummary ? parseCompletionKeyValues(taskCompleteSummary) : null;
+  }
 
-  // Parse key: value pairs
+  return parseCompletionKeyValues(lastMatch);
+}
+
+function extractTaskCompleteSummary(stdout) {
+  if (!stdout || typeof stdout !== 'string') return '';
+  let summary = '';
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || !line.startsWith('{')) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    if (obj.type === 'session.task_complete') {
+      const value = obj.data?.summary;
+      if (typeof value === 'string' && value.trim()) summary = value;
+      continue;
+    }
+    if (obj.type === 'tool.execution_start' && obj.data?.toolName === 'task_complete') {
+      const value = obj.data?.arguments?.summary;
+      if (typeof value === 'string' && value.trim()) summary = value;
+      continue;
+    }
+    if (obj.type === 'assistant.message' && Array.isArray(obj.data?.toolRequests)) {
+      for (const tr of obj.data.toolRequests) {
+        if (tr?.name !== 'task_complete') continue;
+        const value = tr.arguments?.summary || tr.intentionSummary;
+        if (typeof value === 'string' && value.trim()) summary = value;
+      }
+    }
+  }
+  return summary;
+}
+
+function hasActionableFailureClass(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return !['n/a', 'na', 'none', 'null', 'no', 'false', 'not-applicable'].includes(normalized);
+}
+
+function parseCompletionKeyValues(text) {
+  if (!text || typeof text !== 'string') return null;
   const result = {};
-  const lines = lastMatch.trim().split('\n');
+  const allowedFields = new Set(shared.COMPLETION_FIELDS || []);
+  const lines = text.trim().split('\n');
   for (const line of lines) {
-    const colonIdx = line.indexOf(':');
+    const normalizedLine = line.trim().replace(/^[-*]\s+/, '');
+    const colonIdx = normalizedLine.indexOf(':');
     if (colonIdx < 1) continue;
-    const key = line.slice(0, colonIdx).trim().toLowerCase();
-    const value = line.slice(colonIdx + 1).trim();
+    const key = normalizedLine.slice(0, colonIdx).trim().toLowerCase();
+    if (allowedFields.size > 0 && !allowedFields.has(key)) continue;
+    const value = normalizedLine.slice(colonIdx + 1).trim();
     if (key && value) result[key] = value;
   }
 
-  // Must have at least the status field to be valid
+  // Must have at least status, or an actionable failure_class that implies failure.
+  if (!result.status && hasActionableFailureClass(result.failure_class)) result.status = 'failed';
   if (!result.status) return null;
   return result;
 }
@@ -2102,7 +2149,10 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
   const agentNeedsRerun = parseCompletionBoolean(structuredCompletion?.needs_rerun ?? structuredCompletion?.needsRerun) === true;
-  const agentReportedFailure = completionStatus.startsWith('fail') || agentNeedsRerun;
+  const agentReportedFailure = completionStatus.startsWith('fail')
+    || completionStatus === 'error'
+    || hasActionableFailureClass(structuredCompletion?.failure_class)
+    || agentNeedsRerun;
   const agentRetryable = parseCompletionBoolean(structuredCompletion?.retryable);
 
   // Auto-recover: if a failed implement/fix/test agent created PRs, it likely succeeded before the failure surfaced.
@@ -2114,8 +2164,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const effectiveSuccess = (isSuccess && !agentReportedFailure) || autoRecovered;
 
   let nonCleanReportWritten = false;
-  if (completionStatus.startsWith('partial') || autoRecovered || (completionStatus.startsWith('fail') && isSuccess)) {
-    const outcome = completionStatus.startsWith('fail') ? 'failure' : 'partial';
+  if (completionStatus.startsWith('partial') || autoRecovered || (agentReportedFailure && isSuccess)) {
+    const outcome = agentReportedFailure ? 'failure' : 'partial';
     writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, completionGateSummary, code);
     nonCleanReportWritten = true;
   }
@@ -2347,7 +2397,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion);
-  if (type === WORK_TYPE.FIX) {
+  if (type === WORK_TYPE.FIX && effectiveSuccess) {
     updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
     // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.

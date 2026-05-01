@@ -33127,6 +33127,127 @@ async function testStructuredCompletion() {
     assert.strictEqual(result.pending, 'fix compilation errors');
   });
 
+  await test('parseStructuredCompletion reads plain task_complete status summaries', () => {
+    const stdout = JSON.stringify({
+      type: 'session.task_complete',
+      data: {
+        summary: [
+          'status: failed',
+          'files_changed: none',
+          'tests: N/A',
+          'pr: PR-5144236',
+          'failure_class: dirty-worktree',
+          'pending: clean the worktree and rerun the fix',
+        ].join('\n')
+      }
+    });
+    const result = lifecycle.parseStructuredCompletion(stdout, 'copilot');
+    assert.ok(result, 'plain task_complete summary should be parsed as structured completion');
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.pr, 'PR-5144236');
+    assert.strictEqual(result.failure_class, 'dirty-worktree');
+    assert.strictEqual(result.pending, 'clean the worktree and rerun the fix');
+  });
+
+  await test('parseStructuredCompletion ignores status-looking prose without task_complete or fenced block', () => {
+    const stdout = [
+      'Implementation succeeded.',
+      'The original bug report contained this example:',
+      'status: failed',
+      'failure_class: dirty-worktree',
+      'pending: clean or recreate the worktree',
+      'That failure path is now fixed.',
+    ].join('\n');
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null,
+      'plain prose/log excerpts must not be parsed as structured completion');
+  });
+
+  await test('runPostCompletionHooks does not clear pendingFix when task_complete reports failed', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: {} };
+      sharedInner.safeWrite(path.join(testDir, 'config.json'), config);
+      const prPath = sharedInner.projectPrPath(project);
+      const wiPath = sharedInner.projectWorkItemsPath(project);
+      sharedInner.safeWrite(prPath, [{
+        id: 'github:octo/repo#12',
+        prNumber: 12,
+        url: 'https://github.com/octo/repo/pull/12',
+        title: 'Feature PR',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        humanFeedback: { pendingFix: true },
+        minionsReview: { note: 'Human comments pending' },
+      }]);
+      sharedInner.safeWrite(wiPath, [{
+        id: 'W-failed-task-complete',
+        title: 'Fix human feedback',
+        type: sharedInner.WORK_TYPE.FIX,
+        status: sharedInner.WI_STATUS.DISPATCHED,
+        dispatched_to: 'ralph',
+        dispatched_at: '2026-05-01T17:50:00.000Z',
+      }]);
+      const dispatchItem = {
+        id: 'D-failed-task-complete',
+        type: sharedInner.WORK_TYPE.FIX,
+        task: 'Fix human feedback',
+        agent: 'ralph',
+        meta: {
+          source: 'pr-human-feedback',
+          project,
+          pr: { id: 'github:octo/repo#12', prNumber: 12, url: 'https://github.com/octo/repo/pull/12' },
+          item: { id: 'W-failed-task-complete', title: 'Fix human feedback', type: sharedInner.WORK_TYPE.FIX },
+        },
+      };
+      const stdout = JSON.stringify({
+        type: 'session.task_complete',
+        data: {
+          summary: [
+            'status: failed',
+            'files_changed: none',
+            'tests: N/A',
+            'pr: PR-12',
+            'failure_class: dirty-worktree',
+            'pending: clean or recreate the worktree, then rerun the review-fix task',
+          ].join('\n')
+        }
+      });
+
+      const result = await lifecycleInner.runPostCompletionHooks(dispatchItem, 'ralph', 0, stdout, config);
+
+      const [updatedPr] = sharedInner.safeJson(prPath);
+      const [updatedWi] = sharedInner.safeJson(wiPath);
+      assert.strictEqual(result.agentReportedFailure, true,
+        'status: failed task_complete summary should make the dispatch fail despite exit code 0');
+      assert.strictEqual(result.structuredCompletion.failure_class, 'dirty-worktree');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, true,
+        'failed human-feedback fix must leave pendingFix set for redispatch');
+      assert.strictEqual(updatedPr.reviewStatus, 'changes-requested',
+        'failed human-feedback fix must not reset the PR to waiting for re-review');
+      assert.strictEqual(updatedPr.minionsReview.note, 'Human comments pending',
+        'failed human-feedback fix must not stamp a fixedAt/note success marker');
+      assert.notStrictEqual(updatedWi.status, sharedInner.WI_STATUS.DONE,
+        'failed task_complete must not mark the source work item done');
+      assert.ok(!updatedWi.completedAt, 'failed task_complete must not set completedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('fix.md includes ## Completion section', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
     assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
