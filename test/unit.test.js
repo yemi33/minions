@@ -38141,6 +38141,50 @@ async function testAdoRepositoryIdFallback() {
     };
   }
 
+  await test('ADO pollPrStatus treats upstream title as authoritative when stored title came from work item', async () => {
+    const project = {
+      name: 'ado-title-authoritative',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '55555555-5555-5555-5555-555555555555',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+    const prNumber = 4991884;
+    const storedPr = {
+      id: 'ado:org/proj/repo-name#4991884',
+      prNumber,
+      title: 'Resolve merge conflicts on PR 4991884',
+      status: 'active',
+      reviewStatus: 'pending',
+      url: 'https://dev.azure.com/org/proj/_git/repo-name/pullrequest/4991884',
+    };
+
+    await withAdoPollFixture(project, [storedPr], async ({ ado, testShared }) => {
+      globalThis.fetch = async (url) => {
+        if (url.includes('/repositories/55555555-5555-5555-5555-555555555555/pullrequests/4991884?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              title: 'Real ADO Title',
+              status: 'active',
+              reviewers: [],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      const stored = testShared.safeJson(testShared.projectPrPath(project))[0];
+      assert.strictEqual(stored.title, 'Real ADO Title',
+        'ADO polling must overwrite non-placeholder bleed-through titles with the upstream title');
+    });
+  });
+
   await test('ADO pollPrStatus uses repoName for PR metadata but resolves GUID for builds when repositoryId is empty', async () => {
     const repoGuid = '11111111-1111-1111-1111-111111111111';
     const project = {
