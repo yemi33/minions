@@ -120,7 +120,17 @@ test/playwright/report/
 # Dependencies
 node_modules/
 
+# Agent runtime state — only charter.md is tracked under each agent
+agents/*/*
+!agents/*/charter.md
+
+# Untracked agent worktree drops (e.g. agents/pr-1890-conflict/)
+agents/pr-*-conflict/
+
+# Stray artifacts dropped at repo root (curl typos, agent verdict files, etc.)
+/origin
+/pull-requests.json
+verdict-*.md
+
 # Legacy
-agents/ralph/next-action.json
-agents/ralph/loop.log
 sessions/

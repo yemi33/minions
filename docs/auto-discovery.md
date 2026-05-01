@@ -37,7 +37,7 @@ Before scanning, the engine materializes plans and specs into project work items
 | `_mergeConflict: true` | Route to author for conflict resolution | `fix` |
 Skips PRs where `status !== "active"`.
 
-PR fix triggers are evaluated in this source order inside `discoverFromPrs()`: review feedback first (`engine.js:2166-2180`), human feedback second (`engine.js:2191-2226`), build failure third (`engine.js:2229-2271`), and merge conflict fourth (`engine.js:2299-2317`). Conflict fixes are additionally gated by `!fixDispatched` (`engine.js:2301`), so any earlier successful fix dispatch in the same PR discovery pass suppresses the conflict fix until a later pass.
+Inside `discoverFromPrs()`, `evalLoop` / `evalMaxIterations` only gate the minion review loop: initial minion reviews, minion re-reviews, and minion review-feedback fixes. Human-feedback fixes are evaluated outside that gate, build failures use the separate `maxBuildFixAttempts` cap, and merge conflicts use the separate `autoFixConflicts` gate. Conflict fixes are additionally gated by `!fixDispatched`, so an earlier successful human/review/build fix dispatch in the same PR discovery pass suppresses the conflict fix until a later pass.
 
 ### Source 2: PRD Gap Analysis (via `materializePlansAsWorkItems`)
 

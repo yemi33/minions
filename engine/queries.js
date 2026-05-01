@@ -49,7 +49,7 @@ function readHeadTail(filePath, bytes = 1024) {
  * Returns { description, taskId } for the most recent in-flight tool, or null.
  */
 function detectInFlightTool(tail) {
-  if (!tail) return null;
+  if (typeof tail !== 'string' || !tail) return null;
   const lines = tail.split('\n');
   const completed = new Set();
 
@@ -92,10 +92,12 @@ const NOTES_PATH = path.join(MINIONS_DIR, 'notes.md');
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function timeSince(ms) {
-  const s = Math.floor((Date.now() - ms) / 1000);
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return 'unknown';
+  const s = Math.floor(Math.max(0, Date.now() - ms) / 1000);
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 function readJsonNoRestore(filePath) {

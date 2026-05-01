@@ -778,16 +778,22 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     }
   } catch {}
 
-  // Accept inbox fallback only when the agent wrote the explicit PR-created
-  // protocol line; generic PR mentions in findings/review notes are not evidence.
-  const today = dateStamp();
-  const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
-  for (const f of inboxFiles) {
-    const content = safeRead(path.join(INBOX_DIR, f));
-    if (!content) continue;
-    const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
-    while ((match = prHeaderPattern.exec(content)) !== null) {
-      addPrUrlEvidence(match[1]);
+  // Accept inbox fallback ONLY when the agent's stdout is empty (rotated/lost).
+  // The inbox note is the durable artifact for the "gh pr create ran in a sibling
+  // dispatch whose stdout was rotated" case. When stdout has actual content (even
+  // without PR evidence — e.g. the agent ran gh issue view but didn't create a PR),
+  // we must NOT pull in PR URLs from leftover inbox files of prior dispatches —
+  // those would falsely attribute unrelated PRs to this run.
+  if (!output || !String(output).trim()) {
+    const today = dateStamp();
+    const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
+    for (const f of inboxFiles) {
+      const content = safeRead(path.join(INBOX_DIR, f));
+      if (!content) continue;
+      const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
+      while ((match = prHeaderPattern.exec(content)) !== null) {
+        addPrUrlEvidence(match[1]);
+      }
     }
   }
 
@@ -1688,6 +1694,10 @@ function parseStructuredCompletion(stdout, runtimeName) {
   return result;
 }
 
+function normalizeCompletionStatus(status) {
+  return String(status || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+}
+
 const TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS = [
   { phrase: 'still running', pattern: /\bstill\s+running\b/i },
   { phrase: 'will check later', pattern: /\b(?:will|i'?ll|we'?ll)\s+check\s+(?:back\s+)?later\b/i },
@@ -1700,8 +1710,8 @@ const TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS = [
 ];
 
 function findTerminalIncompatibleCompletionPhrase(resultSummary, structuredCompletion) {
-  const structuredStatus = String(structuredCompletion?.status || '').trim().toLowerCase();
-  if (['partial', 'pending', 'in-progress', 'in progress'].includes(structuredStatus)) {
+  const structuredStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (['partial', 'pending', 'in-progress'].includes(structuredStatus)) {
     return `status: ${structuredStatus}`;
   }
 
@@ -1718,6 +1728,40 @@ function buildTerminalIncompatibleCompletionFailure(meta, phrase) {
     itemId,
     processWorkItemFailure: true,
   };
+}
+
+function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
+  if (!dispatchItem?.id || !outcome) {
+    log('warn', 'Cannot write non-clean agent report without dispatch id and outcome');
+    return;
+  }
+  const itemId = dispatchItem.meta?.item?.id || '';
+  const title = dispatchItem.meta?.item?.title || dispatchItem.task || dispatchItem.id;
+  const metadata = {
+    dispatchId: dispatchItem.id,
+    sourceItem: itemId || null,
+    result: outcome,
+    completionStatus: structuredCompletion?.status || null,
+  };
+  const structuredLines = structuredCompletion
+    ? Object.entries(structuredCompletion).map(([key, value]) => `- ${key}: ${value}`).join('\n')
+    : '- none';
+  const content = [
+    `# Agent ${outcome === 'partial' ? 'Partially Completed' : 'Reported Failure'}: ${title}`,
+    '',
+    `**Agent:** ${agentId}`,
+    `**Dispatch:** \`${dispatchItem.id}\``,
+    itemId ? `**Work Item:** \`${itemId}\`` : '',
+    `**Type:** ${dispatchItem.type || 'unknown'}`,
+    `**Exit Code:** ${exitCode}`,
+    `**Outcome:** ${outcome}`,
+    '',
+    `## Structured Completion`,
+    structuredLines,
+    '',
+    resultSummary ? `## Summary\n${resultSummary}` : '## Summary\n(no agent summary captured)',
+  ].filter(Boolean).join('\n');
+  shared.writeToInbox(agentId || 'engine', `agent-${outcome}-${dispatchItem.id}`, content, null, metadata);
 }
 
 /**
@@ -1858,6 +1902,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('info', `Auto-recovery: agent failed but created ${prsCreatedCount} PR(s) — upgrading ${meta.item.id} to done`);
   }
   const effectiveSuccess = isSuccess || autoRecovered;
+
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (completionStatus.startsWith('partial') || autoRecovered || (completionStatus.startsWith('fail') && isSuccess)) {
+    const outcome = completionStatus.startsWith('fail') ? 'failure' : 'partial';
+    writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, code);
+  }
 
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;

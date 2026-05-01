@@ -23,30 +23,34 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 
 ## 4. Fix dispatch trigger order
 
-`discoverFromPrs()` evaluates PR auto-fix triggers in a fixed order during each discovery pass:
+`discoverFromPrs()` evaluates PR review/fix triggers in a fixed order during each discovery pass:
 
-1. Review feedback (`changes-requested`) — `engine.js:2166-2180`
-2. Human feedback (`humanFeedback.pendingFix` or coalesced feedback) — `engine.js:2191-2226`
-3. Build failure (`buildStatus === 'failing'`) — `engine.js:2229-2271`
-4. Merge conflict (`_mergeConflict`) — `engine.js:2299-2317`
+1. Initial minion review (`reviewStatus === 'pending'`)
+2. Human feedback (`humanFeedback.pendingFix` or coalesced feedback)
+3. Minion re-review (`reviewStatus === 'waiting'` after a fix)
+4. Minion review feedback (`changes-requested`)
+5. Build failure (`buildStatus === 'failing'`)
+6. Merge conflict (`_mergeConflict`)
 
-When multiple problems coexist, earlier triggers get the first chance to enqueue work. The local `fixDispatched` flag is declared before the fix triggers (`engine.js:2168`) and set after review-feedback, human-feedback, and build-failure dispatches (`engine.js:2180`, `engine.js:2226`, `engine.js:2271`). Conflict fixes run last and explicitly require `!fixDispatched` (`engine.js:2301`), so any earlier successful fix dispatch suppresses the conflict fix for that PR in the same discovery pass. Build fixes are evaluated after review and human feedback, but the build-fix condition itself is not gated by `!fixDispatched` (`engine.js:2238`).
+When multiple problems coexist, earlier triggers get the first chance to enqueue work. The local `fixDispatched` flag is declared before the fix triggers and set after human-feedback, review-feedback, and build-failure dispatches. Conflict fixes run last and explicitly require `!fixDispatched`, so any earlier successful fix dispatch suppresses the conflict fix for that PR in the same discovery pass. Build fixes are evaluated after human and minion review feedback, but the build-fix condition itself is not gated by `!fixDispatched`.
 
-### A. Review feedback (`changes-requested`)
+`evalMaxIterations` only applies to the minion review loop: initial minion review, minion re-review, and minion review-feedback fixes. It does not gate human-feedback fixes, build-failure fixes, or merge-conflict fixes.
+
+### A. Human comments (`humanFeedback.pendingFix`)
+
+- Gate: `pendingFix || coalescedFeedback` + not already dispatched/on cooldown
+- Agent comments filtered out via `/\bMinions\s*\(/i` regex on comment body
+- Coalesces multiple comments arriving during cooldown into single fix
+- Routes to author
+- Not gated by `_evalEscalated` — humans can always force more fixes via PR comments even after the minion review loop escalates.
+
+### B. Review feedback (`changes-requested`)
 
 - Gate: `reviewStatus === 'changes-requested'` + `!awaitingReReview` + `!evalEscalated` + not dispatched + not on cooldown
 - Routes to PR author via `_author_` routing token
 - `review_note` = reviewer's feedback
-- Sets `fixDispatched = true` — prevents human-feedback and conflict fixes from also firing this pass
-- **Review-loop escalation**: after `evalMaxIterations` review→fix cycles (default 3), `_evalEscalated` is set on the PR and *only this trigger plus review/re-review* stop. Triggers B (human comments), C (build failures), and the merge-conflict fix path keep running. The dashboard PR row distinguishes the two states with separate badges (review badge `review-escalated` vs. build badge `build-escalated`).
-
-### B. Human comments (`humanFeedback.pendingFix`)
-
-- Gate: `pendingFix || coalescedFeedback` + `!awaitingReReview` + `!fixDispatched`
-- Agent comments filtered out via `/\bMinions\s*\(/i` regex on comment body
-- Coalesces multiple comments arriving during cooldown into single fix
-- Routes to author
-- Not gated by `_evalEscalated` — humans can always force more fixes via PR comments even after the review loop escalates.
+- Sets `fixDispatched = true` — prevents the later conflict fix from also firing this pass
+- **Review-loop escalation**: after `evalMaxIterations` review→fix cycles (default 3), `_evalEscalated` is set on the PR and *only this trigger plus minion review/re-review* stop. Triggers A (human comments), C (build failures), and D (merge conflicts) keep running. The dashboard PR row distinguishes the two states with separate badges (review badge `review-escalated` vs. build badge `build-escalated`).
 
 ### C. Build failures (`buildStatus === 'failing'`)
 
@@ -90,7 +94,7 @@ When multiple problems coexist, earlier triggers get the first chance to enqueue
 | Scenario | Guard |
 |---|---|
 | Simultaneous review + fix | `activePrIds` — skip PR if any dispatch in-flight |
-| Duplicate fix (review + human + conflict) | `fixDispatched` flag — later human/conflict triggers skip after earlier fix dispatches in the same PR pass |
+| Duplicate fix (human/review/build + conflict) | `fixDispatched` flag — conflict triggers skip after earlier fix dispatches in the same PR pass |
 | Branch write conflict | `isBranchActive()` mutex |
 | Fix while awaiting re-review | `awaitingReReview` (waiting + fixedAt) |
 | Build fix before CI runs | `_buildFixPushedAt` grace period (10min) |

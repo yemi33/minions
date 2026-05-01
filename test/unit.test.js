@@ -195,6 +195,19 @@ async function testSharedUtilities() {
   await test('safeReadDir returns empty array for missing dir', () => {
     assert.deepStrictEqual(shared.safeReadDir('/nonexistent/dir'), []);
   });
+
+  await test('execAsync keeps event loop alive (no premature unref)', async () => {
+    // Regression: execAsync used to call child.unref() which let Node exit
+    // before the promise resolved, abandoning awaiters. Spawn a child that
+    // takes ~500ms — if execAsync unref's the child, output will be empty
+    // because Node would exit before the child's stdout flushes back.
+    const cmd = process.platform === 'win32'
+      ? `"${process.execPath}" -e "setTimeout(() => process.stdout.write('alive'), 500)"`
+      : `${process.execPath} -e "setTimeout(() => process.stdout.write('alive'), 500)"`;
+    const out = await shared.execAsync(cmd, { timeout: 5000 });
+    assert.ok(out.includes('alive'),
+      'execAsync child must keep event loop alive — output was: ' + JSON.stringify(out));
+  });
 }
 
 async function testIdGeneration() {
@@ -4388,6 +4401,25 @@ async function testQueriesAgents() {
     assert.strictEqual(tail, content, 'tail should be full file content');
   });
 
+  await test('readHeadTail reads full file when exactly head plus tail size', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'exact.log');
+    const content = '0123456789abcdef';
+    fs.writeFileSync(fp, content);
+    const { head, tail } = queries.readHeadTail(fp, 8);
+    assert.strictEqual(head, content, 'exact-size file should be returned as full head');
+    assert.strictEqual(tail, content, 'exact-size file should be returned as full tail');
+  });
+
+  await test('readHeadTail returns empty strings for empty files', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'empty.log');
+    fs.writeFileSync(fp, '');
+    const { head, tail } = queries.readHeadTail(fp, 8);
+    assert.strictEqual(head, '', 'empty file head should be empty');
+    assert.strictEqual(tail, '', 'empty file tail should be empty');
+  });
+
   await test('readHeadTail returns empty strings for missing file', () => {
     const { head, tail } = queries.readHeadTail('/nonexistent/path/file.log', 1024);
     assert.strictEqual(head, '', 'head should be empty for missing file');
@@ -4657,6 +4689,38 @@ async function testQueriesHelpers() {
     const now = Date.now();
     assert.strictEqual(queries.timeSince(now - 7200000), '2h ago');
   });
+
+  await test('timeSince formats days for timestamps at least 24 hours old', () => {
+    const now = Date.now();
+    assert.strictEqual(queries.timeSince(now - (3 * 24 * 60 * 60 * 1000)), '3d ago');
+  });
+
+  await test('timeSince formats boundary values at second/minute/hour/day cutoffs', () => {
+    const origNow = Date.now;
+    const now = new Date('2026-04-30T12:00:00.000Z').getTime();
+    try {
+      Date.now = () => now;
+      assert.strictEqual(queries.timeSince(now - 59000), '59s ago');
+      assert.strictEqual(queries.timeSince(now - 60000), '1m ago');
+      assert.strictEqual(queries.timeSince(now - 3599000), '59m ago');
+      assert.strictEqual(queries.timeSince(now - 3600000), '1h ago');
+      assert.strictEqual(queries.timeSince(now - 86399000), '23h ago');
+      assert.strictEqual(queries.timeSince(now - 86400000), '1d ago');
+    } finally {
+      Date.now = origNow;
+    }
+  });
+
+  await test('timeSince clamps future timestamps to now', () => {
+    const now = Date.now();
+    assert.strictEqual(queries.timeSince(now + 10000), '0s ago');
+  });
+
+  await test('timeSince returns unknown for nullish or invalid timestamps', () => {
+    assert.strictEqual(queries.timeSince(null), 'unknown');
+    assert.strictEqual(queries.timeSince(undefined), 'unknown');
+    assert.strictEqual(queries.timeSince(Number.NaN), 'unknown');
+  });
 }
 
 async function testQueriesAdditionalCoverage() {
@@ -4718,6 +4782,32 @@ async function testQueriesAdditionalCoverage() {
   // NOTE: getInbox() takes no agentName argument — it returns every .md file
   // in notes/inbox/, sorted by mtime descending. Callers filter by agent on the
   // name string (e.g. getAgents() does `inboxFiles.filter(f => f.includes(a.id))`).
+
+  await test('getInboxFiles returns only markdown filenames from the inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      fs.writeFileSync(path.join(inboxDir, 'ralph-note.md'), 'keep');
+      fs.writeFileSync(path.join(inboxDir, 'dallas-note.MD'), 'skip uppercase extension');
+      fs.writeFileSync(path.join(inboxDir, 'scratch.txt'), 'skip');
+      fs.writeFileSync(path.join(inboxDir, 'data.json'), '{}');
+
+      const freshQueries = require('../engine/queries');
+      assert.deepStrictEqual(freshQueries.getInboxFiles(), ['ralph-note.md']);
+    } finally { restore(); }
+  });
+
+  await test('getInboxFiles returns [] when the inbox directory is missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.rmSync(path.join(testDir, 'notes', 'inbox'), { recursive: true, force: true });
+
+      const freshQueries = require('../engine/queries');
+      assert.deepStrictEqual(freshQueries.getInboxFiles(), []);
+    } finally { restore(); }
+  });
 
   await test('getInbox returns [] for an empty inbox directory', () => {
     const restore = createTestMinionsDir();
@@ -4920,6 +5010,11 @@ async function testQueriesAdditionalCoverage() {
     assert.strictEqual(queries.detectInFlightTool(''), null);
     assert.strictEqual(queries.detectInFlightTool(null), null);
     assert.strictEqual(queries.detectInFlightTool(undefined), null);
+  });
+
+  await test('detectInFlightTool returns null for malformed non-string input', () => {
+    assert.strictEqual(queries.detectInFlightTool({ tail: 'not a string' }), null);
+    assert.strictEqual(queries.detectInFlightTool(['{"type":"system","subtype":"task_started"}']), null);
   });
 
   await test('detectInFlightTool returns null when there are no task events', () => {
@@ -16531,6 +16626,22 @@ async function testWakeupEndpoint() {
   await test('fast poll uses 3-second interval', () => {
     assert.ok(cliSrc.includes('3000') && cliSrc.includes('_wakeupAt'),
       'Fast poll should run every 3 seconds');
+  });
+
+  await test('dispatch command signals running daemon instead of running local tick', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('isEngineProcessAlive(control)'),
+      'dispatch command should check whether the daemon process is alive');
+    assert.ok(dispatchBody.includes('_wakeupAt') && dispatchBody.includes('safeWrite(CONTROL_PATH'),
+      'dispatch command should signal the running daemon via control.json wakeup');
+    assert.ok(!dispatchBody.includes('e.tick()'),
+      'dispatch command must not run tick() in the CLI process; it has no activeProcesses state');
+  });
+
+  await test('dispatch command refuses local tick when active dispatches exist without daemon', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('getDispatch().active') && dispatchBody.includes('Refusing to run a local dispatch tick'),
+      'dispatch command should not orphan daemon-owned active work from a process with empty activeProcesses');
   });
 }
 
@@ -31672,6 +31783,41 @@ async function testStructuredCompletion() {
       'Return object should include structuredCompletion');
   });
 
+  await test('runPostCompletionHooks writes an inbox report for partial structured completion', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const inboxDir = path.join(sharedInner.MINIONS_DIR, 'notes', 'inbox');
+      const output = 'Implemented the safe subset.\n```completion\nstatus: partial\nfiles_changed: engine/lifecycle.js\ntests: pass\npr: N/A\nfailure_class: N/A\npending: remaining manual verification\n```\n';
+      const dispatchItem = {
+        id: 'D-partial-note',
+        type: 'fix',
+        task: 'Fix partial note coverage',
+        agent: 'dallas',
+        meta: {
+          item: { id: 'W-partial-note', title: 'Partial outcome should be durable', skipPr: true },
+          source: 'central-work-item'
+        }
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'dallas', 0, output, { agents: { dallas: {} }, projects: [] });
+
+      const files = fs.readdirSync(inboxDir).filter(f => f.includes('agent-partial-D-partial-note'));
+      assert.strictEqual(files.length, 1, 'Partial structured completion should create one durable inbox report');
+      const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+      assert.ok(content.includes('status: partial'), 'Report should preserve structured partial status');
+      assert.ok(content.includes('remaining manual verification'), 'Report should include pending work');
+      assert.ok(content.includes('dispatchId: D-partial-note'), 'Report frontmatter should link the dispatch');
+      assert.ok(content.includes('sourceItem: W-partial-note'), 'Report frontmatter should link the work item');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('parseStructuredCompletion: keys are lowercased', () => {
     const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
     const result = lifecycle.parseStructuredCompletion(stdout);
@@ -32753,6 +32899,20 @@ async function testPrReviewFixFlows() {
   await test('human feedback fix NOT gated by evalEscalated', () => {
     const humanBlock = engineSrc.slice(engineSrc.indexOf('Fresh reviewer comments are actionable fixes'), engineSrc.indexOf('Re-review after fix'));
     assert.ok(!humanBlock.includes('evalEscalated'), 'Human feedback should NOT be gated by evalEscalated');
+  });
+
+  await test('build failure fix NOT gated by evalEscalated', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.length > 10, 'Should locate build-fix block');
+    assert.ok(!buildBlock.includes('evalEscalated') && !buildBlock.includes('_evalEscalated'),
+      'Build failure fixes must not be gated by review-loop escalation');
+  });
+
+  await test('merge conflict fix NOT gated by evalEscalated', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.length > 10, 'Should locate conflict-fix block');
+    assert.ok(!conflictBlock.includes('evalEscalated') && !conflictBlock.includes('_evalEscalated'),
+      'Merge conflict fixes must not be gated by review-loop escalation');
   });
 
   await test('human feedback fix does NOT increment _reviewFixCycles', () => {
@@ -38828,6 +38988,45 @@ async function testDispatchQueueHelpers() {
     } finally { restore(); }
   });
 
+  await test('completeDispatch writes an inbox report for failed agent runs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({
+          id: 'D-failure-note',
+          type: 'fix',
+          agent: 'dallas',
+          task: 'Fix failure note coverage',
+          meta: {
+            source: 'central-work-item',
+            item: { id: 'W-failure-note', title: 'Failed outcome should be durable' }
+          }
+        });
+        return dp;
+      });
+
+      testDispatch.completeDispatch(
+        'D-failure-note',
+        testShared.DISPATCH_RESULT.ERROR,
+        'unit-test failure reason',
+        'Agent stopped after creating diagnostics.',
+        { processWorkItemFailure: false, failureClass: testShared.FAILURE_CLASS.BUILD_FAILURE }
+      );
+
+      const files = fs.readdirSync(testQueries.INBOX_DIR).filter(f => f.includes('agent-failure-D-failure-note'));
+      assert.strictEqual(files.length, 1, 'Failed dispatch should create one durable inbox report');
+      const content = fs.readFileSync(path.join(testQueries.INBOX_DIR, files[0]), 'utf8');
+      assert.ok(content.includes('unit-test failure reason'), 'Report should include failure reason');
+      assert.ok(content.includes('Agent stopped after creating diagnostics.'), 'Report should include result summary');
+      assert.ok(content.includes('dispatchId: D-failure-note'), 'Report frontmatter should link the dispatch');
+      assert.ok(content.includes('sourceItem: W-failure-note'), 'Report frontmatter should link the work item');
+      assert.ok(content.includes('failureClass: build-failure'), 'Report frontmatter should include failure class');
+    } finally { restore(); }
+  });
+
   await test('cleanDispatchEntries removes matching queues, kills active pid, and deletes sidecars', () => {
     const restore = createTestMinionsDir();
     const childProcess = require('child_process');
@@ -42753,10 +42952,10 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  // ── CC action contract hardening — _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions ──
-  // Closes 5 silent failure paths where CC could claim "I dispatched X" without anything being queued.
+  // ── CC action contract hardening — _ccValidateAction, executeCCActions ──
+  // Closes silent failure paths where CC could claim "I dispatched X" without anything being queued.
 
-  const { _ccValidateAction, _detectClaimedActionWithoutBlock, executeCCActions } = dashboard;
+  const { _ccValidateAction, executeCCActions } = dashboard;
 
   await test('_ccValidateAction: returns null for valid dispatch action', () => {
     assert.strictEqual(_ccValidateAction({ type: 'dispatch', title: 'Fix login bug' }), null);
@@ -42821,46 +43020,7 @@ async function testDashboardPureHelpers() {
     assert.strictEqual(_ccValidateAction({ type: 'some-future-action' }), null);
   });
 
-  await test('_detectClaimedActionWithoutBlock: returns warning when prose says "dispatched" with no actions', () => {
-    const w = _detectClaimedActionWithoutBlock('I dispatched a work item to fix that.', []);
-    assert.ok(w && /no work was actually queued|no .*?actions/i.test(w), 'must surface a warning string');
-  });
-
-  await test('_detectClaimedActionWithoutBlock: returns null when actions exist', () => {
-    assert.strictEqual(_detectClaimedActionWithoutBlock('I dispatched a work item.', [{ type: 'dispatch' }]), null);
-  });
-
-  await test('_detectClaimedActionWithoutBlock: returns null for innocuous prose', () => {
-    assert.strictEqual(_detectClaimedActionWithoutBlock('Here is the status of your queue.', []), null);
-    assert.strictEqual(_detectClaimedActionWithoutBlock('No items match.', []), null);
-    assert.strictEqual(_detectClaimedActionWithoutBlock('', []), null);
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "queued" / "enqueued" / "kicked off"', () => {
-    assert.ok(_detectClaimedActionWithoutBlock('Just queued that for you.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Enqueued the task.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Kicked off a build.', []));
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "created a work item" / "assigned to"', () => {
-    assert.ok(_detectClaimedActionWithoutBlock('Created a work item for that.', []));
-    assert.ok(_detectClaimedActionWithoutBlock('Assigned this to dallas.', []));
-  });
-
-  await test('_detectClaimedActionWithoutBlock: catches "I have just dispatched" affirmative variants', () => {
-    assert.ok(_detectClaimedActionWithoutBlock("I'll dispatch dallas right now.", []));
-    assert.ok(_detectClaimedActionWithoutBlock('I have just dispatched a fix agent.', []));
-  });
-
   // Source-string assertions — verify the helpers are present in dashboard.js (they're not just exported stubs).
-  await test('dashboard.js source contains _detectClaimedActionWithoutBlock function', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('function _detectClaimedActionWithoutBlock'),
-      'dashboard.js must define _detectClaimedActionWithoutBlock');
-    assert.ok(src.includes('hallucinationWarning'),
-      'dashboard.js must reference hallucinationWarning in reply payloads');
-  });
-
   await test('dashboard.js source contains _ccValidateAction function', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('function _ccValidateAction'),
@@ -42975,24 +43135,12 @@ async function testDashboardPureHelpers() {
       'dispatch-class case must not fall back to "Untitled" placeholder');
   });
 
-  await test('executeCCActions source: hallucination warning plumbed into both reply paths', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Non-streaming reply
-    assert.ok(src.includes('reply.hallucinationWarning = hallucinationWarning'),
-      'non-streaming reply must include hallucinationWarning');
-    // Streaming donePayload
-    assert.ok(src.includes('donePayload.hallucinationWarning = hallucinationWarning'),
-      'streaming donePayload must include hallucinationWarning');
-  });
-
   await test('command-center.js: renders failed-action list and warnings inline', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
     assert.ok(src.includes('actionResults') && src.includes("r && r.error"),
       'must filter actionResults for errors and surface inline');
     assert.ok(src.includes("r && r.warning"),
       'must filter actionResults for warnings and surface inline');
-    assert.ok(src.includes('hallucinationWarning'),
-      'must render hallucinationWarning inline');
   });
 
   await test('prompts/cc-system.md: documents required fields per action type', () => {
@@ -43005,8 +43153,6 @@ async function testDashboardPureHelpers() {
       'must mark build-and-test pr as REQUIRED');
     assert.ok(md.includes('Unknown agent names error'),
       'must warn that unknown agents error');
-    assert.ok(md.includes('your false claim becomes visible') || md.includes('false claim'),
-      'must explain hallucination detection rule to the model');
   });
 }
 

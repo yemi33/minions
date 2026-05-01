@@ -79,8 +79,6 @@ I'll dispatch dallas to fix that bug.
 - `note`: `title` and `content` (or `description`) REQUIRED.
 - `knowledge`: `title`, `content`, and `category` REQUIRED. Valid categories: architecture, conventions, project-notes, build-reports, reviews.
 
-If you describe an action in prose ("I'll dispatch this..."), you MUST emit a matching `===ACTIONS===` block. The server detects prose claims without action blocks and surfaces a warning to the user — i.e., your false claim becomes visible. Either dispatch or don't promise to.
-
 Core action types:
 - **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project), description
   workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)

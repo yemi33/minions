@@ -21,6 +21,26 @@ function engine() {
 let _dispatchModule = null;
 function dispatchModule() { if (!_dispatchModule) _dispatchModule = require('./dispatch'); return _dispatchModule; }
 
+function isEngineProcessAlive(control) {
+  if (!control?.pid) return false;
+  if (control.pid === process.pid) return true;
+  try {
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process');
+      const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 3000,
+      });
+      return new RegExp(`\\b${control.pid}\\b`).test(out) && out.toLowerCase().includes('node');
+    }
+    process.kill(control.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function handleCommand(cmd, args) {
   if (!cmd) {
     return commands.start();
@@ -910,16 +930,22 @@ const commands = {
   },
 
   dispatch() {
-    const e = engine();
-    console.log('Forcing dispatch cycle...');
     const control = getControl();
-    const prevState = control.state;
-    safeWrite(CONTROL_PATH, { ...control, state: 'running' });
-    e.tick();
-    if (prevState !== 'running') {
-      safeWrite(CONTROL_PATH, { ...control, state: prevState });
+    if (control.state === 'running' && isEngineProcessAlive(control)) {
+      safeWrite(CONTROL_PATH, { ...control, _wakeupAt: Date.now() });
+      console.log(`Dispatch wakeup requested from running engine (PID ${control.pid}).`);
+      return;
     }
-    console.log('Dispatch cycle complete.');
+
+    const activeCount = (getDispatch().active || []).length;
+    if (activeCount > 0) {
+      console.log(`Engine is not running, but ${activeCount} dispatch(es) are active.`);
+      console.log('Refusing to run a local dispatch tick because it cannot track live agent processes.');
+      console.log('Start the engine to re-attach or recover: node engine.js start');
+      return;
+    }
+
+    console.log('Engine is not running. Start it to dispatch work: node engine.js start');
   },
 
   spawn(agentId, ...promptParts) {

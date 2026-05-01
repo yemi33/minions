@@ -74,7 +74,7 @@ Primary modules (the ones you'll touch most often):
 | `engine/consolidation.js` | Haiku-powered inbox → notes.md merging, KB classification |
 | `engine/ado.js` | Azure DevOps: token cache, PR polling, comment polling, reconciliation |
 | `engine/github.js` | GitHub: PR polling, comment polling, reconciliation (parallel to ado.js) |
-| `engine/cli.js` | CLI handlers: start, stop, status, spawn, add project |
+| `engine/cli.js` | CLI handlers: start, stop, status, spawn, add project. Also owns orphan re-attach to surviving agents after engine restart (grace period, PID scan) |
 | `engine/preflight.js` | Prerequisite checks: Node, Git, Claude CLI, API key. Powers `minions doctor` |
 | `engine/scheduler.js` | Cron-style scheduled task discovery from `config.schedules` |
 | `engine/pipeline.js` | Multi-stage pipeline execution (e.g. daily-arch-improvement) |
@@ -86,7 +86,7 @@ Primary modules (the ones you'll touch most often):
 | `engine/cleanup.js` | Worktree, temp file, and zombie process cleanup (every 10 ticks) |
 | `engine/routing.js` | `routing.md` parsing, agent resolution, temp agent spawning |
 | `engine/playbook.js` | Playbook loading, template variable substitution, project-local overrides |
-| `engine/recovery.js` | Re-attach to surviving agents after engine restart (grace period, PID scan) |
+| `engine/recovery.js` | Per-FAILURE_CLASS retry recipes consumed by `dispatch.js` to gate per-class retry budgets (`maxAttempts` only — escalation/description metadata is not consumed) |
 | `engine/projects.js` | Project lifecycle (`removeProject`): cancel WIs, drain dispatch, kill agents, clean worktrees, archive data dir. Shared by `minions remove` CLI and `POST /api/projects/remove` |
 
 Support scripts (rarely edited directly):
@@ -829,6 +829,89 @@ CC Actions `create-watch` / `delete-watch` / `pause-watch` / `resume-watch` mana
 - **Unit tests** (`test/unit.test.js`): Custom async runner, 2200+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
+
+### Test Runner Conventions
+
+- All unit tests live in `test/unit.test.js` (~3550 `await test()` calls). Single Node process, sequential via top-level `main()`. No per-test timeout — a single hung test halts the suite.
+- Module-level state persists across tests (`_adoTokenFailedUntil`, caches, etc.). Test isolation uses the `MINIONS_TEST_DIR` env override + `createTmpDir()`.
+- `_setAdoTokenForTest(null)` short-circuits `azureauth` so tests don't spawn the auth subprocess (which has a 15s timeout).
+- If tests stop printing `PASS` lines mid-run, the most likely cause is a pending Promise on a child process / lock / fetch. The runner exits silently with code 0 when the event loop goes idle (see Footgun #1 below).
+
+## Known Footguns
+
+These bug classes have appeared more than once. Each cost real debugging time. Don't reintroduce.
+
+### 1. `child.unref()` in async exec — abandons the awaiting Promise
+
+`unref()` removes the child from the event loop's reference count. With it on, **Node will exit while the child is still running**, abandoning any awaiting Promise. The CLI happens to run fine because the parent has other pending work; the test runner exits silently with code 0 the moment its event loop goes idle.
+
+Symptom (the actual bug, fixed in `a40fbad2`): ~1100 unit tests silently skipped, no error, no summary banner — the runner exited at the first `execAsync('azureauth ...')` because azureauth was the only pending child and it was unref'd.
+
+```js
+// WRONG — abandons the awaiting promise the moment the parent goes idle
+const child = exec(cmd, cb);
+child.unref && child.unref();
+```
+
+The `timeout` opt on `exec`/`execAsync` already prevents indefinite hangs. Don't unref.
+
+### 2. `safeJson(p) || []` masks parse errors — use `safeJsonArr(p)`
+
+`safeJson` returns `null` for both "missing file" AND "corrupt JSON". The `|| []` fallback hides corruption. `safeJsonArr(p)` / `safeJsonObj(p)` return the typed default while logging on parse failure. Use them.
+
+### 3. `safeWrite` on shared JSON — race condition
+
+PRD JSON, `pull-requests.json`, `work-items.json`, `dispatch.json`, `metrics.json`, `cooldowns.json` are read-modify-written from multiple ticks/handlers. `safeWrite` doesn't lock. Must use `mutateJsonFileLocked()` (or wrappers like `mutateDispatch`, `mutateWorkItems`, `mutatePullRequests`). Tests already enforce this for the dispatch-class files; PRD writes still drift in occasionally.
+
+### 4. `process.kill(pid, 'SIGTERM')` is Windows-broken
+
+On Windows, `process.kill(pid, 'SIGTERM')` doesn't recurse into child processes. Use `shared.killByPidGracefully(pid)` / `killByPidImmediate(pid)` — they shell out to `taskkill /T` on Windows and emit `SIGTERM`/`SIGKILL` elsewhere. Same rule as the existing `shared.killGracefully(proc)` for process handles.
+
+### 5. `syncPrsFromOutput` inbox fallback only fires on empty stdout
+
+When stdout is non-empty, the function MUST NOT also scan `notes/inbox/` for PR URLs. Stale sibling inbox files (e.g., from a prior test run sharing `MINIONS_DIR`) leak phantom PR records into the current call's evidence map. Fixed in `c4c42472` — the inbox scan is gated on `!output || !String(output).trim()`. The inbox path remains the documented fallback for the "stdout was rotated/lost" case.
+
+## CC Action Contract
+
+CC's `===ACTIONS===` JSON block goes through `parseCCActions` → `executeCCActions` in `dashboard.js`. The contract is hardened against silent failure modes — don't soften it without thinking through the regression class.
+
+### Required fields (server returns `{ error }` if missing)
+
+| Action type | Required |
+|-------------|----------|
+| `dispatch` (and `fix`/`implement`/`explore`/`review`/`test`) | `title`. Plus `project` if multiple projects are configured. |
+| `build-and-test` | `pr` (number, ID, or URL) |
+| `note` | `title` and `content` (or `description`) |
+| `knowledge` | `title`, `content`, `category` (one of: architecture, conventions, project-notes, build-reports, reviews) |
+| `pin-to-pinned` | `title`, `content` |
+
+### Strict project resolution
+
+If `action.project` doesn't match any configured project name, the handler returns `{ error: 'Project "X" not found. Known: [...]' }` — **no silent fallback** to `PROJECTS[0]`. Multi-project configs require the field; single-project configs fall through transparently. Zero-project configs allow root-level work items so the orchestrator works standalone.
+
+### Agent hint normalization
+
+Both shapes are accepted: `agent: "lambert"` (string) and `agents: ["lambert"]` (array). Singular is promoted to plural inside the handler. Unknown agent names → error result. A single explicit agent hint hard-pins assignment via `item.preferred_agent` + `item.agents` and bypasses the routing table.
+
+### Pre-flight routing check
+
+After enqueueing a dispatch, the handler asks `routing.resolveAgent` whether any agent is currently available for the workType. If not, the result includes a `warning` field that the client renders inline ("Created W-xxx but no agent is currently available — item will sit pending").
+
+### Delimiter parser tiers
+
+`findCCActionsHeader(text)` returns `{ index, headerLength, parseable }` across three tiers:
+
+1. **Strict (`parseable: true`)**: `===ACTIONS={0,3}` on its own line, well-formed.
+2. **Loose (`parseable: false`)**: `===ACTIONS<anything>` — strips the prose but doesn't try to JSON-parse.
+3. **Very-loose (`parseable: false`)**: `={2,}\s*ACTIONS\s*={0,}` (case-insensitive) — catches `====ACTIONS===`, `===actions===`, `===ACTIONS=====`.
+
+When `parseable === false`, the client surfaces a banner: "Actions block emitted but JSON could not be parsed — no actions were executed." Silent action-drop is no longer a thing.
+
+Streaming chunks also get a partial-delimiter strip so 1- to 12-character prefixes of `===ACTIONS===` (e.g., a chunk ending in `=` or `==ACT`) never reach the user. Both server and client run the strip; `_ccMergeStreamText` trusts `prev` as already-clean and only restrips `incoming`.
+
+### What was removed: hallucination detector
+
+There used to be a regex-based detector that fired warnings when CC's prose described an action ("dispatched", "queued") without a matching `===ACTIONS===` block. Removed in `01072475` — too many false positives because CC has direct tool access (`Bash`, `Write`, `Edit`, `WebFetch`) and can queue work via direct API calls without ever emitting an action block. Don't reintroduce without solving the false-positive problem first.
 
 ## Best Practices for Contributing
 
