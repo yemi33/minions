@@ -1304,7 +1304,7 @@ async function spawnAgent(dispatchItem, config) {
     // autoRecovered: agent failed after creating PRs — treat as success
     const effectiveResult = completionContractFailure ? DISPATCH_RESULT.ERROR : ((code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
     const completeOpts = completionContractFailure
-      ? { processWorkItemFailure: false }
+      ? { processWorkItemFailure: completionContractFailure.processWorkItemFailure !== false }
       : (effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {});
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
     let errorReason = '';

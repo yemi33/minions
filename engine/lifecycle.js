@@ -1028,7 +1028,7 @@ async function enforcePrAttachmentContract(type, meta, agentId, config, resultSu
   const reason = `PR-producing work item ${meta.item.id} completed without a canonically attached PR record. Successful completion requires PR.prdItems/pr-links.json to include the work item; branch names, note URLs, and _context.workItemId metadata are not sufficient.`;
   markMissingPrAttachment(meta, agentId, reason, resultSummary);
   log('warn', reason);
-  return { reason, itemId: meta.item.id };
+  return { reason, itemId: meta.item.id, processWorkItemFailure: false };
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
@@ -1688,6 +1688,38 @@ function parseStructuredCompletion(stdout, runtimeName) {
   return result;
 }
 
+const TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS = [
+  { phrase: 'still running', pattern: /\bstill\s+running\b/i },
+  { phrase: 'will check later', pattern: /\b(?:will|i'?ll|we'?ll)\s+check\s+(?:back\s+)?later\b/i },
+  { phrase: 'wake up', pattern: /\bwake\s+up\b/i },
+  { phrase: 'pending', pattern: /\bpending\b/i },
+  { phrase: 'not yet complete', pattern: /\bnot\s+yet\s+complete(?:d)?\b/i },
+  { phrase: 'partial', pattern: /\bpartial(?:ly)?\b/i },
+  { phrase: 'to be continued', pattern: /\bto\s+be\s+continued\b/i },
+  { phrase: 'in progress', pattern: /\bin\s+progress\b/i },
+];
+
+function findTerminalIncompatibleCompletionPhrase(resultSummary, structuredCompletion) {
+  const structuredStatus = String(structuredCompletion?.status || '').trim().toLowerCase();
+  if (['partial', 'pending', 'in-progress', 'in progress'].includes(structuredStatus)) {
+    return `status: ${structuredStatus}`;
+  }
+
+  const text = String(resultSummary || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const match = TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS.find(({ pattern }) => pattern.test(text));
+  return match ? match.phrase : null;
+}
+
+function buildTerminalIncompatibleCompletionFailure(meta, phrase) {
+  const itemId = meta?.item?.id || 'unknown';
+  return {
+    reason: `Rejected task_complete for ${itemId}: resultSummary contains non-terminal language "${phrase}". The work item was not marked done and will be retried.`,
+    itemId,
+    processWorkItemFailure: true,
+  };
+}
+
 /**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
@@ -1932,9 +1964,16 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   let completionContractFailure = null;
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
-    completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary);
-    if (completionContractFailure) skipDoneStatus = true;
+    const terminalIncompatiblePhrase = findTerminalIncompatibleCompletionPhrase(resultSummary, structuredCompletion);
+    if (terminalIncompatiblePhrase) {
+      completionContractFailure = buildTerminalIncompatibleCompletionFailure(meta, terminalIncompatiblePhrase);
+      log('warn', completionContractFailure.reason);
+    }
   }
+  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus && !completionContractFailure) {
+    completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary);
+  }
+  if (completionContractFailure) skipDoneStatus = true;
 
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
@@ -2266,6 +2305,7 @@ module.exports = {
   parseReviewVerdict,
   isReviewBailout,
   parseStructuredCompletion,
+  findTerminalIncompatibleCompletionPhrase,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,
