@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1650 (2026-05-01)
+
+### Features
+- reject premature task_complete for nonterminal summaries
+- ADO build poll repositoryId GUID handling
+
+### Fixes
+- yemi33/minions#1927
+- yemi33/minions#1925
+
 ## 0.1.1648 (2026-05-01)
 
 ### Other
