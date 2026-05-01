@@ -26,15 +26,29 @@ const getAdoPrUrl = (project, prNumber) => {
   const repoPath = encodeURIComponent(project.repoName || project.repositoryId || '');
   return `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${repoPath}/pullrequest/${prNumber}`;
 };
+const ADO_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isGitHubProject(project) {
   return String(project?.repoHost || '').toLowerCase() === 'github';
 }
 
-function getAdoRepositoryId(project) {
+function isAdoGuid(value) {
+  return ADO_GUID_RE.test(String(value || '').trim());
+}
+
+function getAdoRepositoryLookupKey(project) {
   const repositoryId = String(project?.repositoryId || '').trim();
   if (repositoryId) return repositoryId;
   return String(project?.repoName || '').trim();
+}
+
+function getAdoRepositoryId(project) {
+  return getAdoRepositoryLookupKey(project);
+}
+
+function getConfiguredAdoRepositoryGuid(project) {
+  const repositoryId = String(project?.repositoryId || '').trim();
+  return isAdoGuid(repositoryId) ? repositoryId : '';
 }
 
 function getAdoProjectLabel(project) {
@@ -43,6 +57,85 @@ function getAdoProjectLabel(project) {
 
 function logMissingAdoRepository(project, purpose) {
   log('error', `${purpose} disabled for project ${getAdoProjectLabel(project)}: missing project.repositoryId and project.repoName; configure one so Azure DevOps repository API calls can target the repo`);
+}
+
+function adoConfigPath() {
+  return path.join(shared.MINIONS_DIR, 'config.json');
+}
+
+function sameAdoProject(a, b) {
+  if (!a || !b) return false;
+  if (a.name && b.name && a.name === b.name) return true;
+  if (a.localPath && b.localPath && path.resolve(a.localPath) === path.resolve(b.localPath)) return true;
+  return String(a.adoOrg || '') === String(b.adoOrg || '')
+    && String(a.adoProject || '') === String(b.adoProject || '')
+    && String(a.repoName || '') === String(b.repoName || '')
+    && String(a.repoHost || 'ado').toLowerCase() === String(b.repoHost || 'ado').toLowerCase();
+}
+
+function persistAdoRepositoryGuid(project, guid, repoName) {
+  if (!isAdoGuid(guid)) return;
+  const previous = String(project?.repositoryId || '').trim();
+  project.repositoryId = guid;
+  if (!project.repoName && repoName) project.repoName = repoName;
+  if (previous === guid) return;
+
+  try {
+    let persisted = false;
+    mutateJsonFileLocked(adoConfigPath(), (config) => {
+      if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+      if (!Array.isArray(config.projects)) return config;
+      const target = config.projects.find(p => sameAdoProject(p, project));
+      if (!target) return config;
+      target.repositoryId = guid;
+      if (!target.repoName && repoName) target.repoName = repoName;
+      persisted = true;
+      return config;
+    }, { defaultValue: { projects: [] }, skipWriteIfUnchanged: true });
+    if (persisted) {
+      log('info', `Resolved ADO repository GUID for ${getAdoProjectLabel(project)}: ${previous || project.repoName || 'unknown'} → ${guid}`);
+    } else {
+      log('warn', `Resolved ADO repository GUID for ${getAdoProjectLabel(project)} but could not find the project in config.json to persist it`);
+    }
+  } catch (e) {
+    log('warn', `Resolved ADO repository GUID for ${getAdoProjectLabel(project)} but failed to persist it: ${e.message}`);
+  }
+}
+
+async function resolveAdoBuildRepositoryGuid(project, token, orgBase, purpose, opts = {}) {
+  const configured = getConfiguredAdoRepositoryGuid(project);
+  if (configured) return configured;
+
+  const lookupKey = getAdoRepositoryLookupKey(project);
+  if (!lookupKey) {
+    logMissingAdoRepository(project, purpose);
+    return null;
+  }
+
+  try {
+    const repoUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodeURIComponent(lookupKey)}?api-version=7.1`;
+    const repoData = await adoFetch(repoUrl, token, opts);
+    const guid = String(repoData?.id || '').trim();
+    if (!isAdoGuid(guid)) {
+      log('error', `${purpose} disabled for project ${getAdoProjectLabel(project)}: ADO repository lookup for "${lookupKey}" did not return a repository GUID`);
+      return null;
+    }
+    persistAdoRepositoryGuid(project, guid, repoData?.name || project.repoName || '');
+    return guid;
+  } catch (e) {
+    log('warn', `${purpose} could not resolve repository GUID for project ${getAdoProjectLabel(project)} from "${lookupKey}": ${e.message}`);
+    return null;
+  }
+}
+
+function markBuildStatusStale(pr, detail) {
+  pr._buildStatusStale = true;
+  if (detail) pr._buildStatusDetail = detail;
+}
+
+function clearBuildStatusStale(pr) {
+  if (pr._buildStatusStale) delete pr._buildStatusStale;
+  if (pr._buildStatusDetail) delete pr._buildStatusDetail;
 }
 
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
@@ -353,9 +446,6 @@ async function pollPrStatus(config) {
     const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}/pullrequests/${prNum}`;
     let updated = false;
 
-    // Clear stale flag — we're attempting a fresh poll
-    if (pr._buildStatusStale) { delete pr._buildStatusStale; updated = true; }
-
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
     const sourceBranch = stripRefsHeads(prData.sourceRefName);
@@ -387,6 +477,8 @@ async function pollPrStatus(config) {
           delete pr.buildFailReason;
           delete pr.buildErrorLog;
           delete pr._buildFailNotified;
+          delete pr._buildStatusStale;
+          delete pr._buildStatusDetail;
           delete pr.buildFixAttempts;
           delete pr.buildFixEscalated;
         }
@@ -485,42 +577,59 @@ async function pollPrStatus(config) {
     // merge commit (same ref accumulates builds across all prior pushes to the PR).
     const prNumber = pr.prNumber;
     const mergeCommitId = prData.lastMergeCommit?.commitId;
-    let buildStatus = 'none';
-    let buildFailReason = '';
+    let buildStatus = pr.buildStatus || 'none';
+    let buildFailReason = pr.buildFailReason || '';
     let buildStatuses = []; // for error log fetching
+    let buildStatusResolved = true;
+    let buildStatusStaleDetail = '';
 
     if (prNumber && mergeCommitId) {
-      try {
-        const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
-        const buildsData = await adoFetch(buildsUrl, token);
-        const allBuilds = buildsData?.value || [];
-        const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
+      const buildRepositoryGuid = await resolveAdoBuildRepositoryGuid(project, token, orgBase, 'ADO build polling');
+      if (!buildRepositoryGuid) {
+        buildStatusResolved = false;
+        buildStatusStaleDetail = 'ADO Builds API requires a repository GUID; repository GUID could not be resolved from project.repositoryId/project.repoName';
+      } else {
+        try {
+          const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
+          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodeURIComponent(buildRepositoryGuid)}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+          const buildsData = await adoFetch(buildsUrl, token);
+          const allBuilds = buildsData?.value || [];
+          const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
+          buildStatus = 'none';
+          buildFailReason = '';
 
-        if (prBuilds.length > 0) {
-          buildStatus = classifyBuildStatus(prBuilds);
-          if (buildStatus === 'failing') {
-            const failed = prBuilds.find(b => b.result === 'failed');
-            buildFailReason = failed?.definition?.name || 'Build failed';
-            // Build fake status objects for error log fetching
-            buildStatuses = prBuilds.filter(b => b.result === 'failed').map(b => ({
-              state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
-              _buildId: String(b.id),
-            }));
+          if (prBuilds.length > 0) {
+            buildStatus = classifyBuildStatus(prBuilds);
+            if (buildStatus === 'failing') {
+              const failed = prBuilds.find(b => b.result === 'failed');
+              buildFailReason = failed?.definition?.name || 'Build failed';
+              // Build fake status objects for error log fetching
+              buildStatuses = prBuilds.filter(b => b.result === 'failed').map(b => ({
+                state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
+                _buildId: String(b.id),
+              }));
+            }
+          } else if (allBuilds.length > 0 && pr.buildStatus) {
+            // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
+            // but none target the current `mergeCommitId`. Most likely the target branch
+            // moved, ADO recomputed the merge commit, but no new source-side changes
+            // triggered a rebuild. Preserve the previous `pr.buildStatus` so the tracker
+            // reflects the last known truth instead of flipping to a spurious 'none'.
+            // Also log a warn so stale states are detectable in engine logs. Issue #1233.
+            const sampleSv = (allBuilds[0]?.sourceVersion || '').slice(0, 8);
+            log('warn', `PR ${pr.id} build: merge-commit mismatch — ${allBuilds.length} build(s) on merge ref, none target current merge commit ${String(mergeCommitId).slice(0, 8)} (sample sourceVersion ${sampleSv}); preserving previous buildStatus '${pr.buildStatus}'`);
+            buildStatus = pr.buildStatus;
+            if (pr.buildFailReason) buildFailReason = pr.buildFailReason;
           }
-        } else if (allBuilds.length > 0 && pr.buildStatus) {
-          // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
-          // but none target the current `mergeCommitId`. Most likely the target branch
-          // moved, ADO recomputed the merge commit, but no new source-side changes
-          // triggered a rebuild. Preserve the previous `pr.buildStatus` so the tracker
-          // reflects the last known truth instead of flipping to a spurious 'none'.
-          // Also log a warn so stale states are detectable in engine logs. Issue #1233.
-          const sampleSv = (allBuilds[0]?.sourceVersion || '').slice(0, 8);
-          log('warn', `PR ${pr.id} build: merge-commit mismatch — ${allBuilds.length} build(s) on merge ref, none target current merge commit ${String(mergeCommitId).slice(0, 8)} (sample sourceVersion ${sampleSv}); preserving previous buildStatus '${pr.buildStatus}'`);
-          buildStatus = pr.buildStatus;
-          if (pr.buildFailReason) buildFailReason = pr.buildFailReason;
+        } catch (e) {
+          buildStatusResolved = false;
+          buildStatusStaleDetail = `ADO build query failed: ${e.message}`;
+          log('warn', `ADO build query for ${pr.id}: ${e.message}; preserving previous buildStatus '${pr.buildStatus || 'none'}'`);
         }
-      } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
+      }
+    } else {
+      buildStatus = 'none';
+      buildFailReason = '';
     }
 
     // Record actual poll time — makes lastBuildCheck reflect when the engine last
@@ -528,50 +637,64 @@ async function pollPrStatus(config) {
     pr.lastBuildCheck = ts();
     updated = true;
 
-    if (pr.buildStatus !== buildStatus) {
-      log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
-      pr.buildStatus = buildStatus;
-      if (buildFailReason) pr.buildFailReason = buildFailReason;
-      else delete pr.buildFailReason;
-      // Build transitioned — clear grace period and auto-complete flag
-      delete pr._buildFixPushedAt;
-      if (buildStatus === 'failing') delete pr._autoCompleted;
-      if (buildStatus !== 'failing') {
-        delete pr._buildFailNotified;
-        // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
-        // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
-        // can also occur when ADO recomputes the merge commit after a target-branch
-        // update but no new builds have been triggered yet (filter by sourceVersion
-        // returns []), which previously wiped the last known error log and caused
-        // fix agents to be dispatched blind.
-        if (buildStatus === 'passing') {
-          delete pr.buildErrorLog;
-          // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
-          if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
-        }
+    if (buildStatusResolved) {
+      if (pr._buildStatusStale || pr._buildStatusDetail) {
+        clearBuildStatusStale(pr);
+        updated = true;
       }
+    } else {
+      markBuildStatusStale(pr, buildStatusStaleDetail);
       updated = true;
+    }
 
-      // Fetch actual compiler/build error logs when transitioning to failing
-      if (buildStatus === 'failing') {
-        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
-        const logParts = [];
-        const seenBuildIds = new Set();
-        for (const failedStatusObj of failedStatusObjs) {
-          const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
-          if (errorLog) logParts.push(errorLog);
+    if (buildStatusResolved) {
+      if (pr.buildStatus !== buildStatus) {
+        log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+        pr.buildStatus = buildStatus;
+        if (buildFailReason) pr.buildFailReason = buildFailReason;
+        else delete pr.buildFailReason;
+        // Build transitioned — clear grace period and auto-complete flag
+        delete pr._buildFixPushedAt;
+        if (buildStatus === 'failing') delete pr._autoCompleted;
+        if (buildStatus !== 'failing') {
+          delete pr._buildFailNotified;
+          delete pr._buildStatusStale;
+          delete pr._buildStatusDetail;
+          // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+          // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
+          // can also occur when ADO recomputes the merge commit after a target-branch
+          // update but no new builds have been triggered yet (filter by sourceVersion
+          // returns []), which previously wiped the last known error log and caused
+          // fix agents to be dispatched blind.
+          if (buildStatus === 'passing') {
+            delete pr.buildErrorLog;
+            // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
+            if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+          }
         }
-        if (logParts.length > 0) {
-          pr.buildErrorLog = logParts.join('\n\n');
-          log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
-        }
+        updated = true;
 
-        // Teams notification for build failure — non-blocking
-        try {
-          const teams = require('./teams');
-          const prFilePath = shared.projectPrPath(project);
-          teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
-        } catch {}
+        // Fetch actual compiler/build error logs when transitioning to failing
+        if (buildStatus === 'failing') {
+          const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
+          const logParts = [];
+          const seenBuildIds = new Set();
+          for (const failedStatusObj of failedStatusObjs) {
+            const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
+            if (errorLog) logParts.push(errorLog);
+          }
+          if (logParts.length > 0) {
+            pr.buildErrorLog = logParts.join('\n\n');
+            log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
+          }
+
+          // Teams notification for build failure — non-blocking
+          try {
+            const teams = require('./teams');
+            const prFilePath = shared.projectPrPath(project);
+            teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+          } catch {}
+        }
       }
     }
 
@@ -618,7 +741,7 @@ async function pollPrStatus(config) {
       // Auth errors → mark build status stale so dashboard shows uncertainty
       // and engine re-polls on next tick instead of waiting 6 ticks
       if (isAdoAuthError(err)) {
-        pr._buildStatusStale = true;
+        markBuildStatusStale(pr, `ADO auth error: ${err.message}`);
         _adoPollHadAuthFailure = true;
         log('warn', `PR ${pr.id}: build status marked stale (auth error: ${err.message})`);
         return true; // count as updated to persist the stale flag
@@ -923,6 +1046,8 @@ async function checkLiveReviewStatus(pr, project) {
  *   {
  *     buildStatus: 'failing' | 'passing' | 'running' | 'none' | null,
  *     mergeConflict: boolean,
+ *     buildStatusStale?: boolean,
+ *     buildStatusDetail?: string,
  *   }
  *
  * `buildStatus` is null when ADO has builds on the merge ref but none target the
@@ -937,12 +1062,12 @@ async function checkLiveBuildAndConflict(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = shared.getPrNumber(pr);
     if (!prNum) return null;
-    const adoRepositoryId = getAdoRepositoryId(project);
-    if (!adoRepositoryId) {
+    const adoRepositoryLookupKey = getAdoRepositoryLookupKey(project);
+    if (!adoRepositoryLookupKey) {
       logMissingAdoRepository(project, 'ADO live build/conflict check');
       return null;
     }
-    const encodedRepoId = encodeURIComponent(adoRepositoryId);
+    const encodedRepoId = encodeURIComponent(adoRepositoryLookupKey);
     const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}`;
     const prUrl = `${repoBase}/pullrequests/${prNum}?api-version=7.1`;
     // 4s timeout — same budget as checkLiveReviewStatus. This is a pre-dispatch
@@ -959,23 +1084,35 @@ async function checkLiveBuildAndConflict(pr, project) {
     // pollPrStatus's narrowing logic so the live check and the cached poll
     // agree on what 'failing' / 'passing' / 'running' / 'none' mean.
     let buildStatus = null;
+    let buildStatusStale = false;
+    let buildStatusDetail = '';
     if (prData.status === 'active') {
       const mergeCommitId = prData.lastMergeCommit?.commitId;
       if (mergeCommitId) {
-        try {
-          const mergeRef = encodeURIComponent(`refs/pull/${prNum}/merge`);
-          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
-          const buildsData = await adoFetch(buildsUrl, token, { timeout: 4000 });
-          const allBuilds = buildsData?.value || [];
-          const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
-          if (prBuilds.length > 0) {
-            buildStatus = classifyBuildStatus(prBuilds);
-          } else if (allBuilds.length === 0) {
-            buildStatus = 'none';
+        const buildRepositoryGuid = await resolveAdoBuildRepositoryGuid(project, token, orgBase, 'ADO live build check', { timeout: 4000 });
+        if (!buildRepositoryGuid) {
+          buildStatusStale = true;
+          buildStatusDetail = 'ADO Builds API requires a repository GUID; repository GUID could not be resolved from project.repositoryId/project.repoName';
+        } else {
+          try {
+            const mergeRef = encodeURIComponent(`refs/pull/${prNum}/merge`);
+            const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodeURIComponent(buildRepositoryGuid)}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+            const buildsData = await adoFetch(buildsUrl, token, { timeout: 4000 });
+            const allBuilds = buildsData?.value || [];
+            const prBuilds = allBuilds.filter(b => b.sourceVersion === mergeCommitId);
+            if (prBuilds.length > 0) {
+              buildStatus = classifyBuildStatus(prBuilds);
+            } else if (allBuilds.length === 0) {
+              buildStatus = 'none';
+            }
+            // else: merge-commit mismatch — leave buildStatus null so caller
+            // falls back to cached state (issue #1233).
+          } catch (e) {
+            buildStatusStale = true;
+            buildStatusDetail = `ADO live build query failed: ${e.message}`;
+            log('warn', `Live build check builds query for ${pr.id}: ${e.message}`);
           }
-          // else: merge-commit mismatch — leave buildStatus null so caller
-          // falls back to cached state (issue #1233).
-        } catch (e) { log('warn', `Live build check builds query for ${pr.id}: ${e.message}`); }
+        }
       } else {
         // No merge commit yet — likely conflict or fresh PR. Treat as 'none'
         // so a stale 'failing' cache can be cleared by the caller.
@@ -983,7 +1120,11 @@ async function checkLiveBuildAndConflict(pr, project) {
       }
     }
 
-    return { buildStatus, mergeConflict };
+    return {
+      buildStatus,
+      mergeConflict,
+      ...(buildStatusStale ? { buildStatusStale, buildStatusDetail } : {}),
+    };
   } catch (e) {
     log('warn', `Live build/conflict check for ${pr.id}: ${e.message}`);
     return null;
@@ -1007,7 +1148,8 @@ async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
 /**
  * Fetch live PR and build status for a single PR number.
  * Used by engine/ado-status.js so agents can check CI without raw curl calls.
- * Returns { prNumber, title, branch, status, reviewStatus, buildStatus, buildErrorLog?,
+ * Returns { prNumber, title, branch, status, reviewStatus, buildStatus,
+ *           buildStatusStale?, buildStatusDetail?, buildErrorLog?,
  *           mergeConflict, url, project } or null on auth failure.
  */
 async function fetchSinglePrBuildStatus(project, prNumber) {
@@ -1015,29 +1157,45 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   if (!token) return null;
 
   const orgBase = getAdoOrgBase(project);
-  const adoRepositoryId = getAdoRepositoryId(project);
-  if (!adoRepositoryId) {
+  const adoRepositoryLookupKey = getAdoRepositoryLookupKey(project);
+  if (!adoRepositoryLookupKey) {
     logMissingAdoRepository(project, 'ADO single PR status fetch');
     return null;
   }
-  const encodedRepoId = encodeURIComponent(adoRepositoryId);
+  const encodedRepoId = encodeURIComponent(adoRepositoryLookupKey);
   const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${encodedRepoId}`;
-  const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-  const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodedRepoId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
 
-  // Fetch PR metadata and builds in parallel
-  const [prData, buildsData] = await Promise.all([
+  // Fetch PR metadata and resolve the Builds API repository GUID in parallel.
+  const [prData, buildRepositoryGuid] = await Promise.all([
     adoFetch(`${repoBase}/pullrequests/${prNumber}?api-version=7.1`, token),
-    adoFetch(buildsUrl, token).catch(() => null),
+    resolveAdoBuildRepositoryGuid(project, token, orgBase, 'ADO single PR status fetch'),
   ]);
   if (!prData) return null;
+
+  let buildsData = null;
+  let buildStatusStale = false;
+  let buildStatusDetail = '';
+  if (buildRepositoryGuid) {
+    try {
+      const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
+      const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${encodeURIComponent(buildRepositoryGuid)}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+      buildsData = await adoFetch(buildsUrl, token);
+    } catch (e) {
+      buildStatusStale = true;
+      buildStatusDetail = `ADO build query failed: ${e.message}`;
+      log('warn', `fetchSinglePrBuildStatus builds query for PR #${prNumber}: ${e.message}`);
+    }
+  } else {
+    buildStatusStale = true;
+    buildStatusDetail = 'ADO Builds API requires a repository GUID; repository GUID could not be resolved from project.repositoryId/project.repoName';
+  }
 
   const mergeCommitId = prData.lastMergeCommit?.commitId;
   const prBuilds = mergeCommitId
     ? (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId)
     : [];
 
-  let buildStatus = classifyBuildStatus(prBuilds);
+  let buildStatus = buildStatusStale ? null : classifyBuildStatus(prBuilds);
   let buildErrorLog = null;
 
   if (buildStatus === 'failing') {
@@ -1067,6 +1225,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
     status: prData.status || 'unknown',
     reviewStatus: votesToReviewStatus(votes),
     buildStatus,
+    ...(buildStatusStale ? { buildStatusStale, buildStatusDetail } : {}),
     ...(buildErrorLog ? { buildErrorLog } : {}),
     mergeConflict: prData.mergeStatus === 'conflicts',
     url: prUrl,

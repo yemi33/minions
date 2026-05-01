@@ -787,9 +787,15 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   if (!output || !String(output).trim()) {
     const today = dateStamp();
     const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
+    const currentItemId = meta?.item?.id ? String(meta.item.id) : '';
+    function isCurrentItemInboxNote(fileName, content) {
+      if (!currentItemId) return true;
+      return String(fileName || '').includes(currentItemId) || String(content || '').includes(currentItemId);
+    }
     for (const f of inboxFiles) {
       const content = safeRead(path.join(INBOX_DIR, f));
       if (!content) continue;
+      if (!isCurrentItemInboxNote(f, content)) continue;
       const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
       while ((match = prHeaderPattern.exec(content)) !== null) {
         addPrUrlEvidence(match[1]);
