@@ -27402,17 +27402,20 @@ async function testAutoRecoveryAndAtomicity() {
   const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 
   await test('runPostCompletionHooks returns autoRecovered=true when failed agent created PR', async () => {
+    const restore = createTestMinionsDir();
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
     const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
+    const lifecycleInner = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    const sharedInner = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 
-    const origProjectPrPath = shared.projectPrPath;
-    const origGetProjects = shared.getProjects;
-    shared.projectPrPath = () => prFile;
-    shared.getProjects = () => [mockProject];
+    const origProjectPrPath = sharedInner.projectPrPath;
+    const origGetProjects = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFile;
+    sharedInner.getProjects = () => [mockProject];
 
     try {
       const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/42 — Feature"}';
@@ -27422,16 +27425,17 @@ async function testAutoRecoveryAndAtomicity() {
       };
 
       // code=1 simulates a failed agent process
-      const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
+      const result = await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, true,
         'autoRecovered should be true when failed implement agent created PR');
 
       // PR should have been synced despite failure
-      const prs = shared.safeJson(prFile) || [];
+      const prs = sharedInner.safeJson(prFile) || [];
       assert.ok(prs.length > 0, 'PR should be synced even from failed agent output');
     } finally {
-      shared.projectPrPath = origProjectPrPath;
-      shared.getProjects = origGetProjects;
+      sharedInner.projectPrPath = origProjectPrPath;
+      sharedInner.getProjects = origGetProjects;
+      restore();
     }
   });
 
