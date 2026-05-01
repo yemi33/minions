@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1666 (2026-05-01)
+
+### Other
+- Fix soft routing for fix dispatches
+
 ## 0.1.1664 (2026-05-01)
 
 ### Features
