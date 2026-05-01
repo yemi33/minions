@@ -42,7 +42,7 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
 
 ## Post Review — Submit your verdict
 
-You MUST post a review comment with a clear verdict. The engine parses your verdict to update PR status — **a review without a verdict line is incomplete and will be retried.**
+You MUST post a review comment with a clear verdict and write the completion report described in the shared rules. The verdict in the report is the primary machine-readable signal; the verdict line in the PR comment is for humans and backward compatibility.
 
 ### Post your review with verdict
 
@@ -65,7 +65,6 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 ## When to Stop
 
-Your task is complete when your review comment (with `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES` on the first line) has been posted successfully.
+Your task is complete when your review comment (with `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES` on the first line) has been posted successfully and the completion report has `verdict: "approved"` or `verdict: "changes-requested"`.
 
 Do NOT stop before posting the review. Do NOT continue reading unrelated files after posting.
-

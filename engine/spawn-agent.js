@@ -94,7 +94,7 @@ function parseSpawnArgs(argv) {
  * Returns:
  *   {
  *     bin, leadingArgs, args,         // → spawn(execPath OR bin, [bin?, ...leadingArgs, ...args])
- *     deliveryMode,                   // 'stdin' | 'arg' (per runtime.capabilities.promptViaArg)
+ *     deliveryMode,                   // 'stdin' | 'arg' (runtime adapter decision)
  *     finalPrompt,                    // adapter-built prompt text (may include sysprompt for some runtimes)
  *     usingNodeShim,                  // true → runtime returned a non-native binary (Claude cli.js)
  *   }
@@ -103,9 +103,10 @@ function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, op
   const finalPrompt = runtime.buildPrompt(promptText, sysPromptText);
   const adapterOpts = { ...opts };
   if (Array.isArray(addDirs) && addDirs.length) adapterOpts.addDirs = addDirs;
-  // When the adapter delivers the prompt via argv, hand it the prompt so it
-  // can splice `--prompt <text>` into its args.
-  if (runtime.capabilities && runtime.capabilities.promptViaArg) {
+  const deliveryMode = typeof runtime.getPromptDeliveryMode === 'function'
+    ? runtime.getPromptDeliveryMode(adapterOpts)
+    : (runtime.capabilities && runtime.capabilities.promptViaArg ? 'arg' : 'stdin');
+  if (deliveryMode === 'arg') {
     adapterOpts.prompt = finalPrompt;
   }
   const adapterArgs = runtime.buildArgs(adapterOpts);
@@ -115,7 +116,7 @@ function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, op
     native,
     leadingArgs,
     args: [...adapterArgs, ...(passthrough || [])],
-    deliveryMode: runtime.capabilities && runtime.capabilities.promptViaArg ? 'arg' : 'stdin',
+    deliveryMode,
     finalPrompt,
     usingNodeShim: !native,
   };
@@ -159,7 +160,9 @@ function main() {
   // already merged inside `runtime.buildPrompt(prompt, sys)`.
   const isResume = opts.sessionId != null;
   const sysTmpPath = sysPromptFile + '.tmp';
-  const wantsSystemPromptFile = !isResume && runtime.capabilities && runtime.capabilities.systemPromptFile;
+  const wantsSystemPromptFile = typeof runtime.usesSystemPromptFile === 'function'
+    ? runtime.usesSystemPromptFile({ isResume, opts })
+    : (!isResume && runtime.capabilities && runtime.capabilities.systemPromptFile);
   if (wantsSystemPromptFile) {
     fs.writeFileSync(sysTmpPath, sysPromptText);
     opts.sysPromptFile = sysTmpPath;

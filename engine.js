@@ -141,7 +141,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconcilePrdStatuses, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure, diagnoseEmptyOutput, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure: classifyFailureFallback, diagnoseEmptyOutput, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -232,68 +232,53 @@ async function preflightMergeSimulation(deps, mainRef, gitOpts, cwd) {
   return { ok: true };
 }
 
-const _FAST_WORK_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
-const _MAX_TURNS_BY_TYPE = {
-  [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
-  [WORK_TYPE.DECOMPOSE]: 15, [WORK_TYPE.PLAN]: 30, [WORK_TYPE.PLAN_TO_PRD]: 35,
-  [WORK_TYPE.MEETING]: 30,
-  [WORK_TYPE.IMPLEMENT]: 75, [WORK_TYPE.IMPLEMENT_LARGE]: 75, [WORK_TYPE.FIX]: 75,
-  [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
-};
-function _maxTurnsForType(type, engineConfig) {
-  // Priority: per-type config override → global config override → built-in per-type default → global default
+function _maxTurnsForType(type, engineConfig = {}) {
+  // Engine keeps only explicit operator caps; runtime/playbook owns task-level pacing.
   const perType = engineConfig.maxTurnsByType || {};
   if (perType[type]) return perType[type];
-  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== ENGINE_DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
-  return globalOverride || _MAX_TURNS_BY_TYPE[type] || ENGINE_DEFAULTS.maxTurns;
+  return engineConfig.maxTurns || ENGINE_DEFAULTS.maxTurns;
 }
 
 // ─── Runtime adapter integration (P-2a6d9c4f) ────────────────────────────────
-//
-// _buildAgentSpawnFlags translates a resolved opts bag into the named CLI
-// flags consumed by `engine/spawn-agent.js`. spawn-agent.js parses these back
-// into an opts object and calls `runtime.buildArgs(opts)` once — keeping the
-// adapter as the single source of truth for CLI-level flag formatting and
-// avoiding double-emission.
-//
-// Capability gating happens HERE (in engine.js), not in the adapter:
-//   - Runtimes that don't support a feature (Copilot has no budgetCap, no
-//     bareMode, no fallbackModel) never see the flag. The adapter doesn't
-//     have to silently drop opts it can't honor.
-//   - Truly cross-runtime opts (model, maxTurns, allowedTools, effort,
-//     sessionId) are emitted whenever set; capability flags filter the
-//     ones that are runtime-specific.
-//   - Copilot-specific opts (`stream`, `disableBuiltinMcps`,
-//     `suppressAgentsMd`, `reasoningSummaries`) are emitted unconditionally;
-//     the Claude adapter ignores them via the "tolerate unknown opts" rule.
 
 function _buildAgentSpawnFlags(runtime, opts = {}) {
+  if (runtime && typeof runtime.buildSpawnFlags === 'function') return runtime.buildSpawnFlags(opts);
   const caps = (runtime && runtime.capabilities) || {};
   const flags = ['--runtime', String(runtime?.name || 'claude')];
-
-  // Always-applicable: every runtime understands these.
   if (opts.maxTurns != null) flags.push('--max-turns', String(opts.maxTurns));
   if (opts.model) flags.push('--model', String(opts.model));
   if (opts.allowedTools) flags.push('--allowedTools', String(opts.allowedTools));
-
-  // Capability-gated. The first three (effort/resume) gate on whether the
-  // runtime exposes the feature at all; the next three gate on whether the
-  // runtime's CLI surface actually accepts the flag.
   if (caps.effortLevels && opts.effort) flags.push('--effort', String(opts.effort));
   if (caps.sessionResume && opts.sessionId) flags.push('--resume', String(opts.sessionId));
   if (caps.budgetCap && opts.maxBudget != null) flags.push('--max-budget-usd', String(opts.maxBudget));
   if (caps.bareMode && opts.bare === true) flags.push('--bare');
   if (caps.fallbackModel && opts.fallbackModel) flags.push('--fallback-model', String(opts.fallbackModel));
-
-  // Copilot-specific opts. Always emitted when set; the Claude adapter
-  // silently ignores them (per the "tolerate unknown opts" rule from
-  // P-7e3a8b1c). Engine code never branches on `runtime.name`.
   if (opts.stream != null && opts.stream !== '') flags.push('--stream', String(opts.stream));
   if (opts.disableBuiltinMcps === true) flags.push('--disable-builtin-mcps');
   if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
   if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
 
   return flags;
+}
+
+function _runtimeLogger() {
+  return {
+    info: (msg) => log('info', msg),
+    warn: (msg) => log('warn', msg),
+  };
+}
+
+function _classifyAgentFailure(runtime, code, stdout, stderr) {
+  if (runtime && typeof runtime.classifyFailure === 'function') {
+    const classified = runtime.classifyFailure({
+      code,
+      stdout,
+      stderr,
+      fallback: classifyFailureFallback,
+    });
+    if (classified && classified.failureClass) return classified;
+  }
+  return { failureClass: classifyFailureFallback(code, stdout, stderr) };
 }
 
 function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Date.now()) {
@@ -449,12 +434,31 @@ async function spawnAgent(dispatchItem, config) {
   const systemPrompt = buildSystemPrompt(agentId, config, project);
   const agentContext = buildAgentContext(agentId, config, project);
   const pendingSteering = steering.buildPendingSteeringPrompt(agentId);
+  const completionReportPath = shared.dispatchCompletionReportPath(id);
+  if (completionReportPath) {
+    try {
+      fs.mkdirSync(path.dirname(completionReportPath), { recursive: true });
+      safeUnlink(completionReportPath);
+    } catch (e) { log('warn', `completion report setup: ${e.message}`); }
+  }
+  const completionReportInstruction = completionReportPath ? [
+    '## Completion Report',
+    '',
+    `Before exiting, write a JSON completion report to: \`${completionReportPath}\``,
+    '',
+    'Use this shape: {"status":"success|partial|failed","summary":"...","verdict":"approved|changes-requested|null","pr":"PR URL or id if relevant","failure_class":"...","retryable":true|false,"needs_rerun":true|false}.',
+    'This report is the primary completion signal; fenced completion blocks are only a fallback.',
+    '',
+  ].join('\n') : '';
   const taskPromptWithSteering = pendingSteering.prompt
     ? `${pendingSteering.prompt}\n\n---\n\n${taskPrompt}`
     : taskPrompt;
-  const fullTaskPrompt = agentContext
-    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPromptWithSteering}`
+  const taskPromptWithReport = completionReportInstruction
+    ? `${taskPromptWithSteering}\n\n---\n\n${completionReportInstruction}`
     : taskPromptWithSteering;
+  const fullTaskPrompt = agentContext
+    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPromptWithReport}`
+    : taskPromptWithReport;
   const tmpDir = path.join(ENGINE_DIR, 'tmp');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
   const safeId = id.replace(/[:\\/*?"<>|]/g, '-');
@@ -890,32 +894,18 @@ async function spawnAgent(dispatchItem, config) {
   const resolvedMaxBudget = shared.resolveAgentMaxBudget(agentConfig, engineConfig);
   const resolvedBare = shared.resolveAgentBareMode(agentConfig, engineConfig);
 
-  // Effort: use 'low' for fast work types unless configured otherwise.
-  // The capability gate happens inside _buildAgentSpawnFlags — runtimes
-  // without effortLevels never see the flag.
-  const requestedEffort = engineConfig.agentEffort || (_FAST_WORK_TYPES.has(type) ? 'low' : null);
+  const requestedEffort = engineConfig.agentEffort || null;
 
-  // Session resume: gated on `runtime.capabilities.sessionResume`. Same branch
-  // means the agent is continuing work on the same PR/feature (e.g., author
-  // fixing their own build failure).
   let cachedSessionId = null;
-  if (runtime.capabilities.sessionResume && !agentId.startsWith('temp-')) {
-    try {
-      const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
-      if (sessionFile?.sessionId && sessionFile.savedAt) {
-        const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
-        const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
-        if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
-          cachedSessionId = sessionFile.sessionId;
-          log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
-        }
-      }
-    } catch (e) { log('warn', 'session resume lookup: ' + e.message); }
+  if (runtime && typeof runtime.getResumeSessionId === 'function') {
+    cachedSessionId = runtime.getResumeSessionId({
+      agentId,
+      branchName,
+      agentsDir: AGENTS_DIR,
+      logger: _runtimeLogger(),
+    });
   }
 
-  // Build the spawn-agent.js flag bag. spawn-agent parses the named flags
-  // back into an opts object and calls runtime.buildArgs(opts) — so the
-  // adapter is the single source of truth for the actual CLI args.
   const args = _buildAgentSpawnFlags(runtime, {
     model: resolvedModel,
     maxTurns: _maxTurnsForType(type, engineConfig),
@@ -941,6 +931,7 @@ async function spawnAgent(dispatchItem, config) {
 
   // Spawn the claude process
   const childEnv = shared.cleanChildEnv();
+  if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
 
   // Inject cached ADO token so agents skip re-authentication (#998)
   // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth
@@ -1025,8 +1016,10 @@ async function spawnAgent(dispatchItem, config) {
 
     // Trust gate detection: check first 30s of output for trust/permission prompts
     if (!_trustCheckDone && (Date.now() - _spawnTime) <= 30000) {
-      const lower = chunk.toLowerCase();
-      if (/\b(trust this|do you trust|allow access|grant permission|approve tools?|permission prompt)\b/.test(lower)) {
+      const blockedOnPermission = runtime && typeof runtime.detectPermissionGate === 'function'
+        ? runtime.detectPermissionGate(chunk)
+        : false;
+      if (blockedOnPermission) {
         _trustCheckDone = true;
         updateAgentStatus(id, AGENT_STATUS.TRUST_BLOCKED, 'Agent appears to be waiting for trust approval');
         log('warn', `Trust gate detected for ${agentId} (${id}) — agent may be blocked on a permission prompt`);
@@ -1044,9 +1037,16 @@ async function spawnAgent(dispatchItem, config) {
           const obj = JSON.parse(line);
           if (obj.session_id) {
             procInfo.sessionId = obj.session_id;
-            safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
-              sessionId: obj.session_id, dispatchId: id, savedAt: ts(), branch: branchName
-            });
+            if (runtime && typeof runtime.saveSession === 'function') {
+              runtime.saveSession({
+                agentId,
+                dispatchId: id,
+                branch: branchName,
+                sessionId: obj.session_id,
+                agentsDir: AGENTS_DIR,
+                logger: _runtimeLogger(),
+              });
+            }
             break;
           }
         }
@@ -1123,19 +1123,6 @@ async function spawnAgent(dispatchItem, config) {
         return;
       }
 
-      // Steering resume — gated on `runtime.capabilities.sessionResume`. If the
-      // runtime can't resume sessions, fail fast: nothing to spawn here.
-      if (!runtime.capabilities.sessionResume) {
-        log('warn', `Steering: runtime ${runtime.name} does not support session resume — skipping for ${agentId}`);
-        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Runtime ${runtime.name} does not support session resume. Message was: ${steerMsg}\n`); } catch {}
-        try { fs.unlinkSync(steerPromptPath); } catch {}
-        activeProcesses.delete(id);
-        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering not supported by runtime', '', { processWorkItemFailure: false });
-        return;
-      }
-
-      // Reuse the same flag-builder used by the main spawn so capability gates
-      // and runtime-specific opts stay consistent across the two paths.
       const resumeArgs = _buildAgentSpawnFlags(runtime, {
         model: resolvedModel,
         maxTurns: engineConfig?.maxTurns || ENGINE_DEFAULTS.maxTurns,
@@ -1149,9 +1136,18 @@ async function spawnAgent(dispatchItem, config) {
         suppressAgentsMd: engineConfig?.copilotSuppressAgentsMd,
         reasoningSummaries: engineConfig?.copilotReasoningSummaries,
       });
+      if (!resumeArgs.includes('--resume')) {
+        log('warn', `Steering: runtime ${runtime.name} did not accept session resume — skipping for ${agentId}`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Runtime ${runtime.name} does not support session resume. Message was: ${steerMsg}\n`); } catch {}
+        try { fs.unlinkSync(steerPromptPath); } catch {}
+        activeProcesses.delete(id);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering not supported by runtime', '', { processWorkItemFailure: false });
+        return;
+      }
 
       const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
       const childEnv = shared.cleanChildEnv();
+      if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
       // Inject cached ADO token for steering session too (#998)
       try {
         const adoToken = await getAdoToken();
@@ -1284,11 +1280,13 @@ async function spawnAgent(dispatchItem, config) {
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
     // Classify failure for non-zero exits
-    const failureClass = code !== 0 ? classifyFailure(code, stdout, stderr) : undefined;
+    const failureInfo = code !== 0 ? _classifyAgentFailure(runtime, code, stdout, stderr) : {};
+    const failureClass = failureInfo.failureClass;
 
-    // Detect configuration errors (e.g. Claude CLI not found) — fail immediately with clear message
+    // Detect configuration errors (e.g. missing runtime CLI) — fail immediately with clear message
     if (code === 78) {
-      const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
+      const runtimeHint = runtime.installHint ? ` ${runtime.installHint}` : '';
+      const errMsg = stderr.trim() || `Configuration error — ${runtimeName} runtime unavailable.${runtimeHint}`;
       log('error', `Agent ${agentId} (${id}) failed: ${errMsg} [${failureClass}]`);
       completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '', { failureClass });
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
@@ -1298,18 +1296,27 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary, autoRecovered, completionContractFailure } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered, completionContractFailure, structuredCompletion, agentReportedFailure, agentRetryable } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const retryableDecision = typeof agentRetryable === 'boolean' ? agentRetryable : failureInfo.retryable;
 
     // Move from active to completed in dispatch (single source of truth for agent status)
     // autoRecovered: agent failed after creating PRs — treat as success
-    const effectiveResult = completionContractFailure ? DISPATCH_RESULT.ERROR : ((code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
-    const completeOpts = completionContractFailure
+    const hardContractFail = completionContractFailure?.severity === 'hard'
+      || completionContractFailure?.nonTerminal === true;
+    const effectiveResult = hardContractFail ? DISPATCH_RESULT.ERROR : (((code === 0 && !agentReportedFailure) || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+    const completeOpts = hardContractFail
       ? { processWorkItemFailure: false }
-      : (effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {});
+      : (effectiveResult === DISPATCH_RESULT.ERROR ? {
+          ...(failureClass ? { failureClass } : {}),
+          ...(typeof retryableDecision === 'boolean' ? { agentRetryable: retryableDecision } : {}),
+          ...(structuredCompletion?.failure_class ? { failureClass: structuredCompletion.failure_class } : {}),
+        } : {});
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
     let errorReason = '';
-    if (completionContractFailure) {
+    if (hardContractFail) {
       errorReason = completionContractFailure.reason || 'PR attachment contract failed';
+    } else if (agentReportedFailure && structuredCompletion?.summary) {
+      errorReason = String(structuredCompletion.summary).slice(0, 300);
     } else if (effectiveResult === DISPATCH_RESULT.ERROR) {
       errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
       // W-mo3zul9pirjb — when claude CLI exits in <3s with code 1 and no output (the
@@ -2177,24 +2184,10 @@ async function discoverFromPrs(config, project) {
     // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
-    // Review→fix cycle cap — stop review/fix dispatch after N iterations, but allow build fixes and conflict fixes
-    const evalMax = config.engine?.evalMaxIterations ?? ENGINE_DEFAULTS.evalMaxIterations;
-    const evalCycles = pr._reviewFixCycles || 0;
-    const evalEscalated = evalCycles >= evalMax;
-    if (evalEscalated && !pr._evalEscalated) {
-      try {
-        mutatePullRequests(projectPrPath(project), prs => {
-          const target = shared.findPrRecord(prs, pr, project);
-          if (target) target._evalEscalated = true;
-        });
-      } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
-      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending review/re-review and review-fix dispatch; build/conflict fixes may continue`);
-    }
-
     // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
     const reviewEnabled = evalLoopEnabled && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
+    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -2266,6 +2259,7 @@ async function discoverFromPrs(config, project) {
         const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
         if (earlier) reviewNote = earlier + '\n\n---\n\n' + reviewNote;
       }
+      reviewNote = `New PR comments were observed. Read the full PR thread, decide whether the comments require code/documentation/test changes, make only necessary changes, and push if action is needed.\n\n${reviewNote}`;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
@@ -2280,7 +2274,7 @@ async function discoverFromPrs(config, project) {
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
     const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
-      fixedAfterReview && !evalEscalated && !fixDispatched;
+      fixedAfterReview && !fixDispatched;
     if (needsReReview) {
       const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
@@ -2320,7 +2314,7 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix
     // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
-    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated && !fixDispatched) {
+    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
@@ -2334,13 +2328,6 @@ async function discoverFromPrs(config, project) {
       }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
-        // Increment review→fix cycle counter
-        try {
-          mutatePullRequests(projectPrPath(project), prs => {
-            const target = shared.findPrRecord(prs, pr, project);
-            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
-          });
-        } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
       }
     }
 
@@ -2354,23 +2341,6 @@ async function discoverFromPrs(config, project) {
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
     const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
-
-      // Check if max retry cap reached — escalate to human instead of dispatching another fix
-      if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
-        if (!pr.buildFixEscalated) {
-          try {
-            const prPath = projectPrPath(project);
-            mutatePullRequests(prPath, prs => {
-              const target = shared.findPrRecord(prs, pr, project);
-              if (target) target.buildFixEscalated = true;
-            });
-          } catch (e) { log('warn', 'mark build fix escalated: ' + e.message); }
-          log('warn', `PR ${pr.id}: build fix escalated after ${pr.buildFixAttempts} attempts — suspending auto-dispatch`);
-        }
-        continue;
-      }
-
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
@@ -2423,10 +2393,11 @@ async function discoverFromPrs(config, project) {
       const prBranch = ensurePrBranchForDispatch(project, pr, 'build-fix');
       if (!prBranch) continue;
 
-      let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
-      if (pr.buildErrorLog) {
-        reviewNote += `\n\n## Build Error Log\n\n\`\`\`\n${pr.buildErrorLog}\n\`\`\``;
-      }
+      const reviewNote = [
+        `Build is failing: ${pr.buildFailReason || 'check CI pipeline for details'}.`,
+        'Inspect the live PR checks/build logs yourself, decide the root cause, fix it, run the relevant local validation, and push.',
+        pr.url ? `PR URL: ${pr.url}` : '',
+      ].filter(Boolean).join('\n');
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
@@ -2434,17 +2405,15 @@ async function discoverFromPrs(config, project) {
       }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
-        // Increment build fix attempts counter
         try {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
             const target = shared.findPrRecord(prs, pr, project);
             if (target) {
-              target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
               target._buildFixPushedAt = ts();
             }
           });
-        } catch (e) { log('warn', 'increment build fix attempts: ' + e.message); }
+        } catch (e) { log('warn', 'mark build fix dispatched: ' + e.message); }
       }
 
       if (pr.agent && !pr._buildFailNotified) {
@@ -2501,7 +2470,7 @@ async function discoverFromPrs(config, project) {
             if (!prBranch) continue;
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
               pr_id: pr.id, pr_branch: prBranch,
-              review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
+              review_note: `This PR has merge conflicts with the target branch. Inspect the live PR and repository history, choose the safest merge/rebase/update strategy, resolve all conflicts, validate the result, and push the branch.`,
             }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
             if (item) {
               newWork.push(item);

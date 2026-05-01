@@ -4045,12 +4045,112 @@ async function testPrAttachmentContract() {
 
       const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
       assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
+      assert.strictEqual(result.completionContractFailure.severity, 'hard',
+        'no PR URL in output should be a HARD contract failure');
       assert.strictEqual(updated.status, 'needs-human-review');
+      assert.ok(updated._missingPrAttachment, 'hard failure should set _missingPrAttachment');
+      assert.ok(!updated._unverifiedPrAttachment, 'hard failure must not set the soft flag');
       assert.ok(!updated.completedAt, 'missing PR contract must not persist a done completion timestamp');
-      assert.match(updated.failReason, /canonically attached PR record/);
+      assert.match(updated.failReason, /no PR URL was detected/);
       const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
       assert.ok(inboxFiles.some(f => f.includes('missing-pr-attachment-W-nopr123')),
         'missing PR contract failure should leave a durable inbox note');
+    } finally { restore(); }
+  });
+
+  await test('PR-producing success with PR URL but no canonical attach is SOFT — stays SUCCESS', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = { id: 'W-softpr1', title: 'Soft PR auto-link miss', type: 'implement', status: 'dispatched' };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      // Output mentions a PR URL but it never came through a trusted tool_use
+      // signature, so syncPrsFromOutput won't attach it. The contract should
+      // detect the URL and downgrade the failure to SOFT.
+      const stdout = 'Implemented the change. See https://github.com/octo/minions/pull/4242 for details.\n';
+
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-softpr1', type: 'implement', task: 'Soft PR auto-link miss', meta: { source: 'work-item', item, branch: 'work/W-softpr1', project: { name: 'minions', localPath: testDir } } },
+        'dallas',
+        0,
+        stdout,
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(result.completionContractFailure, 'hook should still surface the verification gap');
+      assert.strictEqual(result.completionContractFailure.severity, 'soft',
+        'PR URL present should downgrade severity to soft');
+      // Soft failure: WI is marked done (the agent did the work), only the
+      // unverified flag is set so the dashboard can render a verify badge.
+      assert.strictEqual(updated.status, testShared.WI_STATUS.DONE,
+        'soft failure must NOT change status to needs-review');
+      assert.ok(updated._unverifiedPrAttachment,
+        'soft failure should set _unverifiedPrAttachment for the dashboard');
+      assert.ok(!updated._missingPrAttachment,
+        'soft failure must NOT set _missingPrAttachment');
+      assert.ok(!updated.failReason || !/no PR URL/.test(updated.failReason || ''),
+        'soft failure must not write a hard-severity failReason');
+      const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      assert.ok(inboxFiles.some(f => f.includes('pr-auto-link-unverified-W-softpr1')),
+        'soft failure should leave a quieter pr-auto-link-unverified inbox note');
+      assert.ok(!inboxFiles.some(f => f.includes('missing-pr-attachment-W-softpr1')),
+        'soft failure must NOT leave a missing-pr-attachment inbox note');
+    } finally { restore(); }
+  });
+
+  await test('PR contract returns null when canonical attachment already exists', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = { id: 'W-attached1', title: 'Already attached', type: 'implement', status: 'dispatched' };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      // Pre-attach a PR record with prdItems including our work item id.
+      fs.writeFileSync(prPath, JSON.stringify([{
+        id: 'github:octo/minions#9901',
+        prNumber: 9901,
+        title: 'Already attached',
+        agent: 'dallas',
+        branch: 'work/W-attached1',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/9901',
+        prdItems: ['W-attached1'],
+      }], null, 2));
+      // pr-links.json mirror so hasCanonicalPrAttachment short-circuits.
+      const prLinksPath = path.join(testDir, 'pr-links.json');
+      fs.writeFileSync(prLinksPath, JSON.stringify({ 'github:octo/minions#9901': ['W-attached1'] }, null, 2));
+
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-attached1', type: 'implement', task: 'Already attached', meta: { source: 'work-item', item, branch: 'work/W-attached1', project: { name: 'minions', localPath: testDir } } },
+        'dallas',
+        0,
+        'Done.\n',
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      assert.strictEqual(result.completionContractFailure, null,
+        'already-attached PRs should not trigger any contract failure');
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(!updated._unverifiedPrAttachment, 'clean items must not get the soft flag');
+      assert.ok(!updated._missingPrAttachment, 'clean items must not get the hard flag');
     } finally { restore(); }
   });
 }
@@ -7939,8 +8039,8 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
-    assert.ok(src.includes('retryableFailure && classAllowsRetry'),
-      'Auto-retry should run only for retryable failures under per-class retry cap');
+    assert.ok(src.includes('retryableFailure && withinSafetyCap'),
+      'Auto-retry should run only when the agent/runtime marks it retryable and the global safety cap allows it');
     assert.ok(src.includes('Non-retryable failure:'),
       'Non-retryable failures should be surfaced explicitly');
   });
@@ -12849,49 +12949,26 @@ async function testDiscoverFromPrs() {
 
 }
 
-// ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
+// ─── Build Fix Delegation Tests ─────────────────────────────────────────────
 
 async function testBuildFixRetryCap() {
-  console.log('\n── Build Fix Retry Cap ──');
+  console.log('\n── Build Fix Delegation ──');
 
   const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
   const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
   const githubSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
 
-  await test('ENGINE_DEFAULTS includes maxBuildFixAttempts', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.maxBuildFixAttempts, 3,
-      'maxBuildFixAttempts should default to 3');
+  await test('engine.js no longer caps build-fix dispatch by attempts', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.length > 10, 'Should locate build-fix block');
+    assert.ok(!buildBlock.includes('maxBuildFixAttempts') && !buildBlock.includes('>= maxBuildFix') && !buildBlock.includes('buildFixAttempts ='),
+      'Build-fix dispatch should delegate retry/escalation decisions to the agent/runtime, not a PR attempt cap');
   });
 
-  await test('engine.js checks buildFixAttempts before dispatching fix agent', () => {
-    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('maxBuildFixAttempts'),
-      'Build fix dispatch should check buildFixAttempts against maxBuildFixAttempts cap');
-  });
-
-  await test('engine.js increments buildFixAttempts on fix dispatch', () => {
-    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('+ 1'),
-      'buildFixAttempts should be incremented when a fix agent is dispatched');
-  });
-
-  await test('engine.js sets buildFixEscalated when cap reached', () => {
-    assert.ok(engineSrc.includes('buildFixEscalated'),
-      'Should set buildFixEscalated flag when fix attempt cap is reached');
-  });
-
-  await test('engine.js suppresses escalation inbox alert when cap reached', () => {
-    assert.ok(engineSrc.includes('buildFixEscalated') && !engineSrc.includes('build-fix-escalated'),
-      'Should set buildFixEscalated without writing a build-fix-escalated inbox alert');
-  });
-
-  await test('engine.js skips dispatch when buildFixEscalated', () => {
-    assert.ok(engineSrc.includes('buildFixEscalated') && engineSrc.includes('continue'),
-      'Should skip fix dispatch (continue) when cap is reached and escalated');
-  });
-
-  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
+  await test('engine.js does not inject engine-fetched build logs into fix prompt', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(!buildBlock.includes('Build Error Log') && !buildBlock.includes('pr.buildErrorLog'),
+      'Build-fix prompt should send PR/check context and let the agent inspect live CI logs');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -12926,10 +13003,9 @@ async function testBuildFixRetryCap() {
       'Server-side numericFields should include maxBuildFixAttempts with bounds [1, 10]');
   });
 
-  await test('escalation only fires once per PR (buildFixEscalated guard)', () => {
-    // The escalation alert + flag write should only happen when !pr.buildFixEscalated
-    assert.ok(engineSrc.includes('!pr.buildFixEscalated'),
-      'Escalation should check !pr.buildFixEscalated to prevent duplicate alerts');
+  await test('pollers keep stale build-fix fields only as cleanup compatibility', () => {
+    assert.ok(adoSrc.includes('delete pr.buildFixAttempts') && githubSrc.includes('delete pr.buildFixAttempts'),
+      'Pollers may still clean old build-fix attempt fields when a PR recovers/closes');
   });
 }
 
@@ -13934,7 +14010,9 @@ async function testSyncPrsFromOutput() {
     const helperIdx = src.indexOf('async function enforcePrAttachmentContract');
     assert.ok(helperIdx > -1, 'Should enforce the PR attachment contract before marking done');
     const fallbackStart = src.indexOf('if (found) {', helperIdx);
-    const fallbackEnd = src.indexOf('const reason = `PR-producing work item', fallbackStart);
+    // Bound the fallback block at the severity-decision marker that follows it.
+    const fallbackEnd = src.indexOf('const severity = _outputContainsPrUrl', fallbackStart);
+    assert.ok(fallbackEnd > fallbackStart, 'Should locate the severity-decision boundary after the fallback block');
     const helperBlock = src.slice(fallbackStart, fallbackEnd);
     assert.ok(helperBlock.includes('shared.upsertPullRequestRecord'),
       'Fallback should create/update the tracked PR and prdItems through the canonical helper');
@@ -15935,8 +16013,8 @@ async function testExitCode78Handling() {
   });
 
   await test('engine.js includes install instructions in code 78 error', () => {
-    assert.ok(src.includes('npm install -g @anthropic-ai/claude-code'),
-      'Error message for code 78 should include install instructions');
+    assert.ok(src.includes('runtime.installHint'),
+      'Error message for code 78 should use runtime-provided install instructions');
   });
 }
 
@@ -15958,6 +16036,7 @@ async function testSessionResume() {
   });
 
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const claudeRuntimeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
 
   await test('parseAgentOutput returns sessionId', () => {
     assert.ok(lifecycleSrc.includes('sessionId') && lifecycleSrc.includes('parseStreamJsonOutput'),
@@ -15965,13 +16044,13 @@ async function testSessionResume() {
   });
 
   await test('session.json is saved after successful dispatch', () => {
-    assert.ok(lifecycleSrc.includes('session.json') && lifecycleSrc.includes('sessionId'),
-      'runPostCompletionHooks should save session.json with sessionId');
+    assert.ok(claudeRuntimeSrc.includes('function saveSession') && claudeRuntimeSrc.includes('session.json') && claudeRuntimeSrc.includes('sessionId'),
+      'runtime adapter should save session.json with sessionId');
   });
 
   await test('session.json is NOT saved for temp agents', () => {
-    assert.ok(lifecycleSrc.includes("temp-") && lifecycleSrc.includes('session.json'),
-      'Session save should skip temp agents');
+    assert.ok(claudeRuntimeSrc.includes("temp-") && claudeRuntimeSrc.includes('session.json'),
+      'Runtime session save should skip temp agents');
   });
 
   const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
@@ -15982,24 +16061,24 @@ async function testSessionResume() {
   });
 
   await test('session resume has 2-hour TTL and requires same branch', () => {
-    assert.ok(engineSrc.includes('2 * 60 * 60 * 1000') || engineSrc.includes('7200000'),
-      'Session resume should have a 2-hour staleness guard');
-    assert.ok(engineSrc.includes('sameBranch'),
-      'Session resume should only trigger when working on the same branch');
+    assert.ok(claudeRuntimeSrc.includes('2 * 60 * 60 * 1000') || claudeRuntimeSrc.includes('7200000'),
+      'Runtime session resume should have a 2-hour staleness guard');
+    assert.ok(claudeRuntimeSrc.includes('sameBranch'),
+      'Runtime session resume should only trigger when working on the same branch');
   });
 
   await test('session resume skips temp agents', () => {
-    assert.ok(engineSrc.includes("temp-") && engineSrc.includes('session.json'),
-      'spawnAgent should skip session resume for temp agents');
+    assert.ok(claudeRuntimeSrc.includes("temp-") && claudeRuntimeSrc.includes('session.json'),
+      'Runtime session resume should skip temp agents');
   });
 
   await test('session.json stores branch for context matching', () => {
-    assert.ok(lifecycleSrc.includes('branch:') && lifecycleSrc.includes('session.json'),
+    assert.ok(claudeRuntimeSrc.includes('branch:') && claudeRuntimeSrc.includes('session.json'),
       'session.json should include branch so resume only triggers on same branch');
   });
 
   await test('session.json stores dispatchId for traceability', () => {
-    assert.ok(lifecycleSrc.includes('dispatchId') && lifecycleSrc.includes('session.json'),
+    assert.ok(claudeRuntimeSrc.includes('dispatchId') && claudeRuntimeSrc.includes('session.json'),
       'session.json should include dispatchId');
   });
 }
@@ -26635,25 +26714,28 @@ async function testPrDuplicateRaceFix() {
 
   // ── Merge-back pattern: only modified PRs, not full stale snapshot ──
 
-  await test('ado.js forEachActivePr merges only activePrs, not full prs snapshot', () => {
+  await test('ado.js forEachActivePr merges only updated PR deltas, not full prs snapshot', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
     const fn = src.match(/async function forEachActivePr[\s\S]*?^}/m);
     assert.ok(fn, 'forEachActivePr must exist');
-    // The merge-back must iterate activePrs (modified only), not prs (full snapshot)
-    assert.ok(fn[0].includes('for (const updatedPr of activePrs)'),
-      'ado.js merge-back must iterate activePrs, not the full prs snapshot');
+    assert.ok(fn[0].includes('for (const { before, after } of updatedRecords)'),
+      'ado.js merge-back must iterate only callback-updated records');
+    assert.ok(fn[0].includes('applyPrFieldDelta'),
+      'ado.js merge-back must apply field deltas to preserve concurrent writes');
     assert.ok(!fn[0].includes('for (const updatedPr of prs)'),
       'ado.js merge-back must NOT iterate the full prs snapshot — overwrites concurrent writes');
   });
 
-  await test('github.js forEachActiveGhPr merges only activePrs, not full prs snapshot', () => {
+  await test('github.js forEachActiveGhPr merges only updated PR deltas, not full prs snapshot', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
     const fn = src.match(/async function forEachActiveGhPr[\s\S]*?^}/m);
     assert.ok(fn, 'forEachActiveGhPr must exist');
-    assert.ok(fn[0].includes('for (const updatedPr of activePrs)'),
-      'github.js project merge-back must iterate activePrs');
-    assert.ok(fn[0].includes('for (const updatedPr of activeCentral)'),
-      'github.js central merge-back must iterate activeCentral');
+    assert.ok(fn[0].includes('for (const { before, after } of updatedRecords)'),
+      'github.js project merge-back must iterate only callback-updated records');
+    assert.ok(fn[0].includes('for (const { before, after } of updatedCentralRecords)'),
+      'github.js central merge-back must iterate only callback-updated records');
+    assert.ok(fn[0].includes('applyPrFieldDelta'),
+      'github.js merge-back must apply field deltas to preserve concurrent writes');
     // Must not have the old pattern iterating full snapshots
     assert.ok(!fn[0].includes('for (const updatedPr of prs)'),
       'github.js must NOT iterate full prs snapshot');
@@ -27295,8 +27377,8 @@ async function testAutoRecoveryAndAtomicity() {
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
     assert.ok(engineSrc.includes('autoRecovered') && engineSrc.includes('await runPostCompletionHooks'),
       'engine.js must destructure autoRecovered from runPostCompletionHooks');
-    assert.ok(engineSrc.includes('code === 0 || autoRecovered'),
-      'engine.js must use autoRecovered to determine effectiveResult for completeDispatch');
+    assert.ok(engineSrc.includes('code === 0 && !agentReportedFailure') && engineSrc.includes('|| autoRecovered'),
+      'engine.js must use autoRecovered while respecting agent-reported failure for effectiveResult');
   });
 
   await test('effectiveSuccess drives all downstream success checks', () => {
@@ -30144,35 +30226,19 @@ async function testBuildFixEscalation() {
   const prRenderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
   const cssSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
 
-  await test('ENGINE_DEFAULTS includes maxBuildFixAttempts', () => {
-    assert.ok(sharedSrc.includes('maxBuildFixAttempts'),
-      'shared.js should define maxBuildFixAttempts in ENGINE_DEFAULTS');
+  await test('engine keeps build-fix retry policy out of discovery', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.length > 10, 'Should locate build-fix block');
+    assert.ok(!buildBlock.includes('maxBuildFixAttempts') && !buildBlock.includes('>= maxBuildFix') && !buildBlock.includes('buildFixAttempts ='),
+      'Build-fix discovery should not enforce an engine-owned attempt/escalation policy');
   });
 
-  await test('engine.js checks buildFixAttempts against max before dispatching', () => {
-    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('maxBuildFixAttempts'),
-      'engine.js should check buildFixAttempts against maxBuildFixAttempts limit');
-  });
-
-  await test('engine.js escalates when max build fix attempts reached without inbox alert', () => {
-    assert.ok(engineSrc.includes('buildFixEscalated') && !engineSrc.includes('build-fix-escalated'),
-      'engine.js should set buildFixEscalated flag without writing an inbox alert');
-  });
-
-  await test('engine.js increments buildFixAttempts on dispatch', () => {
-    // Verify the counter is incremented when a fix agent is actually dispatched
-    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('+ 1'),
-      'engine.js should increment buildFixAttempts counter on successful dispatch');
-  });
-
-  await test('engine.js skips dispatch when escalated (continues loop)', () => {
-    // After escalation check, the code should continue to next PR (not dispatch)
-    // Find the escalation guard block that checks >= maxBuildFix
-    const idx = engineSrc.indexOf('>= maxBuildFix');
-    assert.ok(idx > 0, 'engine.js should compare against maxBuildFix');
-    const block = engineSrc.slice(idx, idx + 1500);
-    assert.ok(block.includes('continue'),
-      'engine.js should skip dispatch (continue) when build fix attempts exceed max');
+  await test('engine.js records build-fix dispatch timestamp for anti-storm grace only', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('_buildFixPushedAt'),
+      'Build-fix dispatch should still stamp _buildFixPushedAt for CI grace period throttling');
+    assert.ok(!buildBlock.includes('buildFixAttempts ='),
+      'Build-fix dispatch should not increment semantic retry counters');
   });
 
   await test('ado.js resets buildFixAttempts on build recovery', () => {
@@ -30218,14 +30284,9 @@ async function testBuildFixEscalation() {
       'CSS should have a .pr-badge.build-escalated style for visual escalation indicator');
   });
 
-  await test('escalation uses configurable limit from ENGINE_DEFAULTS', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
-  });
-
-  await test('escalation suppresses inbox alert for build fix failures', () => {
+  await test('build-fix delegation suppresses engine escalation inbox alerts', () => {
     assert.ok(!engineSrc.includes('Build Fix Escalation') && !engineSrc.includes('build-fix-escalated'),
-      'engine.js should not write an inbox alert when escalating build fix failures');
+      'engine.js should not write an inbox alert for build-fix attempt caps');
   });
 
   // ── Behavioral tests (exercise actual code paths, not just string matching) ──
@@ -30582,12 +30643,13 @@ async function testBuildErrorLogFeature() {
       'Should include truncation notice when log exceeds limit');
   });
 
-  await test('ado.js sets buildErrorLog on PR when transitioning to failing', () => {
+  await test('ado.js does not store engine-fetched buildErrorLog on PR when failing', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
-    assert.ok(src.includes('pr.buildErrorLog ='),
-      'Should store fetched error log on PR entry');
-    assert.ok(src.includes("buildStatus === 'failing'") && src.includes('fetchAdoBuildErrorLog'),
-      'Should only fetch error log when transitioning to failing');
+    const pollFn = src.slice(src.indexOf('async function pollPrStatus'), src.indexOf('\n// ─── Poll Human Comments'));
+    assert.ok(!pollFn.includes('pr.buildErrorLog ='),
+      'PR status poll should not store fetched error logs on PR entries');
+    assert.ok(!pollFn.includes('fetchAdoBuildErrorLog('),
+      'PR status poll should let agents inspect live logs instead of fetching them in the engine');
   });
 
   await test('ado.js clears buildErrorLog when build recovers', () => {
@@ -30616,12 +30678,13 @@ async function testBuildErrorLogFeature() {
       'Should fall back to Actions job logs API');
   });
 
-  await test('github.js sets buildErrorLog on PR when transitioning to failing', () => {
+  await test('github.js does not store engine-fetched buildErrorLog on PR when failing', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
-    assert.ok(src.includes('pr.buildErrorLog = errorLog'),
-      'Should store fetched error log on PR entry');
-    assert.ok(src.includes('fetchGhBuildErrorLog(slug, failedRuns)'),
-      'Should pass failed runs to log fetcher');
+    const pollFn = src.slice(src.indexOf('async function pollPrStatus'), src.indexOf('\n// ─── Poll Human Comments'));
+    assert.ok(!pollFn.includes('pr.buildErrorLog ='),
+      'PR status poll should not store fetched error logs on PR entries');
+    assert.ok(!pollFn.includes('fetchGhBuildErrorLog('),
+      'PR status poll should let agents inspect live logs instead of fetching them in the engine');
   });
 
   await test('github.js clears buildErrorLog when build recovers', () => {
@@ -30630,12 +30693,13 @@ async function testBuildErrorLogFeature() {
       'Should clean up buildErrorLog when build status changes away from failing');
   });
 
-  await test('engine.js includes buildErrorLog in fix agent prompt', () => {
+  await test('engine.js excludes buildErrorLog from fix agent prompt', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('pr.buildErrorLog'),
-      'Should reference buildErrorLog when constructing fix dispatch');
-    assert.ok(src.includes('Build Error Log'),
-      'Should include build error log section in review_note');
+    const buildBlock = src.slice(src.indexOf('PRs with build failures'), src.indexOf('PRs with merge conflicts'));
+    assert.ok(!buildBlock.includes('pr.buildErrorLog') && !buildBlock.includes('Build Error Log'),
+      'Build-fix prompt should not inject engine-fetched build logs');
+    assert.ok(buildBlock.includes('Inspect the live PR checks/build logs yourself'),
+      'Build-fix prompt should delegate live CI inspection to the agent');
   });
 
   await test('engine.js suppresses build error inbox notification preview', () => {
@@ -31387,9 +31451,9 @@ async function testFailureClassEnum() {
 
   await test('onAgentClose calls classifyFailure and passes failureClass to completeDispatch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('classifyFailure(code, stdout, stderr)'),
-      'onAgentClose should call classifyFailure with code, stdout, stderr');
-    assert.ok(src.includes('{ failureClass }'),
+    assert.ok(src.includes('_classifyAgentFailure(runtime, code, stdout, stderr)'),
+      'onAgentClose should ask the runtime adapter to classify failure with lifecycle fallback');
+    assert.ok(src.includes('failureClass'),
       'onAgentClose should pass failureClass to completeDispatch opts');
   });
 
@@ -31502,10 +31566,12 @@ async function testRecoveryRecipes() {
     assert.strictEqual(recoveryMod.shouldRetry('', 3), false);
   });
 
-  await test('completeDispatch uses shouldRetry from recovery.js', () => {
+  await test('completeDispatch uses runtime retryability plus global safety cap', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
-    assert.ok(src.includes("recovery().shouldRetry("),
-      'completeDispatch should call shouldRetry from recovery module');
+    assert.ok(src.includes('agentRetryable') && src.includes('withinSafetyCap'),
+      'completeDispatch should prefer runtime/agent retryability and apply only a global safety cap');
+    assert.ok(!src.includes("recovery().shouldRetry("),
+      'completeDispatch should not use engine-owned per-class retry recipes');
   });
 
   await test('completeDispatch uses CLASS_LABELS map for human-readable failure reasons', () => {
@@ -31559,14 +31625,9 @@ async function testStructuredCompletion() {
   await test('COMPLETION_FIELDS exported from engine/shared.js', () => {
     assert.ok(Array.isArray(shared.COMPLETION_FIELDS),
       'COMPLETION_FIELDS should be an array');
-    assert.strictEqual(shared.COMPLETION_FIELDS.length, 6,
-      'COMPLETION_FIELDS should have 6 fields');
-    assert.ok(shared.COMPLETION_FIELDS.includes('status'), 'Should include status');
-    assert.ok(shared.COMPLETION_FIELDS.includes('files_changed'), 'Should include files_changed');
-    assert.ok(shared.COMPLETION_FIELDS.includes('tests'), 'Should include tests');
-    assert.ok(shared.COMPLETION_FIELDS.includes('pr'), 'Should include pr');
-    assert.ok(shared.COMPLETION_FIELDS.includes('pending'), 'Should include pending');
-    assert.ok(shared.COMPLETION_FIELDS.includes('failure_class'), 'Should include failure_class');
+    for (const field of ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict']) {
+      assert.ok(shared.COMPLETION_FIELDS.includes(field), `Should include ${field}`);
+    }
   });
 
   await test('parseStructuredCompletion exported from engine/lifecycle.js', () => {
@@ -32857,9 +32918,11 @@ async function testPrReviewFixFlows() {
 
   // ── Review dispatch ──
 
-  await test('review dispatch gated by evalEscalated', () => {
-    assert.ok(engineSrc.includes('!evalEscalated') && engineSrc.includes('needsReview'),
-      'needsReview should include !evalEscalated check');
+  await test('review dispatch is not gated by engine-owned evalEscalated policy', () => {
+    const reviewBlock = engineSrc.slice(engineSrc.indexOf('PRs needing review'), engineSrc.indexOf('let fixDispatched'));
+    assert.ok(reviewBlock.includes('needsReview'), 'Should locate review dispatch block');
+    assert.ok(!reviewBlock.includes('evalEscalated') && !reviewBlock.includes('_evalEscalated'),
+      'Review dispatch should not be suppressed by an engine-owned review/fix cycle cap');
   });
 
   await test('review dispatch includes PR title in label', () => {
@@ -32874,14 +32937,17 @@ async function testPrReviewFixFlows() {
 
   // ── Review-fix dispatch ──
 
-  await test('review-fix dispatch gated by evalEscalated', () => {
-    assert.ok(engineSrc.includes("changes-requested' && !awaitingReReview && !evalEscalated"),
-      'Review-fix should check !evalEscalated');
+  await test('review-fix dispatch is not gated by engine-owned evalEscalated policy', () => {
+    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(fixBlock.length > 10, 'Should locate review-fix block');
+    assert.ok(!fixBlock.includes('evalEscalated') && !fixBlock.includes('_evalEscalated'),
+      'Review-fix dispatch should not be suppressed by an engine-owned cycle cap');
   });
 
-  await test('review-fix increments _reviewFixCycles', () => {
-    assert.ok(engineSrc.includes('_reviewFixCycles') && engineSrc.includes('review-fix cycles'),
-      'Should increment _reviewFixCycles on review-fix dispatch');
+  await test('review-fix does not increment engine-owned _reviewFixCycles', () => {
+    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!fixBlock.includes('_reviewFixCycles'),
+      'Review-fix dispatch should not maintain semantic cycle counters in the engine');
   });
 
   await test('review-fix sets fixDispatched flag', () => {
@@ -32936,21 +33002,22 @@ async function testPrReviewFixFlows() {
 
   // ── Eval escalation ──
 
-  await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
-    const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
-    const escalBlock = engineSrc.slice(startIdx, endIdx);
-    assert.ok(escalBlock.length > 10, 'Should find escalation block');
-    assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
-    assert.ok(escalBlock.includes('evalEscalated'), 'Should set evalEscalated flag');
+  await test('engine.js removes eval escalation block from PR discovery', () => {
+    const startIdx = engineSrc.indexOf('Use reviewStatus as single source of truth');
+    const preReviewBlock = engineSrc.slice(startIdx, engineSrc.indexOf('PRs needing review', startIdx));
+    assert.ok(preReviewBlock.length > 10, 'Should locate pre-review block');
+    assert.ok(!preReviewBlock.includes('evalMaxIterations') && !preReviewBlock.includes('evalEscalated'),
+      'PR discovery should not enforce an engine-owned review/fix cycle cap');
   });
 
   await test('eval escalation suppresses inbox alert', () => {
     assert.ok(!engineSrc.includes('Review Loop Escalation'), 'Should not write escalation alert to inbox');
   });
 
-  await test('eval escalation uses evalMaxIterations from config', () => {
-    assert.ok(engineSrc.includes('evalMaxIterations'), 'Should read evalMaxIterations from config');
+  await test('eval escalation config is not used by engine discovery', () => {
+    const discoveryFn = engineSrc.slice(engineSrc.indexOf('async function discoverFromPrs'), engineSrc.indexOf('\nfunction', engineSrc.indexOf('async function discoverFromPrs') + 1));
+    assert.ok(!discoveryFn.includes('evalMaxIterations'),
+      'discoverFromPrs should not read evalMaxIterations for semantic dispatch policy');
   });
 
   // Helper that loads render-prs.js as an isolated module exposing window.MinionsPrs
@@ -33086,14 +33153,10 @@ async function testPrReviewFixFlows() {
       'CSS should style missing PR branches distinctly');
   });
 
-  await test('eval escalation log message does not imply all automation stopped', () => {
-    const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
-    const escalBlock = engineSrc.slice(startIdx, endIdx);
-    assert.ok(!escalBlock.includes('suspending auto-dispatch'),
-      'Eval escalation log should not imply build/conflict automation was stopped');
-    assert.ok(escalBlock.includes('build/conflict fixes may continue'),
-      'Eval escalation log should state build/conflict auto-fixes may continue');
+  await test('engine.js no longer logs review-loop escalation from discovery', () => {
+    const discoveryFn = engineSrc.slice(engineSrc.indexOf('async function discoverFromPrs'), engineSrc.indexOf('\nfunction', engineSrc.indexOf('async function discoverFromPrs') + 1));
+    assert.ok(!discoveryFn.includes('review→fix escalated') && !discoveryFn.includes('suspending review/re-review'),
+      'discoverFromPrs should not emit engine-owned review-loop escalation messages');
   });
 
   // ── Review vote protection ──
@@ -33133,12 +33196,12 @@ async function testPrReviewFixFlows() {
   });
 
   await test('PR persistence guard: approved never overwritten by stale in-memory copy (ADO)', () => {
-    assert.ok(adoSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && adoSrc.includes("updatedPr.reviewStatus = 'approved'"),
+    assert.ok(adoSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && adoSrc.includes("after.reviewStatus = 'approved'"),
       'ADO forEachActivePr persistence should guard approved on disk from stale in-memory copy');
   });
 
   await test('PR persistence guard: approved never overwritten by stale in-memory copy (GitHub)', () => {
-    assert.ok(ghSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && ghSrc.includes("updatedPr.reviewStatus = 'approved'"),
+    assert.ok(ghSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && ghSrc.includes("after.reviewStatus = 'approved'"),
       'GitHub forEachActivePr persistence should guard approved on disk from stale in-memory copy');
   });
 
@@ -33209,8 +33272,8 @@ async function testPrReviewFixFlows() {
   // ── updatePrAfterReview passes resultSummary ──
 
   await test('updatePrAfterReview receives resultSummary for review note', () => {
-    assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary)'),
-      'updatePrAfterReview should accept resultSummary parameter');
+    assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary'),
+      'updatePrAfterReview should accept resultSummary parameter and optional completion report');
     assert.ok(lifecycleSrc.includes('resultSummary || completedEntry'),
       'Should use resultSummary as primary note source');
   });
@@ -33268,10 +33331,10 @@ async function testPrReviewFixFlows() {
       lifecycleSrc.indexOf('function updatePrAfterReview('),
       lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterReview(') + 1)
     );
-    assert.ok(reviewFn.includes('parseReviewVerdict(resultSummary)'),
-      'Should parse verdict from resultSummary when live check returns pending');
-    assert.ok(reviewFn.includes('Parsed review verdict from agent output'),
-      'Should log when using parsed verdict');
+    assert.ok(reviewFn.includes('reviewVerdictFromCompletion(structuredCompletion)') && reviewFn.includes('parseReviewVerdict(resultSummary)'),
+      'Should prefer completion-report verdict and fall back to resultSummary parsing when live check returns pending');
+    assert.ok(reviewFn.includes('Read review verdict from agent completion'),
+      'Should log when using agent-reported verdict');
   });
 
   await test('runPostCompletionHooks verifies review verdict exists before marking done', () => {
@@ -33279,8 +33342,8 @@ async function testPrReviewFixFlows() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nmodule.exports')
     );
-    assert.ok(hooksFn.includes('parseReviewVerdict(resultSummary)'),
-      'Should check for verdict in review output');
+    assert.ok(hooksFn.includes('reviewVerdictFromCompletion(structuredCompletion)') && hooksFn.includes('parseReviewVerdict(resultSummary)'),
+      'Should check for verdict in completion report or review output');
     assert.ok(hooksFn.includes('completed without verdict'),
       'Should warn about missing verdict');
     assert.ok(hooksFn.includes('No review verdict after'),
@@ -33420,9 +33483,10 @@ async function testPrReviewFixFlows() {
       'Should check grace period before re-dispatching build fix');
   });
 
-  await test('build fix escalates after maxBuildFixAttempts', () => {
-    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('buildFixEscalated'),
-      'Should escalate after max attempts');
+  await test('build fix does not escalate via engine-owned attempt cap', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts') || engineSrc.length);
+    assert.ok(!buildBlock.includes('maxBuildFixAttempts') && !buildBlock.includes('>= maxBuildFix') && !buildBlock.includes('buildFixAttempts ='),
+      'Build-fix escalation should be delegated to the agent/runtime completion contract');
   });
 
   await test('_autoCompleted reset when build goes red', () => {
@@ -43419,16 +43483,10 @@ async function testEngineHelperCoverage() {
 
   // ── _maxTurnsForType ──
 
-  await test('_maxTurnsForType returns built-in default per WORK_TYPE when no config overrides', () => {
-    const expected = {
-      [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
-      [WORK_TYPE.DECOMPOSE]: 15, [WORK_TYPE.PLAN]: 30, [WORK_TYPE.PLAN_TO_PRD]: 35,
-      [WORK_TYPE.MEETING]: 30, [WORK_TYPE.IMPLEMENT]: 75, [WORK_TYPE.IMPLEMENT_LARGE]: 75,
-      [WORK_TYPE.FIX]: 75, [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
-    };
-    for (const [type, turns] of Object.entries(expected)) {
-      assert.strictEqual(engine._maxTurnsForType(type, {}), turns,
-        `${type} should resolve to built-in default ${turns}`);
+  await test('_maxTurnsForType returns global default for all work types when no config overrides', () => {
+    for (const type of Object.values(WORK_TYPE)) {
+      assert.strictEqual(engine._maxTurnsForType(type, {}), ENGINE_DEFAULTS.maxTurns,
+        `${type} should resolve to global default so task pacing stays runtime/playbook-owned`);
     }
   });
 
@@ -43436,10 +43494,9 @@ async function testEngineHelperCoverage() {
     assert.strictEqual(engine._maxTurnsForType('unknown-work-type', {}), ENGINE_DEFAULTS.maxTurns);
   });
 
-  await test('_maxTurnsForType ignores global maxTurns when it equals the default', () => {
-    // Same as default → treated as "no override"; built-in per-type wins
+  await test('_maxTurnsForType returns global maxTurns when it equals the default', () => {
     const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, { maxTurns: ENGINE_DEFAULTS.maxTurns });
-    assert.strictEqual(out, 75);
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns);
   });
 
   await test('_maxTurnsForType applies global maxTurns override (overrides built-in per-type)', () => {
@@ -43460,7 +43517,7 @@ async function testEngineHelperCoverage() {
     assert.strictEqual(out, 200);
   });
 
-  await test('_maxTurnsForType per-type override beats built-in per-type default', () => {
+  await test('_maxTurnsForType per-type override beats global default', () => {
     const out = engine._maxTurnsForType(WORK_TYPE.REVIEW, {
       maxTurnsByType: { [WORK_TYPE.REVIEW]: 9 },
     });
@@ -43475,11 +43532,10 @@ async function testEngineHelperCoverage() {
   });
 
   await test('_maxTurnsForType ignores per-type override of 0 (falsy) and falls through', () => {
-    // perType[type] is checked with truthy test, so 0 falls through to next branch
     const out = engine._maxTurnsForType(WORK_TYPE.IMPLEMENT, {
       maxTurnsByType: { [WORK_TYPE.IMPLEMENT]: 0 },
     });
-    assert.strictEqual(out, 75, 'zero per-type override must not apply; falls through to built-in 75');
+    assert.strictEqual(out, ENGINE_DEFAULTS.maxTurns, 'zero per-type override must not apply; falls through to global default');
   });
 
   // ── isWorktreeRetryableError ──
