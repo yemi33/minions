@@ -12,7 +12,7 @@ const { setCooldownFailure } = require('./cooldown');
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
   sidecarDispatchPrompt, deleteDispatchPromptSidecar,
-  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS, PR_STATUS } = shared;
+  WI_STATUS, WORK_TYPE, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS, PR_STATUS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -59,8 +59,20 @@ function mutateDispatch(mutator) {
 
 // ─── Add to Dispatch ─────────────────────────────────────────────────────────
 
+function getPrDispatchDedupeKey(entry) {
+  if (!entry?.meta?.pr || !entry?.meta?.project || !entry?.type) return null;
+  const type = entry.type === WORK_TYPE.FIX ? WORK_TYPE.FIX : entry.type;
+  const project = entry.meta.project;
+  const projectKey = project.name
+    || (project.localPath ? path.resolve(project.localPath).toLowerCase() : '');
+  if (!projectKey) return null;
+  const prKey = shared.getCanonicalPrId(project, entry.meta.pr, entry.meta.pr?.url || '');
+  if (!prKey) return null;
+  return `${projectKey}:${type}:${prKey}`;
+}
+
 function addToDispatch(item) {
-  item.id = item.id || `${item.agent}-${item.type}-${shared.uid()}`;
+  item.id = item.id || `${item.agent || 'unassigned'}-${item.type}-${shared.uid()}`;
   item.created_at = ts();
   item.meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
   if (!item.meta.completionReportPath) {
@@ -82,6 +94,15 @@ function addToDispatch(item) {
       const existing = [...dispatch.pending, ...(dispatch.active || [])].find(d => d.meta?.dispatchKey === item.meta.dispatchKey);
       if (existing) {
         log('info', `Dedup: skipping ${item.id} — dispatchKey ${item.meta.dispatchKey} already in ${existing.id}`);
+        return dispatch;
+      }
+    }
+    const prDedupeKey = getPrDispatchDedupeKey(item);
+    if (prDedupeKey) {
+      const existing = [...dispatch.pending, ...(dispatch.active || [])]
+        .find(d => getPrDispatchDedupeKey(d) === prDedupeKey);
+      if (existing) {
+        log('info', `Dedup: skipping ${item.id} — PR dispatch ${prDedupeKey} already in ${existing.id}`);
         return dispatch;
       }
     }
@@ -568,6 +589,7 @@ function cancelPendingWorkItems(wiPath, matchFn, reason) {
 module.exports = {
   mutateDispatch,
   addToDispatch,
+  getPrDispatchDedupeKey,
   isRetryableFailureReason,
   completeDispatch,
   writeInboxAlert,

@@ -228,6 +228,42 @@ function resolveAgent(workType, config, opts = {}) {
   return null;
 }
 
+function resolveAgentReservation(workType, config, opts = {}) {
+  const { authorAgent = null, agentHints = null } = opts || {};
+  const routes = getRoutingTableCached();
+  const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
+  const agents = config.agents || {};
+  const hintedAgents = normalizeAgentHints(agentHints, authorAgent, agents);
+
+  const hasBudget = (id) => {
+    if (!agents[id]) return false;
+    const budget = agents[id].monthlyBudgetUsd;
+    return !(budget && budget > 0 && getMonthlySpend(id) >= budget);
+  };
+  const eligible = (id) => (id && id !== '_any_' && hasBudget(id)) ? id : null;
+  const anyEligible = (exclude = []) => {
+    const excludeSet = new Set(exclude.filter(Boolean));
+    return Object.keys(agents)
+      .filter(id => !excludeSet.has(id) && hasBudget(id))
+      .sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b))[0] || null;
+  };
+
+  if (hintedAgents.length > 0) return hintedAgents.find(hasBudget) || null;
+
+  const preferred = route.preferred === '_author_' ? authorAgent : route.preferred;
+  const fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
+
+  if (preferred === '_any_') return anyEligible();
+  const preferredAgent = eligible(preferred);
+  if (preferredAgent) return preferredAgent;
+
+  if (fallback === '_any_') return anyEligible([preferred]);
+  const fallbackAgent = eligible(fallback);
+  if (fallbackAgent) return fallbackAgent;
+
+  return anyEligible([preferred, fallback]);
+}
+
 module.exports = {
   tempAgents,
   getRouting,
@@ -241,6 +277,7 @@ module.exports = {
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,
+  resolveAgentReservation,
   setTempBudget,
   getTempBudget,
 };

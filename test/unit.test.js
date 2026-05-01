@@ -8254,6 +8254,54 @@ async function testStateIntegrity() {
       'Auto-retry should clear completed dedupe entry for the same dispatch key');
   });
 
+  await test('addToDispatch dedupes PR-backed fixes by project, PR, and type (#1941)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dispatchMod = require('../engine/dispatch');
+      const freshShared = require('../engine/shared');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const project = { name: 'ProjA', localPath: 'D:\\\\proj-a' };
+      const pr = { id: 'PR-5144573', prNumber: 5144573 };
+
+      dispatchMod.addToDispatch({
+        id: 'ralph-fix',
+        type: freshShared.WORK_TYPE.FIX,
+        agent: 'ralph',
+        task: 'Fix build failure',
+        prompt: 'fix',
+        meta: { dispatchKey: 'build-fix-ProjA-PR-5144573', project, pr },
+      });
+      dispatchMod.addToDispatch({
+        id: 'dallas-fix',
+        type: freshShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Fix review feedback',
+        prompt: 'fix',
+        meta: { dispatchKey: 'human-fix-ProjA-PR-5144573', project, pr },
+      });
+      dispatchMod.addToDispatch({
+        id: 'ripley-review',
+        type: freshShared.WORK_TYPE.REVIEW,
+        agent: 'ripley',
+        task: 'Review PR',
+        prompt: 'review',
+        meta: { dispatchKey: 'review-ProjA-PR-5144573', project, pr },
+      });
+      dispatchMod.addToDispatch({
+        id: 'dallas-fix-other-pr',
+        type: freshShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Fix other PR',
+        prompt: 'fix',
+        meta: { dispatchKey: 'build-fix-ProjA-PR-999', project, pr: { id: 'PR-999', prNumber: 999 } },
+      });
+
+      const pending = freshShared.safeJson(dispatchPath).pending || [];
+      assert.deepStrictEqual(pending.map(d => d.id).sort(), ['dallas-fix-other-pr', 'ralph-fix', 'ripley-review'].sort(),
+        'second same-PR fix should be skipped, while different type and PR remain queueable');
+    } finally { restore(); }
+  });
+
   await test('Pending work-item discovery self-heals stale dispatch gates (batched)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('selfHealKeys'),
@@ -11362,6 +11410,46 @@ async function testResolveAgent() {
       'Should track and check claimed agents per discovery pass');
   });
 
+  await test('resolveAgentReservation can reserve a routed busy/claimed agent for pending queue (#1940)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
+      fs.writeFileSync(routingPath, [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| verify | dallas | ralph |',
+        ''
+      ].join('\n'));
+      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      const freshShared = require('../engine/shared');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{ id: 'busy-ralph', agent: 'ralph' }],
+        completed: [],
+      });
+      routing.resetClaimedAgents();
+      const config = {
+        agents: {
+          dallas: { name: 'Dallas' },
+          ralph: { name: 'Ralph' },
+        },
+        engine: { allowTempAgents: false },
+      };
+
+      assert.strictEqual(routing.resolveAgent('verify', config), 'dallas',
+        'first item should claim the only idle routed agent');
+      assert.strictEqual(routing.resolveAgent('verify', config), null,
+        'strict resolution should refuse a second item in the same discovery pass');
+      assert.strictEqual(routing.resolveAgentReservation('verify', config), 'dallas',
+        'reservation should still return the routed agent so the item can enter dispatch.pending');
+    } finally { restore(); }
+  });
+
   await test('resolveAgent uses pickAnyIdle to fall back to any idle agent', () => {
     assert.ok(src.includes('const anyIdle = pickAnyIdle([preferred, fallback])'),
       'Final fallback should use pickAnyIdle excluding preferred and fallback');
@@ -11462,6 +11550,16 @@ async function testResolveAgent() {
       'Pending dispatch fallback should preserve work-item agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item)'),
       'Busy-agent reassignment should treat hinted work as explicit assignment via the helper');
+  });
+
+  await test('work-item discovery reserves unhinted agent-busy items instead of marking no_agent (#1940)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('resolveAgentReservation(workType, config)'),
+      'Unhinted work-item discovery should reserve a routed agent when strict routing finds no idle agent');
+    assert.ok(engineSrc.includes('resetClaimedAgents(); // Pending agent resolution is a fresh allocation phase after discovery claims.'),
+      'Dispatch-loop pending resolution should not inherit discovery-pass claimed-agent state');
+    assert.ok(engineSrc.includes('!hasExplicitAgentHint ? resolveAgentReservation(workType, config) : null'),
+      'Explicit agent pins/hints should not be rerouted through the reservation fallback');
   });
 
   await test('Command Center dispatch persists agents[] hint for engine routing', () => {

@@ -125,7 +125,7 @@ const { getConfig, getControl, getDispatch, getNotes,
 const routing = require('./engine/routing');
 const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
   getAgentErrorRate, isAgentIdle, resolveAgent, resetClaimedAgents,
-  setTempBudget, tempAgents } = routing;
+  resolveAgentReservation, setTempBudget, tempAgents } = routing;
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
@@ -2655,14 +2655,23 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     const agentHints = routing.extractAgentHints(item);
-    const agentId = item.agent || resolveAgent(workType, config, { agentHints });
+    const hasExplicitAgentHint = !!(item.agent || routing.normalizeAgentHints(agentHints, null, config.agents || {}).length);
+    let agentId = item.agent || resolveAgent(workType, config, { agentHints });
+    const cfgAgents = config.agents || {};
+    const budgetBlocked = Object.keys(cfgAgents).some(id => {
+      const b = cfgAgents[id].monthlyBudgetUsd;
+      return b && b > 0 && getMonthlySpend(id) >= b && isAgentIdle(id);
+    });
     if (!agentId) {
-      // Check if reason is budget
-      const cfgAgents = config.agents || {};
-      const budgetBlocked = Object.keys(cfgAgents).some(id => {
-        const b = cfgAgents[id].monthlyBudgetUsd;
-        return b && b > 0 && getMonthlySpend(id) >= b && isAgentIdle(id);
-      });
+      if (!budgetBlocked && !hasExplicitAgentHint) {
+        agentId = resolveAgentReservation(workType, config);
+      }
+      if (agentId) {
+        delete item._pendingReason;
+        needsWrite = true;
+      }
+    }
+    if (!agentId) {
       if (budgetBlocked) {
         if (item._pendingReason !== 'budget_exceeded') { item._pendingReason = 'budget_exceeded'; needsWrite = true; }
       } else {
@@ -3176,7 +3185,10 @@ function discoverCentralWorkItems(config) {
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
       const agentHints = routing.extractAgentHints(item);
-      const agentId = item.agent || resolveAgent(workType, config, { agentHints });
+      const hasExplicitAgentHint = !!(item.agent || routing.normalizeAgentHints(agentHints, null, config.agents || {}).length);
+      const agentId = item.agent
+        || resolveAgent(workType, config, { agentHints })
+        || (!hasExplicitAgentHint ? resolveAgentReservation(workType, config) : null);
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
@@ -3837,6 +3849,7 @@ async function tickInner() {
   const seenPendingIds = new Set();
   const toDispatch = [];
   let generalSlots = slotsAvailable;
+  resetClaimedAgents(); // Pending agent resolution is a fresh allocation phase after discovery claims.
 
   for (const item of dispatch.pending) {
     if (seenPendingIds.has(item.id)) {
