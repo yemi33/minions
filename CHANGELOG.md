@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1653 (2026-05-01)
+
+### Fixes
+- exempt fix/test work items from PR contract when meta.pr is set
+
 ## 0.1.1652 (2026-05-01)
 
 ### Other
