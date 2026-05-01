@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1648 (2026-05-01)
+
+### Other
+- docs: add Copilot instructions
+
 ## 0.1.1647 (2026-05-01)
 
 ### Other
