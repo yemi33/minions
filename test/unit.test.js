@@ -16317,7 +16317,7 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
-  await test('updatePrAfterFix: resets non-approved reviewStatus to "waiting" and sets fixedAt', () => {
+  await test('updatePrAfterFix: non-human-feedback source preserves pendingFix', () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -16340,8 +16340,8 @@ async function testLifecycleUncoveredFns() {
       assert.strictEqual(after[0].reviewStatus, 'waiting',
         'non-approved reviewStatus must be reset to "waiting"');
       assert.ok(after[0].minionsReview?.fixedAt, 'minionsReview.fixedAt must be set');
-      assert.strictEqual(after[0].humanFeedback.pendingFix, false,
-        'humanFeedback.pendingFix must be cleared on any fix dispatch');
+      assert.strictEqual(after[0].humanFeedback.pendingFix, true,
+        'non-human-feedback fixes must not clear humanFeedback.pendingFix');
       assert.strictEqual(after[0].minionsReview.note, 'Fixed, awaiting re-review',
         'default source should use the generic note');
     } finally { restore(); }
@@ -16373,7 +16373,7 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
-  await test('updatePrAfterFix: pr-human-feedback source uses specific note', () => {
+  await test('updatePrAfterFix: pr-human-feedback source uses specific note and clears pendingFix', () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -16395,7 +16395,7 @@ async function testLifecycleUncoveredFns() {
       assert.strictEqual(after[0].minionsReview.note, 'Fixed human feedback, awaiting re-review',
         'pr-human-feedback source must use the human-feedback specific note');
       assert.strictEqual(after[0].humanFeedback.pendingFix, false,
-        'humanFeedback.pendingFix must still be cleared');
+        'pr-human-feedback fixes must clear humanFeedback.pendingFix');
     } finally { restore(); }
   });
 
