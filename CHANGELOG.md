@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1667 (2026-05-01)
+
+### Other
+- Harden PR attachment completion handling
+
 ## 0.1.1666 (2026-05-01)
 
 ### Other
