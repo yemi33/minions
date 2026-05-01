@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1649 (2026-05-01)
+
+### Features
+- ADO build poll repositoryId GUID handling
+
+### Fixes
+- yemi33/minions#1925
+
 ## 0.1.1648 (2026-05-01)
 
 ### Other
