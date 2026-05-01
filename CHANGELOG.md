@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1656 (2026-05-01)
+
+### Features
+- ADO manual PR link metadata and branch race
+- gate non-terminal task completions
+
 ## 0.1.1654 (2026-05-01)
 
 ### Fixes
