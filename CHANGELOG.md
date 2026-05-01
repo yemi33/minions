@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1664 (2026-05-01)
+
+### Features
+- prevent duplicate PR fix dispatch (#1953)
+
 ## 0.1.1662 (2026-05-01)
 
 ### Other
