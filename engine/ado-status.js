@@ -42,7 +42,7 @@ if (!prNumberArg) {
     '  --project <name>    Scope search to one project (optional)',
     '',
     'Output: JSON with fields: prNumber, title, branch, status, reviewStatus,',
-    '        buildStatus, buildErrorLog (if failing), mergeConflict, url, project, source',
+    '        buildStatus, buildStatusStale/detail (if stale), buildErrorLog (if failing), mergeConflict, url, project, source',
     '',
     'buildStatus values: passing | failing | running | none',
     'reviewStatus values: approved | changes-requested | waiting | pending',
@@ -73,6 +73,10 @@ function findInCache(projects) {
       source: 'cached',
     };
     if (pr.buildErrorLog) out.buildErrorLog = pr.buildErrorLog;
+    if (pr._buildStatusStale) {
+      out.buildStatusStale = true;
+      if (pr._buildStatusDetail) out.buildStatusDetail = pr._buildStatusDetail;
+    }
     if (pr._mergeConflict) out.mergeConflict = true;
     return out;
   }

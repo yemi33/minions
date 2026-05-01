@@ -13307,7 +13307,7 @@ async function testPreDispatchBuildAndConflictFreshness() {
     name: 'test-project',
     adoOrg: 'org',
     adoProject: 'proj',
-    repositoryId: 'repo-guid',
+    repositoryId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     repoHost: 'ado',
   };
   const fakePr = {
@@ -27251,6 +27251,7 @@ async function testPrDuplicateRaceFix() {
   await test('dashboard render-prs.js shows stale build status indicator', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
     assert.ok(src.includes('_buildStatusStale'), 'render-prs.js must check _buildStatusStale');
+    assert.ok(src.includes('_buildStatusDetail'), 'render-prs.js must surface stale build diagnostic detail');
     assert.ok(src.includes('build-stale'), 'render-prs.js must use build-stale CSS class');
     assert.ok(src.includes('(stale)'), 'render-prs.js must show (stale) label');
   });
@@ -27545,17 +27546,20 @@ async function testAutoRecoveryAndAtomicity() {
   const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 
   await test('runPostCompletionHooks returns autoRecovered=true when failed agent created PR', async () => {
+    const restore = createTestMinionsDir();
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
 
     const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
     const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
+    const lifecycleInner = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    const sharedInner = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 
-    const origProjectPrPath = shared.projectPrPath;
-    const origGetProjects = shared.getProjects;
-    shared.projectPrPath = () => prFile;
-    shared.getProjects = () => [mockProject];
+    const origProjectPrPath = sharedInner.projectPrPath;
+    const origGetProjects = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFile;
+    sharedInner.getProjects = () => [mockProject];
 
     try {
       const output = '{"type":"result","result":"PR created: https://github.com/org/repo/pull/42 — Feature"}';
@@ -27565,16 +27569,17 @@ async function testAutoRecoveryAndAtomicity() {
       };
 
       // code=1 simulates a failed agent process
-      const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
+      const result = await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, true,
         'autoRecovered should be true when failed implement agent created PR');
 
       // PR should have been synced despite failure
-      const prs = shared.safeJson(prFile) || [];
+      const prs = sharedInner.safeJson(prFile) || [];
       assert.ok(prs.length > 0, 'PR should be synced even from failed agent output');
     } finally {
-      shared.projectPrPath = origProjectPrPath;
-      shared.getProjects = origGetProjects;
+      sharedInner.projectPrPath = origProjectPrPath;
+      sharedInner.getProjects = origGetProjects;
+      restore();
     }
   });
 
@@ -31818,6 +31823,123 @@ async function testStructuredCompletion() {
     }
   });
 
+  await test('detectNonTerminalResultSummary recognizes premature task_complete summaries', () => {
+    assert.strictEqual(typeof lifecycle.detectNonTerminalResultSummary, 'function',
+      'Nonterminal summary detector should be exported for regression coverage');
+    const nonTerminalSummaries = [
+      "Builds still running. I'll wake up in ~10 minutes to check.",
+      'The verification is pending and will check later.',
+      'This is partial; remaining validation is to be continued.',
+      'Tests are in progress and the work is not yet complete.',
+    ];
+    for (const summary of nonTerminalSummaries) {
+      const detected = lifecycle.detectNonTerminalResultSummary(summary);
+      assert.ok(detected, `Expected summary to be treated as nonterminal: ${summary}`);
+    }
+    assert.strictEqual(
+      lifecycle.detectNonTerminalResultSummary('Implemented the fix. Tests pass. Pending: none.'),
+      null,
+      'Terminal summaries with explicit no-pending phrasing should not be rejected'
+    );
+  });
+
+  await test('runPostCompletionHooks defers nonterminal success summaries instead of marking done', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const wiPath = path.join(sharedInner.MINIONS_DIR, 'work-items.json');
+      sharedInner.safeWrite(wiPath, [{
+        id: 'W-nonterminal-summary',
+        title: 'Reject premature completion',
+        type: 'docs',
+        status: sharedInner.WI_STATUS.DISPATCHED,
+        dispatched_at: '2026-04-30T23:00:00.000Z',
+        dispatched_to: 'rebecca',
+      }]);
+      const dispatchItem = {
+        id: 'D-nonterminal-summary',
+        type: sharedInner.WORK_TYPE.DOCS,
+        agent: 'rebecca',
+        meta: {
+          source: 'central-work-item',
+          item: { id: 'W-nonterminal-summary', title: 'Reject premature completion' },
+        },
+      };
+
+      const result = await lifecycleInner.runPostCompletionHooks(
+        dispatchItem,
+        'rebecca',
+        0,
+        "Builds still running. I'll wake up in ~10 minutes to check.",
+        { agents: { rebecca: {} }, projects: [] }
+      );
+
+      const [updated] = sharedInner.safeJson(wiPath);
+      assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
+      assert.match(result.completionContractFailure.reason, /nonterminal completion summary/i);
+      assert.strictEqual(updated.status, sharedInner.WI_STATUS.PENDING,
+        'nonterminal success should be retried rather than marked done');
+      assert.strictEqual(updated._retryCount, 1, 'retry counter should advance for the deferred work item');
+      assert.strictEqual(updated._pendingReason, 'nonterminal_completion',
+        'dashboard should show why the pending item was deferred');
+      assert.ok(!updated.completedAt, 'nonterminal success must not persist completedAt');
+      assert.ok(!Object.prototype.hasOwnProperty.call(updated, 'dispatched_at'),
+        'retry reset should clear dispatched_at');
+      assert.ok(!Object.prototype.hasOwnProperty.call(updated, 'dispatched_to'),
+        'retry reset should clear dispatched_to');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('runPostCompletionHooks preserves legitimate terminal summaries', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const wiPath = path.join(sharedInner.MINIONS_DIR, 'work-items.json');
+      sharedInner.safeWrite(wiPath, [{
+        id: 'W-terminal-summary',
+        title: 'Accept terminal completion',
+        type: 'docs',
+        status: sharedInner.WI_STATUS.DISPATCHED,
+      }]);
+      const dispatchItem = {
+        id: 'D-terminal-summary',
+        type: sharedInner.WORK_TYPE.DOCS,
+        agent: 'rebecca',
+        meta: {
+          source: 'central-work-item',
+          item: { id: 'W-terminal-summary', title: 'Accept terminal completion' },
+        },
+      };
+
+      const result = await lifecycleInner.runPostCompletionHooks(
+        dispatchItem,
+        'rebecca',
+        0,
+        'Implemented the fix. Tests pass. Pending: none.',
+        { agents: { rebecca: {} }, projects: [] }
+      );
+
+      const [updated] = sharedInner.safeJson(wiPath);
+      assert.strictEqual(result.completionContractFailure, null,
+        'terminal summary should not be treated as a contract failure');
+      assert.strictEqual(updated.status, sharedInner.WI_STATUS.DONE,
+        'terminal success should still be marked done');
+      assert.ok(updated.completedAt, 'terminal success should persist completedAt');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('parseStructuredCompletion: keys are lowercased', () => {
     const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
     const result = lifecycle.parseStructuredCompletion(stdout);
@@ -35771,6 +35893,11 @@ async function testAdoRepositoryIdFallback() {
     const origFetch = globalThis.fetch;
     try {
       const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      testShared.safeWrite(path.join(process.env.MINIONS_TEST_DIR, 'config.json'), {
+        projects: [project],
+        agents: {},
+        engine: {},
+      });
       testShared.safeWrite(testShared.projectPrPath(project), prs);
 
       delete require.cache[require.resolve(adoPath)];
@@ -35789,7 +35916,7 @@ async function testAdoRepositoryIdFallback() {
     }
   }
 
-  function successfulPollFetch(calls, expectedRepoToken) {
+  function successfulPollFetch(calls, expectedRepoToken, buildRepoToken = expectedRepoToken) {
     return async (url) => {
       calls.push(url);
       assert.ok(!url.includes('/repositories//'),
@@ -35808,7 +35935,7 @@ async function testAdoRepositoryIdFallback() {
           headers: { get: () => null },
         };
       }
-      if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${expectedRepoToken}`)) {
+      if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${buildRepoToken}`)) {
         return {
           ok: true,
           status: 200,
@@ -35824,7 +35951,8 @@ async function testAdoRepositoryIdFallback() {
     };
   }
 
-  await test('ADO pollPrStatus uses repoName when repositoryId is empty', async () => {
+  await test('ADO pollPrStatus uses repoName for PR metadata but resolves GUID for builds when repositoryId is empty', async () => {
+    const repoGuid = '11111111-1111-1111-1111-111111111111';
     const project = {
       name: 'ado-empty-repository-id',
       adoOrg: 'org',
@@ -35836,17 +35964,68 @@ async function testAdoRepositoryIdFallback() {
 
     await withAdoPollFixture(project, [{ ...basePr }], async ({ ado, testShared }) => {
       const calls = [];
-      globalThis.fetch = successfulPollFetch(calls, 'repo-name');
+      globalThis.fetch = async (url) => {
+        calls.push(url);
+        assert.ok(!url.includes('/repositories//'),
+          `ADO poll URL must never contain an empty repository segment: ${url}`);
+        if (url.includes('/repositories/repo-name/pullrequests/42?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              status: 'active',
+              mergeStatus: 'succeeded',
+              lastMergeCommit: { commitId: 'merge-abc' },
+              lastMergeSourceCommit: { commitId: 'source-abc' },
+              reviewers: [],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/repositories/repo-name?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ id: repoGuid, name: 'repo-name' }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${repoGuid}`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              value: [
+                { id: 7, sourceVersion: 'merge-abc', status: 'completed', result: 'succeeded' },
+              ],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes('repositoryId=repo-name')) {
+          return { ok: false, status: 400, statusText: 'Bad Request', headers: { get: () => null } };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
 
       await ado.pollPrStatus({ projects: [project], engine: {} });
 
       assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
-        'pollPrStatus must recover from empty repositoryId by polling via project.repoName');
+        'pollPrStatus must continue using repoName for PR metadata when repositoryId is not configured');
+      assert.ok(calls.some(url => url.includes('/repositories/repo-name?')),
+        'pollPrStatus must resolve the repository GUID from repoName before querying builds');
+      assert.ok(calls.some(url => url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${repoGuid}`)),
+        'pollPrStatus must pass the resolved repository GUID to the Builds API');
+      assert.ok(!calls.some(url => url.includes('/_apis/build/builds?') && url.includes('repositoryId=repo-name')),
+        'pollPrStatus must not pass repoName as the Builds API repositoryId');
       const stored = testShared.safeJson(testShared.projectPrPath(project));
       assert.strictEqual(stored[0].buildStatus, 'passing',
-        'pollPrStatus should persist the mocked build result when repoName fallback succeeds');
+        'pollPrStatus should persist the mocked build result when GUID resolution succeeds');
       assert.ok(stored[0].lastBuildCheck,
-        'pollPrStatus should record lastBuildCheck after a successful fallback poll');
+        'pollPrStatus should record lastBuildCheck after a successful build poll');
+      const config = testShared.safeJson(path.join(process.env.MINIONS_TEST_DIR, 'config.json'));
+      assert.strictEqual(config.projects[0].repositoryId, repoGuid,
+        'pollPrStatus should persist the resolved repository GUID back to config.json');
     });
   });
 
@@ -35889,21 +36068,144 @@ async function testAdoRepositoryIdFallback() {
       name: 'ado-valid-repository-id',
       adoOrg: 'org',
       adoProject: 'proj',
-      repositoryId: 'repo-guid',
+      repositoryId: '44444444-4444-4444-4444-444444444444',
       repoName: 'repo-name',
       repoHost: 'ado',
     };
 
     await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
       const calls = [];
-      globalThis.fetch = successfulPollFetch(calls, 'repo-guid');
+      globalThis.fetch = successfulPollFetch(calls, '44444444-4444-4444-4444-444444444444');
 
       await ado.pollPrStatus({ projects: [project], engine: {} });
 
-      assert.ok(calls.some(url => url.includes('/repositories/repo-guid/pullrequests/42?')),
+      assert.ok(calls.some(url => url.includes('/repositories/44444444-4444-4444-4444-444444444444/pullrequests/42?')),
         'valid project.repositoryId must remain the preferred ADO repository identifier');
       assert.ok(!calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
         'repoName fallback must not override a valid repositoryId');
+    });
+  });
+
+  await test('ADO pollPrStatus preserves cached failing build and marks stale when Builds API query fails', async () => {
+    const repoGuid = '22222222-2222-2222-2222-222222222222';
+    const project = {
+      name: 'ado-build-query-fails',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: repoGuid,
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+    const failingPr = {
+      ...basePr,
+      buildStatus: 'failing',
+      buildFailReason: 'Pipeline',
+      buildErrorLog: 'compiler error',
+      buildFixAttempts: 1,
+    };
+
+    await withAdoPollFixture(project, [failingPr], async ({ ado, testShared }) => {
+      globalThis.fetch = async (url) => {
+        if (url.includes(`/repositories/${repoGuid}/pullrequests/42?`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              status: 'active',
+              mergeStatus: 'succeeded',
+              lastMergeCommit: { commitId: 'merge-abc' },
+              lastMergeSourceCommit: { commitId: 'source-abc' },
+              reviewers: [],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?')) {
+          return { ok: false, status: 500, statusText: 'Server Error', headers: { get: () => null } };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      const stored = testShared.safeJson(testShared.projectPrPath(project))[0];
+      assert.strictEqual(stored.buildStatus, 'failing',
+        'build query failures must preserve the cached failing status instead of resetting to none');
+      assert.strictEqual(stored.buildErrorLog, 'compiler error',
+        'build query failures must preserve existing build error logs for fix agents');
+      assert.strictEqual(stored.buildFixAttempts, 1,
+        'build query failures must preserve build fix retry state');
+      assert.strictEqual(stored._buildStatusStale, true,
+        'build query failures must mark cached build status stale for the dashboard');
+      assert.ok(stored._buildStatusDetail && stored._buildStatusDetail.includes('Server Error'),
+        'build query failures must persist a dashboard-visible diagnostic detail');
+    });
+  });
+
+  await test('ADO live build check resolves repository GUID before querying Builds API', async () => {
+    const repoGuid = '33333333-3333-3333-3333-333333333333';
+    const project = {
+      name: 'ado-live-empty-repository-id',
+      adoOrg: 'org',
+      adoProject: 'proj',
+      repositoryId: '',
+      repoName: 'repo-name',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+      const calls = [];
+      globalThis.fetch = async (url) => {
+        calls.push(url);
+        if (url.includes('/repositories/repo-name/pullrequests/42?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              status: 'active',
+              mergeStatus: 'succeeded',
+              lastMergeCommit: { commitId: 'merge-live' },
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/repositories/repo-name?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ id: repoGuid, name: 'repo-name' }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${repoGuid}`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              value: [
+                { id: 11, sourceVersion: 'merge-live', status: 'completed', result: 'succeeded' },
+              ],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes('repositoryId=repo-name')) {
+          return { ok: false, status: 400, statusText: 'Bad Request', headers: { get: () => null } };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      const result = await ado.checkLiveBuildAndConflict(basePr, project);
+
+      assert.ok(result, 'live build check should return a result when PR metadata and builds respond');
+      assert.strictEqual(result.buildStatus, 'passing',
+        'live build check must classify builds returned through the resolved GUID');
+      assert.ok(calls.some(url => url.includes('/repositories/repo-name/pullrequests/42?')),
+        'live build check must continue using repoName for the PR metadata endpoint');
+      assert.ok(calls.some(url => url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${repoGuid}`)),
+        'live build check must pass the resolved repository GUID to the Builds API');
+      assert.ok(!calls.some(url => url.includes('/_apis/build/builds?') && url.includes('repositoryId=repo-name')),
+        'live build check must not pass repoName as the Builds API repositoryId');
     });
   });
 

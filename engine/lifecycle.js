@@ -787,9 +787,15 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   if (!output || !String(output).trim()) {
     const today = dateStamp();
     const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
+    const currentItemId = meta?.item?.id ? String(meta.item.id) : '';
+    function isCurrentItemInboxNote(fileName, content) {
+      if (!currentItemId) return true;
+      return String(fileName || '').includes(currentItemId) || String(content || '').includes(currentItemId);
+    }
     for (const f of inboxFiles) {
       const content = safeRead(path.join(INBOX_DIR, f));
       if (!content) continue;
+      if (!isCurrentItemInboxNote(f, content)) continue;
       const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
       while ((match = prHeaderPattern.exec(content)) !== null) {
         addPrUrlEvidence(match[1]);
@@ -1698,36 +1704,117 @@ function normalizeCompletionStatus(status) {
   return String(status || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
 }
 
-const TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS = [
-  { phrase: 'still running', pattern: /\bstill\s+running\b/i },
-  { phrase: 'will check later', pattern: /\b(?:will|i'?ll|we'?ll)\s+check\s+(?:back\s+)?later\b/i },
-  { phrase: 'wake up', pattern: /\bwake\s+up\b/i },
-  { phrase: 'pending', pattern: /\bpending\b/i },
-  { phrase: 'not yet complete', pattern: /\bnot\s+yet\s+complete(?:d)?\b/i },
-  { phrase: 'partial', pattern: /\bpartial(?:ly)?\b/i },
-  { phrase: 'to be continued', pattern: /\bto\s+be\s+continued\b/i },
-  { phrase: 'in progress', pattern: /\bin\s+progress\b/i },
-];
-
-function findTerminalIncompatibleCompletionPhrase(resultSummary, structuredCompletion) {
-  const structuredStatus = normalizeCompletionStatus(structuredCompletion?.status);
-  if (['partial', 'pending', 'in-progress'].includes(structuredStatus)) {
-    return `status: ${structuredStatus}`;
-  }
-
-  const text = String(resultSummary || '').replace(/\s+/g, ' ').trim();
-  if (!text) return null;
-  const match = TERMINAL_INCOMPATIBLE_COMPLETION_PATTERNS.find(({ pattern }) => pattern.test(text));
-  return match ? match.phrase : null;
+function isTerminalPendingValue(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return true;
+  return /^(?:none|n\/a|na|no|nothing|not-applicable|not applicable|-)$/.test(text)
+    || /^no\s+(?:pending|remaining|outstanding)\b/.test(text)
+    || /^(?:all\s+)?(?:pending|remaining|outstanding)\s+(?:work|items?|tasks?)?\s*(?:resolved|complete|completed|done|closed)$/.test(text);
 }
 
-function buildTerminalIncompatibleCompletionFailure(meta, phrase) {
-  const itemId = meta?.item?.id || 'unknown';
-  return {
-    reason: `Rejected task_complete for ${itemId}: resultSummary contains non-terminal language "${phrase}". The work item was not marked done and will be retried.`,
-    itemId,
-    processWorkItemFailure: true,
-  };
+function isTerminalPendingLine(line) {
+  const text = String(line || '').trim().toLowerCase();
+  return /\bno\s+pending\b/.test(text)
+    || /\bpending\s*[:=-]\s*(?:none|n\/a|na|no|nothing|not applicable|-)\b/.test(text)
+    || /\bpending\s+(?:work|items?|tasks?)?\s*(?:resolved|complete|completed|done|closed)\b/.test(text);
+}
+
+function detectNonTerminalResultSummary(resultSummary, structuredCompletion) {
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (completionStatus) {
+    if (/^(?:partial|partially-complete|in-progress|pending|deferred|blocked|incomplete|to-be-continued)/.test(completionStatus)) {
+      return {
+        phrase: `status:${structuredCompletion.status}`,
+        reason: `Nonterminal completion summary: structured status is '${structuredCompletion.status}'`,
+      };
+    }
+    if (/^(?:fail|failed|failure|error)/.test(completionStatus)) {
+      return {
+        phrase: `status:${structuredCompletion.status}`,
+        reason: `Nonterminal completion summary: structured status is '${structuredCompletion.status}', not a successful terminal state`,
+      };
+    }
+  }
+
+  if (structuredCompletion?.pending && !isTerminalPendingValue(structuredCompletion.pending)) {
+    return {
+      phrase: 'pending',
+      reason: `Nonterminal completion summary: pending work remains (${String(structuredCompletion.pending).slice(0, 160)})`,
+    };
+  }
+
+  const text = String(resultSummary || '').replace(/\r/g, '').trim();
+  if (!text) return null;
+
+  const patterns = [
+    { phrase: 'still running', re: /\b(?:still|currently|continues?\s+to\s+be)\s+(?:running|ongoing|in\s+progress)\b/i },
+    { phrase: 'will check later', re: /\b(?:i(?:'|’)ll|i\s+will|we(?:'|’)ll|we\s+will|will)\s+(?:check|verify|review|follow\s+up|revisit)\s+(?:again\s+)?(?:later|soon|in\b|after\b|when\b)/i },
+    { phrase: 'wake up', re: /\bwake(?:\s|-)?up\b|\bwake\b.*\b(?:check|verify|review)\b/i },
+    { phrase: 'not yet complete', re: /\b(?:not\s+yet|isn(?:'|’)t|not|incomplete|not\s+fully|not\s+completely)\s+(?:complete|completed|done|finished|validated|verified)\b/i },
+    { phrase: 'partial', re: /\bpartial(?:ly)?\b/i },
+    { phrase: 'to be continued', re: /\bto\s+be\s+continued\b|\btbc\b/i },
+    { phrase: 'in progress', re: /\bin\s+progress\b|\bongoing\b|\bincomplete\b/i },
+  ];
+  for (const { phrase, re } of patterns) {
+    if (re.test(text)) {
+      return { phrase, reason: `Nonterminal completion summary: matched '${phrase}'` };
+    }
+  }
+
+  const pendingLines = text.split('\n').filter(line => /\bpending\b/i.test(line));
+  for (const line of pendingLines) {
+    if (!isTerminalPendingLine(line)) {
+      return { phrase: 'pending', reason: `Nonterminal completion summary: matched 'pending'` };
+    }
+  }
+
+  return null;
+}
+
+function deferNonTerminalCompletion(meta, detection) {
+  const itemId = meta?.item?.id;
+  const reason = detection?.reason || 'Nonterminal completion summary';
+  if (!itemId) return reason;
+  const wiPath = resolveWorkItemPath(meta);
+  if (!wiPath) return reason;
+
+  let finalStatus = WI_STATUS.PENDING;
+  try {
+    mutateJsonFileLocked(wiPath, data => {
+      if (!Array.isArray(data)) return data;
+      const w = data.find(i => i.id === itemId);
+      if (!w) return data;
+      const retries = w._retryCount || 0;
+      if (retries < ENGINE_DEFAULTS.maxRetries) {
+        w.status = WI_STATUS.PENDING;
+        w._retryCount = retries + 1;
+        w._lastRetryAt = ts();
+        w._lastRetryReason = reason;
+        w._pendingReason = 'nonterminal_completion';
+        delete w.completedAt;
+        delete w.dispatched_at;
+        delete w.dispatched_to;
+        delete w.failedAt;
+        finalStatus = WI_STATUS.PENDING;
+        log('warn', `Work item ${itemId} reported nonterminal success — retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}: ${reason}`);
+      } else {
+        w.status = WI_STATUS.FAILED;
+        w.failReason = `${reason} after ${ENGINE_DEFAULTS.maxRetries} attempts`;
+        w.failedAt = ts();
+        delete w.completedAt;
+        delete w.dispatched_at;
+        delete w.dispatched_to;
+        delete w._pendingReason;
+        finalStatus = WI_STATUS.FAILED;
+        log('warn', `Work item ${itemId} failed — repeated nonterminal completion summaries after ${ENGINE_DEFAULTS.maxRetries} attempts`);
+      }
+      return data;
+    }, { defaultValue: [], skipWriteIfUnchanged: true });
+    syncPrdItemStatus(itemId, finalStatus, meta.item?.sourcePlan);
+  } catch (err) {
+    log('warn', `nonterminal completion gate: ${err.message}`);
+  }
+  return reason;
 }
 
 function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
@@ -1866,6 +1953,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // (P-2a6d9c4f, P-9c4f2d6a) populate dispatchItem.meta.runtimeName at spawn time.
   const runtimeName = dispatchItem.meta?.runtimeName || dispatchItem.runtimeName || 'claude';
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout, runtimeName);
+  const completionGateSummary = resultSummary || (typeof stdout === 'string' && !stdout.includes('"type":') ? stdout : '');
 
   // Try structured completion protocol first (```completion block from agent output)
   const structuredCompletion = parseStructuredCompletion(stdout, runtimeName);
@@ -1904,9 +1992,11 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const effectiveSuccess = isSuccess || autoRecovered;
 
   const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  let nonCleanReportWritten = false;
   if (completionStatus.startsWith('partial') || autoRecovered || (completionStatus.startsWith('fail') && isSuccess)) {
     const outcome = completionStatus.startsWith('fail') ? 'failure' : 'partial';
-    writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, code);
+    writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, completionGateSummary, code);
+    nonCleanReportWritten = true;
   }
 
   // Handle decomposition results — create sub-items from decompose agent output
@@ -2014,13 +2104,18 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   let completionContractFailure = null;
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
-    const terminalIncompatiblePhrase = findTerminalIncompatibleCompletionPhrase(resultSummary, structuredCompletion);
-    if (terminalIncompatiblePhrase) {
-      completionContractFailure = buildTerminalIncompatibleCompletionFailure(meta, terminalIncompatiblePhrase);
-      log('warn', completionContractFailure.reason);
+    const nonTerminalCompletion = detectNonTerminalResultSummary(completionGateSummary, structuredCompletion);
+    if (nonTerminalCompletion) {
+      skipDoneStatus = true;
+      const reason = deferNonTerminalCompletion(meta, nonTerminalCompletion);
+      completionContractFailure = { reason, itemId: meta.item.id, nonTerminal: true, processWorkItemFailure: false };
+      if (!nonCleanReportWritten) {
+        writeNonCleanAgentReport(dispatchItem, agentId, 'partial', structuredCompletion, completionGateSummary, code);
+      }
     }
   }
-  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus && !completionContractFailure) {
+
+  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary);
   }
   if (completionContractFailure) skipDoneStatus = true;
@@ -2355,7 +2450,7 @@ module.exports = {
   parseReviewVerdict,
   isReviewBailout,
   parseStructuredCompletion,
-  findTerminalIncompatibleCompletionPhrase,
+  detectNonTerminalResultSummary,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,

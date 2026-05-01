@@ -16,6 +16,7 @@ function prRow(pr) {
   const reviewTitle = reviewEscalated ? 'Review/re-review and review-fix automation stopped after evalMaxIterations; build-fix and conflict-fix automation may still run.' : '';
   const buildClass = pr.buildFixEscalated ? 'build-escalated' : pr._buildStatusStale ? 'build-stale' : pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
   const buildLabel = pr.buildFixEscalated ? 'escalated (' + (pr.buildFixAttempts || '?') + ' fixes)' : (pr.buildStatus || 'none') + (pr._buildStatusStale ? ' (stale)' : '');
+  const buildTitle = pr._buildStatusDetail || '';
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
   const statusLabel = pr.status || 'active';
   const branchError = pr._branchResolutionError?.reason || '';
@@ -34,7 +35,7 @@ function prRow(pr) {
     '<td><span class="' + branchClass + '"' + (branchError ? ' title="' + escapeHtml(branchError) + '"' : '') + '>' + escapeHtml(branchLabel) + '</span>' + pendingReasonHtml + '</td>' +
     '<td><span class="pr-badge ' + reviewClass + '"' + (reviewTitle ? ' title="' + escapeHtml(reviewTitle) + '"' : '') + '>' + escapeHtml(reviewLabel) + '</span></td>' +
     '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escapeHtml(sq.note || '') + '">' + escapeHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escapeHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escapeHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
-    '<td><span class="pr-badge ' + buildClass + '">' + escapeHtml(buildLabel) + '</span></td>' +
+    '<td><span class="pr-badge ' + buildClass + '"' + (buildTitle ? ' title="' + escapeHtml(buildTitle) + '"' : '') + '>' + escapeHtml(buildLabel) + '</span></td>' +
     '<td><span class="pr-badge ' + statusClass + '">' + escapeHtml(statusLabel) + '</span></td>' +
     '<td><span class="pr-date">' + escapeHtml((pr.created || '—').slice(0, 16).replace('T', ' ')) + '</span></td>' +
     '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 5px;color:var(--red);border-color:var(--red)" data-pr-id="' + escapeHtml(String(prId)) + '" onclick="event.stopPropagation();unlinkPr(this.dataset.prId)" title="Remove from tracking">x</button></td>' +
