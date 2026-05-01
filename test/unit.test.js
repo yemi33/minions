@@ -4058,14 +4058,18 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
-  await test('non-terminal task_complete summaries are retried instead of marked done', async () => {
-    const summaries = [
-      'Builds still running. I will check later.',
-      'Validation is pending; will check later before calling this complete.',
-      'I will wake up in about 10 minutes to check the build.',
+  await test('structured non-terminal completion statuses are retried instead of marked done', async () => {
+    // Structured statuses that explicitly say "not done" — emitted via
+    // ```completion fenced block or MINIONS_COMPLETION_REPORT JSON. Prose
+    // resultSummaries are no longer scanned (too many false positives), so
+    // the structured status field is the only signal we trust now.
+    const cases = [
+      { status: 'partial', summary: 'Did half the work; the rest is queued.' },
+      { status: 'in-progress', summary: 'Working on the remaining acceptance criteria.' },
+      { status: 'pending', summary: 'Waiting on dependency to land.' },
     ];
 
-    for (let i = 0; i < summaries.length; i++) {
+    for (let i = 0; i < cases.length; i++) {
       const restore = createTestMinionsDir();
       try {
         const lifecycle = require('../engine/lifecycle');
@@ -4104,8 +4108,21 @@ async function testPrAttachmentContract() {
           return dp;
         });
 
+        // Use a fenced ```completion block — this is the structured signal we
+        // trust. The prose summary is intentionally benign to confirm we're
+        // gating on `status:`, not on the prose itself. The fenced block
+        // lives inside the task_complete summary because the runtime parses
+        // text out of JSON events, not raw lines between them.
+        const summaryWithFence = [
+          cases[i].summary,
+          '```completion',
+          `status: ${cases[i].status}`,
+          'pr: N/A',
+          'tests: pass',
+          '```',
+        ].join('\n');
         const stdout = [
-          JSON.stringify({ type: 'session.task_complete', data: { summary: summaries[i], success: true } }),
+          JSON.stringify({ type: 'session.task_complete', data: { summary: summaryWithFence, success: true } }),
           JSON.stringify({ type: 'result', sessionId: `sess-gate-${i}`, exitCode: 0, usage: { premiumRequests: 1 } }),
         ].join('\n');
         const hook = await lifecycle.runPostCompletionHooks(dispatchItem, 'lambert', 0, stdout, config);
@@ -4119,13 +4136,88 @@ async function testPrAttachmentContract() {
         testDispatch.completeDispatch(dispatchItem.id, result, reason, hook.resultSummary, opts);
 
         const [updated] = testShared.safeJson(wiPath);
-        assert.ok(hook.completionContractFailure, 'non-terminal summary should be rejected by completion gate');
+        assert.ok(hook.completionContractFailure, `structured status '${cases[i].status}' should be rejected by completion gate`);
         assert.strictEqual(updated.status, testShared.WI_STATUS.PENDING,
-          `summary should be retried, not done: ${summaries[i]}`);
+          `structured status '${cases[i].status}' should be retried, not done`);
         assert.strictEqual(updated._retryCount, 1, 'rejected completion should use normal retry ownership');
         assert.ok(!updated.completedAt, 'rejected completion must not persist a completion timestamp');
         assert.ok(!testQueries.getDispatch().active.some(d => d.id === dispatchItem.id),
           'rejected dispatch should be removed from active after completion handling');
+      } finally { restore(); }
+    }
+  });
+
+  await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
+    // Regression guard: the old regex-based prose scanner produced false
+    // positives on phrases like "I checked the pending PRs", "build is in
+    // progress on CI", "wake up the engine". These should now pass through
+    // as long as the structured status (or absence of one with no failure)
+    // doesn't say otherwise.
+    const proseSamples = [
+      'I checked the pending PRs and confirmed they are queued correctly.',
+      'The build is in progress on CI; the change itself is shipped.',
+      'Wake up the engine after redeploy. All work is done.',
+      'Implemented partial coverage helpers as specified. Tests pass.',
+      'To be continued in the next plan: stretch goals. This plan is done.',
+    ];
+
+    for (let i = 0; i < proseSamples.length; i++) {
+      const restore = createTestMinionsDir();
+      try {
+        const lifecycle = require('../engine/lifecycle');
+        const testDispatch = require('../engine/dispatch');
+        const testShared = require('../engine/shared');
+        const testDir = process.env.MINIONS_TEST_DIR;
+        const project = { name: 'minions', localPath: testDir };
+        const config = { projects: [project], agents: { lambert: { name: 'Lambert' } }, engine: {} };
+        testShared.safeWrite(path.join(testDir, 'config.json'), config);
+        const wiPath = testShared.projectWorkItemsPath(project);
+        fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+        const item = {
+          id: `W-benign-prose-${i}`,
+          title: 'Accept benign prose',
+          type: 'docs',
+          status: testShared.WI_STATUS.DISPATCHED,
+          dispatched_to: 'lambert',
+        };
+        testShared.safeWrite(wiPath, [item]);
+        const dispatchItem = {
+          id: `D-benign-prose-${i}`,
+          type: testShared.WORK_TYPE.DOCS,
+          agent: 'lambert',
+          task: 'Accept benign prose',
+          meta: {
+            source: 'work-item',
+            dispatchKey: `work-minions-${item.id}`,
+            item,
+            project: { name: project.name, localPath: testDir },
+            runtimeName: 'copilot',
+          },
+        };
+        testDispatch.mutateDispatch(dp => {
+          dp.active.push(dispatchItem);
+          return dp;
+        });
+
+        // Structured status: success. Prose contains tripwire words. The new
+        // gate trusts the structured status and ignores the prose — this is
+        // exactly the behavior the user wanted restored.
+        const stdout = [
+          JSON.stringify({ type: 'session.task_complete', data: { summary: proseSamples[i], success: true } }),
+          '```completion',
+          'status: success',
+          'pr: N/A',
+          'tests: pass',
+          '```',
+          JSON.stringify({ type: 'result', sessionId: `sess-prose-${i}`, exitCode: 0, usage: { premiumRequests: 1 } }),
+        ].join('\n');
+        const hook = await lifecycle.runPostCompletionHooks(dispatchItem, 'lambert', 0, stdout, config);
+
+        const [updated] = testShared.safeJson(wiPath);
+        assert.strictEqual(hook.completionContractFailure, null,
+          `benign prose with status:success should NOT be rejected: ${proseSamples[i]}`);
+        assert.strictEqual(updated.status, testShared.WI_STATUS.DONE,
+          `benign prose with status:success should be marked done: ${proseSamples[i]}`);
       } finally { restore(); }
     }
   });
@@ -11496,7 +11588,7 @@ async function testResolveAgent() {
     } finally { restore(); }
   });
 
-  await test('resolveAgent waits for hinted agents instead of falling back to route default', () => {
+  await test('resolveAgent falls back when hinted agent is busy', () => {
     const restore = createTestMinionsDir();
     try {
       const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
@@ -11528,8 +11620,43 @@ async function testResolveAgent() {
         },
         engine: { allowTempAgents: false },
       };
-      assert.strictEqual(routing.resolveAgent('verify', config, { agentHints: ['lambert'] }), null,
-        'Busy Lambert hint must block dispatch instead of rerouting to Dallas');
+      assert.strictEqual(routing.resolveAgent('verify', config, { agentHints: ['lambert'] }), 'dallas',
+        'Busy Lambert hint should fall through to the verify route preferred agent');
+    } finally { restore(); }
+  });
+
+  await test('resolveAgent falls back to implement route for task and unknown types', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
+      fs.writeFileSync(routingPath, [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| implement | dallas | ralph |',
+        '| explore | ripley | rebecca |',
+        ''
+      ].join('\n'));
+      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      routing.resetClaimedAgents();
+      const config = {
+        agents: {
+          ralph: { name: 'Ralph' },
+          dallas: { name: 'Dallas' },
+          ripley: { name: 'Ripley' },
+          rebecca: { name: 'Rebecca' },
+        },
+        engine: { allowTempAgents: false },
+      };
+      assert.strictEqual(routing.normalizeWorkType('task'), 'task',
+        'literal task work type should be preserved for dispatch metadata');
+      assert.strictEqual(routing.resolveAgent('task', config), 'dallas',
+        'task should fall back to implement routing when no explicit task route exists');
+      assert.strictEqual(routing.resolveAgent('unknown-type', config), 'ralph',
+        'unknown work types should continue through the implement route fallback');
     } finally { restore(); }
   });
 
@@ -11540,26 +11667,26 @@ async function testResolveAgent() {
     // source of truth). Engine call sites delegate to it.
     assert.ok(routingSrc.includes('function extractAgentHints(item)'),
       'routing should expose extractAgentHints helper for hint derivation');
-    assert.ok(routingSrc.includes('item.preferred_agent || item.agents || null'),
-      'extractAgentHints should derive hints from preferred_agent/agents');
+    assert.ok(routingSrc.includes('item.preferred_agent') && routingSrc.includes('item.agents') && routingSrc.includes('item.agent'),
+      'extractAgentHints should derive soft hints from agent/preferred_agent/agents');
     assert.ok(engineSrc.includes('routing.extractAgentHints(item)'),
       'Work-item discovery should derive agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('resolveAgent(workType, config, { agentHints })'),
       'Work-item discovery should pass hints into resolveAgent (opts-bag form) so routing defaults do not override them');
     assert.ok(engineSrc.includes('routing.extractAgentHints(item.meta?.item)'),
       'Pending dispatch fallback should preserve work-item agent hints via routing.extractAgentHints');
-    assert.ok(engineSrc.includes('item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item)'),
-      'Busy-agent reassignment should treat hinted work as explicit assignment via the helper');
+    assert.ok(engineSrc.includes('routing.isAgentHardPinned(item.meta?.item)'),
+      'Busy-agent reassignment should only block reassignment for explicitly hard-pinned work');
   });
 
-  await test('work-item discovery reserves unhinted agent-busy items instead of marking no_agent (#1940)', () => {
+  await test('work-item discovery reserves agent-busy items instead of marking no_agent (#1940)', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('resolveAgentReservation(workType, config)'),
-      'Unhinted work-item discovery should reserve a routed agent when strict routing finds no idle agent');
+    assert.ok(engineSrc.includes('resolveAgentReservation(workType, config, { agentHints })'),
+      'Work-item discovery should reserve a routed agent with soft hints when strict routing finds no idle agent');
     assert.ok(engineSrc.includes('resetClaimedAgents(); // Pending agent resolution is a fresh allocation phase after discovery claims.'),
       'Dispatch-loop pending resolution should not inherit discovery-pass claimed-agent state');
-    assert.ok(engineSrc.includes('!hasExplicitAgentHint ? resolveAgentReservation(workType, config) : null'),
-      'Explicit agent pins/hints should not be rerouted through the reservation fallback');
+    assert.ok(engineSrc.includes('routing.getHardPinnedAgent(item, config.agents || {})'),
+      'Only explicit hard pins should bypass soft routing and reservation fallback');
   });
 
   await test('Command Center dispatch persists agents[] hint for engine routing', () => {
@@ -14136,6 +14263,30 @@ async function testAddToDispatch() {
   await test('addToDispatch pushes to pending queue', () => {
     assert.ok(src.includes('dispatch.pending.push(item)'),
       'Should push item to dispatch.pending array');
+  });
+
+  await test('addToDispatch allows central fan-out entries for the same work item', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const m of ['../engine/shared', '../engine/dispatch']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const dispatchMod = require('../engine/dispatch');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const baseMeta = { source: 'central-work-item-fanout', item: { id: 'W-fanout', title: 'Fan out' } };
+      dispatchMod.addToDispatch({
+        id: 'fan-dallas', type: 'explore', agent: 'dallas', task: 'fanout', prompt: 'p',
+        meta: { ...baseMeta, dispatchKey: 'central-work-W-fanout-dallas' },
+      });
+      dispatchMod.addToDispatch({
+        id: 'fan-ralph', type: 'explore', agent: 'ralph', task: 'fanout', prompt: 'p',
+        meta: { ...baseMeta, dispatchKey: 'central-work-W-fanout-ralph' },
+      });
+      const dispatch = freshShared.safeJson(dispatchPath);
+      assert.strictEqual((dispatch.pending || []).length, 2,
+        'fan-out dispatches must dedupe by dispatchKey, not shared meta.item.id');
+    } finally { restore(); }
   });
 }
 
@@ -25190,28 +25341,27 @@ async function testPrWriteRaceConditions() {
       'POST /api/work-items must copy oneShot from body to item (parallel to skipPr)');
   });
 
-  await test('handleWorkItemsCreate hard-pins a single explicit agent so routing is skipped', () => {
+  await test('handleWorkItemsCreate stores agent selections as soft hints unless locked', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fn = dashSrc.slice(dashSrc.indexOf('async function handleWorkItemsCreate'),
                               dashSrc.indexOf('async function handleWorkItemsUpdate'));
-    // body.agent → item.agent (singular hard pin)
     assert.ok(/if \(body\.agent\)\s*item\.agent\s*=/.test(fn),
-      'singular body.agent should map to item.agent (hard pin)');
-    // Single-element body.agents array → item.agent (also hard pin), unless fan-out
+      'singular body.agent should still map to item.agent as a soft preference');
     assert.ok(/_agentsArr\.length === 1/.test(fn),
-      'single-element agents array should be promoted to a hard-pin agent');
+      'single-element agents array should still populate item.agent for display/soft hinting');
     assert.ok(/scope !== 'fan-out'/.test(fn),
-      'fan-out scope must NOT be hard-pinned (multi-agent intentional)');
-    // Multi-agent arrays still stored as item.agents (hint list)
+      'fan-out scope must not collapse multi-agent intent into one agent');
     assert.ok(/item\.agents = _agentsArr/.test(fn),
       'multi-agent arrays should still flow into item.agents for resolveAgent hints / fan-out');
+    assert.ok(/item\.agentLock = true/.test(fn),
+      'hard pinning should require an explicit agentLock/hardAgent request flag');
   });
 
   await test('CC dispatch client forwards both singular and plural agent fields', () => {
     const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
     const dispatchCase = ccSrc.slice(ccSrc.indexOf("case 'dispatch':"), ccSrc.indexOf("case 'note':"));
     assert.ok(/agent:\s*action\.agent/.test(dispatchCase),
-      'CC client should forward action.agent (singular) so the server can hard-pin');
+      'CC client should forward action.agent (singular) so the server can preserve soft preference');
     assert.ok(/agents:\s*action\.agents/.test(dispatchCase),
       'CC client should still forward action.agents (plural) for multi-agent / fan-out cases');
   });
@@ -32247,27 +32397,54 @@ async function testStructuredCompletion() {
     }
   });
 
-  await test('detectNonTerminalResultSummary recognizes premature task_complete summaries', () => {
+  await test('detectNonTerminalResultSummary uses structured status only, ignores prose', () => {
     assert.strictEqual(typeof lifecycle.detectNonTerminalResultSummary, 'function',
       'Nonterminal summary detector should be exported for regression coverage');
-    const nonTerminalSummaries = [
+
+    // Structured non-terminal statuses (from fenced ```completion or
+    // MINIONS_COMPLETION_REPORT JSON) — these MUST be rejected.
+    const nonTerminalStatuses = ['partial', 'partially-complete', 'in-progress',
+      'pending', 'deferred', 'blocked', 'incomplete', 'to-be-continued',
+      'failed', 'failure', 'error'];
+    for (const status of nonTerminalStatuses) {
+      const detected = lifecycle.detectNonTerminalResultSummary('', { status });
+      assert.ok(detected, `Expected structured status '${status}' to be rejected`);
+      assert.match(detected.reason, new RegExp(status, 'i'));
+    }
+
+    // Benign prose with no structured status — must NOT be rejected. This
+    // covers the regression vector that motivated removing the prose regex:
+    // "I checked the pending PRs", "build is in progress on CI", etc.
+    const proseSamples = [
       "Builds still running. I'll wake up in ~10 minutes to check.",
       'The verification is pending and will check later.',
       'This is partial; remaining validation is to be continued.',
       'Tests are in progress and the work is not yet complete.',
+      'I checked the pending PRs and confirmed all are queued.',
+      'Build is in progress on CI; this change itself is shipped.',
+      'Wake up the engine after redeploy.',
+      'Implemented partial coverage helpers.',
     ];
-    for (const summary of nonTerminalSummaries) {
-      const detected = lifecycle.detectNonTerminalResultSummary(summary);
-      assert.ok(detected, `Expected summary to be treated as nonterminal: ${summary}`);
+    for (const prose of proseSamples) {
+      assert.strictEqual(
+        lifecycle.detectNonTerminalResultSummary(prose, null, null),
+        null,
+        `Benign prose without structured status should not be rejected: ${prose}`
+      );
+      assert.strictEqual(
+        lifecycle.detectNonTerminalResultSummary(prose, { status: 'success' }, null),
+        null,
+        `Benign prose with status:success should not be rejected: ${prose}`
+      );
     }
-    assert.strictEqual(
-      lifecycle.detectNonTerminalResultSummary('Implemented the fix. Tests pass. Pending: none.'),
-      null,
-      'Terminal summaries with explicit no-pending phrasing should not be rejected'
-    );
+
+    // The completionReport (third arg) is the primary signal per the
+    // playbook contract; it should also be honored.
+    const fromReport = lifecycle.detectNonTerminalResultSummary('all good', null, { status: 'partial' });
+    assert.ok(fromReport, 'Sidecar completion report status must also be honored');
   });
 
-  await test('runPostCompletionHooks defers nonterminal success summaries instead of marking done', async () => {
+  await test('runPostCompletionHooks defers structured non-terminal completion instead of marking done', async () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycleInner = require('../engine/lifecycle');
@@ -32291,11 +32468,25 @@ async function testStructuredCompletion() {
         },
       };
 
+      // Structured `status: partial` from a fenced ```completion block —
+      // this is the explicit signal the agent emits when it knows it's not
+      // done. The prose itself is benign, the structured status is what
+      // triggers the rejection.
+      const stdout = [
+        "Builds still running, but I'm pausing here.",
+        '',
+        '```completion',
+        'status: partial',
+        'pr: N/A',
+        'pending: validation step',
+        '```',
+      ].join('\n');
+
       const result = await lifecycleInner.runPostCompletionHooks(
         dispatchItem,
         'rebecca',
         0,
-        "Builds still running. I'll wake up in ~10 minutes to check.",
+        stdout,
         { agents: { rebecca: {} }, projects: [] }
       );
 
@@ -32303,7 +32494,7 @@ async function testStructuredCompletion() {
       assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
       assert.match(result.completionContractFailure.reason, /nonterminal completion summary/i);
       assert.strictEqual(updated.status, sharedInner.WI_STATUS.PENDING,
-        'nonterminal success should be retried rather than marked done');
+        'structured non-terminal should be retried rather than marked done');
       assert.strictEqual(updated._retryCount, 1, 'retry counter should advance for the deferred work item');
       assert.strictEqual(updated._pendingReason, 'nonterminal_completion',
         'dashboard should show why the pending item was deferred');
@@ -35250,11 +35441,10 @@ async function testAgentBusyReassignment() {
       'Should log a message when reassignment occurs');
   });
 
-  // 5. Reassignment skips explicitly assigned items
-  await test('reassignment skips explicitly assigned items', () => {
-    // Items with meta.item.agent are explicitly assigned — should not be reassigned
-    assert.ok(engineSrc.includes('meta?.item?.agent') || engineSrc.includes("meta?.item?.agent"),
-      'Dispatch loop should check for explicit agent assignment');
+  // 5. Reassignment skips only explicitly hard-pinned items
+  await test('reassignment skips only explicitly hard-pinned items', () => {
+    assert.ok(engineSrc.includes('routing.isAgentHardPinned(item.meta?.item)'),
+      'Dispatch loop should check the explicit hard-pin flag, not soft agent hints');
   });
 
   // 6. Behavioral: item stays on busy agent below threshold
@@ -35338,8 +35528,8 @@ async function testAgentBusyReassignment() {
     assert.strictEqual(toDispatch[0]._agentBusySince, undefined, '_agentBusySince should be cleared after reassignment');
   });
 
-  // 8. Behavioral: explicitly assigned items are NOT reassigned even above threshold
-  await test('explicitly assigned items are NOT reassigned (behavioral)', () => {
+  // 8. Behavioral: hard-pinned items are NOT reassigned even above threshold
+  await test('hard-pinned items are NOT reassigned (behavioral)', () => {
     const now = Date.now();
     const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
 
@@ -35349,7 +35539,7 @@ async function testAgentBusyReassignment() {
     const pending = [
       {
         id: 'fix-explicit', agent: 'dallas', type: 'fix',
-        meta: { item: { agent: 'dallas' }, branch: 'work/P-explicit' },
+        meta: { item: { agent: 'dallas', agentLock: true }, branch: 'work/P-explicit' },
         _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(),
       },
     ];
@@ -35359,8 +35549,8 @@ async function testAgentBusyReassignment() {
 
     for (const item of pending) {
       if (busyAgents.has(item.agent)) {
-        const isExplicit = !!item.meta?.item?.agent;
-        if (isExplicit) { continue; } // explicit items skip reassignment
+        const isHardPinned = !!item.meta?.item?.agentLock;
+        if (isHardPinned) { continue; } // hard-pinned items skip reassignment
         const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
         if (busySince && (now - busySince) > reassignMs) {
           item.agent = 'ralph';
@@ -35372,12 +35562,41 @@ async function testAgentBusyReassignment() {
       toDispatch.push(item);
     }
 
-    assert.strictEqual(toDispatch.length, 0, 'Explicitly assigned item should NOT be reassigned');
+    assert.strictEqual(toDispatch.length, 0, 'Hard-pinned item should NOT be reassigned');
+  });
+
+  await test('soft agent-hinted items ARE reassigned above threshold (behavioral)', () => {
+    const now = Date.now();
+    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
+    const active = [{ id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } }];
+    const pending = [{
+      id: 'fix-hinted', agent: 'dallas', type: 'fix',
+      meta: { item: { agent: 'dallas' }, branch: 'work/P-hinted' },
+      _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(),
+    }];
+    const busyAgents = new Set(active.map(d => d.agent));
+    const toDispatch = [];
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        const isHardPinned = !!item.meta?.item?.agentLock;
+        if (isHardPinned) continue;
+        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
+        if (busySince && (now - busySince) > reassignMs) {
+          item.agent = 'ralph';
+          toDispatch.push(item);
+          continue;
+        }
+        continue;
+      }
+      toDispatch.push(item);
+    }
+    assert.strictEqual(toDispatch.length, 1, 'Soft-hinted item should be eligible for reassignment');
+    assert.strictEqual(toDispatch[0].agent, 'ralph');
   });
 
   // 9. Source code: reassignment uses resolveAgent for routing-aware selection
   await test('reassignment uses resolveAgent for routing-aware agent selection', () => {
-    assert.ok(engineSrc.includes('resolveAgent(item.type'),
+    assert.ok(engineSrc.includes('resolveAgent(routing.normalizeWorkType(item.type'),
       'Reassignment should use resolveAgent to find alternative agent via routing table');
   });
 

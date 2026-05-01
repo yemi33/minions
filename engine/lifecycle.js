@@ -1820,70 +1820,39 @@ function normalizeCompletionStatus(status) {
   return String(status || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
 }
 
-function isTerminalPendingValue(value) {
-  const text = String(value || '').trim().toLowerCase();
-  if (!text) return true;
-  return /^(?:none|n\/a|na|no|nothing|not-applicable|not applicable|-)$/.test(text)
-    || /^no\s+(?:pending|remaining|outstanding)\b/.test(text)
-    || /^(?:all\s+)?(?:pending|remaining|outstanding)\s+(?:work|items?|tasks?)?\s*(?:resolved|complete|completed|done|closed)$/.test(text);
-}
+// Trust the agent's explicit structured `status` field as the only signal that
+// a completion is non-terminal. Earlier versions also scanned the agent's
+// resultSummary prose with regex (looking for "pending", "in progress",
+// "partial", "wake up", etc.), but that produced false positives on benign
+// phrases like "I checked the pending PRs" or "build is in progress on CI"
+// and burned 3-9 minutes of agent time per false-positive retry.
+//
+// Both structured signals (the JSON completion report at MINIONS_COMPLETION_REPORT
+// and the fenced ```completion block in stdout) carry a `status` field. If the
+// agent explicitly says they're not done, honor it; otherwise accept the
+// dispatch. The PR attachment contract still catches silent-failure cases
+// for PR-producing work.
+const NON_TERMINAL_COMPLETION_STATUSES = new Set([
+  'partial', 'partially-complete', 'in-progress', 'pending', 'deferred',
+  'blocked', 'incomplete', 'to-be-continued',
+  'failed', 'failure', 'error',
+]);
 
-function isTerminalPendingLine(line) {
-  const text = String(line || '').trim().toLowerCase();
-  return /\bno\s+pending\b/.test(text)
-    || /\bpending\s*[:=-]\s*(?:none|n\/a|na|no|nothing|not applicable|-)\b/.test(text)
-    || /\bpending\s+(?:work|items?|tasks?)?\s*(?:resolved|complete|completed|done|closed)\b/.test(text);
-}
-
-function detectNonTerminalResultSummary(resultSummary, structuredCompletion) {
-  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
-  if (completionStatus) {
-    if (/^(?:partial|partially-complete|in-progress|pending|deferred|blocked|incomplete|to-be-continued)/.test(completionStatus)) {
+function detectNonTerminalResultSummary(_resultSummary, structuredCompletion, completionReport) {
+  const candidates = [completionReport?.status, structuredCompletion?.status];
+  for (const status of candidates) {
+    const norm = normalizeCompletionStatus(status);
+    if (!norm) continue;
+    if (NON_TERMINAL_COMPLETION_STATUSES.has(norm)) {
+      const isFailure = norm === 'failed' || norm === 'failure' || norm === 'error';
       return {
-        phrase: `status:${structuredCompletion.status}`,
-        reason: `Nonterminal completion summary: structured status is '${structuredCompletion.status}'`,
+        phrase: `status:${status}`,
+        reason: isFailure
+          ? `Nonterminal completion summary: structured status is '${status}', not a successful terminal state`
+          : `Nonterminal completion summary: structured status is '${status}'`,
       };
     }
-    if (/^(?:fail|failed|failure|error)/.test(completionStatus)) {
-      return {
-        phrase: `status:${structuredCompletion.status}`,
-        reason: `Nonterminal completion summary: structured status is '${structuredCompletion.status}', not a successful terminal state`,
-      };
-    }
   }
-
-  if (structuredCompletion?.pending && !isTerminalPendingValue(structuredCompletion.pending)) {
-    return {
-      phrase: 'pending',
-      reason: `Nonterminal completion summary: pending work remains (${String(structuredCompletion.pending).slice(0, 160)})`,
-    };
-  }
-
-  const text = String(resultSummary || '').replace(/\r/g, '').trim();
-  if (!text) return null;
-
-  const patterns = [
-    { phrase: 'still running', re: /\b(?:still|currently|continues?\s+to\s+be)\s+(?:running|ongoing|in\s+progress)\b/i },
-    { phrase: 'will check later', re: /\b(?:i(?:'|’)ll|i\s+will|we(?:'|’)ll|we\s+will|will)\s+(?:check|verify|review|follow\s+up|revisit)\s+(?:again\s+)?(?:later|soon|in\b|after\b|when\b)/i },
-    { phrase: 'wake up', re: /\bwake(?:\s|-)?up\b|\bwake\b.*\b(?:check|verify|review)\b/i },
-    { phrase: 'not yet complete', re: /\b(?:not\s+yet|isn(?:'|’)t|not|incomplete|not\s+fully|not\s+completely)\s+(?:complete|completed|done|finished|validated|verified)\b/i },
-    { phrase: 'partial', re: /\bpartial(?:ly)?\b/i },
-    { phrase: 'to be continued', re: /\bto\s+be\s+continued\b|\btbc\b/i },
-    { phrase: 'in progress', re: /\bin\s+progress\b|\bongoing\b|\bincomplete\b/i },
-  ];
-  for (const { phrase, re } of patterns) {
-    if (re.test(text)) {
-      return { phrase, reason: `Nonterminal completion summary: matched '${phrase}'` };
-    }
-  }
-
-  const pendingLines = text.split('\n').filter(line => /\bpending\b/i.test(line));
-  for (const line of pendingLines) {
-    if (!isTerminalPendingLine(line)) {
-      return { phrase: 'pending', reason: `Nonterminal completion summary: matched 'pending'` };
-    }
-  }
-
   return null;
 }
 
@@ -2256,7 +2225,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   let completionContractFailure = null;
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
-    const nonTerminalCompletion = detectNonTerminalResultSummary(completionGateSummary, structuredCompletion);
+    const nonTerminalCompletion = detectNonTerminalResultSummary(completionGateSummary, structuredCompletion, reportCompletion);
     if (nonTerminalCompletion) {
       skipDoneStatus = true;
       const reason = deferNonTerminalCompletion(meta, nonTerminalCompletion);

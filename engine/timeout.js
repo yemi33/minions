@@ -147,7 +147,7 @@ function checkTimeouts(config) {
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
   const engineRestartGraceExempt = engine().engineRestartGraceExempt;
   const { completeDispatch } = dispatch();
-  const { runPostCompletionHooks, parseAgentOutput, parseStructuredCompletion, detectNonTerminalResultSummary } = require('./lifecycle');
+  const { runPostCompletionHooks, parseAgentOutput, parseStructuredCompletion, parseCompletionReportFile, detectNonTerminalResultSummary } = require('./lifecycle');
 
   const timeout = config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout;
   const defaultStaleOrphanTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
@@ -265,7 +265,7 @@ function checkTimeouts(config) {
           outputResultSummary = parseAgentOutput(fullLogForHooks, runtimeName).resultSummary || '';
           const gateSummary = outputResultSummary || (!fullLogForHooks.includes('"type":') ? fullLogForHooks : '');
           completionDetection = isSuccess
-            ? detectNonTerminalResultSummary(gateSummary, parseStructuredCompletion(fullLogForHooks, runtimeName))
+            ? detectNonTerminalResultSummary(gateSummary, parseStructuredCompletion(fullLogForHooks, runtimeName), parseCompletionReportFile(item))
             : null;
         } catch (e) { log('warn', 'completion summary gate: ' + e.message); }
 
