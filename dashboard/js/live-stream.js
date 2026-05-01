@@ -136,12 +136,14 @@ async function sendSteering() {
           try {
             const liveRes = await fetch('/api/agent/' + encodeURIComponent(currentAgentId) + '/live-output');
             const text = await liveRes.text();
-            // Check if there's new output after the [human-steering] line
+            // Check if there's runtime output after the [human-steering] line.
+            // Claude emits "assistant"; Copilot emits "assistant.message_delta"
+            // / "assistant.message", and either one proves the resume turn ran.
             const steerIdx = text.lastIndexOf('[human-steering]');
             if (steerIdx >= 0) {
-              const afterSteer = text.slice(steerIdx + 100);
-              // Look for assistant response (JSON with type:assistant or readable text)
-              if (afterSteer.length > 200 && (afterSteer.includes('"type":"assistant"') || afterSteer.includes('"type":"text"'))) {
+              const afterSteer = text.slice(steerIdx + '[human-steering]'.length);
+              const sawRuntimeOutput = /"type"\s*:\s*"(assistant(?:\.|")|tool\.|session\.task_complete"|result")/.test(afterSteer);
+              if (afterSteer.length > 20 && sawRuntimeOutput) {
                 clearInterval(ackInterval);
                 pending.textContent = '\u2713 Agent acknowledged';
                 pending.style.color = 'var(--green)';

@@ -283,6 +283,7 @@ function _classifyAgentFailure(runtime, code, stdout, stderr) {
 
 function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Date.now()) {
   if (!procInfo?._pendingSteeringFiles?.length || !rawOutput) return;
+  if (procInfo._steeringMessage || procInfo._steeringNoSession) return;
   const acked = steering.ackProcessedSteeringMessages(agentId, procInfo._pendingSteeringFiles, rawOutput, { observedAtMs });
   if (acked.length === 0) return;
 
@@ -290,6 +291,45 @@ function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Da
   procInfo._pendingSteeringFiles = procInfo._pendingSteeringFiles.filter(entry => !ackedPaths.has(entry.path));
   if (procInfo._pendingSteeringFiles.length === 0) delete procInfo._pendingSteeringFiles;
   log('info', `Steering: ACKed ${acked.length} processed message(s) for ${agentId}`);
+}
+
+function captureSessionIdFromStdoutChunk(agentId, dispatchId, branchName, runtime, procInfo, chunk, state) {
+  if (!procInfo || procInfo.sessionId || !chunk) return;
+  const text = String(state.sessionLineBuffer || '') + String(chunk);
+  const lines = text.split('\n');
+  state.sessionLineBuffer = /[\r\n]$/.test(text) ? '' : (lines.pop() || '');
+  if (state.sessionLineBuffer.length > 65536) state.sessionLineBuffer = '';
+
+  for (const line of lines) {
+    const sessionId = steering.sessionIdFromOutputLine(line);
+    if (!sessionId) continue;
+    procInfo.sessionId = sessionId;
+    if (runtime && typeof runtime.saveSession === 'function') {
+      runtime.saveSession({
+        agentId,
+        dispatchId,
+        branch: branchName,
+        sessionId,
+        agentsDir: AGENTS_DIR,
+        logger: _runtimeLogger(),
+      });
+    }
+    return;
+  }
+}
+
+function mergePendingSteeringEntries(...groups) {
+  const merged = [];
+  const seen = new Set();
+  for (const group of groups) {
+    const entries = Array.isArray(group) ? group : (group ? [group] : []);
+    for (const entry of entries) {
+      if (!entry?.path || seen.has(entry.path)) continue;
+      seen.add(entry.path);
+      merged.push(entry);
+    }
+  }
+  return merged;
 }
 
 // Resolve dependency plan item IDs to their PR branches
@@ -1005,6 +1045,7 @@ async function spawnAgent(dispatchItem, config) {
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
+  const sessionCaptureState = { sessionLineBuffer: '' };
   let _trustCheckDone = false;
   const _spawnTime = Date.now();
 
@@ -1028,30 +1069,10 @@ async function spawnAgent(dispatchItem, config) {
       _trustCheckDone = true; // past 30s window
     }
 
-    // Capture sessionId early for mid-session steering
+    // Capture sessionId early for mid-session steering. Claude emits session_id;
+    // Copilot emits sessionId, so use the runtime-neutral steering helper.
     const procInfo = activeProcesses.get(id);
-    if (procInfo && !procInfo.sessionId && chunk.includes('session_id')) {
-      try {
-        for (const line of chunk.split('\n')) {
-          if (!line.trim() || !line.startsWith('{')) continue;
-          const obj = JSON.parse(line);
-          if (obj.session_id) {
-            procInfo.sessionId = obj.session_id;
-            if (runtime && typeof runtime.saveSession === 'function') {
-              runtime.saveSession({
-                agentId,
-                dispatchId: id,
-                branch: branchName,
-                sessionId: obj.session_id,
-                agentsDir: AGENTS_DIR,
-                logger: _runtimeLogger(),
-              });
-            }
-            break;
-          }
-        }
-      } catch { /* JSON parse — output may not be valid JSON */ }
-    }
+    captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, procInfo, chunk, sessionCaptureState);
 
     ackPendingSteeringFiles(agentId, procInfo, chunk);
   });
@@ -1112,8 +1133,12 @@ async function spawnAgent(dispatchItem, config) {
         }
       }
 
-      // Write new prompt with steering message
-      const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
+      // Write new prompt with all unACKed steering messages. This keeps delivery
+      // durable if the killed process had older pending messages that never
+      // produced processing evidence before the resume.
+      const pendingForResume = steering.buildPendingSteeringPrompt(agentId);
+      const steerPromptBody = pendingForResume.prompt || steerMsg;
+      const steerPrompt = `Message from your human teammate:\n\n${steerPromptBody}\n\nRespond to this, then continue working on your current task.`;
       const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${safeId}.md`);
       try { safeWrite(steerPromptPath, steerPrompt); } catch (e) {
         log('warn', `Steering: failed to write prompt for ${agentId}: ${e.message}`);
@@ -1180,19 +1205,26 @@ async function spawnAgent(dispatchItem, config) {
         startedAt: procInfo.startedAt,
         sessionId: steerSessionId,
         lastRealOutputAt: Date.now(),
-        _pendingSteeringFiles: steerEntry ? [steerEntry] : (procInfo._pendingSteeringFiles || []),
+        _pendingSteeringFiles: mergePendingSteeringEntries(
+          procInfo._pendingSteeringFiles,
+          pendingForResume.entries,
+          steerEntry,
+        ),
       });
 
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
       stderr = '';
+      sessionCaptureState.sessionLineBuffer = '';
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {
         const chunk = data.toString();
         realActivityMap.set(id, Date.now());
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
-        ackPendingSteeringFiles(agentId, activeProcesses.get(id), chunk);
+        const resumeInfo = activeProcesses.get(id);
+        captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, resumeInfo, chunk, sessionCaptureState);
+        ackPendingSteeringFiles(agentId, resumeInfo, chunk);
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();

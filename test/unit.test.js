@@ -17009,6 +17009,20 @@ async function testAgentSteering() {
       'stdout handler should capture sessionId for mid-session steering');
   });
 
+  await test('session ID capture supports Copilot camelCase sessionId', () => {
+    const steering = require('../engine/steering');
+    assert.strictEqual(
+      steering.sessionIdFromOutputLine('{"type":"result","sessionId":"copilot-session-123"}'),
+      'copilot-session-123',
+      'Copilot result.sessionId should be captured for steering resume'
+    );
+    assert.strictEqual(
+      steering.sessionIdFromOutputLine('{"type":"system","subtype":"init","session_id":"claude-session-123"}'),
+      'claude-session-123',
+      'Claude session_id should still be captured for steering resume'
+    );
+  });
+
   // Fast poll steering tests
   const cliSrcSteer = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
 
@@ -17042,6 +17056,16 @@ async function testAgentSteering() {
       'Re-spawn prompt should frame the steering as a teammate message');
     assert.ok(engineSrc.includes('continue working on your current task'),
       'Re-spawn prompt should tell agent to continue after responding');
+  });
+
+  await test('steering does not ACK inbox files from old process output while kill/resume is in-flight', () => {
+    assert.ok(engineSrc.includes('procInfo._steeringMessage || procInfo._steeringNoSession'),
+      'ACK helper should ignore output from the process being killed for steering');
+  });
+
+  await test('steering resume carries all unACKed inbox messages forward', () => {
+    assert.ok(engineSrc.includes('pendingForResume') && engineSrc.includes('mergePendingSteeringEntries'),
+      'Resume prompt/tracking should include every unread steering message, not only the newest one');
   });
 
   await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
@@ -17083,10 +17107,9 @@ async function testAgentSteering() {
     assert.ok(engineSrc.includes('_steeringNoSession'),
       'Close handler should check _steeringNoSession flag from timeout.js');
     // Should re-queue (move to pending), not complete as error
-    const noSessionBlock = engineSrc.slice(
-      engineSrc.indexOf('_steeringNoSession'),
-      engineSrc.indexOf('_steeringNoSession') + 600
-    );
+    const noSessionIdx = engineSrc.indexOf('if (procInfo?._steeringNoSession)');
+    assert.ok(noSessionIdx >= 0, 'Should locate the no-session close-handler block');
+    const noSessionBlock = engineSrc.slice(noSessionIdx, noSessionIdx + 600);
     assert.ok(noSessionBlock.includes('pending'),
       'Should move dispatch item back to pending queue');
     assert.ok(!noSessionBlock.includes('DISPATCH_RESULT.ERROR'),
@@ -17094,7 +17117,8 @@ async function testAgentSteering() {
   });
 
   await test('steering no-session re-queue cleans up activeProcesses and realActivityMap', () => {
-    const noSessionIdx = engineSrc.indexOf('_steeringNoSession');
+    const noSessionIdx = engineSrc.indexOf('if (procInfo?._steeringNoSession)');
+    assert.ok(noSessionIdx >= 0, 'Should locate the no-session close-handler block');
     const noSessionBlock = engineSrc.slice(noSessionIdx, noSessionIdx + 600);
     assert.ok(noSessionBlock.includes('activeProcesses.delete'),
       'Should remove from activeProcesses on re-queue');
@@ -17103,7 +17127,8 @@ async function testAgentSteering() {
   });
 
   await test('steering no-session re-queue logs the re-queue action', () => {
-    const noSessionIdx = engineSrc.indexOf('_steeringNoSession');
+    const noSessionIdx = engineSrc.indexOf('if (procInfo?._steeringNoSession)');
+    assert.ok(noSessionIdx >= 0, 'Should locate the no-session close-handler block');
     const noSessionBlock = engineSrc.slice(noSessionIdx, noSessionIdx + 600);
     assert.ok(noSessionBlock.includes('log(') || noSessionBlock.includes("log('"),
       'Should log the re-queue action for observability');
@@ -17221,6 +17246,8 @@ async function testAgentSteering() {
       'Should poll for agent response after steering');
     assert.ok(liveSrc.includes('Agent acknowledged') || liveSrc.includes('agent acknowledged'),
       'Should show acknowledgment when agent responds');
+    assert.ok(liveSrc.includes('assistant.message_delta'),
+      'Acknowledgment detector should account for Copilot assistant.message_delta events');
   });
 
   await test('sendSteering pauses polling during send', () => {
