@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1647 (2026-05-01)
+
+### Other
+- docs(CLAUDE.md): add Known Footguns + CC Action Contract sections
+
 ## 0.1.1646 (2026-05-01)
 
 ### Fixes
