@@ -21,6 +21,17 @@ function engine() {
 let _dispatchModule = null;
 function dispatchModule() { if (!_dispatchModule) _dispatchModule = require('./dispatch'); return _dispatchModule; }
 
+function normalizeSessionBranch(branch) {
+  if (!branch) return null;
+  return String(branch).replace(/^refs\/heads\//, '');
+}
+
+function dispatchSessionBranch(item) {
+  return normalizeSessionBranch(
+    item?.meta?.branch || item?.branch || item?.meta?.item?.branch || item?.meta?.item?.featureBranch
+  );
+}
+
 function isEngineProcessAlive(control) {
   if (!control?.pid) return false;
   if (control.pid === process.pid) return true;
@@ -396,13 +407,21 @@ const commands = {
         }
 
         if (agentPid) {
-          // Load sessionId from session.json for steering support
+          // Load sessionId from session.json for steering support, but only
+          // when its saved branch still matches the active dispatch branch.
           let sessionId = null;
           try {
             const sj = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
-            if (sj?.sessionId) sessionId = sj.sessionId;
+            const expectedBranch = dispatchSessionBranch(item);
+            const savedBranch = normalizeSessionBranch(sj?.branch);
+            if (sj?.sessionId && (!expectedBranch || savedBranch === expectedBranch)) {
+              sessionId = sj.sessionId;
+            } else if (sj?.sessionId && expectedBranch) {
+              shared.log('warn', `Reattach: ignoring session for ${agentId} on branch ${savedBranch || 'unknown'}; expected ${expectedBranch}`);
+            }
           } catch {}
-          e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true, sessionId });
+          const runtimeName = item.runtimeName || item.runtime || item.meta?.runtimeName || item.meta?.runtime || null;
+          e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true, sessionId, runtimeName });
           // Sync work item status to dispatched — atomic write to avoid lifecycle lazy init issues
           if (item.meta?.item?.id && item.meta?.project?.localPath) {
             try {

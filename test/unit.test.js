@@ -1241,6 +1241,7 @@ async function testRuntimeAdapters() {
     const c = claude.capabilities;
     assert.strictEqual(c.streaming, true);
     assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.midRunSessionId, true, 'Claude emits session_id before terminal result for mid-run steering');
     assert.strictEqual(c.systemPromptFile, true);
     assert.strictEqual(c.effortLevels, true);
     assert.strictEqual(c.costTracking, true);
@@ -1649,10 +1650,11 @@ async function testCopilotAdapter() {
     assert.strictEqual(c.systemPromptFile, false, 'no --system-prompt-file flag — sysprompt merged into stdin');
   });
 
-  await test('copilot.capabilities matches AC: streaming/sessionResume/effortLevels all TRUE', () => {
+  await test('copilot.capabilities exposes streaming/resume and no mid-run session IDs', () => {
     const c = copilot.capabilities;
     assert.strictEqual(c.streaming, true);
     assert.strictEqual(c.sessionResume, true);
+    assert.strictEqual(c.midRunSessionId, false, 'Copilot only exposes sessionId on terminal result');
     assert.strictEqual(c.effortLevels, true);
   });
 
@@ -1804,6 +1806,12 @@ async function testCopilotAdapter() {
   await test('copilot.buildPrompt prepends <system> block when sysPromptText non-empty', () => {
     const out = copilot.buildPrompt('do thing', 'You are an engineer.');
     assert.strictEqual(out, '<system>\nYou are an engineer.\n</system>\n\ndo thing');
+  });
+
+  await test('copilot.buildPrompt omits <system> block when resuming a session', () => {
+    const out = copilot.buildPrompt('continue work', 'You are an engineer.', { sessionId: 'sess-123' });
+    assert.strictEqual(out, 'continue work');
+    assert.ok(!out.includes('<system>'), 'Resume prompt must not re-inject system context');
   });
 
   await test('copilot.buildPrompt is passthrough when sysPromptText empty/null/undefined', () => {
@@ -2777,6 +2785,23 @@ async function testSpawnAgentHelpers() {
     });
     assert.ok(!('addDirs' in calls[0]), 'empty addDirs must not pollute opts bag');
     assert.strictEqual(calls.length, 1);
+  });
+
+  await test('buildSpawnInvocation passes opts to runtime.buildPrompt', () => {
+    const calls = [];
+    const runtime = {
+      name: 'spy', capabilities: {},
+      buildArgs: () => [],
+      buildPrompt: (p, s, opts) => { calls.push({ p, s, opts }); return opts.sessionId ? 'resumed' : 'fresh'; },
+    };
+    const inv = spawnAgent.buildSpawnInvocation({
+      runtime,
+      resolved: { bin: '/x', native: true, leadingArgs: [] },
+      promptText: 'p', sysPromptText: 'sys',
+      opts: { sessionId: 'sess-1' }, passthrough: [],
+    });
+    assert.strictEqual(inv.finalPrompt, 'resumed');
+    assert.strictEqual(calls[0].opts.sessionId, 'sess-1');
   });
 
   await test('buildSpawnInvocation: passthrough args appended AFTER adapter args', () => {
@@ -16582,6 +16607,17 @@ async function testSpawnAgentScript() {
       'cli.js should NOT read PID files from ENGINE_DIR root — must use ENGINE_DIR/tmp/');
   });
 
+  await test('cli.js reattach validates session branch before using sessionId', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const reattachBlock = cliSrc.slice(cliSrc.indexOf('Load sessionId from session.json'), cliSrc.indexOf('Sync work item status to dispatched'));
+    assert.ok(reattachBlock.includes('dispatchSessionBranch(item)'),
+      'Reattach should compute expected branch from the active dispatch item');
+    assert.ok(reattachBlock.includes('savedBranch === expectedBranch'),
+      'Reattach should only trust session.json when saved branch matches dispatch branch');
+    assert.ok(reattachBlock.includes('ignoring session'),
+      'Mismatched session branch should be logged and ignored');
+  });
+
   await test('spawn-agent.js supports --resume flag', () => {
     assert.ok(src.includes("isResume") && src.includes("'--resume'"),
       'Should detect --resume flag and skip system prompt (baked into session)');
@@ -17736,6 +17772,18 @@ async function testAgentSteering() {
       'stdout handler should capture sessionId for mid-session steering');
   });
 
+  await test('spawnAgent tracks active process before stdout session capture handlers', () => {
+    const spawnFn = engineSrc.slice(engineSrc.indexOf('async function spawnAgent('));
+    const activeIdx = spawnFn.indexOf('activeProcesses.set(id, initialProcInfo)');
+    const stdoutIdx = spawnFn.indexOf("proc.stdout.on('data'");
+    assert.ok(activeIdx > 0 && stdoutIdx > 0 && activeIdx < stdoutIdx,
+      'activeProcesses must be populated before stdout can emit session IDs');
+    assert.ok(spawnFn.includes('existingProcInfo.sessionId || cachedSessionId'),
+      'Later tracking write must preserve sessionId captured by early stdout');
+    assert.ok(spawnFn.includes('runtimeName'),
+      'Tracked proc info should include runtimeName for capability-gated steering');
+  });
+
   await test('session ID capture supports Copilot camelCase sessionId', () => {
     const steering = require('../engine/steering');
     assert.strictEqual(
@@ -17993,10 +18041,16 @@ async function testAgentSteering() {
 
   // ── Steering edge cases ───────────────────────────────────────────────────
 
-  await test('checkSteering kills process tree on Unix (pkill fallback)', () => {
-    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(timeoutSrc.includes('pkill') && timeoutSrc.includes('-P'),
-      'Stale steering recovery should attempt process tree kill on Unix');
+  await test('shared kill helpers recursively kill Unix process trees and unref grace timers', () => {
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes('function killUnixProcessTree'),
+      'shared.js should centralize recursive Unix tree killing');
+    assert.ok(sharedSrc.includes('pgrep -P'),
+      'Unix tree kill should discover descendants before killing the parent');
+    assert.ok(sharedSrc.includes('pid <= 0'),
+      'Kill helpers must guard against process.kill(0) or negative process groups');
+    assert.ok(sharedSrc.includes('unrefTimer(setTimeout'),
+      'Grace timers should be unref()ed so they do not keep the engine alive');
   });
 
   await test('spawn-agent.js skips --system-prompt-file on resume (behavioral via Claude adapter)', () => {
@@ -18387,6 +18441,51 @@ async function testTimeoutBehavioral() {
       const body = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
       assert.ok(body.includes('try a smaller model'), 'Unread inbox file should carry original message');
       assert.ok(fs.existsSync(steerPath), 'No-session path should not ACK/delete the steering file');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: Copilot without mid-run sessionId defers steering without killing', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot-copilot';
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      const inboxDir = path.join(agentDir, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      const steerPath = path.join(inboxDir, 'steering-1000.md');
+      const livePath = path.join(agentDir, 'live-output.log');
+      fs.writeFileSync(steerPath, 'please adjust once resumable');
+      fs.writeFileSync(livePath, 'started\n');
+      const info = { agentId, proc: {}, runtimeName: 'copilot' /* no sessionId yet */ };
+      env.fakeEngine.activeProcesses.set('disp-copilot', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(env.counters.killImmediate, 0, 'Copilot should not be killed before it emits terminal sessionId');
+      assert.strictEqual(info._steeringNoSession, undefined, 'Deferred path must not trigger no-session requeue');
+      assert.strictEqual(info._steeringAt, undefined, 'Deferred path must not arm kill retry state');
+      assert.ok(Array.isArray(info._deferredSteeringFiles) && info._deferredSteeringFiles.includes(steerPath),
+        'Deferred steering file should be remembered to avoid duplicate live-output spam');
+      assert.ok(fs.existsSync(steerPath), 'Steering file must remain unread for the next resumable checkpoint/dispatch');
+      const live = fs.readFileSync(livePath, 'utf8');
+      assert.ok(live.includes('queued until the agent reaches a resumable checkpoint'),
+        'Live output should explain that steering was queued, not lost');
+    } finally { env.restore(); }
+  });
+
+  await test('checkSteering: unknown runtime without sessionId preserves kill/requeue behavior', () => {
+    const env = setupIsolated();
+    try {
+      const agentId = 'bot-unknown-runtime';
+      const inboxDir = path.join(env.testDir, 'agents', agentId, 'inbox');
+      fs.mkdirSync(inboxDir, { recursive: true });
+      fs.writeFileSync(path.join(inboxDir, 'steering-1000.md'), 'retry via kill');
+      const info = { agentId, proc: {}, runtimeName: 'does-not-exist' };
+      env.fakeEngine.activeProcesses.set('disp-unknown', info);
+
+      env.timeout.checkSteering({});
+
+      assert.strictEqual(env.counters.killImmediate, 1, 'Unknown runtimes should keep legacy no-session kill/requeue behavior');
+      assert.strictEqual(info._steeringNoSession, true);
     } finally { env.restore(); }
   });
 
@@ -30207,6 +30306,14 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('_resolveBin(runtime)'), 'Should have _resolveBin(runtime) for direct spawn (renamed in P-5e1b7a3c)');
     assert.ok(src.includes('runtime.resolveBinary'),
       'Direct path must defer binary resolution to the runtime adapter');
+  });
+
+  await test('llm.js passes adapter opts to runtime.buildPrompt', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('runtime.buildPrompt(promptText, sysPromptText, adapterOpts)'),
+      'Direct/indirect LLM spawns should let adapters make opts-aware prompt decisions');
+    assert.ok(src.indexOf('if (!caps.sessionResume) adapterOpts.sessionId = undefined') < src.indexOf('runtime.buildPrompt(promptText, sysPromptText, adapterOpts)'),
+      'sessionResume capability gate should run before buildPrompt sees opts.sessionId');
   });
 
   await test('callLLMStreaming supports direct spawn mode', () => {

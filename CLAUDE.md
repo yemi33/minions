@@ -508,7 +508,7 @@ time*.
 | `modelsCache` | string (path) | Per-runtime model catalog cache (`engine/<name>-models.json`) |
 | `spawnScript` | string (path) | Wrapper script (always `engine/spawn-agent.js` today; reserved for future runtimes that need a different wrapper) |
 | `buildArgs(opts)` | function → `string[]` | CLI args excluding the binary; receives the resolved opts bag |
-| `buildPrompt(promptText, sysPromptText)` | function → string | Final prompt delivered. Claude returns the user prompt verbatim (sysprompt goes via `--system-prompt-file`); Copilot inlines `<system>...</system>` into the user prompt |
+| `buildPrompt(promptText, sysPromptText, opts)` | function → string | Final prompt delivered. Claude returns the user prompt verbatim (sysprompt goes via `--system-prompt-file`); Copilot inlines `<system>...</system>` into fresh prompts and omits it on `opts.sessionId` resumes |
 | `resolveModel(input)` | function → string \| undefined | Shorthand expansion / passthrough. Returns `undefined` for nullish input |
 | `parseOutput(raw, { maxTextLength })` | function → `{ text, usage, sessionId, model }` | Full stream parse — used by `lifecycle.parseAgentOutput` |
 | `parseStreamChunk(line)` | function → object \| null | Single-line streaming parse |
@@ -526,6 +526,7 @@ capability flag, not a name check.
 |------|--------|---------|---------------|
 | `streaming` | true | true | JSONL events on stdout |
 | `sessionResume` | true | true | `--resume <id>` resumes a prior session |
+| `midRunSessionId` | true | false | Runtime emits a resumable session ID before terminal `result`; when false, steering waits instead of kill/requeue until a checkpoint |
 | `systemPromptFile` | true | false | sysprompt accepted via `--system-prompt-file` (vs inlined into the user prompt) |
 | `effortLevels` | true | true | `--effort low\|medium\|high\|xhigh` is honored |
 | `costTracking` | true | false | Result event includes USD + token usage (Copilot only emits `premiumRequests` count) |
@@ -537,7 +538,7 @@ capability flag, not a name check.
 | `fallbackModel` | true | false | `--fallback-model <id>` on rate-limit / overload |
 | `sessionPersistenceControl` | true | false | The engine writes `session.json` (Copilot manages session state in `~/.copilot/session-state/`) |
 
-Source: `engine/runtimes/claude.js:357-389`, `engine/runtimes/copilot.js:509-534`.
+Source: `engine/runtimes/claude.js`, `engine/runtimes/copilot.js`.
 
 ### Six Resolution Helpers (in `engine/shared.js`)
 

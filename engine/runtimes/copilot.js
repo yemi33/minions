@@ -344,8 +344,9 @@ function classifyFailure({ code, stdout = '', stderr = '', fallback } = {}) {
 // convention from Anthropic tool-use docs and is recognized as "system role"
 // content by every model in the Copilot catalog.
 
-function buildPrompt(promptText, sysPromptText) {
+function buildPrompt(promptText, sysPromptText, opts = {}) {
   const user = promptText == null ? '' : String(promptText);
+  if (opts && opts.sessionId) return user;
   if (sysPromptText == null || sysPromptText === '') return user;
   return `<system>\n${String(sysPromptText)}\n</system>\n\n${user}`;
 }
@@ -722,6 +723,8 @@ const capabilities = {
   streaming: true,
   // --resume=<id> resumes a session
   sessionResume: true,
+  // Copilot only exposes sessionId on the terminal result event
+  midRunSessionId: false,
   // No --system-prompt-file flag — system prompt is merged into stdin
   systemPromptFile: false,
   // --effort low|medium|high|xhigh (no 'max' — adapter maps it)

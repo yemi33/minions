@@ -2094,27 +2094,60 @@ function upsertPullRequestRecord(prPath, entry, { project = null, itemId = null,
 
 // ─── Cross-Platform Process Kill Helpers ─────────────────────────────────────
 
+function normalizeKillPid(proc) {
+  const pid = Number(proc?.pid);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function unixChildPids(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return [];
+  try {
+    return _execSync(`pgrep -P ${pid}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+      .split(/\r?\n/)
+      .map(line => Number(line.trim()))
+      .filter(childPid => Number.isInteger(childPid) && childPid > 0 && childPid !== pid);
+  } catch {
+    return [];
+  }
+}
+
+function killUnixProcessTree(pid, signal, seen = new Set()) {
+  if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) return;
+  seen.add(pid);
+  for (const childPid of unixChildPids(pid)) {
+    killUnixProcessTree(childPid, signal, seen);
+  }
+  try { process.kill(pid, signal); } catch { /* process may be dead */ }
+}
+
+function unrefTimer(timer) {
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return timer;
+}
+
 function killGracefully(proc, graceMs = 5000) {
-  if (!proc || !proc.pid) return;
+  const pid = normalizeKillPid(proc);
+  if (!pid) return;
   if (process.platform === 'win32') {
-    try { _execSync(`taskkill /PID ${proc.pid} /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
-    setTimeout(() => {
-      try { _execSync(`taskkill /PID ${proc.pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
-    }, graceMs);
+    try { _execSync(`taskkill /PID ${pid} /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+    unrefTimer(setTimeout(() => {
+      try { _execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+    }, graceMs));
   } else {
-    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
-    setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
-    }, graceMs);
+    killUnixProcessTree(pid, 'SIGTERM');
+    unrefTimer(setTimeout(() => {
+      killUnixProcessTree(pid, 'SIGKILL');
+    }, graceMs));
   }
 }
 
 function killImmediate(proc) {
-  if (!proc || !proc.pid) return;
+  const pid = normalizeKillPid(proc);
+  if (!pid) return;
   if (process.platform === 'win32') {
-    try { _execSync(`taskkill /PID ${proc.pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+    try { _execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
   } else {
-    try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
+    killUnixProcessTree(pid, 'SIGKILL');
   }
 }
 

@@ -581,6 +581,8 @@ const capabilities = {
   streaming: true,
   // `--resume <session-id>` resumes a previous turn
   sessionResume: true,
+  // Emits a resumable session ID before the terminal result event
+  midRunSessionId: true,
   // Accepts the system prompt via `--system-prompt-file`
   systemPromptFile: true,
   // Honours `--effort low|medium|high|xhigh`

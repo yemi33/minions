@@ -100,9 +100,9 @@ function parseSpawnArgs(argv) {
  *   }
  */
 function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, opts, passthrough, addDirs }) {
-  const finalPrompt = runtime.buildPrompt(promptText, sysPromptText);
   const adapterOpts = { ...opts };
   if (Array.isArray(addDirs) && addDirs.length) adapterOpts.addDirs = addDirs;
+  const finalPrompt = runtime.buildPrompt(promptText, sysPromptText, adapterOpts);
   const deliveryMode = typeof runtime.getPromptDeliveryMode === 'function'
     ? runtime.getPromptDeliveryMode(adapterOpts)
     : (runtime.capabilities && runtime.capabilities.promptViaArg ? 'arg' : 'stdin');

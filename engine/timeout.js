@@ -57,6 +57,27 @@ function checkIdleThreshold(config) {
 // How long to wait for a steered agent to exit before retrying the kill
 const STEERING_KILL_RETRY_MS = 30000;
 
+function runtimeSupportsMidRunSessionId(info) {
+  if (typeof info?.midRunSessionId === 'boolean') return info.midRunSessionId;
+  if (typeof info?.runtime?.capabilities?.midRunSessionId === 'boolean') return info.runtime.capabilities.midRunSessionId;
+  if (info?.runtimeName) {
+    try {
+      const { resolveRuntime } = require('./runtimes');
+      const runtime = resolveRuntime(info.runtimeName);
+      if (typeof runtime.capabilities?.midRunSessionId === 'boolean') return runtime.capabilities.midRunSessionId;
+    } catch {
+      return true;
+    }
+  }
+  return true;
+}
+
+function rememberDeferredSteering(info, steerEntry) {
+  const existing = new Set(Array.isArray(info._deferredSteeringFiles) ? info._deferredSteeringFiles : []);
+  if (steerEntry?.path) existing.add(steerEntry.path);
+  info._deferredSteeringFiles = Array.from(existing);
+}
+
 function checkSteering(config) {
   const activeProcesses = engine().activeProcesses;
   for (const [id, info] of activeProcesses) {
@@ -79,7 +100,10 @@ function checkSteering(config) {
     // Skip if already being steered (prevents double-kill race)
     if (info._steeringMessage || info._steeringAt) continue;
 
-    const alreadyPending = new Set((info._pendingSteeringFiles || []).map(entry => entry.path || entry));
+    const alreadyPending = new Set([
+      ...(info._pendingSteeringFiles || []).map(entry => entry.path || entry),
+      ...(info._deferredSteeringFiles || []),
+    ]);
     const unread = steering.listUnreadSteeringMessages(info.agentId);
     for (const empty of unread.filter(entry => !entry.message.trim())) {
       shared.safeUnlink(empty.path);
@@ -90,8 +114,19 @@ function checkSteering(config) {
 
     const sessionId = info.sessionId;
     if (!sessionId) {
-      // No session to resume — kill agent and leave message unread in inbox for retry.
-      // Previously this silently skipped for up to 5m then deleted the message (#627).
+      if (!runtimeSupportsMidRunSessionId(info)) {
+        log('info', `Steering: no mid-run sessionId for ${info.agentId} (${id}) — queued until resumable checkpoint`);
+        rememberDeferredSteering(info, steerEntry);
+        try {
+          const liveLogPath = path.join(AGENTS_DIR, info.agentId, 'live-output.log');
+          fs.appendFileSync(liveLogPath, `\n[steering] Message received. This runtime has not emitted a resumable session yet, so the message is queued until the agent reaches a resumable checkpoint or the next dispatch.\n`);
+        } catch { /* optional */ }
+        continue;
+      }
+
+      // No session to resume for a runtime that should have emitted one — kill
+      // agent and leave message unread in inbox for retry. Previously this
+      // silently skipped for up to 5m then deleted the message (#627).
       log('info', `Steering: no sessionId for ${info.agentId} (${id}) — killing and keeping unread message in inbox`);
 
       // Append to live output so user sees confirmation in the dashboard

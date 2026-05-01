@@ -163,7 +163,14 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
   };
-  const finalPrompt = runtime.buildPrompt(promptText, sysPromptText);
+  // Capability-gate per-flag opts before prompt construction so adapters can
+  // make resume-aware prompt decisions from the same opts used for argv.
+  if (!caps.effortLevels) adapterOpts.effort = undefined;
+  if (!caps.sessionResume) adapterOpts.sessionId = undefined;
+  if (!caps.budgetCap) adapterOpts.maxBudget = undefined;
+  if (!caps.bareMode) adapterOpts.bare = undefined;
+  if (!caps.fallbackModel) adapterOpts.fallbackModel = undefined;
+  const finalPrompt = runtime.buildPrompt(promptText, sysPromptText, adapterOpts);
 
   // ── Direct path ──
   const resolved = direct ? _resolveBin(runtime) : null;
@@ -178,13 +185,6 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
       cleanupFiles.push(sysTmpPath);
       adapterOpts.sysPromptFile = sysTmpPath;
     }
-    // Capability-gate per-flag opts so the Claude path keeps emitting its
-    // historical flag set while Copilot only sees what it understands.
-    if (!caps.effortLevels) adapterOpts.effort = undefined;
-    if (!caps.sessionResume) adapterOpts.sessionId = undefined;
-    if (!caps.budgetCap) adapterOpts.maxBudget = undefined;
-    if (!caps.bareMode) adapterOpts.bare = undefined;
-    if (!caps.fallbackModel) adapterOpts.fallbackModel = undefined;
     // promptViaArg=true: the adapter splices `--prompt <text>` into args itself.
     if (caps.promptViaArg) adapterOpts.prompt = finalPrompt;
 

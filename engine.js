@@ -1043,6 +1043,16 @@ async function spawnAgent(dispatchItem, config) {
     fs.appendFileSync(liveOutputPath, `[${new Date().toISOString()}] pid: ${proc.pid ?? 'unknown'}\n`);
   } catch { /* log stamp is best-effort — don't block spawn on fs failure */ }
 
+  const initialProcInfo = {
+    proc,
+    agentId,
+    startedAt,
+    runtimeName,
+    sessionId: cachedSessionId,
+    _pendingSteeringFiles: pendingSteering.entries,
+  };
+  activeProcesses.set(id, initialProcInfo);
+
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
@@ -1204,6 +1214,7 @@ async function spawnAgent(dispatchItem, config) {
         proc: resumeProc,
         agentId,
         startedAt: procInfo.startedAt,
+        runtimeName,
         sessionId: steerSessionId,
         lastRealOutputAt: Date.now(),
         _pendingSteeringFiles: mergePendingSteeringEntries(
@@ -1446,12 +1457,15 @@ async function spawnAgent(dispatchItem, config) {
   // realActivityMap was already seeded immediately after runFile() returned (#W-mo25loq8kjer);
   // don't re-seed here — the stdout/stderr handlers above can already have updated it with
   // a fresher timestamp, and overwriting would clobber the real "last activity" signal.
+  const existingProcInfo = activeProcesses.get(id) || {};
   activeProcesses.set(id, {
+    ...existingProcInfo,
     proc,
     agentId,
     startedAt,
-    sessionId: cachedSessionId,
-    _pendingSteeringFiles: pendingSteering.entries,
+    runtimeName,
+    sessionId: existingProcInfo.sessionId || cachedSessionId,
+    _pendingSteeringFiles: mergePendingSteeringEntries(existingProcInfo._pendingSteeringFiles, pendingSteering.entries),
   });
 
   updateAgentStatus(id, AGENT_STATUS.RUNNING, `Process spawned for ${agentId}`);
