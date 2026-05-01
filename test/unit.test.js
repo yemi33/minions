@@ -3971,7 +3971,7 @@ async function testPrAttachmentContract() {
       }, { project, itemId: 'W-context123' });
 
       const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-      assert.ok(dashSrc.includes('linkPullRequestForTracking(body, CONFIG)'),
+      assert.ok(dashSrc.includes('linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData })'),
         'dashboard /api/pull-requests/link must route through the canonical link helper');
       assert.ok(dashSrc.includes('context.workItemId'),
         'manual PR link context.workItemId must feed the canonical attachment');
@@ -18539,7 +18539,7 @@ async function testRecentFeatures() {
     const start = dashSrc.indexOf("/api/pull-requests/link'");
     const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
     const linkHandler = dashSrc.slice(start, next);
-    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData })'),
       'link handler should route through the helper that normalizes context before persisting the PR');
     assert.ok(dashSrc.includes('contextText') && dashSrc.includes('_context: contextText'),
       'pull-requests.json should receive the normalized contextText, not the raw request body value');
@@ -22126,6 +22126,7 @@ async function main() {
     // W-moa4gs7dpd7a: ado.js pure helpers — classifyBuildStatus, votesToReviewStatus, isAdoAuthError, throttle
     await testAdoPureHelpers();
     await testAdoRepositoryIdFallback();
+    await testAdoManualPrLinkMetadataRace();
 
     await testGhThrottle();
     await testGhThrottleEngineGuards();
@@ -36513,6 +36514,152 @@ async function testAdoRepositoryIdFallback() {
   });
 }
 
+// ─── W-mom5f4mkbnlm: ADO manual PR link metadata race ────────────────────────
+
+async function testAdoManualPrLinkMetadataRace() {
+  console.log('\n── W-mom5f4mkbnlm: ADO manual PR link metadata race ──');
+
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+
+  await test('manual ADO PR link helper writes fetched metadata before the record is visible', () => {
+    const restore = createTestMinionsDir();
+    const dashboardPath = path.join(MINIONS_DIR, 'dashboard.js');
+    try {
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+      const dashboard = require('../dashboard');
+      const project = {
+        name: 'ado-demo',
+        repoHost: 'ado',
+        adoOrg: 'org',
+        adoProject: 'proj',
+        repoName: 'repo',
+        localPath: testDir,
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(testShared.projectPrPath(project), []);
+
+      const result = dashboard._linkPullRequestForTracking({
+        url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/77',
+        project: 'ado-demo',
+        autoObserve: true,
+        workItemId: 'W-mom5f4mkbnlm',
+      }, config, {
+        metadata: {
+          title: 'Fix branch race',
+          description: 'ADO metadata fetched before insert',
+          branch: 'feat/branch-race',
+          author: 'Ada Lovelace',
+        },
+      });
+
+      const stored = testShared.safeJson(result.prPath)[0];
+      assert.strictEqual(stored.title, 'Fix branch race',
+        'the first visible PR record must not use the polling placeholder when ADO metadata was fetched synchronously');
+      assert.strictEqual(stored.description, 'ADO metadata fetched before insert');
+      assert.strictEqual(stored.branch, 'feat/branch-race');
+      assert.strictEqual(stored.agent, 'Ada Lovelace');
+      assert.ok(!stored._branchResolutionError, 'sync metadata should avoid seeding stale branch-resolution errors');
+      assert.ok(!stored._pendingReason, 'sync metadata should avoid missing_pr_branch pending state');
+    } finally {
+      restore();
+      try { delete require.cache[require.resolve(dashboardPath)]; } catch {}
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('ADO pollPrStatus self-heals placeholder manual-link metadata and missing branch gate', async () => {
+    const restore = createTestMinionsDir();
+    const origFetch = globalThis.fetch;
+    try {
+      const testShared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      const project = {
+        name: 'ado-manual-placeholder',
+        adoOrg: 'org',
+        adoProject: 'proj',
+        repositoryId: '',
+        repoName: 'repo',
+        repoHost: 'ado',
+      };
+      testShared.safeWrite(testShared.projectPrPath(project), [{
+        id: 'ado:org/proj/repo#77',
+        prNumber: 77,
+        title: 'PR #77 (polling...)',
+        description: '',
+        agent: 'human',
+        branch: '',
+        status: 'active',
+        reviewStatus: 'pending',
+        url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/77',
+        _manual: true,
+        _autoObserve: true,
+        _branchResolutionError: { reason: 'Cannot dispatch review: missing pr_branch/source branch metadata.', at: '2026-04-30T00:00:00.000Z' },
+        _pendingReason: 'missing_pr_branch',
+      }]);
+
+      delete require.cache[require.resolve(adoPath)];
+      const ado = require(adoPath);
+      ado._setAdoTokenForTest('eyJ-fake-test-token');
+      globalThis.fetch = async (url) => {
+        if (url.includes('/repositories/repo/pullrequests/77?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              title: 'Real ADO PR title',
+              description: 'Real ADO PR description',
+              status: 'active',
+              sourceRefName: 'refs/heads/feat/ado-manual-link',
+              mergeStatus: 'succeeded',
+              lastMergeCommit: { commitId: 'merge-77' },
+              lastMergeSourceCommit: { commitId: 'source-77' },
+              createdBy: { displayName: 'Grace Hopper' },
+              reviewers: [],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes('repositoryId=repo')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ value: [] }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrStatus({ projects: [project], agents: {}, engine: {} });
+
+      const stored = testShared.safeJson(testShared.projectPrPath(project))[0];
+      assert.strictEqual(stored.title, 'Real ADO PR title',
+        'ADO polling should replace the manual-link polling title once metadata is available');
+      assert.strictEqual(stored.description, 'Real ADO PR description');
+      assert.strictEqual(stored.agent, 'Grace Hopper');
+      assert.strictEqual(stored.branch, 'feat/ado-manual-link');
+      assert.ok(!stored._branchResolutionError,
+        'resolved ADO source branch should clear stale branch-resolution error so review can retry');
+      assert.ok(!stored._pendingReason,
+        'resolved ADO source branch should clear missing_pr_branch pending reason so review can retry');
+    } finally {
+      globalThis.fetch = origFetch;
+      try {
+        const ado = require(adoPath);
+        if (ado._setAdoTokenForTest) ado._setAdoTokenForTest(null);
+      } catch {}
+      delete require.cache[require.resolve(adoPath)];
+      restore();
+    }
+  });
+}
+
 // ─── W-mnyao4dyz8w7: adoFetchText throttle detection ───────────────────────
 
 async function testAdoFetchTextThrottle() {
@@ -44752,12 +44899,12 @@ async function testAutoLinkAgentPrs() {
     assert.ok(start > 0, 'link handler must exist');
     const next = dashSrc.indexOf("{ method: 'POST', path: '/api/pull-requests/delete'", start);
     const linkHandler = dashSrc.slice(start, next);
-    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG)'),
+    assert.ok(linkHandler.includes('linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData })'),
       'manual link handler must route through the canonical PR attachment helper');
   });
 
   await test('/api/pull-requests/link accepts workItemId as a top-level field', () => {
-    assert.ok(dashSrc.includes('function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }'),
+    assert.ok(dashSrc.includes('function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {})'),
       'link helper must accept workItemId from the request body');
   });
 
