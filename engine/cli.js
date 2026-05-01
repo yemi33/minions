@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateWorkItems, ts, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeRead, safeJson, safeWrite, mutateControl, mutateWorkItems, ts, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus,
   MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
@@ -312,7 +312,7 @@ const commands = {
     }
     let codeCommit = null;
     try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
-    safeWrite(CONTROL_PATH, { state: 'running', pid: process.pid, started_at: e.ts(), codeVersion, codeCommit });
+    mutateControl(() => ({ state: 'running', pid: process.pid, started_at: e.ts(), codeVersion, codeCommit }));
     // Keep .minions-version in sync so `minions version` stays accurate after git pulls
     if (codeVersion) {
       try { fs.writeFileSync(path.join(shared.MINIONS_DIR, '.minions-version'), codeVersion); } catch {}
@@ -599,7 +599,10 @@ const commands = {
       const ctrl = getControl();
       if (ctrl._wakeupAt && Date.now() - ctrl._wakeupAt < 5000) {
         delete ctrl._wakeupAt;
-        safeWrite(CONTROL_PATH, ctrl);
+        mutateControl((control) => {
+          delete control._wakeupAt;
+          return control;
+        });
         e.tick();
       }
     }, 1000);
@@ -669,11 +672,11 @@ const commands = {
       clearInterval(fastPollTimer);
       if (teamsInboxTimer) clearInterval(teamsInboxTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
-      safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
+      mutateControl(() => ({ state: 'stopping', pid: process.pid, stopping_at: e.ts() }));
       e.log('info', `Graceful shutdown initiated (${signal})`);
 
       if (e.activeProcesses.size === 0) {
-        safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+        mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
         e.log('info', 'Graceful shutdown complete (no active agents)');
         shared.flushLogs(); // drain buffered log entries before exit
         console.log('No active agents — stopped.');
@@ -687,7 +690,7 @@ const commands = {
       const poll = setInterval(() => {
         if (e.activeProcesses.size === 0) {
           clearInterval(poll);
-          safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+          mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
           e.log('info', 'Graceful shutdown complete (all agents finished)');
           shared.flushLogs(); // drain buffered log entries before exit
           console.log('All agents finished — stopped.');
@@ -695,7 +698,7 @@ const commands = {
         }
         if (Date.now() >= deadline) {
           clearInterval(poll);
-          safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+          mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
           e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
           shared.flushLogs(); // drain buffered log entries before exit
           console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
@@ -742,14 +745,14 @@ const commands = {
     if (control.pid && control.pid !== process.pid) {
       try { process.kill(control.pid); } catch { /* process may be dead */ }
     }
-    safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+    mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
     e.log('info', 'Engine stopped');
     console.log('Engine stopped.');
   },
 
   pause() {
     const e = engine();
-    safeWrite(CONTROL_PATH, { state: 'paused', paused_at: e.ts() });
+    mutateControl(() => ({ state: 'paused', paused_at: e.ts() }));
     e.log('info', 'Engine paused');
     console.log('Engine paused. Run `node .minions/engine.js resume` to resume.');
   },
@@ -761,7 +764,7 @@ const commands = {
       console.log('Engine is already running.');
       return;
     }
-    safeWrite(CONTROL_PATH, { state: 'running', resumed_at: e.ts() });
+    mutateControl(() => ({ state: 'running', resumed_at: e.ts() }));
     e.log('info', 'Engine resumed');
     console.log('Engine resumed.');
   },
@@ -932,7 +935,7 @@ const commands = {
   dispatch() {
     const control = getControl();
     if (control.state === 'running' && isEngineProcessAlive(control)) {
-      safeWrite(CONTROL_PATH, { ...control, _wakeupAt: Date.now() });
+      mutateControl((c) => ({ ...c, _wakeupAt: Date.now() }));
       console.log(`Dispatch wakeup requested from running engine (PID ${control.pid}).`);
       return;
     }

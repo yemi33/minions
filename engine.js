@@ -95,6 +95,7 @@ const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const safeUnlink = shared.safeUnlink;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
+const mutateControl = shared.mutateControl;
 const mutateWorkItems = shared.mutateWorkItems;
 const mutatePullRequests = shared.mutatePullRequests;
 const withFileLock = shared.withFileLock;
@@ -3557,7 +3558,7 @@ async function tickInner() {
   }
 
   // Write heartbeat so dashboard can detect stale engine
-  try { safeWrite(CONTROL_PATH, { ...control, heartbeat: Date.now() }); } catch (e) { log('warn', 'write heartbeat: ' + e.message); }
+  try { mutateControl(c => ({ ...c, heartbeat: Date.now() })); } catch (e) { log('warn', 'write heartbeat: ' + e.message); }
 
   const config = getConfig();
   tickCount++;

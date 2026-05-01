@@ -180,6 +180,47 @@ async function testSharedUtilities() {
     assert.deepStrictEqual(shared.safeJson(fp), { deep: true });
   });
 
+  await test('mutateControl preserves concurrent control.json fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const controlPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'control.json');
+      freshShared.safeWrite(controlPath, { state: 'running', pid: 123, _wakeupAt: 456 });
+      freshShared.mutateControl(control => ({ ...control, heartbeat: 789 }));
+      assert.deepStrictEqual(freshShared.safeJson(controlPath), {
+        state: 'running',
+        pid: 123,
+        _wakeupAt: 456,
+        heartbeat: 789,
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  await test('mutateCooldowns updates cooldowns.json under the shared lock', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const cooldownPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'cooldowns.json');
+      freshShared.safeWrite(cooldownPath, {
+        'work-W-1': { timestamp: 1, failures: 1 },
+        'work-W-2': { timestamp: 2, failures: 2 },
+      });
+      freshShared.mutateCooldowns(cooldowns => {
+        delete cooldowns['work-W-1'];
+        cooldowns['work-W-3'] = { timestamp: 3, failures: 0 };
+        return cooldowns;
+      });
+      assert.deepStrictEqual(freshShared.safeJson(cooldownPath), {
+        'work-W-2': { timestamp: 2, failures: 2 },
+        'work-W-3': { timestamp: 3, failures: 0 },
+      });
+    } finally {
+      restore();
+    }
+  });
+
   await test('safeUnlink removes file silently', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'delete-me.txt');
@@ -4522,6 +4563,26 @@ async function testQueriesCore() {
     assert.ok(Array.isArray(dispatch.pending));
     assert.ok(Array.isArray(dispatch.active));
     assert.ok(Array.isArray(dispatch.completed));
+  });
+
+  await test('getDispatch warns on corrupt dispatch.json instead of silently defaulting', () => {
+    const restore = createTestMinionsDir();
+    const warnings = [];
+    const origWarn = console.warn;
+    try {
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, '{ not json');
+      console.warn = (msg) => warnings.push(String(msg));
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+      freshQueries.invalidateDispatchCache();
+      const dispatch = freshQueries.getDispatch();
+      assert.ok(Array.isArray(dispatch.pending));
+      assert.ok(warnings.some(w => w.includes('corrupt JSON') && w.includes('dispatch.json')),
+        'corrupt dispatch.json should be surfaced to logs');
+    } finally {
+      console.warn = origWarn;
+      restore();
+    }
   });
 
   await test('getDispatchQueue caps completed at 20', () => {
@@ -10922,6 +10983,29 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
+  await test('saveCooldowns does not resurrect entries deleted by locked external cleanup', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        stale: { timestamp: Date.now(), failures: 1 },
+      });
+      cooldown.loadCooldowns();
+      freshShared.mutateCooldowns(cooldowns => {
+        delete cooldowns.stale;
+        return cooldowns;
+      });
+      cooldown.setCooldown('fresh');
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.ok(saved.fresh, 'new in-memory cooldown should still persist');
+      assert.ok(!saved.stale, 'externally deleted cooldown must not be resurrected by debounced save');
+      assert.ok(!cooldown.dispatchCooldowns.has('stale'),
+        'in-memory cooldown map should honor the locked external deletion');
+    } finally { restore(); }
+  });
+
   await test('saveCooldowns caps pendingContexts at maxPendingContexts (#1167)', async () => {
     const restore = createTestMinionsDir();
     try {
@@ -17121,8 +17205,8 @@ async function testWakeupEndpoint() {
     const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
     assert.ok(dispatchBody.includes('isEngineProcessAlive(control)'),
       'dispatch command should check whether the daemon process is alive');
-    assert.ok(dispatchBody.includes('_wakeupAt') && dispatchBody.includes('safeWrite(CONTROL_PATH'),
-      'dispatch command should signal the running daemon via control.json wakeup');
+    assert.ok(dispatchBody.includes('_wakeupAt') && dispatchBody.includes('mutateControl('),
+      'dispatch command should signal the running daemon via locked control.json wakeup');
     assert.ok(!dispatchBody.includes('e.tick()'),
       'dispatch command must not run tick() in the CLI process; it has no activeProcesses state');
   });
@@ -24899,13 +24983,13 @@ async function testAuxModuleBugFixes() {
   console.log('\n── P-e9y7xcp5: Auxiliary Module Bug Fixes ──');
 
   // Bug #16: saveCooldowns .catch() for write errors
-  await test('cooldown.js: saveCooldowns wraps safeWrite in try-catch', () => {
+  await test('cooldown.js: saveCooldowns wraps locked cooldown mutation in try-catch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
-    // Find the saveCooldowns function and verify it has try-catch around safeWrite
+    // Find the saveCooldowns function and verify it has try-catch around the locked write
     const fnMatch = src.match(/function saveCooldowns\(\)[\s\S]*?^\}/m);
     assert.ok(fnMatch, 'saveCooldowns function should exist');
     const fnBody = fnMatch[0];
-    assert.ok(fnBody.includes('try {') && fnBody.includes('safeWrite(COOLDOWN_PATH'), 'safeWrite should be wrapped in try block');
+    assert.ok(fnBody.includes('try {') && fnBody.includes('mutateCooldowns('), 'cooldown mutation should be wrapped in try block');
     assert.ok(fnBody.includes('catch (err)'), 'Should have catch clause');
     assert.ok(fnBody.includes('COOLDOWN_PATH'), 'Error message should reference COOLDOWN_PATH');
   });

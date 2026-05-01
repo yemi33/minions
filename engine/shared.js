@@ -8,6 +8,9 @@ const path = require('path');
 const crypto = require('crypto');
 
 const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
+const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
+const CONTROL_PATH = path.join(ENGINE_DIR, 'control.json');
+const COOLDOWNS_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const PINNED_ITEMS_PATH = path.join(MINIONS_DIR, 'engine', 'kb-pins.json');
 const LOG_PATH = path.join(MINIONS_DIR, 'engine', 'log.json');
@@ -426,6 +429,20 @@ function mutateJsonFileLocked(filePath, mutateFn, {
     }
     return finalData;
   }, { retries, retryBackoffMs });
+}
+
+function mutateControl(mutator) {
+  return mutateJsonFileLocked(CONTROL_PATH, (data) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+    return mutator(data) || data;
+  }, { defaultValue: { state: 'stopped', pid: null }, skipWriteIfUnchanged: true });
+}
+
+function mutateCooldowns(mutator) {
+  return mutateJsonFileLocked(COOLDOWNS_PATH, (data) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+    return mutator(data) || data;
+  }, { defaultValue: {}, skipWriteIfUnchanged: true });
 }
 
 /**
@@ -2304,6 +2321,9 @@ function createThrottleTracker({ label, baseBackoffMs = 60000, maxBackoffMs = 32
 
 module.exports = {
   MINIONS_DIR,
+  ENGINE_DIR,
+  CONTROL_PATH,
+  COOLDOWNS_PATH,
   PR_LINKS_PATH,
   PINNED_ITEMS_PATH,
   LOG_PATH,
@@ -2325,6 +2345,8 @@ module.exports = {
   assertStateFileSize,
   withFileLock,
   mutateJsonFileLocked,
+  mutateControl,
+  mutateCooldowns,
   mutateWorkItems,
   reopenWorkItem,
   mutatePullRequests,

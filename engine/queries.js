@@ -101,7 +101,21 @@ function timeSince(ms) {
 }
 
 function readJsonNoRestore(filePath) {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return null; }
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') {
+      console.warn(`[queries] failed to read ${_relativeStatePath(filePath)}: ${e.message}`);
+    }
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn(`[queries] corrupt JSON in ${_relativeStatePath(filePath)}: ${e.message}`);
+    return null;
+  }
 }
 
 // ── Core State Readers ──────────────────────────────────────────────────────

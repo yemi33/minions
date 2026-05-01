@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { exec, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
-const { safeJson, safeWrite, safeReadDir, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
+const { safeJson, safeWrite, safeReadDir, mutateCooldowns, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
 
@@ -675,9 +675,9 @@ function runCleanup(config, verbose = false) {
         entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
         const keep = Object.fromEntries(entries.slice(0, COOLDOWN_CAP));
         cleaned.cooldowns = entries.length - COOLDOWN_CAP;
-        safeWrite(cooldownPath, keep);
+        mutateCooldowns(() => keep);
       } else if (dirty) {
-        safeWrite(cooldownPath, cooldowns);
+        mutateCooldowns(() => cooldowns);
       }
     }
   } catch (e) { log('warn', 'cap cooldowns: ' + e.message); }

@@ -31,7 +31,7 @@ const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -2116,12 +2116,10 @@ const { cleanDispatchEntries } = require('./engine/dispatch');
 // ── Engine Restart Helpers (used by watchdog + API) ─────────────────────────
 
 function spawnEngine() {
-  const controlPath = path.join(ENGINE_DIR, 'control.json');
   // Don't pre-write 'stopped' — let the new engine process own its state transition.
   // The engine start code already handles state:'running' with a dead PID gracefully.
   // Only set restarted_at + clear stale pid so dashboard shows the restart timestamp.
-  const control = safeJson(controlPath) || {};
-  safeWrite(controlPath, { ...control, pid: null, restarted_at: new Date().toISOString() });
+  mutateControl(control => ({ ...control, pid: null, restarted_at: new Date().toISOString() }));
   const { spawn: cpSpawn } = require('child_process');
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
@@ -2413,12 +2411,10 @@ const server = http.createServer(async (req, res) => {
           }, { defaultValue: { pending: [], active: [], completed: [] } });
         } catch (e) { console.error('dispatch cleanup:', e.message); }
         try {
-          const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-          const cooldowns = safeJsonObj(cooldownPath);
-          if (cooldowns[dispatchKey]) {
+          mutateCooldowns(cooldowns => {
             delete cooldowns[dispatchKey];
-            safeWrite(cooldownPath, cooldowns);
-          }
+            return cooldowns;
+          });
         } catch (e) { console.error('cooldown cleanup:', e.message); }
 
         return jsonReply(res, 200, { ok: true, id, rematerialized: true });
@@ -2463,12 +2459,10 @@ const server = http.createServer(async (req, res) => {
 
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
-        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = safeJsonObj(cooldownPath);
-        if (cooldowns[dispatchKey]) {
+        mutateCooldowns(cooldowns => {
           delete cooldowns[dispatchKey];
-          safeWrite(cooldownPath, cooldowns);
-        }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       return jsonReply(res, 200, { ok: true, id });
@@ -2514,13 +2508,12 @@ const server = http.createServer(async (req, res) => {
 
       // Clean cooldown entries so item can be re-created immediately
       try {
-        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = safeJsonObj(cooldownPath);
-        let cleaned = false;
-        for (const key of Object.keys(cooldowns)) {
-          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
-        }
-        if (cleaned) safeWrite(cooldownPath, cooldowns);
+        mutateCooldowns(cooldowns => {
+          for (const key of Object.keys(cooldowns)) {
+            if (key.includes(id)) delete cooldowns[key];
+          }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       // Reset PRD item status so it doesn't stay 'dispatched' with no work item (#779)
@@ -2579,13 +2572,12 @@ const server = http.createServer(async (req, res) => {
 
       // Clean cooldown entries
       try {
-        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = safeJsonObj(cooldownPath);
-        let cleaned = false;
-        for (const key of Object.keys(cooldowns)) {
-          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
-        }
-        if (cleaned) safeWrite(cooldownPath, cooldowns);
+        mutateCooldowns(cooldowns => {
+          for (const key of Object.keys(cooldowns)) {
+            if (key.includes(id)) delete cooldowns[key];
+          }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup on cancel:', e.message); }
 
       invalidateStatusCache();
@@ -2704,12 +2696,10 @@ const server = http.createServer(async (req, res) => {
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       } catch (e) { console.error('dispatch cleanup on reopen:', e.message); }
       try {
-        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = safeJsonObj(cooldownPath);
-        if (cooldowns[dispatchKey]) {
+        mutateCooldowns(cooldowns => {
           delete cooldowns[dispatchKey];
-          safeWrite(cooldownPath, cooldowns);
-        }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup on reopen:', e.message); }
 
       invalidateStatusCache();
@@ -6446,10 +6436,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Engine
     { method: 'POST', path: '/api/engine/wakeup', desc: 'Trigger immediate engine tick via control.json signal', handler: async (req, res) => {
-      const controlPath = path.join(MINIONS_DIR, 'engine', 'control.json');
-      const control = shared.safeJson(controlPath) || {};
-      control._wakeupAt = Date.now();
-      shared.safeWrite(controlPath, control);
+      shared.mutateControl(control => ({ ...control, _wakeupAt: Date.now() }));
       return jsonReply(res, 200, { ok: true, message: 'Wakeup signal sent' });
     }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },

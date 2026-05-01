@@ -7,7 +7,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeWrite, log, ENGINE_DEFAULTS } = shared;
+const { safeJson, mutateCooldowns, log, ENGINE_DEFAULTS } = shared;
 const { ENGINE_DIR } = queries;
 
 /**
@@ -37,6 +37,7 @@ function _truncateContextEntry(entry, maxBytes) {
 
 const COOLDOWN_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
 const dispatchCooldowns = new Map(); // key → { timestamp, failures }
+let _lastDiskCooldownKeys = new Set();
 
 function loadCooldowns() {
   const saved = safeJson(COOLDOWN_PATH);
@@ -48,6 +49,7 @@ function loadCooldowns() {
       dispatchCooldowns.set(k, v);
     }
   }
+  _lastDiskCooldownKeys = new Set(dispatchCooldowns.keys());
   log('info', `Loaded ${dispatchCooldowns.size} cooldowns from disk`);
 }
 
@@ -57,27 +59,35 @@ function saveCooldowns() {
   if (_cooldownWriteTimer) clearTimeout(_cooldownWriteTimer);
   _cooldownWriteTimer = setTimeout(() => {
     _cooldownWriteTimer = null;
-    // Prune expired entries (>24h) before saving
-    const now = Date.now();
-    for (const [k, v] of dispatchCooldowns) {
-      if (now - v.timestamp > 24 * 60 * 60 * 1000) dispatchCooldowns.delete(k);
-    }
-    // Trim pendingContexts arrays before writing to prevent bloat
-    const cap = ENGINE_DEFAULTS.maxPendingContexts;
-    const entryLimit = ENGINE_DEFAULTS.maxPendingContextEntryBytes;
-    for (const [, v] of dispatchCooldowns) {
-      if (Array.isArray(v.pendingContexts)) {
-        if (v.pendingContexts.length > cap) {
-          v.pendingContexts = v.pendingContexts.slice(-cap);
-        }
-        // Also truncate oversized individual entries — #1167 showed
-        // 20 entries × 25 MB each still produced a 500 MB cooldowns.json.
-        v.pendingContexts = v.pendingContexts.map(e => _truncateContextEntry(e, entryLimit));
-      }
-    }
-    const obj = Object.fromEntries(dispatchCooldowns);
     try {
-      safeWrite(COOLDOWN_PATH, obj);
+      mutateCooldowns((diskCooldowns) => {
+        for (const key of Array.from(dispatchCooldowns.keys())) {
+          if (_lastDiskCooldownKeys.has(key) && !Object.prototype.hasOwnProperty.call(diskCooldowns, key)) {
+            dispatchCooldowns.delete(key);
+          }
+        }
+        // Prune expired entries (>24h) before saving
+        const now = Date.now();
+        for (const [k, v] of dispatchCooldowns) {
+          if (now - v.timestamp > 24 * 60 * 60 * 1000) dispatchCooldowns.delete(k);
+        }
+        // Trim pendingContexts arrays before writing to prevent bloat
+        const cap = ENGINE_DEFAULTS.maxPendingContexts;
+        const entryLimit = ENGINE_DEFAULTS.maxPendingContextEntryBytes;
+        for (const [, v] of dispatchCooldowns) {
+          if (Array.isArray(v.pendingContexts)) {
+            if (v.pendingContexts.length > cap) {
+              v.pendingContexts = v.pendingContexts.slice(-cap);
+            }
+            // Also truncate oversized individual entries — #1167 showed
+            // 20 entries × 25 MB each still produced a 500 MB cooldowns.json.
+            v.pendingContexts = v.pendingContexts.map(e => _truncateContextEntry(e, entryLimit));
+          }
+        }
+        const obj = Object.fromEntries(dispatchCooldowns);
+        _lastDiskCooldownKeys = new Set(Object.keys(obj));
+        return obj;
+      });
     } catch (err) {
       log('warn', `saveCooldowns failed writing ${COOLDOWN_PATH}: ${err.message}`);
     }
