@@ -19030,6 +19030,49 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
+  await test('checkTimeouts: stale orphan full-scans live log before marking clean exit orphaned (#1952)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'clean-exit-outside-tail';
+      const startedAt = new Date(Date.now() - 1000000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: startedAt,
+          workType: 'implement',
+          meta: {},
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.mkdirSync(agentDir, { recursive: true });
+      const fakeLog = [
+        JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'Done.' }),
+        '[process-exit] code=0',
+        'x'.repeat(70000),
+      ].join('\n') + '\n';
+      fs.writeFileSync(liveLogPath, fakeLog);
+      const oldTime = new Date(Date.now() - 1000000);
+      fs.utimesSync(liveLogPath, oldTime, oldTime);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Clean-exit stale orphan should leave active via completion recovery, not orphan timeout');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Clean-exit stale orphan should be completed');
+      assert.strictEqual(completed.result, 'success',
+        'Full-log [process-exit] code=0 scan should route through SUCCESS completion recovery');
+      assert.ok(!/Orphaned/.test(completed.resultSummary || completed.error || ''),
+        'Clean-exit recovery must not surface an Orphaned/silent summary');
+    } finally { env.restore(); }
+  });
+
   await test('checkTimeouts: completion-via-output detection — error subtype maps to ERROR', () => {
     const env = setupIsolated();
     try {
