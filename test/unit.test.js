@@ -195,6 +195,19 @@ async function testSharedUtilities() {
   await test('safeReadDir returns empty array for missing dir', () => {
     assert.deepStrictEqual(shared.safeReadDir('/nonexistent/dir'), []);
   });
+
+  await test('execAsync keeps event loop alive (no premature unref)', async () => {
+    // Regression: execAsync used to call child.unref() which let Node exit
+    // before the promise resolved, abandoning awaiters. Spawn a child that
+    // takes ~500ms — if execAsync unref's the child, output will be empty
+    // because Node would exit before the child's stdout flushes back.
+    const cmd = process.platform === 'win32'
+      ? `"${process.execPath}" -e "setTimeout(() => process.stdout.write('alive'), 500)"`
+      : `${process.execPath} -e "setTimeout(() => process.stdout.write('alive'), 500)"`;
+    const out = await shared.execAsync(cmd, { timeout: 5000 });
+    assert.ok(out.includes('alive'),
+      'execAsync child must keep event loop alive — output was: ' + JSON.stringify(out));
+  });
 }
 
 async function testIdGeneration() {
