@@ -59,16 +59,52 @@ function mutateDispatch(mutator) {
 
 // ─── Add to Dispatch ─────────────────────────────────────────────────────────
 
-function getPrDispatchDedupeKey(entry) {
-  if (!entry?.meta?.pr || !entry?.meta?.project || !entry?.type) return null;
-  const type = entry.type === WORK_TYPE.FIX ? WORK_TYPE.FIX : entry.type;
+function getDispatchProjectKey(project) {
+  if (!project) return '';
+  return project.name || (project.localPath ? path.resolve(project.localPath).toLowerCase() : '');
+}
+
+function getPrDispatchTargetKey(entry) {
+  if (!entry?.meta?.pr || !entry?.meta?.project) return null;
   const project = entry.meta.project;
-  const projectKey = project.name
-    || (project.localPath ? path.resolve(project.localPath).toLowerCase() : '');
+  const projectKey = getDispatchProjectKey(project);
   if (!projectKey) return null;
   const prKey = shared.getCanonicalPrId(project, entry.meta.pr, entry.meta.pr?.url || '');
   if (!prKey) return null;
-  return `${projectKey}:${type}:${prKey}`;
+  return `${projectKey}:${prKey}`;
+}
+
+function getPrDispatchDedupeKey(entry) {
+  if (!entry?.type) return null;
+  const targetKey = getPrDispatchTargetKey(entry);
+  if (!targetKey) return null;
+  const type = entry.type === WORK_TYPE.FIX ? WORK_TYPE.FIX : entry.type;
+  return `${targetKey}:${type}`;
+}
+
+function getBranchDispatchLockKey(entry) {
+  const branch = entry?.meta?.branch || entry?.meta?.pr?.branch || '';
+  if (!branch) return null;
+  const normalizedBranch = shared.sanitizeBranch(branch);
+  if (!normalizedBranch) return null;
+  const projectKey = getDispatchProjectKey(entry?.meta?.project) || 'default';
+  return `${projectKey}:${normalizedBranch}`;
+}
+
+function findActivePrOrBranchLock(dispatch, item) {
+  if (item?.type !== WORK_TYPE.FIX) return null;
+  const active = dispatch.active || [];
+  const prTargetKey = getPrDispatchTargetKey(item);
+  if (prTargetKey) {
+    const existing = active.find(d => getPrDispatchTargetKey(d) === prTargetKey);
+    if (existing) return { existing, reason: `active PR dispatch ${prTargetKey}` };
+  }
+
+  const branchLockKey = getBranchDispatchLockKey(item);
+  if (!branchLockKey) return null;
+  const existing = active.find(d => getBranchDispatchLockKey(d) === branchLockKey);
+  if (!existing) return null;
+  return { existing, reason: `active branch dispatch ${branchLockKey}` };
 }
 
 function addToDispatch(item) {
@@ -105,6 +141,11 @@ function addToDispatch(item) {
         log('info', `Dedup: skipping ${item.id} — PR dispatch ${prDedupeKey} already in ${existing.id}`);
         return dispatch;
       }
+    }
+    const activeLock = findActivePrOrBranchLock(dispatch, item);
+    if (activeLock) {
+      log('info', `Dedup: skipping ${item.id} — ${activeLock.reason} already in ${activeLock.existing.id}`);
+      return dispatch;
     }
     dispatch.pending.push(item);
     added = true;

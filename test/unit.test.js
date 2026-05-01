@@ -8480,6 +8480,90 @@ async function testStateIntegrity() {
     } finally { restore(); }
   });
 
+  await test('addToDispatch blocks PR fix when active dispatch owns the same PR (#1941)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dispatchMod = require('../engine/dispatch');
+      const freshShared = require('../engine/shared');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const project = {
+        name: 'ProjA',
+        localPath: 'D:\\\\proj-a',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const pr = { id: 'PR-5144573', prNumber: 5144573, url: 'https://github.com/octo/repo/pull/5144573' };
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{
+          id: 'ripley-review-active',
+          type: freshShared.WORK_TYPE.REVIEW,
+          agent: 'ripley',
+          meta: { dispatchKey: 'review-ProjA-PR-5144573', project, pr },
+        }],
+        completed: [],
+      });
+
+      dispatchMod.addToDispatch({
+        id: 'ralph-fix',
+        type: freshShared.WORK_TYPE.FIX,
+        agent: 'ralph',
+        task: 'Fix build failure',
+        prompt: 'fix',
+        meta: {
+          dispatchKey: 'build-fix-ProjA-PR-5144573',
+          project,
+          pr: { id: 'github:octo/repo#5144573', prNumber: 5144573 },
+        },
+      });
+
+      const dispatch = freshShared.safeJson(dispatchPath);
+      assert.deepStrictEqual(dispatch.pending || [], [],
+        'fix should not enqueue while an active same-PR dispatch owns the branch');
+      assert.strictEqual((dispatch.active || []).length, 1,
+        'active dispatch should remain untouched');
+    } finally { restore(); }
+  });
+
+  await test('addToDispatch blocks PR fix when active dispatch owns the same branch (#1941)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dispatchMod = require('../engine/dispatch');
+      const freshShared = require('../engine/shared');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const project = { name: 'ProjA', localPath: 'D:\\\\proj-a' };
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{
+          id: 'dallas-fix-active',
+          type: freshShared.WORK_TYPE.FIX,
+          agent: 'dallas',
+          meta: { dispatchKey: 'work-item-fix', project, branch: 'work/PR-5144573-fix' },
+        }],
+        completed: [],
+      });
+
+      dispatchMod.addToDispatch({
+        id: 'ralph-fix',
+        type: freshShared.WORK_TYPE.FIX,
+        agent: 'ralph',
+        task: 'Fix build failure',
+        prompt: 'fix',
+        meta: {
+          dispatchKey: 'build-fix-ProjA-PR-5144573',
+          project,
+          branch: 'work/PR-5144573-fix',
+          pr: { id: 'PR-5144573', prNumber: 5144573 },
+        },
+      });
+
+      const dispatch = freshShared.safeJson(dispatchPath);
+      assert.deepStrictEqual(dispatch.pending || [], [],
+        'fix should not enqueue while an active dispatch owns the same branch');
+    } finally { restore(); }
+  });
+
   await test('Pending work-item discovery self-heals stale dispatch gates (batched)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('selfHealKeys'),
