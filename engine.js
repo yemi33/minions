@@ -2644,7 +2644,7 @@ function discoverFromWorkItems(config, project) {
       skipped.gated++; continue;
     }
 
-    let workType = item.type || 'implement';
+    let workType = routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT);
     if (workType === WORK_TYPE.IMPLEMENT && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
       workType = WORK_TYPE.IMPLEMENT_LARGE;
     }
@@ -2655,16 +2655,17 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     const agentHints = routing.extractAgentHints(item);
-    const hasExplicitAgentHint = !!(item.agent || routing.normalizeAgentHints(agentHints, null, config.agents || {}).length);
-    let agentId = item.agent || resolveAgent(workType, config, { agentHints });
+    const hardPinRequested = routing.isAgentHardPinned(item);
+    let agentId = routing.getHardPinnedAgent(item, config.agents || {})
+      || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null);
     const cfgAgents = config.agents || {};
     const budgetBlocked = Object.keys(cfgAgents).some(id => {
       const b = cfgAgents[id].monthlyBudgetUsd;
       return b && b > 0 && getMonthlySpend(id) >= b && isAgentIdle(id);
     });
     if (!agentId) {
-      if (!budgetBlocked && !hasExplicitAgentHint) {
-        agentId = resolveAgentReservation(workType, config);
+      if (!budgetBlocked && !hardPinRequested) {
+        agentId = resolveAgentReservation(workType, config, { agentHints });
       }
       if (agentId) {
         delete item._pendingReason;
@@ -3104,7 +3105,7 @@ function discoverCentralWorkItems(config) {
     }
     if (isOnCooldown(key, 0)) continue;
 
-    const workType = item.type || 'implement';
+    const workType = routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT);
     const isFanOut = item.scope === 'fan-out';
 
     if (isFanOut) {
@@ -3185,10 +3186,10 @@ function discoverCentralWorkItems(config) {
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
       const agentHints = routing.extractAgentHints(item);
-      const hasExplicitAgentHint = !!(item.agent || routing.normalizeAgentHints(agentHints, null, config.agents || {}).length);
-      const agentId = item.agent
-        || resolveAgent(workType, config, { agentHints })
-        || (!hasExplicitAgentHint ? resolveAgentReservation(workType, config) : null);
+      const hardPinRequested = routing.isAgentHardPinned(item);
+      const agentId = routing.getHardPinnedAgent(item, config.agents || {})
+        || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null)
+        || (!hardPinRequested ? resolveAgentReservation(workType, config, { agentHints }) : null);
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
@@ -3862,7 +3863,7 @@ async function tickInner() {
     // be of type string. Received undefined` and re-queues — every tick. Try to
     // resolve a fallback via routing; if none is available, skip this tick.
     if (!item.agent || typeof item.agent !== 'string') {
-      const fallback = resolveAgent(item.type || WORK_TYPE.FIX, config, { agentHints: routing.extractAgentHints(item.meta?.item) });
+      const fallback = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config, { agentHints: routing.extractAgentHints(item.meta?.item) });
       if (!fallback) {
         log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
         continue;
@@ -3893,7 +3894,7 @@ async function tickInner() {
     // them eagerly before the busy check so an idle named agent can pick up.
     const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
     if (isUnspawnedTemp) {
-      const altAgent = resolveAgent(item.type, config);
+      const altAgent = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config);
       if (altAgent && altAgent !== item.agent) {
         const prevAgent = item.agent;
         item.agent = altAgent;
@@ -3920,12 +3921,12 @@ async function tickInner() {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
       const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
-      const isExplicitReassign = !!(item.meta?.item?.agent || routing.extractAgentHints(item.meta?.item));
-      if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
+      const isHardPinned = routing.isAgentHardPinned(item.meta?.item);
+      if (!isHardPinned && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();
         if (Date.now() - busySinceMs > reassignMs) {
           const originalAgent = item.agent;
-          const altAgent = resolveAgent(item.type, config);
+          const altAgent = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config, { agentHints: routing.extractAgentHints(item.meta?.item) });
           if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
             log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy > ${reassignMs}ms`);
             item.agent = altAgent;
@@ -3959,14 +3960,12 @@ async function tickInner() {
     // Branch mutex: skip items targeting a branch already locked by an active or newly-dispatched task
     const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
     if (itemBranch && lockedBranches.has(itemBranch)) continue;
-    // Items explicitly assigned to an agent bypass concurrency cap — dispatch if agent is free
-    const isExplicitAssignment = !!item.meta?.item?.agent;
-    if (!isExplicitAssignment && generalSlots <= 0) continue;
+    if (generalSlots <= 0) continue;
     seenPendingIds.add(item.id);
     toDispatch.push(item);
     busyAgents.add(item.agent);
     if (itemBranch) lockedBranches.add(itemBranch);
-    if (!isExplicitAssignment) generalSlots--;
+    generalSlots--;
   }
 
   // Dispatch items — spawnAgent moves each from pending→active on disk.

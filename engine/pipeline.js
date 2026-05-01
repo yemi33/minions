@@ -9,6 +9,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS, MINIONS_DIR } = shared;
+const routing = require('./routing');
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
@@ -306,10 +307,11 @@ function executeTaskStage(stage, stageState, run, config) {
         id,
         title: item.title || stage.title,
         description: item.description || stage.description || '',
-        type: item.type || stage.taskType || 'explore',
+        type: routing.normalizeWorkType(item.type || stage.taskType, WORK_TYPE.EXPLORE),
         priority: item.priority || stage.priority || 'medium',
-        // Only set agent if explicitly specified — otherwise engine routing assigns any available agent
+        // Agent is a soft routing hint unless agentLock/hardAgent is set.
         ...(item.agent || stage.agent ? { agent: item.agent || stage.agent } : {}),
+        ...(item.agentLock === true || stage.agentLock === true || item.hardAgent === true || stage.hardAgent === true ? { agentLock: true } : {}),
         status: WI_STATUS.PENDING,
         created: ts(),
         createdBy: 'pipeline:' + run.pipelineId,
@@ -587,7 +589,7 @@ function executeMergePrsStage(stage, stageState, run, config) {
 
 function executeScheduleStage(stage, stageState, config) {
   // Create/update schedules in config
-  const schedules = stage.schedules || [{ id: stage.id + '-sched', cron: stage.cron, title: stage.title, type: stage.taskType || 'implement' }];
+  const schedules = stage.schedules || [{ id: stage.id + '-sched', cron: stage.cron, title: stage.title, type: routing.normalizeWorkType(stage.taskType, WORK_TYPE.IMPLEMENT) }];
   // Write to config via shared
   for (const sched of schedules) {
     const existing = (config.schedules || []).find(s => s.id === sched.id);

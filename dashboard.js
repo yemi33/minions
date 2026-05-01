@@ -31,7 +31,7 @@ const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -1392,7 +1392,7 @@ async function executeCCActions(actions) {
     try {
       switch (action.type) {
         case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {
-          const workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
+          const workType = routing.normalizeWorkType(action.workType || (action.type !== 'dispatch' ? action.type : WORK_TYPE.IMPLEMENT), WORK_TYPE.IMPLEMENT);
           const id = 'W-' + shared.uid();
           const project = action.project || '';
 
@@ -2733,22 +2733,19 @@ const server = http.createServer(async (req, res) => {
       }
       const id = 'W-' + shared.uid();
       const item = {
-        id, title: body.title.trim(), type: body.type || 'implement',
+        id, title: body.title.trim(), type: routing.normalizeWorkType(body.type, WORK_TYPE.IMPLEMENT),
         priority: body.priority || 'medium', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
       if (body.scope) item.scope = body.scope;
-      // Agent assignment normalization: when the caller (CC, dashboard form,
-      // direct API) supplies a single explicit agent — either via `agent`
-      // (singular) or a one-element `agents` array — treat it as a HARD pin
-      // by setting `item.agent`. The engine reads `item.agent || resolveAgent(…)`,
-      // so a hard-pinned item bypasses routing entirely and queues until that
-      // exact agent is free. Multi-agent arrays remain `item.agents` (hints
-      // for resolveAgent or fan-out scope).
+      // Agent assignment normalization: `agent` and `agents` are routing hints.
+      // Use agentLock/hardAgent only for the rare case where an item must wait
+      // for one exact agent instead of falling through to another idle agent.
       const _agentsArr = Array.isArray(body.agents) ? body.agents.filter(Boolean) : (typeof body.agents === 'string' && body.agents ? [body.agents] : []);
       if (body.agent) item.agent = String(body.agent);
       else if (_agentsArr.length === 1 && body.scope !== 'fan-out') item.agent = String(_agentsArr[0]);
       if (_agentsArr.length > 0) item.agents = _agentsArr;
+      if (body.agentLock === true || body.hardAgent === true) item.agentLock = true;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr) item.skipPr = true;

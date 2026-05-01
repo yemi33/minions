@@ -24,7 +24,8 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, mutateJsonFileLocked, ts, dateStamp, WI_STATUS } = shared;
+const routing = require('./routing');
+const { safeJson, safeWrite, mutateJsonFileLocked, ts, dateStamp, WI_STATUS, WORK_TYPE } = shared;
 
 const SCHEDULE_RUNS_PATH = path.join(shared.MINIONS_DIR, 'engine', 'schedule-runs.json');
 
@@ -167,13 +168,14 @@ function discoverScheduledWork(config) {
       work.push({
         id: workItemId,
         title: resolveScheduleTemplateVars(sched.title),
-        type: sched.type || 'implement',
+        type: routing.normalizeWorkType(sched.type, WORK_TYPE.IMPLEMENT),
         priority: sched.priority || 'medium',
         description: resolveScheduleTemplateVars(sched.description || sched.title),
         status: WI_STATUS.PENDING,
         created: ts(),
         createdBy: 'scheduler',
         agent: sched.agent || null,
+        ...(sched.agentLock === true || sched.hardAgent === true ? { agentLock: true } : {}),
         project: sched.project || null,
         _scheduleId: sched.id,
       });

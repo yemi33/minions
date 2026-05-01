@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, log, ts } = shared;
+const { safeJson, safeRead, log, ts, WORK_TYPE } = shared;
 const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -116,12 +116,43 @@ function setTempBudget(n) {
 }
 function getTempBudget() { return _tempBudget; }
 
-// Centralizes the work-item shape used to derive routing hints. Engine code
-// previously inlined `item.preferred_agent || item.agents || null` at four
-// call sites; hoisting keeps the contract in one place.
+function normalizeWorkType(workType, fallback = WORK_TYPE.IMPLEMENT) {
+  const type = String(workType || fallback || '').trim();
+  if (!type) return fallback;
+  return type;
+}
+
+function routeForWorkType(workType) {
+  const routes = getRoutingTableCached();
+  return routes[normalizeWorkType(workType)] || routes[WORK_TYPE.IMPLEMENT] || { preferred: '_any_', fallback: '_any_' };
+}
+
+function isAgentHardPinned(item) {
+  return !!(item && (
+    item.agentLock === true ||
+    item.agent_locked === true ||
+    item.hardAgent === true ||
+    item.hard_agent === true
+  ));
+}
+
+function getHardPinnedAgent(item, agents = null) {
+  if (!isAgentHardPinned(item) || !item?.agent) return null;
+  const normalized = normalizeAgentHints(item.agent, null, agents);
+  return normalized[0] || null;
+}
+
+// Centralizes the work-item shape used to derive routing hints. `agent`,
+// `preferred_agent`, and `agents` are soft preferences unless an explicit
+// hard-pin flag is present (agentLock / hardAgent variants).
 function extractAgentHints(item) {
   if (!item || typeof item !== 'object') return null;
-  return item.preferred_agent || item.agents || null;
+  const hints = [];
+  if (!isAgentHardPinned(item) && item.agent) hints.push(item.agent);
+  if (item.preferred_agent) hints.push(item.preferred_agent);
+  if (Array.isArray(item.agents)) hints.push(...item.agents);
+  else if (item.agents) hints.push(item.agents);
+  return hints.length > 0 ? hints : null;
 }
 
 // Normalize a list of agent-hint inputs. Accepts:
@@ -158,8 +189,7 @@ function normalizeAgentHints(agentHints, authorAgent = null, agents = null) {
 
 function resolveAgent(workType, config, opts = {}) {
   const { authorAgent = null, agentHints = null } = opts || {};
-  const routes = getRoutingTableCached();
-  const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
+  const route = routeForWorkType(workType);
   const agents = config.agents || {};
 
   // Resolve _author_ token
@@ -191,7 +221,6 @@ function resolveAgent(workType, config, opts = {}) {
     for (const id of hintedAgents) {
       if (isAvailable(id)) { _claimedAgents.add(id); return id; }
     }
-    return null;
   }
 
   // Resolve _any_ token — pick any available agent (#480)
@@ -230,8 +259,7 @@ function resolveAgent(workType, config, opts = {}) {
 
 function resolveAgentReservation(workType, config, opts = {}) {
   const { authorAgent = null, agentHints = null } = opts || {};
-  const routes = getRoutingTableCached();
-  const route = routes[workType] || routes['implement'] || { preferred: '_any_', fallback: '_any_' };
+  const route = routeForWorkType(workType);
   const agents = config.agents || {};
   const hintedAgents = normalizeAgentHints(agentHints, authorAgent, agents);
 
@@ -274,6 +302,9 @@ module.exports = {
   isAgentIdle,
   normalizeAgentHints,
   extractAgentHints,
+  isAgentHardPinned,
+  getHardPinnedAgent,
+  normalizeWorkType,
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,

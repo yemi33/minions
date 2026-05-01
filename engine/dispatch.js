@@ -81,7 +81,7 @@ function addToDispatch(item) {
   let added = false;
   mutateDispatch((dispatch) => {
     // Dedup: skip if same work item ID is already pending or active
-    const wiId = item.meta?.item?.id;
+    const wiId = item.meta?.source === 'central-work-item-fanout' ? null : item.meta?.item?.id;
     if (wiId) {
       const existing = [...dispatch.pending, ...(dispatch.active || [])].find(d => d.meta?.item?.id === wiId);
       if (existing) {
