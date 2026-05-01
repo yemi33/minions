@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1668 (2026-05-01)
+
+### Fixes
+-  route stranded work items to available agents
+
 ## 0.1.1667 (2026-05-01)
 
 ### Other
