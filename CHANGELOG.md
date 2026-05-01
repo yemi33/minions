@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1659 (2026-05-01)
+
+### Other
+- Harden runtime state writes
+
 ## 0.1.1658 (2026-05-01)
 
 ### Fixes
