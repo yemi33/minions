@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1657 (2026-05-01)
+
+### Other
+- Fix dispatch dedupe and routing starvation
+
 ## 0.1.1655 (2026-05-01)
 
 ### Features
