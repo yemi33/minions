@@ -9,7 +9,7 @@ const queries = require('./queries');
 const steering = require('./steering');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  ENGINE_DEFAULTS, ENGINE_DIR, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -140,6 +140,23 @@ function isTrackedProcessAlive(procInfo) {
   } catch {
     return false;
   }
+}
+
+// Last-resort liveness check via the on-disk PID file (engine/tmp/pid-<safeId>.pid).
+// Used by orphan detection to avoid false-positive kills when the engine has lost the
+// tracked process handle (engine restart, never-tracked spawn, etc.) but the OS-level
+// child process is still alive and healthy. The safeId here mirrors engine.js spawn
+// (id.replace(/[:\\/*?"<>|]/g, '-')) — same pattern engine/cli.js uses to re-attach.
+function isOsPidAliveForDispatch(itemId) {
+  const safeId = String(itemId || '').replace(/[:\\/*?"<>|]/g, '-');
+  const pidPath = path.join(ENGINE_DIR, 'tmp', `pid-${safeId}.pid`);
+  let raw;
+  try { raw = fs.readFileSync(pidPath, 'utf8'); }
+  catch { return false; }
+  const pid = parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
 }
 
 function checkTimeouts(config) {
@@ -335,6 +352,11 @@ function checkTimeouts(config) {
     } catch { /* ENOENT — keep default */ }
 
     if (!processAlive && silentMs > staleOrphanTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
+      // Last-resort PID check: lost tracked handle but OS process may still be alive.
+      if (isOsPidAliveForDispatch(item.id)) {
+        log('info', `Orphan check: ${item.agent} (${item.id}) silent ${silentSec}s but OS PID is alive — keeping [${_logState}]`);
+        continue;
+      }
       // No tracked process AND no recent output past stale-orphan timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
       log('warn', `Orphan detected: ${item.agent} (${item.id}) — no live process tracked, silent for ${silentSec}s [${_logState}]`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
@@ -424,4 +446,5 @@ module.exports = {
   checkTimeouts,
   checkSteering,
   checkIdleThreshold,
+  isOsPidAliveForDispatch,
 };

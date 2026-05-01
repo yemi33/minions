@@ -721,7 +721,19 @@ const ENGINE_DEFAULTS = {
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
-  heartbeatTimeouts: {}, // optional per-type stale-orphan overrides; merged at runtime (see timeout.js)
+  // Per-type stale-orphan overrides (merged with config.engine.heartbeatTimeouts at runtime — see timeout.js).
+  // Heavy work types (multi-file edits, builds, test suites, full verify cycles) routinely go quiet for
+  // longer than the 5-min default when the engine has lost their tracked handle (e.g. across an engine
+  // restart). We give them headroom up to a typical build+tests cycle. Short-running types
+  // (decompose / meeting / etc.) keep the 5-min default by simply not appearing here.
+  heartbeatTimeouts: {
+    implement:       900000, // 15min — refactors, multi-file edits, builds
+    'implement:large': 900000, // 15min — same class of work, larger scope
+    fix:             900000, // 15min — fix runs often include builds + retries
+    test:            900000, // 15min — build-and-test against existing PR
+    verify:          900000, // 15min — full project verification cycle
+    plan:            600000, // 10min — research-heavy
+  },
   maxTurns: 100,
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
@@ -785,7 +797,6 @@ const ENGINE_DEFAULTS = {
   copilotReasoningSummaries: false,  // Copilot --enable-reasoning-summaries (Anthropic-family models only)
   maxBudgetUsd: undefined,       // fleet USD ceiling for --max-budget-usd (per-agent override: agents.<id>.maxBudgetUsd). Honors 0 via ?? so a literal cap of $0 works
   disableModelDiscovery: false,  // skip runtime.listModels() REST calls fleet-wide (settings UI falls back to free-text)
-  heartbeatTimeouts: {},
   maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)

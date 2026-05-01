@@ -14225,10 +14225,20 @@ async function testCheckTimeouts() {
       'shared-rules.md should not prescribe runtime/tool-specific heartbeat workarounds');
   });
 
-  await test('ENGINE_DEFAULTS.heartbeatTimeouts is empty by default', () => {
+  await test('ENGINE_DEFAULTS.heartbeatTimeouts bumps heavy work types past the 5-min default', () => {
     const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
     assert.ok(hbt && typeof hbt === 'object', 'heartbeatTimeouts map should exist for user overrides');
-    assert.deepStrictEqual(Object.keys(hbt), [], 'No work type should get a built-in silence/orphan special case');
+    // Heavy work types (multi-file edits, builds, full verify cycles) get 15 min headroom.
+    assert.strictEqual(hbt[shared.WORK_TYPE.IMPLEMENT], 900000, 'IMPLEMENT should get 15min stale-orphan timeout');
+    assert.strictEqual(hbt[shared.WORK_TYPE.IMPLEMENT_LARGE], 900000, 'IMPLEMENT_LARGE should get 15min stale-orphan timeout');
+    assert.strictEqual(hbt[shared.WORK_TYPE.FIX], 900000, 'FIX should get 15min stale-orphan timeout');
+    assert.strictEqual(hbt[shared.WORK_TYPE.TEST], 900000, 'TEST should get 15min stale-orphan timeout');
+    assert.strictEqual(hbt[shared.WORK_TYPE.VERIFY], 900000, 'VERIFY should get 15min stale-orphan timeout');
+    // Research-heavy planning gets 10 min — between the default and the heavy-work bucket.
+    assert.strictEqual(hbt[shared.WORK_TYPE.PLAN], 600000, 'PLAN should get 10min stale-orphan timeout');
+    // Short-running types keep the bare 5-min default by NOT appearing in the map.
+    assert.strictEqual(hbt[shared.WORK_TYPE.DECOMPOSE], undefined, 'DECOMPOSE keeps the bare default');
+    assert.strictEqual(hbt[shared.WORK_TYPE.MEETING], undefined, 'MEETING keeps the bare default');
   });
 
   await test('checkTimeouts resolves optional per-type stale-orphan timeout from dispatch workType', () => {
@@ -14254,10 +14264,11 @@ async function testCheckTimeouts() {
       'staleOrphanTimeout should be declared inside the per-item loop');
   });
 
-  await test('implement/fix types fall back to default heartbeatTimeout (no override)', () => {
+  await test('decompose/meeting types fall back to default heartbeatTimeout (no override)', () => {
     const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
-    assert.strictEqual(hbt[shared.WORK_TYPE.IMPLEMENT], undefined, 'IMPLEMENT should not have per-type override');
-    assert.strictEqual(hbt[shared.WORK_TYPE.FIX], undefined, 'FIX should not have per-type override');
+    // Short-running types keep the bare 5-min default by NOT being listed in the per-type map.
+    assert.strictEqual(hbt[shared.WORK_TYPE.DECOMPOSE], undefined, 'DECOMPOSE should not have per-type override');
+    assert.strictEqual(hbt[shared.WORK_TYPE.MEETING], undefined, 'MEETING should not have per-type override');
   });
 
   // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
@@ -14323,6 +14334,101 @@ async function testCheckTimeouts() {
         throw new Error(`checkTimeouts threw ReferenceError (stale constant?): ${e.message}`);
       }
       // Any other error is fine — the function needs a full engine context to run end-to-end.
+    }
+  });
+
+  // ── isOsPidAliveForDispatch: last-resort liveness via on-disk PID file ─────
+  // Used by orphan detection so a missing tracked handle doesn't kill an agent
+  // whose OS process is actually alive (engine restart, never-tracked spawn, etc.).
+
+  await test('isOsPidAliveForDispatch returns true when PID file points to a live process', () => {
+    const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+    const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const restoreMinionsDir = createTestMinionsDir();
+    try { delete require.cache[timeoutPath]; } catch {}
+    try { delete require.cache[sharedPath]; } catch {}
+    try {
+      const freshShared = require(sharedPath);
+      const tmpDir = path.join(freshShared.ENGINE_DIR, 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      // Use the test runner's own PID — guaranteed alive while this test runs.
+      fs.writeFileSync(path.join(tmpDir, `pid-disp-live.pid`), String(process.pid));
+      const timeout = require(timeoutPath);
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('disp-live'), true,
+        'PID file pointing at a running process should be reported alive');
+    } finally {
+      try { delete require.cache[timeoutPath]; } catch {}
+      try { delete require.cache[sharedPath]; } catch {}
+      restoreMinionsDir();
+    }
+  });
+
+  await test('isOsPidAliveForDispatch returns false when PID file is missing', () => {
+    const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+    const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const restoreMinionsDir = createTestMinionsDir();
+    try { delete require.cache[timeoutPath]; } catch {}
+    try { delete require.cache[sharedPath]; } catch {}
+    try {
+      const timeout = require(timeoutPath);
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('no-such-dispatch'), false,
+        'Missing PID file should return false (no false-positive liveness)');
+    } finally {
+      try { delete require.cache[timeoutPath]; } catch {}
+      try { delete require.cache[sharedPath]; } catch {}
+      restoreMinionsDir();
+    }
+  });
+
+  await test('isOsPidAliveForDispatch returns false for empty / non-numeric / zero PID files', () => {
+    const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+    const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const restoreMinionsDir = createTestMinionsDir();
+    try { delete require.cache[timeoutPath]; } catch {}
+    try { delete require.cache[sharedPath]; } catch {}
+    try {
+      const freshShared = require(sharedPath);
+      const tmpDir = path.join(freshShared.ENGINE_DIR, 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, `pid-empty.pid`), '');
+      fs.writeFileSync(path.join(tmpDir, `pid-bogus.pid`), 'not-a-number');
+      fs.writeFileSync(path.join(tmpDir, `pid-zero.pid`), '0');
+      fs.writeFileSync(path.join(tmpDir, `pid-negative.pid`), '-5');
+      const timeout = require(timeoutPath);
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('empty'), false,
+        'Empty PID file → not alive (process.kill(0,...) targets the process group on POSIX — would be catastrophic)');
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('bogus'), false,
+        'Non-numeric PID file → not alive');
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('zero'), false,
+        'Zero PID file → not alive');
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('negative'), false,
+        'Negative PID file → not alive');
+    } finally {
+      try { delete require.cache[timeoutPath]; } catch {}
+      try { delete require.cache[sharedPath]; } catch {}
+      restoreMinionsDir();
+    }
+  });
+
+  await test('isOsPidAliveForDispatch returns false when PID points to a non-existent process', () => {
+    const timeoutPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'timeout'));
+    const sharedPath = require.resolve(path.join(MINIONS_DIR, 'engine', 'shared'));
+    const restoreMinionsDir = createTestMinionsDir();
+    try { delete require.cache[timeoutPath]; } catch {}
+    try { delete require.cache[sharedPath]; } catch {}
+    try {
+      const freshShared = require(sharedPath);
+      const tmpDir = path.join(freshShared.ENGINE_DIR, 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      // Very high PID — almost certainly not in use on either platform.
+      fs.writeFileSync(path.join(tmpDir, `pid-ghost.pid`), '9999999');
+      const timeout = require(timeoutPath);
+      assert.strictEqual(timeout.isOsPidAliveForDispatch('ghost'), false,
+        'PID pointing at a non-existent process → not alive');
+    } finally {
+      try { delete require.cache[timeoutPath]; } catch {}
+      try { delete require.cache[sharedPath]; } catch {}
+      restoreMinionsDir();
     }
   });
 }
@@ -18418,7 +18524,8 @@ async function testTimeoutBehavioral() {
         active: [{
           id: itemId,
           agent: 'bot',
-          started_at: new Date(Date.now() - 600000).toISOString(), // 10min ago
+          // 16.7 min ago — past the 15min stale-orphan timeout for IMPLEMENT type.
+          started_at: new Date(Date.now() - 1000000).toISOString(),
           workType: 'implement',
         }],
       });
@@ -18444,7 +18551,7 @@ async function testTimeoutBehavioral() {
         active: [{
           id: itemId,
           agent: 'bot',
-          started_at: new Date(Date.now() - 600000).toISOString(),
+          started_at: new Date(Date.now() - 1000000).toISOString(),
           workType: 'implement',
         }],
       });
@@ -18467,7 +18574,7 @@ async function testTimeoutBehavioral() {
         active: [{
           id: 'confirmed-dead',
           agent: 'bot',
-          started_at: new Date(Date.now() - 600000).toISOString(),
+          started_at: new Date(Date.now() - 1000000).toISOString(),
           workType: 'implement',
         }],
       });
@@ -18478,6 +18585,68 @@ async function testTimeoutBehavioral() {
       assert.strictEqual(dp.active.length, 0,
         'Exempt dispatch IDs must skip the grace period and be reaped');
       assert.strictEqual(dp.completed[0]?.id, 'confirmed-dead');
+    } finally { env.restore(); }
+  });
+
+  // Behavioral guard for the on-disk PID liveness check: a missing tracked handle
+  // should NOT orphan the dispatch when engine/tmp/pid-<id>.pid points at a live
+  // OS process. Engine restart is the canonical case — we kept the spawn alive but
+  // lost our handle to it.
+  await test('checkTimeouts: missing tracked handle but live PID file — keeps dispatch (no orphan)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'live-pid-no-handle';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          // Past the 15min stale-orphan threshold so orphan detection definitely runs.
+          started_at: new Date(Date.now() - 1000000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // No entry in activeProcesses — the engine lost the tracked handle (e.g. across restart).
+      // But the on-disk PID file points at a live process (the test runner itself).
+      const tmpDir = path.join(env.testDir, 'engine', 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      // safeId mirrors engine.js (id.replace(/[:\\/*?"<>|]/g, '-')) — no special chars in this id.
+      fs.writeFileSync(path.join(tmpDir, `pid-${itemId}.pid`), String(process.pid));
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Dispatch with missing tracked handle but live OS PID must NOT be orphaned');
+      assert.strictEqual((dp.completed || []).length, 0,
+        'No completion record should be written when the OS process is still alive');
+    } finally { env.restore(); }
+  });
+
+  // The companion case: missing tracked handle AND no PID file → orphan as before.
+  // This is the regression guard for the original orphan path; the new PID check is
+  // strictly a "fall back to false" gate, never a false-negative orphan blocker.
+  await test('checkTimeouts: missing tracked handle and missing PID file — orphans as before', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'no-handle-no-pid';
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: 'bot',
+          started_at: new Date(Date.now() - 1000000).toISOString(),
+          workType: 'implement',
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      // No PID file written. No entry in activeProcesses. Orphan path must fire.
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Missing handle + missing PID file = orphan');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Orphan should land in completed list');
+      assert.strictEqual(completed.result, 'error', 'Orphan cleanup result is ERROR');
     } finally { env.restore(); }
   });
 
@@ -18772,7 +18941,8 @@ async function testTimeoutBehavioral() {
     const env = setupIsolated();
     try {
       const itemId = 'stale-orphan';
-      const startedAt = new Date(Date.now() - 600000).toISOString();
+      // 16.7 min ago — past the 15min stale-orphan timeout for IMPLEMENT type.
+      const startedAt = new Date(Date.now() - 1000000).toISOString();
       writeDispatch(env.testDir, {
         active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement' }],
       });
@@ -18781,7 +18951,7 @@ async function testTimeoutBehavioral() {
       const agentDir = path.join(env.testDir, 'agents', 'bot');
       fs.mkdirSync(agentDir, { recursive: true });
       fs.writeFileSync(path.join(agentDir, 'live-output.log'), 'started\n');
-      const oldTime = new Date(Date.now() - 600000);
+      const oldTime = new Date(Date.now() - 1000000);
       fs.utimesSync(path.join(agentDir, 'live-output.log'), oldTime, oldTime);
 
       env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
