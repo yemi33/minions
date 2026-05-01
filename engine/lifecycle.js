@@ -943,7 +943,8 @@ function isPrAttachmentRequired(type, item, meta = {}) {
     || item.prRequired === true
     || item.requiresPullRequest === true
     || item.itemType === 'pr';
-  if (meta.branchStrategy === 'shared-branch' && item.itemType !== 'pr' && !explicit) return false;
+  const branchStrategy = meta.branchStrategy || item.branchStrategy;
+  if (branchStrategy === 'shared-branch' && item.itemType !== 'pr' && !explicit) return false;
 
   // Fix/test work items dispatched against an existing PR don't produce a new
   // PR — the agent updates meta.pr in place. Only require fresh PR attachment
@@ -960,21 +961,144 @@ function isPrAttachmentRequired(type, item, meta = {}) {
     || type === WORK_TYPE.TEST;
 }
 
+function readOptionalJsonStrict(filePath, label, validate) {
+  if (!filePath) return null;
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw new Error(`Cannot read ${label} JSON at ${filePath}: ${err.message}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Corrupt ${label} JSON at ${filePath}: ${err.message}`);
+  }
+  if (validate && !validate(parsed)) {
+    throw new Error(`Invalid ${label} JSON shape at ${filePath}`);
+  }
+  return parsed;
+}
+
 function hasCanonicalPrAttachment(itemId, config) {
   if (!itemId) return false;
+  // Cheapest probe first — getPrLinks() is in-process cached and merges canonical IDs.
   if (Object.values(getPrLinks()).some(linkedIds => (linkedIds || []).includes(itemId))) return true;
   const projects = shared.getProjects(config);
   for (const p of projects) {
-    const prs = safeJson(shared.projectPrPath(p)) || [];
+    const prs = readOptionalJsonStrict(shared.projectPrPath(p), 'project pull-requests', Array.isArray) || [];
     if (prs.some(pr => (pr.prdItems || []).includes(itemId))) return true;
   }
-  const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json')) || [];
+  const centralPrs = readOptionalJsonStrict(path.join(MINIONS_DIR, 'pull-requests.json'), 'central pull-requests', Array.isArray) || [];
   return centralPrs.some(pr => (pr.prdItems || []).includes(itemId));
+}
+
+function resolvePrFallbackProject(meta, config) {
+  const projects = shared.getProjects(config);
+  if (meta?.project?.name) {
+    const match = projects.find(p => p.name === meta.project.name);
+    if (match) return match;
+  }
+  if (meta?.project?.localPath) {
+    const metaPath = path.resolve(meta.project.localPath);
+    const match = projects.find(p => p.localPath && path.resolve(p.localPath) === metaPath);
+    if (match) return match;
+  }
+  if (meta?.item?.project) {
+    const match = projects.find(p => p.name === meta.item.project);
+    if (match) return match;
+  }
+  return projects.length === 1 ? projects[0] : null;
+}
+
+function runFileCapture(file, args, opts = {}) {
+  const { timeout = 30000, ...spawnOpts } = opts;
+  const MAX_BUFFER = 4 * 1024 * 1024; // 4MB — generous for gh/git output
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    let timedOut = false;
+    let killedForBuffer = false;
+    let stdout = '';
+    let stderr = '';
+    let hardKillTimer = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (hardKillTimer) clearTimeout(hardKillTimer);
+      fn(value);
+    };
+    const timer = timeout ? setTimeout(() => {
+      timedOut = true;
+      if (!child) return;
+      shared.killGracefully(child, 1000);
+      // Hard-kill fallback if the child ignores SIGTERM. Cleared on close.
+      hardKillTimer = setTimeout(() => {
+        try { shared.killImmediate(child); } catch {}
+      }, 2500);
+    }, timeout) : null;
+    try {
+      child = shared.runFile(file, args, { ...spawnOpts, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      finish(reject, err);
+      return;
+    }
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', chunk => {
+      if (stdout.length + chunk.length > MAX_BUFFER) {
+        if (!killedForBuffer) { killedForBuffer = true; try { shared.killImmediate(child); } catch {} }
+        return;
+      }
+      stdout += chunk;
+    });
+    child.stderr?.on('data', chunk => {
+      if (stderr.length + chunk.length > MAX_BUFFER) {
+        if (!killedForBuffer) { killedForBuffer = true; try { shared.killImmediate(child); } catch {} }
+        return;
+      }
+      stderr += chunk;
+    });
+    child.on('error', err => {
+      err.stdout = stdout;
+      err.stderr = stderr;
+      finish(reject, err);
+    });
+    child.once('close', () => {
+      if (hardKillTimer) { clearTimeout(hardKillTimer); hardKillTimer = null; }
+    });
+    child.on('close', code => {
+      if (code === 0 && !timedOut && !killedForBuffer) {
+        finish(resolve, stdout);
+        return;
+      }
+      let message;
+      let errCode;
+      if (timedOut) {
+        message = `${file} timed out after ${timeout}ms`;
+        errCode = 'ETIMEDOUT';
+      } else if (killedForBuffer) {
+        message = `${file} exceeded max buffer of ${MAX_BUFFER} bytes`;
+        errCode = 'ERR_OUT_OF_RANGE';
+      } else {
+        message = `${file} exited with code ${code}`;
+        errCode = code;
+      }
+      const err = new Error(message);
+      err.code = errCode;
+      err.stdout = stdout;
+      err.stderr = stderr;
+      finish(reject, err);
+    });
+  });
 }
 
 async function findOpenPrForBranch(meta, config) {
   if (!meta?.branch) return null;
-  const projectObj = shared.getProjects(config).find(p => p.name === meta?.project?.name);
+  const projectObj = resolvePrFallbackProject(meta, config);
   if (!projectObj) return null;
   const host = projectObj.repoHost || 'ado';
   if (host === 'github') {
@@ -984,7 +1108,7 @@ async function findOpenPrForBranch(meta, config) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
       let raw = '';
       try {
-        raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
+        raw = await runFileCapture('gh', ['pr', 'list', '--head', String(meta.branch), '--repo', ghSlug, '--json', 'number,url,state', '--limit', '1'], { timeout: 15000 });
         const parsed = JSON.parse(raw || '[]');
         const hits = Array.isArray(parsed) ? parsed : [];
         if (hits.length > 0 && hits[0].state === 'OPEN') {
@@ -1024,6 +1148,7 @@ function _outputContainsPrUrl(output) {
 function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity) {
   const noPrWiPath = resolveWorkItemPath(meta);
   const isHard = severity !== 'soft';
+  let syncNeedsReviewToPrd = false;
   if (noPrWiPath) {
     mutateJsonFileLocked(noPrWiPath, data => {
       if (!Array.isArray(data)) return data;
@@ -1034,6 +1159,7 @@ function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity)
         w._missingPrAttachment = true;
         w.failReason = reason;
         w._lastReviewReason = reason;
+        syncNeedsReviewToPrd = !!meta.item?.sourcePlan;
         delete w.completedAt;
         delete w._noPr;
         delete w._noPrReason;
@@ -1046,6 +1172,9 @@ function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity)
       }
       return data;
     }, { skipWriteIfUnchanged: true });
+  }
+  if (isHard && syncNeedsReviewToPrd) {
+    syncPrdItemStatus(meta.item.id, WI_STATUS.NEEDS_REVIEW, meta.item.sourcePlan);
   }
   if (isHard) {
     shared.writeToInbox('engine', `missing-pr-attachment-${meta.item.id}`,
@@ -1075,9 +1204,50 @@ function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity)
   }
 }
 
+function markPrAttachmentVerificationError(meta, agentId, reason, resultSummary) {
+  const wiPath = resolveWorkItemPath(meta);
+  let syncNeedsReviewToPrd = false;
+  if (wiPath) {
+    mutateJsonFileLocked(wiPath, data => {
+      if (!Array.isArray(data)) return data;
+      const w = data.find(i => i.id === meta.item.id);
+      if (!w) return data;
+      w.status = WI_STATUS.NEEDS_REVIEW;
+      w._prAttachmentStateError = true;
+      w.failReason = reason;
+      w._lastReviewReason = reason;
+      syncNeedsReviewToPrd = !!meta.item?.sourcePlan;
+      delete w.completedAt;
+      delete w._missingPrAttachment;
+      delete w._unverifiedPrAttachment;
+      return data;
+    }, { skipWriteIfUnchanged: true });
+  }
+  if (syncNeedsReviewToPrd) {
+    syncPrdItemStatus(meta.item.id, WI_STATUS.NEEDS_REVIEW, meta.item.sourcePlan);
+  }
+  shared.writeToInbox('engine', `pr-attachment-state-error-${meta.item.id}`,
+    `# PR attachment verification blocked for ${meta.item.id}\n\n` +
+    `**Agent:** ${agentId}\n` +
+    `**Work item:** \`${meta.item.id}\` — ${meta.item.title || ''}\n` +
+    `**Type:** ${meta.item.type || 'unknown'}\n` +
+    `**Branch:** ${meta.branch || '(none)'}\n\n` +
+    `${reason}\n` +
+    (resultSummary ? `\n## Agent summary\n${resultSummary}\n` : ''),
+    null,
+    { sourceItem: meta.item.id, reason: 'pr-attachment-state-error' });
+}
+
 async function enforcePrAttachmentContract(type, meta, agentId, config, resultSummary, output) {
   if (!isPrAttachmentRequired(type, meta?.item, meta)) return null;
-  if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+  try {
+    if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+  } catch (err) {
+    const reason = `${meta.item.id} completed but PR attachment verification could not read PR tracking state: ${err.message}`;
+    markPrAttachmentVerificationError(meta, agentId, reason, resultSummary);
+    log('warn', reason);
+    return { reason, itemId: meta.item.id, severity: 'hard', stateError: true };
+  }
 
   const found = await findOpenPrForBranch(meta, config);
   if (found) {
@@ -1100,7 +1270,14 @@ async function enforcePrAttachmentContract(type, meta, agentId, config, resultSu
       itemId: meta.item.id,
     });
     log('info', `Auto-linked existing PR ${entry.id} on branch ${meta.branch} for ${meta.item.id}`);
-    if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+    try {
+      if (hasCanonicalPrAttachment(meta.item.id, config)) return null;
+    } catch (err) {
+      const reason = `${meta.item.id} auto-linked a PR but PR attachment verification could not read PR tracking state: ${err.message}`;
+      markPrAttachmentVerificationError(meta, agentId, reason, resultSummary);
+      log('warn', reason);
+      return { reason, itemId: meta.item.id, severity: 'hard', stateError: true };
+    }
   }
 
   // Distinguish "agent never claimed a PR" (hard — silent failure the contract
@@ -1737,13 +1914,7 @@ function parseStructuredCompletion(stdout, runtimeName) {
   if (!stdout || typeof stdout !== 'string') return null;
 
   // Extract text from stream-json output if needed
-  let text = stdout;
-  if (stdout.includes('"type":')) {
-    try {
-      const parsed = shared.parseStreamJsonOutput(stdout, runtimeName);
-      if (parsed.text) text = parsed.text;
-    } catch {}
-  }
+  const text = extractCompletionText(stdout, runtimeName);
 
   // Find all ```completion blocks, take the last one
   const blockPattern = /```completion\s*\n([\s\S]*?)```/g;
@@ -1758,6 +1929,22 @@ function parseStructuredCompletion(stdout, runtimeName) {
   }
 
   return parseCompletionKeyValues(lastMatch);
+}
+
+function extractCompletionText(stdout, runtimeName) {
+  let text = stdout;
+  if (typeof stdout === 'string' && stdout.includes('"type":')) {
+    try {
+      const parsed = shared.parseStreamJsonOutput(stdout, runtimeName);
+      if (parsed.text) text = parsed.text;
+    } catch {}
+  }
+  return text;
+}
+
+function hasCompletionFence(stdout, runtimeName) {
+  const text = extractCompletionText(stdout, runtimeName);
+  return /```completion\s*\n[\s\S]*?```/.test(text);
 }
 
 function extractTaskCompleteSummary(stdout) {
@@ -1814,6 +2001,29 @@ function parseCompletionKeyValues(text) {
   // Must have at least status, or an actionable failure_class that implies failure.
   if (!result.status && hasActionableFailureClass(result.failure_class)) result.status = 'failed';
   if (!result.status) return null;
+  return result;
+}
+
+function parseCompletionFieldSummary(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  const allowedFields = new Set(shared.COMPLETION_FIELDS || []);
+  const result = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim().replace(/^[-*]\s+/, '');
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 1) continue;
+    const key = line.slice(0, colonIdx).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (!allowedFields.has(key)) continue;
+    const value = line.slice(colonIdx + 1).trim().replace(/^["'`]+|["'`]+$/g, '');
+    if (value) result[key] = value;
+  }
+
+  if (!result.status) return null;
+  const fieldCount = Object.keys(result).length;
+  const status = normalizeCompletionStatus(result.status);
+  const explicitlyFailed = status.startsWith('fail') || status === 'error';
+  if (fieldCount < 2 && !explicitlyFailed) return null;
   return result;
 }
 
@@ -1875,10 +2085,11 @@ function normalizeCompletionStatus(status) {
 // and burned 3-9 minutes of agent time per false-positive retry.
 //
 // Both structured signals (the JSON completion report at MINIONS_COMPLETION_REPORT
-// and the fenced ```completion block in stdout) carry a `status` field. If the
-// agent explicitly says they're not done, honor it; otherwise accept the
-// dispatch. The PR attachment contract still catches silent-failure cases
-// for PR-producing work.
+// and the fenced ```completion block in stdout) carry a `status` field. A plain
+// task_complete summary made only of completion fields is accepted as a narrow
+// compatibility fallback. If the agent explicitly says they're not done, honor
+// it; otherwise accept the dispatch. The PR attachment contract still catches
+// silent-failure cases for PR-producing work.
 const NON_TERMINAL_COMPLETION_STATUSES = new Set([
   'partial', 'partially-complete', 'in-progress', 'pending', 'deferred',
   'blocked', 'incomplete', 'to-be-continued',
@@ -2110,8 +2321,11 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   // Prefer the sidecar completion report; keep fenced output as a compatibility fallback.
   const reportCompletion = parseCompletionReportFile(dispatchItem, { warnIfMissing: true });
-  const fallbackCompletion = reportCompletion ? null : parseStructuredCompletion(stdout, runtimeName);
-  const structuredCompletion = reportCompletion || persistCompletionReport(dispatchItem, fallbackCompletion, 'fenced-completion');
+  const fencedCompletion = reportCompletion ? null : parseStructuredCompletion(stdout, runtimeName);
+  const summaryCompletion = reportCompletion || fencedCompletion ? null : parseCompletionFieldSummary(resultSummary);
+  const fallbackCompletion = fencedCompletion || summaryCompletion;
+  const fallbackSource = fencedCompletion && hasCompletionFence(stdout, runtimeName) ? 'fenced-completion' : 'summary-completion';
+  const structuredCompletion = reportCompletion || persistCompletionReport(dispatchItem, fallbackCompletion, fallbackSource);
   if (structuredCompletion) {
     if (structuredCompletion.summary) resultSummary = String(structuredCompletion.summary);
     log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}${structuredCompletion._source ? ` (${structuredCompletion._source})` : ''}`);
@@ -2625,6 +2839,7 @@ module.exports = {
   parseReviewVerdict,
   isReviewBailout,
   parseStructuredCompletion,
+  parseCompletionFieldSummary,
   detectNonTerminalResultSummary,
   parseCompletionReportFile,
   persistCompletionReport,

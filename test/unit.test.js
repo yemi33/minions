@@ -4095,8 +4095,10 @@ async function testPrAttachmentContract() {
       const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
       const wiPath = testShared.projectWorkItemsPath(project);
       fs.mkdirSync(path.dirname(wiPath), { recursive: true });
-      const item = { id: 'W-nopr123', title: 'No PR regression', type: 'implement', status: 'dispatched' };
+      const item = { id: 'W-nopr123', title: 'No PR regression', type: 'implement', status: testShared.WI_STATUS.DISPATCHED, sourcePlan: 'contract-prd.json' };
       fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prdPath = path.join(testDir, 'prd', item.sourcePlan);
+      fs.writeFileSync(prdPath, JSON.stringify({ missing_features: [{ id: item.id, status: testShared.WI_STATUS.DISPATCHED }] }, null, 2));
       const prPath = testShared.projectPrPath(project);
       fs.mkdirSync(path.dirname(prPath), { recursive: true });
       fs.writeFileSync(prPath, '[]');
@@ -4121,6 +4123,9 @@ async function testPrAttachmentContract() {
       const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
       assert.ok(inboxFiles.some(f => f.includes('missing-pr-attachment-W-nopr123')),
         'missing PR contract failure should leave a durable inbox note');
+      const prd = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
+      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.NEEDS_REVIEW,
+        'hard PR contract escalation should sync the PRD item status');
     } finally { restore(); }
   });
 
@@ -4211,6 +4216,95 @@ async function testPrAttachmentContract() {
           'rejected dispatch should be removed from active after completion handling');
       } finally { restore(); }
     }
+  });
+
+  await test('plain task_complete status: failed is treated as failed dispatch (#1946)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-1946',
+        title: 'Fix human feedback',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'ralph',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-5144236',
+        prNumber: 5144236,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        humanFeedback: { pendingFix: false, feedbackContent: 'Please address this.' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-1946',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'ralph',
+        task: 'Fix human feedback',
+        meta: {
+          source: 'pr-human-feedback',
+          dispatchKey: 'human-fix-demo-PR-5144236',
+          item,
+          project,
+          pr: { id: 'PR-5144236', prNumber: 5144236 },
+          runtimeName: 'copilot',
+        },
+      };
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push(dispatchItem);
+        return dp;
+      });
+
+      const summary = [
+        'status: failed',
+        'files_changed: none',
+        'tests: N/A',
+        'pr: PR-5144236',
+        'failure_class: dirty-worktree',
+        'retryable: true',
+        'pending: clean or recreate the dirty worktree, then rerun the fix',
+      ].join('\n');
+      const stdout = [
+        JSON.stringify({ type: 'session.task_complete', data: { summary, success: true } }),
+        JSON.stringify({ type: 'result', sessionId: 'sess-1946', exitCode: 0, usage: { premiumRequests: 1 } }),
+      ].join('\n');
+
+      const exitCode = 0;
+      const hook = await lifecycle.runPostCompletionHooks(dispatchItem, 'ralph', exitCode, stdout, config);
+      assert.strictEqual(hook.agentReportedFailure, true, 'plain task_complete status: failed must override exit code 0');
+      assert.strictEqual(hook.structuredCompletion?._source, 'summary-completion');
+      assert.strictEqual(hook.structuredCompletion?.failure_class, 'dirty-worktree');
+
+      const result = hook.completionContractFailure
+        ? testShared.DISPATCH_RESULT.ERROR
+        : (((exitCode === 0 && !hook.agentReportedFailure) || hook.autoRecovered) ? testShared.DISPATCH_RESULT.SUCCESS : testShared.DISPATCH_RESULT.ERROR);
+      testDispatch.completeDispatch(dispatchItem.id, result, hook.structuredCompletion.pending, hook.resultSummary, {
+        failureClass: hook.structuredCompletion.failure_class,
+        agentRetryable: hook.agentRetryable,
+      });
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(result, testShared.DISPATCH_RESULT.ERROR, 'dispatch result must be error despite exit code 0');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, true, 'failed human-feedback fix must restore pendingFix');
+      assert.ok(!testQueries.getDispatch().active.some(d => d.id === dispatchItem.id),
+        'failed dispatch should be removed from active');
+      assert.ok(!testQueries.getDispatch().completed.some(d => d.id === dispatchItem.id),
+        'failed human-feedback dispatch should not leave a completed dedupe blocker');
+    } finally { restore(); }
   });
 
   await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
@@ -4390,6 +4484,114 @@ async function testPrAttachmentContract() {
         'soft failure should leave a quieter pr-auto-link-unverified inbox note');
       assert.ok(!inboxFiles.some(f => f.includes('missing-pr-attachment-W-softpr1')),
         'soft failure must NOT leave a missing-pr-attachment inbox note');
+    } finally { restore(); }
+  });
+
+  await test('central PR-producing work item auto-links GitHub PR by branch using argv-safe gh call', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const { EventEmitter } = require('events');
+      const { PassThrough } = require('stream');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      const wiPath = path.join(testDir, 'work-items.json');
+      const dangerousBranch = 'work/W-central-argv"; echo pwned; #';
+      const item = { id: 'W-central-argv', title: 'Central argv fallback', type: 'implement', status: testShared.WI_STATUS.DISPATCHED };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const originalRunFile = testShared.runFile;
+      let captured = null;
+      testShared.runFile = (file, args, opts) => {
+        captured = { file, args, opts };
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        process.nextTick(() => {
+          child.stdout.write(JSON.stringify([{ number: 777, url: 'https://github.com/octo/minions/pull/777', state: 'OPEN' }]));
+          child.stdout.end();
+          child.stderr.end();
+          child.emit('close', 0);
+        });
+        return child;
+      };
+
+      try {
+        const result = await lifecycle.runPostCompletionHooks(
+          { id: 'D-central-argv', type: 'implement', task: 'Central argv fallback', meta: { source: 'central-work-item', item, branch: dangerousBranch } },
+          'dallas',
+          0,
+          'Implemented the requested change. PR created on the branch.\n',
+          config,
+        );
+        assert.strictEqual(result.completionContractFailure, null,
+          'branch fallback should auto-link the PR for central work items when one project is configured');
+      } finally {
+        testShared.runFile = originalRunFile;
+      }
+
+      assert.ok(captured, 'GitHub branch fallback should invoke gh via shared.runFile');
+      assert.strictEqual(captured.file, 'gh');
+      const headIdx = captured.args.indexOf('--head');
+      assert.ok(headIdx >= 0, 'gh args should include --head');
+      assert.strictEqual(captured.args[headIdx + 1], dangerousBranch,
+        'dangerous branch must be passed as a single argv entry, not interpolated into a shell string');
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1);
+      assert.deepStrictEqual(prs[0].prdItems, [item.id]);
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.strictEqual(updated.status, testShared.WI_STATUS.DONE);
+    } finally { restore(); }
+  });
+
+  await test('corrupt PR tracking state escalates as state error, not missing PR', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = { id: 'W-corrupt-pr-state', title: 'Corrupt PR state', type: 'implement', status: testShared.WI_STATUS.DISPATCHED, sourcePlan: 'corrupt-prd.json' };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prdPath = path.join(testDir, 'prd', item.sourcePlan);
+      fs.writeFileSync(prdPath, JSON.stringify({ missing_features: [{ id: item.id, status: testShared.WI_STATUS.DISPATCHED }] }, null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '{ this is not json');
+
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-corrupt-pr-state', type: 'implement', task: 'Corrupt PR state', meta: { source: 'work-item', item, branch: 'work/W-corrupt-pr-state', project: { name: project.name, localPath: testDir } } },
+        'dallas',
+        0,
+        'Implemented the requested change without opening a pull request.\n',
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(result.completionContractFailure?.stateError,
+        'corrupt PR state should be reported as a state verification error');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.NEEDS_REVIEW);
+      assert.ok(updated._prAttachmentStateError, 'state error marker should be set');
+      assert.ok(!updated._missingPrAttachment, 'corrupt state must not be mislabeled as a missing PR');
+      assert.match(updated.failReason, /could not read PR tracking state/);
+      const prd = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
+      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.NEEDS_REVIEW,
+        'state-error escalation should sync the PRD item status');
+      const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
+      assert.ok(inboxFiles.some(f => f.includes('pr-attachment-state-error-W-corrupt-pr-state')),
+        'state errors should leave a durable inbox note');
     } finally { restore(); }
   });
 
