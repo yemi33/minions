@@ -11673,9 +11673,9 @@ async function testResolveAgent() {
   });
 
   await test('resolveAgent supports _any_ token for routing to any idle agent (#480)', () => {
-    assert.ok(src.includes("preferred === '_any_'"),
+    assert.ok(src.includes('preferred === ANY_AGENT'),
       'Should handle _any_ token for preferred agent');
-    assert.ok(src.includes("fallback === '_any_'"),
+    assert.ok(src.includes('fallback === ANY_AGENT'),
       'Should handle _any_ token for fallback agent');
     assert.ok(src.includes('pickAnyIdle'),
       'Should use pickAnyIdle helper for _any_ resolution');
@@ -14091,6 +14091,89 @@ async function testDiscoverFromWorkItems() {
   await test('discoverFromWorkItems filters pending/queued items only', () => {
     assert.ok(src.includes("'pending'") && src.includes("'queued'"),
       'Should only discover work items in pending or queued status');
+  });
+
+  await test('discoverFromWorkItems queues unhinted claimed-agent items as _any_ (#1940)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      fs.writeFileSync(path.join(testDir, 'routing.md'), [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| verify | dallas | ralph |',
+        ''
+      ].join('\n'));
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [{ id: 'ralph-active', agent: 'ralph' }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        workSources: { workItems: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const wiPath = freshShared.projectWorkItemsPath(project);
+      freshShared.safeWrite(wiPath, [
+        { id: 'W-first', status: 'pending', type: 'verify', title: 'First verify', prompt: 'First prompt' },
+        { id: 'W-second', status: 'pending', type: 'verify', title: 'Second verify', prompt: 'Second prompt' },
+      ]);
+      const config = {
+        projects: [project],
+        workSources: { workItems: { enabled: true, cooldownMinutes: 0 } },
+        engine: { allowTempAgents: false },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ralph: { name: 'Ralph', role: 'Engineer' },
+        },
+      };
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = engineModule.discoverFromWorkItems(config, project);
+
+      assert.strictEqual(discovered.length, 2, 'both work items should enter dispatch instead of leaving the second at no_agent');
+      assert.strictEqual(discovered[0].agent, 'dallas', 'first item should claim the only idle routed agent');
+      assert.strictEqual(discovered[1].agent, '_any_', 'second unhinted item should defer concrete agent choice to the dispatch loop');
+      const persisted = freshShared.safeJson(wiPath);
+      assert.ok(!persisted.some(item => item._pendingReason === 'no_agent'),
+        'claimed-agent contention must not persist no_agent on undispatched work items');
+    } finally {
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('dispatch loop resolves _any_ pending work before spawn (#1940)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('item.agent === routing.ANY_AGENT'),
+      'Pending dispatch loop should recognize _any_ sentinel items');
+    assert.ok(engineSrc.includes('refreshDeferredWorkItemPrompt(item, config)'),
+      'Pending dispatch loop should re-render deferred work-item prompts after concrete agent assignment');
   });
 }
 

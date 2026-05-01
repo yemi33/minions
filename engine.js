@@ -2568,6 +2568,73 @@ async function discoverFromPrs(config, project) {
 /**
  * Scan work-items.json for manually queued tasks
  */
+function renderProjectWorkItemPromptForAgent(item, workType, agentId, config, project, root, branchName) {
+  const vars = {
+    ...buildBaseVars(agentId, config, project),
+    item_id: item.id,
+    item_name: item.title || item.id,
+    item_priority: item.priority || 'medium',
+    item_description: item.description || '',
+    item_complexity: item.complexity || item.estimated_complexity || 'medium',
+    task_description: item.title + (item.description ? '\n\n' + item.description : ''),
+    task_id: item.id,
+    work_type: workType,
+    source_plan: item.sourcePlan || '',
+    plan_slug: (item.sourcePlan || '').replace('.json', ''),
+    additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
+    scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
+    branch_name: branchName,
+    project_path: root,
+    worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', `${branchName}`),
+    commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
+    notes_content: '',
+  };
+  const cpResult = buildWorkItemDispatchVars(item, vars, config, {
+    worktreePath: vars.worktree_path || root,
+    workType,
+  });
+  if (cpResult.needsReview) {
+    return { needsReview: true, checkpointCount: cpResult.checkpointCount, prompt: null };
+  }
+
+  const playbookName = selectPlaybook(workType, item);
+  if (playbookName === 'work-item' && workType === WORK_TYPE.REVIEW) {
+    log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
+  }
+  return {
+    needsReview: false,
+    checkpointCount: cpResult.checkpointCount,
+    prompt: item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description,
+  };
+}
+
+function projectFromDispatchMeta(metaProject, config) {
+  if (!metaProject) return null;
+  const projects = getProjects(config);
+  if (metaProject.name) {
+    const byName = projects.find(p => p.name === metaProject.name);
+    if (byName) return byName;
+  }
+  if (metaProject.localPath) {
+    const refPath = path.resolve(metaProject.localPath);
+    const byPath = projects.find(p => p.localPath && path.resolve(p.localPath) === refPath);
+    if (byPath) return byPath;
+  }
+  return metaProject;
+}
+
+function refreshDeferredWorkItemPrompt(item, config) {
+  if (!item?.meta?.deferAgentResolution || item.meta.source !== 'work-item' || !item.meta.item) return;
+  if (!item.agent || item.agent === routing.ANY_AGENT) return;
+  const project = projectFromDispatchMeta(item.meta.project, config);
+  const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(MINIONS_DIR, '..');
+  const workType = routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT);
+  const branchName = item.meta.branch || item.meta.item.branch || `work/${item.meta.item.id}`;
+  const rendered = renderProjectWorkItemPromptForAgent(item.meta.item, workType, item.agent, config, project, root, branchName);
+  if (rendered.prompt) item.prompt = rendered.prompt;
+  item.meta.deferAgentResolution = false;
+}
+
 function discoverFromWorkItems(config, project) {
   const src = project?.workSources?.workItems || config.workSources?.workItems;
   if (!src?.enabled) return [];
@@ -2675,9 +2742,11 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     const agentHints = routing.extractAgentHints(item);
+    const hasAgentHints = Array.isArray(agentHints) && agentHints.length > 0;
     const hardPinRequested = routing.isAgentHardPinned(item);
     let agentId = routing.getHardPinnedAgent(item, config.agents || {})
       || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null);
+    let reservedAgentId = agentId;
     const cfgAgents = config.agents || {};
     const budgetBlocked = Object.keys(cfgAgents).some(id => {
       const b = cfgAgents[id].monthlyBudgetUsd;
@@ -2685,7 +2754,8 @@ function discoverFromWorkItems(config, project) {
     });
     if (!agentId) {
       if (!budgetBlocked && !hardPinRequested) {
-        agentId = resolveAgentReservation(workType, config, { agentHints });
+        reservedAgentId = resolveAgentReservation(workType, config, { agentHints });
+        agentId = reservedAgentId && !hasAgentHints ? routing.ANY_AGENT : reservedAgentId;
       }
       if (agentId) {
         delete item._pendingReason;
@@ -2703,6 +2773,7 @@ function discoverFromWorkItems(config, project) {
 
     const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
     const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
+    const deferredAgentResolution = agentId === routing.ANY_AGENT;
 
     // Branch mutex: skip if target branch is locked by an active dispatch
     const branchConflict = isBranchActive(branchName);
@@ -2713,50 +2784,23 @@ function discoverFromWorkItems(config, project) {
       continue;
     }
 
-    const vars = {
-      ...buildBaseVars(agentId, config, project),
-      item_id: item.id,
-      item_name: item.title || item.id,
-      item_priority: item.priority || 'medium',
-      item_description: item.description || '',
-      item_complexity: item.complexity || item.estimated_complexity || 'medium',
-      task_description: item.title + (item.description ? '\n\n' + item.description : ''),
-      task_id: item.id,
-      work_type: workType,
-      source_plan: item.sourcePlan || '',
-      plan_slug: (item.sourcePlan || '').replace('.json', ''),
-      additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
-      scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
-      branch_name: branchName,
-      project_path: root,
-      worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', `${branchName}`),
-      commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
-      notes_content: '',
-    };
-    // Build common vars: references, acceptance criteria, checkpoint, notes, task context
-    const cpResult = buildWorkItemDispatchVars(item, vars, config, {
-      worktreePath: vars.worktree_path || root,
-      workType,
-    });
-    if (cpResult.needsReview) {
+    const promptAgentId = deferredAgentResolution ? reservedAgentId : agentId;
+    const promptResult = renderProjectWorkItemPromptForAgent(item, workType, promptAgentId, config, project, root, branchName);
+    if (promptResult.needsReview) {
       log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
       item.status = WI_STATUS.NEEDS_REVIEW;
-      item._checkpointCount = cpResult.checkpointCount;
+      item._checkpointCount = promptResult.checkpointCount;
       needsWrite = true;
       continue;
     }
-    if (cpResult.checkpointCount !== null) {
-      item._checkpointCount = cpResult.checkpointCount;
+    if (promptResult.checkpointCount !== null) {
+      item._checkpointCount = promptResult.checkpointCount;
       needsWrite = true;
     }
 
-    const playbookName = selectPlaybook(workType, item);
-    if (playbookName === 'work-item' && workType === WORK_TYPE.REVIEW) {
-      log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
-    }
-    const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
+    const prompt = promptResult.prompt;
     if (!prompt) {
-      log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
+      log('warn', `No playbook rendered for ${item.id} (type: ${workType}) — skipping`);
       continue;
     }
 
@@ -2773,7 +2817,7 @@ function discoverFromWorkItems(config, project) {
       agentRole: config.agents[agentId]?.role || tempAgents.get(agentId)?.role || 'Agent',
       task: `[${project?.name || 'project'}] ${item.title || item.description?.slice(0, 80) || item.id}`,
       prompt,
-      meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(item.branchStrategy === 'shared-branch' && item.featureBranch), item, project: { name: project?.name, localPath: project?.localPath } }
+      meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(item.branchStrategy === 'shared-branch' && item.featureBranch), item, project: { name: project?.name, localPath: project?.localPath }, deferAgentResolution: deferredAgentResolution }
     });
 
     setCooldown(key);
@@ -3876,6 +3920,34 @@ async function tickInner() {
     if (seenPendingIds.has(item.id)) {
       log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
       continue;
+    }
+    if (item.agent === routing.ANY_AGENT) {
+      const routedAgent = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config, { agentHints: routing.extractAgentHints(item.meta?.item) });
+      if (!routedAgent) {
+        log('debug', `Pending dispatch ${item.id} is waiting for any available agent`);
+        continue;
+      }
+      item.agent = routedAgent;
+      item.agentName = config.agents[routedAgent]?.name || tempAgents.get(routedAgent)?.name || routedAgent;
+      item.agentRole = config.agents[routedAgent]?.role || tempAgents.get(routedAgent)?.role || 'Agent';
+      delete item._agentBusySince;
+      delete item.skipReason;
+      refreshDeferredWorkItemPrompt(item, config);
+      try {
+        mutateDispatch((dp) => {
+          const p = (dp.pending || []).find(d => d.id === item.id);
+          if (p) {
+            p.agent = item.agent;
+            p.agentName = item.agentName;
+            p.agentRole = item.agentRole;
+            p.prompt = item.prompt;
+            if (item.meta) p.meta = item.meta;
+            delete p._agentBusySince;
+            delete p.skipReason;
+          }
+          return dp;
+        });
+      } catch (e) { log('warn', `Persist any-agent resolution for ${item.id} failed: ${e.message}`); }
     }
     // #1206: Guard against undefined/non-string item.agent. A corrupted dispatch
     // entry (manual edit, serialization round-trip, cleared field) would otherwise

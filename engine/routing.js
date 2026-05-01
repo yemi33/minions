@@ -13,6 +13,7 @@ const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
+const ANY_AGENT = '_any_';
 
 // ─── Temp Agents ─────────────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ function normalizeWorkType(workType, fallback = WORK_TYPE.IMPLEMENT) {
 
 function routeForWorkType(workType) {
   const routes = getRoutingTableCached();
-  return routes[normalizeWorkType(workType)] || routes[WORK_TYPE.IMPLEMENT] || { preferred: '_any_', fallback: '_any_' };
+  return routes[normalizeWorkType(workType)] || routes[WORK_TYPE.IMPLEMENT] || { preferred: ANY_AGENT, fallback: ANY_AGENT };
 }
 
 function isAgentHardPinned(item) {
@@ -224,10 +225,10 @@ function resolveAgent(workType, config, opts = {}) {
   }
 
   // Resolve _any_ token — pick any available agent (#480)
-  if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
+  if (preferred === ANY_AGENT) { const pick = pickAnyIdle(); if (pick) return pick; }
   else if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
 
-  if (fallback === '_any_') { const pick = pickAnyIdle([preferred]); if (pick) return pick; }
+  if (fallback === ANY_AGENT) { const pick = pickAnyIdle([preferred]); if (pick) return pick; }
   else if (fallback && isAvailable(fallback)) { _claimedAgents.add(fallback); return fallback; }
 
   // Fall back to any idle agent, preferring lower error rates
@@ -268,7 +269,7 @@ function resolveAgentReservation(workType, config, opts = {}) {
     const budget = agents[id].monthlyBudgetUsd;
     return !(budget && budget > 0 && getMonthlySpend(id) >= budget);
   };
-  const eligible = (id) => (id && id !== '_any_' && hasBudget(id)) ? id : null;
+  const eligible = (id) => (id && id !== ANY_AGENT && hasBudget(id)) ? id : null;
   const anyEligible = (exclude = []) => {
     const excludeSet = new Set(exclude.filter(Boolean));
     return Object.keys(agents)
@@ -281,11 +282,11 @@ function resolveAgentReservation(workType, config, opts = {}) {
   const preferred = route.preferred === '_author_' ? authorAgent : route.preferred;
   const fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
 
-  if (preferred === '_any_') return anyEligible();
+  if (preferred === ANY_AGENT) return anyEligible();
   const preferredAgent = eligible(preferred);
   if (preferredAgent) return preferredAgent;
 
-  if (fallback === '_any_') return anyEligible([preferred]);
+  if (fallback === ANY_AGENT) return anyEligible([preferred]);
   const fallbackAgent = eligible(fallback);
   if (fallbackAgent) return fallbackAgent;
 
@@ -305,6 +306,7 @@ module.exports = {
   isAgentHardPinned,
   getHardPinnedAgent,
   normalizeWorkType,
+  ANY_AGENT,
   _claimedAgents,
   resetClaimedAgents,
   resolveAgent,
