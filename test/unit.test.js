@@ -22872,6 +22872,7 @@ async function main() {
     await testExecSilent();
     await testTrackReviewMetric();
     await testParseCanonicalPrId();
+    await testPrUrlParsingAndScopeHelpers();
 
     // Scheduler tests
     await testSchedulerCronParsing();
@@ -23604,6 +23605,10 @@ async function testParseCanonicalPrId() {
 
   await test('parseCanonicalPrId returns null for malformed input', () => {
     assert.strictEqual(shared.parseCanonicalPrId('not-a-pr-id'), null);
+    assert.strictEqual(shared.parseCanonicalPrId('github:'), null, 'missing scope and #number');
+    assert.strictEqual(shared.parseCanonicalPrId(':'), null, 'missing host, scope, and #number');
+    assert.strictEqual(shared.parseCanonicalPrId('github:#42'), null, 'empty scope before #number');
+    assert.strictEqual(shared.parseCanonicalPrId('github:   #42'), null, 'whitespace-only scope before #number');
     assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo'), null, 'missing #number');
     assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo#'), null, 'missing digits after #');
     assert.strictEqual(shared.parseCanonicalPrId('github:owner/repo#abc'), null, 'non-numeric PR id');
@@ -23645,6 +23650,274 @@ async function testParseCanonicalPrId() {
     const adoCanonical = shared.getCanonicalPrId(adoProject, 99);
     assert.deepStrictEqual(shared.parseCanonicalPrId(ghCanonical), { scope: 'github:octo/alpha', prNumber: 99 });
     assert.deepStrictEqual(shared.parseCanonicalPrId(adoCanonical), { scope: 'ado:octo/platform/beta', prNumber: 99 });
+  });
+}
+
+async function testPrUrlParsingAndScopeHelpers() {
+  console.log('\n── shared.js — PR URL parsing and scope helpers ──');
+
+  await test('normalizePrScopeSegment trims slashes and lowercases segments', () => {
+    assert.strictEqual(shared.normalizePrScopeSegment('  /Owner.Name/  '), 'owner.name');
+    assert.strictEqual(shared.normalizePrScopeSegment('Repo-Name'), 'repo-name');
+    assert.strictEqual(shared.normalizePrScopeSegment(null), '');
+    assert.strictEqual(shared.normalizePrScopeSegment(undefined), '');
+  });
+
+  await test('parseGitHubPrUrl parses GitHub pull request URLs and suffixes', () => {
+    assert.deepStrictEqual(
+      shared.parseGitHubPrUrl('https://github.com/Owner-Name/repo.name/pull/42'),
+      { scope: 'github:owner-name/repo.name', prNumber: 42 }
+    );
+    assert.deepStrictEqual(
+      shared.parseGitHubPrUrl('http://GitHub.com/Org/Repo/pull/7/'),
+      { scope: 'github:org/repo', prNumber: 7 }
+    );
+    assert.deepStrictEqual(
+      shared.parseGitHubPrUrl('https://github.com/Org/Repo/pull/8/files'),
+      { scope: 'github:org/repo', prNumber: 8 }
+    );
+  });
+
+  await test('parseGitHubPrUrl returns null for malformed and non-string inputs', () => {
+    assert.strictEqual(shared.parseGitHubPrUrl('https://github.com/owner/pull/42'), null);
+    assert.strictEqual(shared.parseGitHubPrUrl('https://github.com/owner/repo/pull/not-a-number'), null);
+    assert.strictEqual(shared.parseGitHubPrUrl(''), null);
+    assert.strictEqual(shared.parseGitHubPrUrl(null), null);
+    assert.strictEqual(shared.parseGitHubPrUrl(undefined), null);
+    assert.strictEqual(shared.parseGitHubPrUrl(42), null);
+  });
+
+  await test('parseAdoPrUrl parses dev.azure.com and visualstudio.com pull request URLs', () => {
+    assert.deepStrictEqual(
+      shared.parseAdoPrUrl('https://dev.azure.com/Org-Name/Project.Name/_git/Repo-Name/pullrequest/123?view=files'),
+      { scope: 'ado:org-name/project.name/repo-name', prNumber: 123 }
+    );
+    assert.deepStrictEqual(
+      shared.parseAdoPrUrl('https://dev.azure.com/Org/Project/_git/Repo/PULLREQUEST/5'),
+      { scope: 'ado:org/project/repo', prNumber: 5 }
+    );
+    assert.deepStrictEqual(
+      shared.parseAdoPrUrl('https://Org.visualstudio.com/DefaultCollection/Project/_git/Repo/pullrequest/9'),
+      { scope: 'ado:org/project/repo', prNumber: 9 }
+    );
+  });
+
+  await test('parseAdoPrUrl returns null for malformed inputs', () => {
+    assert.strictEqual(shared.parseAdoPrUrl('https://dev.azure.com/org/project/repo/pullrequest/1'), null);
+    assert.strictEqual(shared.parseAdoPrUrl('https://dev.azure.com/org/project/_git/repo/pullrequest/not-a-number'), null);
+    assert.strictEqual(shared.parseAdoPrUrl('https://example.com/org/project/_git/repo/pullrequest/1'), null);
+    assert.strictEqual(shared.parseAdoPrUrl(null), null);
+    assert.strictEqual(shared.parseAdoPrUrl(undefined), null);
+    assert.strictEqual(shared.parseAdoPrUrl(''), null);
+  });
+
+  await test('parsePrUrl dispatches GitHub and ADO URLs and rejects unknown hosts', () => {
+    assert.deepStrictEqual(
+      shared.parsePrUrl('https://github.com/octo/alpha/pull/11'),
+      { scope: 'github:octo/alpha', prNumber: 11 }
+    );
+    assert.deepStrictEqual(
+      shared.parsePrUrl('https://dev.azure.com/octo/platform/_git/beta/pullrequest/12'),
+      { scope: 'ado:octo/platform/beta', prNumber: 12 }
+    );
+    assert.strictEqual(shared.parsePrUrl('https://gitlab.com/octo/alpha/-/merge_requests/11'), null);
+  });
+
+  await test('getProjectPrScope derives GitHub and ADO scopes from project config', () => {
+    assert.strictEqual(
+      shared.getProjectPrScope({ repoHost: 'github', adoOrg: 'Octo-Org', repoName: 'Repo.Name' }),
+      'github:octo-org/repo.name'
+    );
+    assert.strictEqual(
+      shared.getProjectPrScope({ repoHost: 'github', prUrlBase: 'https://github.com/FromUrl/Repo/pull/99' }),
+      'github:fromurl/repo'
+    );
+    assert.strictEqual(
+      shared.getProjectPrScope({ repoHost: 'ado', adoOrg: 'Octo', adoProject: 'Platform', repositoryId: 'Repo-Guid' }),
+      'ado:octo/platform/repo-guid'
+    );
+    assert.strictEqual(
+      shared.getProjectPrScope({ adoOrg: 'Octo', adoProject: 'Platform', repoName: 'Repo' }),
+      'ado:octo/platform/repo'
+    );
+  });
+
+  await test('getProjectPrScope returns empty string for incomplete project scope config', () => {
+    assert.strictEqual(shared.getProjectPrScope(null), '');
+    assert.strictEqual(shared.getProjectPrScope({ repoHost: 'github', adoOrg: 'Octo' }), '');
+    assert.strictEqual(shared.getProjectPrScope({ repoHost: 'ado', adoProject: 'Platform', repoName: 'Repo' }), '');
+    assert.strictEqual(shared.getProjectPrScope({ repoHost: 'ado', adoOrg: 'Octo', adoProject: 'Platform' }), '');
+    assert.strictEqual(shared.getProjectPrScope({ repoHost: 'gitlab', adoOrg: 'Octo', repoName: 'Repo' }), '');
+  });
+
+  await test('resolveProjectForPrPath resolves absolute and relative project PR paths', () => {
+    const restore = createTestMinionsDir();
+    const isolatedShared = require('../engine/shared');
+    const config = {
+      projects: [
+        { name: 'Alpha', localPath: 'C:\\repos\\alpha' },
+        { name: 'Beta', localPath: 'C:\\repos\\beta' },
+      ],
+    };
+    try {
+      const alphaPath = isolatedShared.projectPrPath(config.projects[0]);
+      const betaPath = isolatedShared.projectPrPath(config.projects[1]);
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(alphaPath, config).name, 'Alpha');
+
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(isolatedShared.MINIONS_DIR);
+        assert.strictEqual(
+          isolatedShared.resolveProjectForPrPath(path.relative(isolatedShared.MINIONS_DIR, betaPath), config).name,
+          'Beta'
+        );
+      } finally {
+        process.chdir(originalCwd);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveProjectForPrPath falls through only for a single configured project', () => {
+    const restore = createTestMinionsDir();
+    const isolatedShared = require('../engine/shared');
+    try {
+      const single = { projects: [{ name: 'Only', localPath: 'C:\\repos\\only' }] };
+      const multi = {
+        projects: [
+          { name: 'Alpha', localPath: 'C:\\repos\\alpha' },
+          { name: 'Beta', localPath: 'C:\\repos\\beta' },
+        ],
+      };
+      const unmatched = path.join(isolatedShared.MINIONS_DIR, 'pull-requests.json');
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(unmatched, single).name, 'Only');
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(unmatched, multi), null);
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(path.join(isolatedShared.MINIONS_DIR, 'projects'), multi), null);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('snapshotPrRecord returns a JSON-serializable deep copy', () => {
+    const pr = {
+      id: 'github:octo/repo#1',
+      labels: ['bug'],
+      nested: { checks: [{ name: 'ci', ok: true }] },
+      omitted: undefined,
+      fn: () => 'ignored',
+    };
+    const snapshot = shared.snapshotPrRecord(pr);
+    assert.deepStrictEqual(snapshot, {
+      id: 'github:octo/repo#1',
+      labels: ['bug'],
+      nested: { checks: [{ name: 'ci', ok: true }] },
+    });
+    snapshot.labels.push('coverage');
+    snapshot.nested.checks[0].ok = false;
+    assert.deepStrictEqual(pr.labels, ['bug']);
+    assert.strictEqual(pr.nested.checks[0].ok, true);
+    assert.strictEqual(shared.snapshotPrRecord(undefined), undefined);
+  });
+
+  await test('applyPrFieldDelta leaves unchanged fields and references intact', () => {
+    const target = { id: 'PR-1', nested: { value: 1 }, items: ['A'] };
+    const before = { id: 'PR-1', nested: { value: 1 }, items: ['A'] };
+    const after = { id: 'PR-1', nested: { value: 1 }, items: ['A'] };
+    const nestedRef = target.nested;
+    const itemsRef = target.items;
+    assert.strictEqual(shared.applyPrFieldDelta(target, before, after), target);
+    assert.strictEqual(target.nested, nestedRef);
+    assert.strictEqual(target.items, itemsRef);
+    assert.deepStrictEqual(target, before);
+  });
+
+  await test('applyPrFieldDelta applies scalar, nested object, array, and deletion changes', () => {
+    const target = {
+      id: 'PR-1',
+      title: 'old',
+      nested: { status: 'old', concurrent: 'keep' },
+      labels: ['old'],
+      removed: true,
+    };
+    const before = {
+      id: 'PR-1',
+      title: 'old',
+      nested: { status: 'old' },
+      labels: ['old'],
+      removed: true,
+    };
+    const after = {
+      id: 'PR-1',
+      title: 'new',
+      nested: { status: 'new' },
+      labels: ['new'],
+    };
+    shared.applyPrFieldDelta(target, before, after);
+    assert.deepStrictEqual(target, {
+      id: 'PR-1',
+      title: 'new',
+      nested: { status: 'new', concurrent: 'keep' },
+      labels: ['new'],
+    });
+    assert.notStrictEqual(target.labels, after.labels, 'array changes should be deep-copied onto target');
+  });
+
+  await test('normalizePrLinkItems coerces arbitrary values to unique string item ids', () => {
+    assert.deepStrictEqual(shared.normalizePrLinkItems(null), []);
+    assert.deepStrictEqual(shared.normalizePrLinkItems(undefined), []);
+    assert.deepStrictEqual(shared.normalizePrLinkItems('W-1'), ['W-1']);
+    assert.deepStrictEqual(
+      shared.normalizePrLinkItems(['W-1', 'W-1', '', null, 123, 'W-2']),
+      ['W-1', 'W-2']
+    );
+  });
+
+  await test('mergePrLinkItems unions linked item ids and skips empty inputs', () => {
+    const links = { 'github:octo/repo#1': ['W-1'] };
+    shared.mergePrLinkItems(links, 'github:octo/repo#1', ['W-1', 'W-2']);
+    assert.deepStrictEqual(links['github:octo/repo#1'], ['W-1', 'W-2']);
+    shared.mergePrLinkItems(links, 'github:octo/repo#2', []);
+    assert.strictEqual(links['github:octo/repo#2'], undefined);
+    shared.mergePrLinkItems(links, null, ['W-3']);
+    assert.deepStrictEqual(Object.keys(links), ['github:octo/repo#1']);
+  });
+
+  await test('backfillPrPrdItems appends linked items without overwriting existing prdItems', () => {
+    assert.strictEqual(shared.backfillPrPrdItems([], { 'PR-1': ['W-1'] }), 0);
+    const prs = [
+      { id: 'PR-1', prdItems: ['W-0', 'W-1'] },
+      { id: 'PR-2' },
+      { id: 'PR-3' },
+    ];
+    const backfilled = shared.backfillPrPrdItems(prs, {
+      'PR-1': ['W-1', 'W-2'],
+      'PR-2': ['W-3'],
+    });
+    assert.strictEqual(backfilled, 2);
+    assert.deepStrictEqual(prs[0].prdItems, ['W-0', 'W-1', 'W-2']);
+    assert.deepStrictEqual(prs[1].prdItems, ['W-3']);
+    assert.strictEqual(prs[2].prdItems, undefined);
+    assert.strictEqual(shared.backfillPrPrdItems(prs, {}), 0);
+  });
+
+  await test('safeSlugComponent creates safe bounded filename components', () => {
+    assert.strictEqual(shared.safeSlugComponent(''), 'item');
+    assert.strictEqual(shared.safeSlugComponent('   '), 'item');
+    assert.strictEqual(shared.safeSlugComponent('Already.Safe-123'), 'Already.Safe-123');
+
+    const unicode = shared.safeSlugComponent('Café Δelta!', 32);
+    assert.match(unicode, /^caf-elta-[a-f0-9]{8}$/);
+    assert.ok(Buffer.byteLength(unicode, 'utf8') <= 32);
+
+    const control = shared.safeSlugComponent('hello\u0000world', 32);
+    assert.match(control, /^hello-world-[a-f0-9]{8}$/);
+
+    const capped = shared.safeSlugComponent('x'.repeat(200), 24);
+    assert.ok(Buffer.byteLength(capped, 'utf8') <= 24, `slug exceeded maxLen: ${capped}`);
+
+    const defaultCapped = shared.safeSlugComponent('y'.repeat(200));
+    assert.ok(Buffer.byteLength(defaultCapped, 'utf8') <= 80, `slug exceeded default maxLen: ${defaultCapped}`);
   });
 }
 

@@ -1275,9 +1275,11 @@ function projectPrPath(project) {
 
 function resolveProjectForPrPath(filePath, config = null) {
   const resolvedPath = path.resolve(filePath);
-  for (const project of getProjects(config)) {
+  const projects = getProjects(config);
+  for (const project of projects) {
     if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
   }
+  if (projects.length === 1) return projects[0];
   return null;
 }
 
@@ -1673,7 +1675,9 @@ function normalizePrScopeSegment(value) {
 function parseCanonicalPrId(value) {
   const match = String(value || '').trim().match(/^(github|ado):(.+?)#(\d+)$/i);
   if (!match) return null;
-  const scope = `${match[1].toLowerCase()}:${match[2].split('/').map(normalizePrScopeSegment).join('/')}`;
+  const normalizedParts = match[2].split('/').map(normalizePrScopeSegment);
+  if (!normalizedParts.some(Boolean)) return null;
+  const scope = `${match[1].toLowerCase()}:${normalizedParts.join('/')}`;
   return { scope, prNumber: parseInt(match[3], 10) };
 }
 
@@ -2429,9 +2433,14 @@ module.exports = {
   projectStateDir,
   projectWorkItemsPath,
   projectPrPath,
+  resolveProjectForPrPath, // exported for testing
   getPrLinks,
   addPrLink,
+  normalizePrScopeSegment, // exported for testing
   parseCanonicalPrId,
+  parseGitHubPrUrl, // exported for testing
+  parseAdoPrUrl, // exported for testing
+  parsePrUrl, // exported for testing
   getProjectPrScope,
   getPrNumber,
   getPrDisplayId,
@@ -2444,6 +2453,8 @@ module.exports = {
   applyPrFieldDelta,
   normalizePrRecord,
   normalizePrRecords,
+  normalizePrLinkItems, // exported for testing
+  mergePrLinkItems, // exported for testing
   upsertPullRequestRecord,
   nextWorkItemId,
   getAdoOrgBase,
