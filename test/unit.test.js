@@ -16500,6 +16500,22 @@ async function testWakeupEndpoint() {
     assert.ok(cliSrc.includes('3000') && cliSrc.includes('_wakeupAt'),
       'Fast poll should run every 3 seconds');
   });
+
+  await test('dispatch command signals running daemon instead of running local tick', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('isEngineProcessAlive(control)'),
+      'dispatch command should check whether the daemon process is alive');
+    assert.ok(dispatchBody.includes('_wakeupAt') && dispatchBody.includes('safeWrite(CONTROL_PATH'),
+      'dispatch command should signal the running daemon via control.json wakeup');
+    assert.ok(!dispatchBody.includes('e.tick()'),
+      'dispatch command must not run tick() in the CLI process; it has no activeProcesses state');
+  });
+
+  await test('dispatch command refuses local tick when active dispatches exist without daemon', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('getDispatch().active') && dispatchBody.includes('Refusing to run a local dispatch tick'),
+      'dispatch command should not orphan daemon-owned active work from a process with empty activeProcesses');
+  });
 }
 
 // ─── Cross-Feature Integration Tests ────────────────────────────────────────
