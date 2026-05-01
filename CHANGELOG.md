@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1655 (2026-05-01)
+
+### Features
+- ADO manual PR link metadata and branch race
+
 ## 0.1.1654 (2026-05-01)
 
 ### Fixes
