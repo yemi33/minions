@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1662 (2026-05-01)
+
+### Other
+- test(scheduler): add unit tests for cron parsing edge cases & discovery flow (#1948)
+
 ## 0.1.1661 (2026-05-01)
 
 ### Other
