@@ -2383,6 +2383,16 @@ async function discoverFromPrs(config, project) {
       try {
         const checkBcFn = project.repoHost === 'github' ? ghCheckLiveBuildAndConflict : adoCheckLiveBuildAndConflict;
         const live = await checkBcFn(pr, project);
+        if (live?.buildStatusStale) {
+          try {
+            mutatePullRequests(projectPrPath(project), prs => {
+              const target = shared.findPrRecord(prs, pr, project);
+              if (!target) return;
+              target._buildStatusStale = true;
+              if (live.buildStatusDetail) target._buildStatusDetail = live.buildStatusDetail;
+            });
+          } catch {}
+        }
         if (live && live.buildStatus && live.buildStatus !== 'failing') {
           log('info', `Pre-dispatch build check: ${pr.id} build is ${live.buildStatus} (cached was failing) — skipping build-fix`);
           // Persist the fresh status so subsequent ticks don't re-check on every pass
@@ -2391,6 +2401,8 @@ async function discoverFromPrs(config, project) {
               const target = shared.findPrRecord(prs, pr, project);
               if (!target) return;
               target.buildStatus = live.buildStatus;
+              delete target._buildStatusStale;
+              delete target._buildStatusDetail;
               if (live.buildStatus === 'passing') {
                 delete target.buildErrorLog;
                 delete target.buildFailReason;
