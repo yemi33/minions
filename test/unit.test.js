@@ -11866,7 +11866,7 @@ async function testResolveAgent() {
       'Work-item discovery should derive agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('resolveAgent(workType, config, { agentHints })'),
       'Work-item discovery should pass hints into resolveAgent (opts-bag form) so routing defaults do not override them');
-    assert.ok(engineSrc.includes('routing.extractAgentHints(item.meta?.item)'),
+    assert.ok(engineSrc.includes('routing.extractAgentHints(item?.meta?.item)'),
       'Pending dispatch fallback should preserve work-item agent hints via routing.extractAgentHints');
     assert.ok(engineSrc.includes('routing.isAgentHardPinned(item.meta?.item)'),
       'Busy-agent reassignment should only block reassignment for explicitly hard-pinned work');
@@ -11880,6 +11880,24 @@ async function testResolveAgent() {
       'Dispatch-loop pending resolution should not inherit discovery-pass claimed-agent state');
     assert.ok(engineSrc.includes('routing.getHardPinnedAgent(item, config.agents || {})'),
       'Only explicit hard pins should bypass soft routing and reservation fallback');
+  });
+
+  await test('fix work-item discovery does not reserve a busy suggested agent', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('workType !== WORK_TYPE.FIX ? resolveAgentReservation(workType, config, { agentHints }) : null'),
+      'Central fix work items should not reserve a busy suggested agent into dispatch.pending');
+    assert.ok(engineSrc.includes('!hardPinRequested && workType !== WORK_TYPE.FIX'),
+      'Project fix work items should wait for strict idle routing instead of reserving a busy suggestion');
+  });
+
+  await test('pending PR fix routing keeps PR author as a soft suggestion', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('function getPendingDispatchRoutingOpts(item)'),
+      'Dispatch-loop fallback routing should centralize options for pending entries');
+    assert.ok(engineSrc.includes("const authorAgent = item?.meta?.pr?.agent"),
+      'Pending PR-backed fix entries should pass the PR author as authorAgent when rerouting');
+    assert.ok(engineSrc.includes('resolvePendingDispatchAgent(item, config)'),
+      'Pending dispatches should resolve their agent through the shared pending-routing helper');
   });
 
   await test('Command Center dispatch persists agents[] hint for engine routing', () => {
@@ -31870,19 +31888,19 @@ async function testBuildFixEscalation() {
     ]);
     // Simulate what engine.js does when dispatching a fix
     shared.mutatePullRequests(fp, prs => {
-      const target = prs.find(p => p.id === 'PR-100');
+      const target = shared.findPrRecord(prs, 'PR-100');
       if (target) target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
     });
     const result = shared.safeJson(fp);
-    assert.strictEqual(result[0].buildFixAttempts, 1, 'First dispatch should set attempts to 1');
+    assert.strictEqual(shared.findPrRecord(result, 'PR-100').buildFixAttempts, 1, 'First dispatch should set attempts to 1');
 
     // Simulate second dispatch
     shared.mutatePullRequests(fp, prs => {
-      const target = prs.find(p => p.id === 'PR-100');
+      const target = shared.findPrRecord(prs, 'PR-100');
       if (target) target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
     });
     const result2 = shared.safeJson(fp);
-    assert.strictEqual(result2[0].buildFixAttempts, 2, 'Second dispatch should increment to 2');
+    assert.strictEqual(shared.findPrRecord(result2, 'PR-100').buildFixAttempts, 2, 'Second dispatch should increment to 2');
   });
 
   await test('behavioral: escalation flag set when attempts reach max', () => {
@@ -31894,16 +31912,16 @@ async function testBuildFixEscalation() {
     ]);
     // Simulate escalation check: attempts >= max → set escalated flag
     const prs = shared.safeJson(fp);
-    const pr = prs.find(p => p.id === 'PR-200');
+    const pr = shared.findPrRecord(prs, 'PR-200');
     assert.ok((pr.buildFixAttempts || 0) >= maxBuildFix,
       'PR should have buildFixAttempts >= maxBuildFixAttempts');
     // Simulate what engine.js does: set buildFixEscalated
     shared.mutatePullRequests(fp, prs => {
-      const target = prs.find(p => p.id === 'PR-200');
+      const target = shared.findPrRecord(prs, 'PR-200');
       if (target) target.buildFixEscalated = true;
     });
     const result = shared.safeJson(fp);
-    assert.strictEqual(result[0].buildFixEscalated, true,
+    assert.strictEqual(shared.findPrRecord(result, 'PR-200').buildFixEscalated, true,
       'buildFixEscalated should be set to true when attempts reach max');
   });
 
@@ -31916,7 +31934,7 @@ async function testBuildFixEscalation() {
         buildFixAttempts: maxBuildFix, buildFixEscalated: true }
     ]);
     const prs = shared.safeJson(fp);
-    const pr = prs.find(p => p.id === 'PR-300');
+    const pr = shared.findPrRecord(prs, 'PR-300');
     // The guard: !pr.buildFixEscalated should be false (already escalated)
     assert.ok(pr.buildFixEscalated, 'PR should already be escalated');
     // Engine code uses: if (!pr.buildFixEscalated) { writeInboxAlert... }
@@ -31935,7 +31953,7 @@ async function testBuildFixEscalation() {
     ]);
     // Simulate what ado.js/github.js does when build recovers (buildStatus !== 'failing')
     shared.mutatePullRequests(fp, prs => {
-      const pr = prs.find(p => p.id === 'PR-400');
+      const pr = shared.findPrRecord(prs, 'PR-400');
       if (pr) {
         pr.buildStatus = 'passing';
         delete pr._buildFailNotified;
@@ -31944,11 +31962,12 @@ async function testBuildFixEscalation() {
       }
     });
     const result = shared.safeJson(fp);
-    assert.strictEqual(result[0].buildStatus, 'passing', 'Build status should be passing');
-    assert.strictEqual(result[0].buildFixAttempts, undefined, 'buildFixAttempts should be cleared');
-    assert.strictEqual(result[0].buildFixEscalated, undefined, 'buildFixEscalated should be cleared');
-    assert.strictEqual(result[0]._buildFailNotified, undefined, '_buildFailNotified should be cleared');
-    assert.strictEqual(result[0].buildErrorLog, undefined, 'buildErrorLog should be cleared');
+    const resultPr = shared.findPrRecord(result, 'PR-400');
+    assert.strictEqual(resultPr.buildStatus, 'passing', 'Build status should be passing');
+    assert.strictEqual(resultPr.buildFixAttempts, undefined, 'buildFixAttempts should be cleared');
+    assert.strictEqual(resultPr.buildFixEscalated, undefined, 'buildFixEscalated should be cleared');
+    assert.strictEqual(resultPr._buildFailNotified, undefined, '_buildFailNotified should be cleared');
+    assert.strictEqual(resultPr.buildErrorLog, undefined, 'buildErrorLog should be cleared');
   });
 
   await test('behavioral: counter resets on PR merge/abandon', () => {
@@ -31961,7 +31980,7 @@ async function testBuildFixEscalation() {
     ]);
     // Simulate what ado.js/github.js does when PR is merged/abandoned
     shared.mutatePullRequests(fp, prs => {
-      const pr = prs.find(p => p.id === 'PR-500');
+      const pr = shared.findPrRecord(prs, 'PR-500');
       if (pr) {
         pr.status = 'merged';
         delete pr.buildFailReason;
@@ -31972,11 +31991,12 @@ async function testBuildFixEscalation() {
       }
     });
     const result = shared.safeJson(fp);
-    assert.strictEqual(result[0].status, 'merged', 'PR should be merged');
-    assert.strictEqual(result[0].buildFixAttempts, undefined, 'buildFixAttempts should be cleared on merge');
-    assert.strictEqual(result[0].buildFixEscalated, undefined, 'buildFixEscalated should be cleared on merge');
-    assert.strictEqual(result[0]._buildFailNotified, undefined, '_buildFailNotified should be cleared');
-    assert.strictEqual(result[0].buildFailReason, undefined, 'buildFailReason should be cleared');
+    const resultPr = shared.findPrRecord(result, 'PR-500');
+    assert.strictEqual(resultPr.status, 'merged', 'PR should be merged');
+    assert.strictEqual(resultPr.buildFixAttempts, undefined, 'buildFixAttempts should be cleared on merge');
+    assert.strictEqual(resultPr.buildFixEscalated, undefined, 'buildFixEscalated should be cleared on merge');
+    assert.strictEqual(resultPr._buildFailNotified, undefined, '_buildFailNotified should be cleared on merge');
+    assert.strictEqual(resultPr.buildFailReason, undefined, 'buildFailReason should be cleared');
   });
 
   await test('behavioral: ENGINE_DEFAULTS.maxBuildFixAttempts is a positive integer', () => {
@@ -36720,9 +36740,18 @@ async function testAgentBusyReassignment() {
     assert.strictEqual(toDispatch[0].agent, 'ralph');
   });
 
+  await test('pending fix dispatches do not wait for busy-agent threshold', () => {
+    assert.ok(engineSrc.includes('function isSoftFixDispatch(item)'),
+      'Dispatch loop should identify fix dispatches whose agent is only a soft suggestion');
+    assert.ok(engineSrc.includes('soft fix suggestion unavailable'),
+      'Busy soft fix dispatches should be rerouted immediately when another agent is available');
+    assert.ok(engineSrc.includes('Clearing busy soft fix agent'),
+      'Busy soft fix dispatches should clear the suggested agent when no alternative is available');
+  });
+
   // 9. Source code: reassignment uses resolveAgent for routing-aware selection
   await test('reassignment uses resolveAgent for routing-aware agent selection', () => {
-    assert.ok(engineSrc.includes('resolveAgent(routing.normalizeWorkType(item.type'),
+    assert.ok(engineSrc.includes('resolvePendingDispatchAgent(item, config)'),
       'Reassignment should use resolveAgent to find alternative agent via routing table');
   });
 
@@ -36772,13 +36801,13 @@ async function testUndefinedAgentGuard() {
       'engine.js must include a guard on item.agent being nullish/non-string before spawn');
   });
 
-  // 2. Source: the guard uses resolveAgent() with the item type as fallback
+  // 2. Source: the guard uses the pending-routing helper with the item type as fallback
   await test('undefined-agent guard uses resolveAgent for fallback resolution', () => {
-    // The guard block should reference resolveAgent with item.type
-    // Look for a `!item.agent` branch that contains `resolveAgent(`
-    const guardBlock = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,400}?resolveAgent\s*\(/);
+    // The guard block should route through resolvePendingDispatchAgent(), which
+    // wraps resolveAgent() while preserving PR author hints.
+    const guardBlock = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,400}?resolvePendingDispatchAgent\s*\(/);
     assert.ok(guardBlock,
-      'Undefined-agent guard must call resolveAgent() to pick a fallback agent');
+      'Undefined-agent guard must route through resolvePendingDispatchAgent() to pick a fallback agent');
   });
 
   // 3. Behavioral: simulate the dispatch loop — undefined agent gets resolved or skipped
@@ -36838,8 +36867,8 @@ async function testUndefinedAgentGuard() {
   // 5. Source: the guard block persists the resolved agent back to dispatch.json
   //    so the fix survives the tick — mirrors the reassignment-path convention.
   await test('undefined-agent guard persists resolution to dispatch.json (source check)', () => {
-    // Look for a mutateDispatch inside the !item.agent guard block
-    const block = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,1500}?mutateDispatch/);
+    // Look for the persistence helper inside the !item.agent guard block.
+    const block = engineSrc.match(/if\s*\(\s*!item\.agent[\s\S]{0,1500}?persistPendingDispatchAgent/);
     assert.ok(block,
       'Undefined-agent guard must call mutateDispatch to persist the resolved agent');
   });
@@ -36871,22 +36900,22 @@ async function testUnspawnedTempAgentReassignment() {
 
   // 2. Source: when detected, reroute via resolveAgent so named idle agents can take over
   await test('dispatch loop reroutes unspawned temp agents via resolveAgent', () => {
-    // The fix must call resolveAgent near the temp-agent detection in the dispatch loop.
+    // The fix must call the pending dispatch resolver near temp-agent detection.
     // Scan all occurrences of startsWith('temp-') in case other paths use the same check.
     const matches = [...engineSrc.matchAll(/startsWith\(['"]temp-['"]\)[\s\S]{0,800}/g)];
-    const hasResolveAgentNearby = matches.some(m => /resolveAgent/.test(m[0]));
+    const hasResolveAgentNearby = matches.some(m => /resolvePendingDispatchAgent/.test(m[0]));
     assert.ok(
       hasResolveAgentNearby,
-      'When a pending item is bound to an unspawned temp agent, the dispatch loop must call resolveAgent to pick a named alternative'
+      'When a pending item is bound to an unspawned temp agent, the dispatch loop must call the pending resolver to pick a named alternative'
     );
   });
 
   // 3. Source: reassignment persists to dispatch.json
   await test('unspawned temp reassignment persists via mutateDispatch', () => {
-    // The reassignment must persist across ticks via mutateDispatch. Scan all
-    // occurrences — at least one must have mutateDispatch within 1500 chars.
+    // The reassignment must persist across ticks. Scan all occurrences — at
+    // least one must call the persistence helper within 1500 chars.
     const matches = [...engineSrc.matchAll(/startsWith\(['"]temp-['"]\)[\s\S]{0,1500}/g)];
-    const hasMutateDispatchNearby = matches.some(m => /mutateDispatch/.test(m[0]));
+    const hasMutateDispatchNearby = matches.some(m => /persistPendingDispatchAgent/.test(m[0]));
     assert.ok(hasMutateDispatchNearby,
       'Unspawned-temp reassignment must persist via mutateDispatch so it survives restarts');
   });

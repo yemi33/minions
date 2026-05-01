@@ -2753,7 +2753,7 @@ function discoverFromWorkItems(config, project) {
       return b && b > 0 && getMonthlySpend(id) >= b && isAgentIdle(id);
     });
     if (!agentId) {
-      if (!budgetBlocked && !hardPinRequested) {
+      if (!budgetBlocked && !hardPinRequested && workType !== WORK_TYPE.FIX) {
         reservedAgentId = resolveAgentReservation(workType, config, { agentHints });
         agentId = reservedAgentId && !hasAgentHints ? routing.ANY_AGENT : reservedAgentId;
       }
@@ -3253,7 +3253,7 @@ function discoverCentralWorkItems(config) {
       const hardPinRequested = routing.isAgentHardPinned(item);
       const agentId = routing.getHardPinnedAgent(item, config.agents || {})
         || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null)
-        || (!hardPinRequested ? resolveAgentReservation(workType, config, { agentHints }) : null);
+        || (!hardPinRequested && workType !== WORK_TYPE.FIX ? resolveAgentReservation(workType, config, { agentHints }) : null);
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
@@ -3559,6 +3559,62 @@ async function discoverWork(config) {
   }
 
   return allWork.length;
+}
+
+function getPendingDispatchRoutingOpts(item) {
+  const opts = { agentHints: routing.extractAgentHints(item?.meta?.item) };
+  const authorAgent = item?.meta?.pr?.agent;
+  if (authorAgent) opts.authorAgent = authorAgent;
+  return opts;
+}
+
+function resolvePendingDispatchAgent(item, config) {
+  return resolveAgent(
+    routing.normalizeWorkType(item?.type, WORK_TYPE.IMPLEMENT),
+    config,
+    getPendingDispatchRoutingOpts(item)
+  );
+}
+
+function assignPendingDispatchAgent(item, agentId, config) {
+  const agents = config.agents || {};
+  item.agent = agentId;
+  item.agentName = agents[agentId]?.name || tempAgents.get(agentId)?.name || agentId;
+  item.agentRole = agents[agentId]?.role || tempAgents.get(agentId)?.role || 'Agent';
+  delete item._agentBusySince;
+  delete item.skipReason;
+}
+
+function clearPendingDispatchAgent(item) {
+  delete item.agent;
+  delete item.agentName;
+  delete item.agentRole;
+  delete item._agentBusySince;
+  delete item.skipReason;
+}
+
+function persistPendingDispatchAgent(item) {
+  mutateDispatch((dp) => {
+    const p = (dp.pending || []).find(d => d.id === item.id);
+    if (p) {
+      if (item.agent) {
+        p.agent = item.agent;
+        p.agentName = item.agentName;
+        p.agentRole = item.agentRole;
+      } else {
+        delete p.agent;
+        delete p.agentName;
+        delete p.agentRole;
+      }
+      delete p._agentBusySince;
+      delete p.skipReason;
+    }
+    return dp;
+  });
+}
+
+function isSoftFixDispatch(item) {
+  return item?.type === WORK_TYPE.FIX && !routing.isAgentHardPinned(item.meta?.item);
 }
 
 // ─── Main Tick ──────────────────────────────────────────────────────────────
@@ -3955,27 +4011,17 @@ async function tickInner() {
     // be of type string. Received undefined` and re-queues — every tick. Try to
     // resolve a fallback via routing; if none is available, skip this tick.
     if (!item.agent || typeof item.agent !== 'string') {
-      const fallback = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config, { agentHints: routing.extractAgentHints(item.meta?.item) });
+      const fallback = resolvePendingDispatchAgent(item, config);
       if (!fallback) {
         log('warn', `Pending dispatch ${item.id} has no agent and routing returned no fallback — skipping`);
         continue;
       }
       log('info', `Pending dispatch ${item.id} missing agent; routed → ${fallback} (#1206 guard)`);
-      item.agent = fallback;
-      item.agentName = config.agents[fallback]?.name || tempAgents.get(fallback)?.name || fallback;
-      item.agentRole = config.agents[fallback]?.role || tempAgents.get(fallback)?.role || 'Agent';
+      assignPendingDispatchAgent(item, fallback, config);
       // Persist so the fix survives across ticks even if this dispatch is skipped
       // later in the loop (branch lock, concurrency cap, agent busy, etc.).
       try {
-        mutateDispatch((dp) => {
-          const p = (dp.pending || []).find(d => d.id === item.id);
-          if (p) {
-            p.agent = item.agent;
-            p.agentName = item.agentName;
-            p.agentRole = item.agentRole;
-          }
-          return dp;
-        });
+        persistPendingDispatchAgent(item);
       } catch (e) { log('warn', `Persist agent resolution for ${item.id} failed: ${e.message}`); }
     }
     // #1204: Pre-assigned unspawned temp agents never unblock naturally.
@@ -3986,27 +4032,13 @@ async function tickInner() {
     // them eagerly before the busy check so an idle named agent can pick up.
     const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
     if (isUnspawnedTemp) {
-      const altAgent = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config);
+      const altAgent = resolvePendingDispatchAgent(item, config);
       if (altAgent && altAgent !== item.agent) {
         const prevAgent = item.agent;
-        item.agent = altAgent;
-        item.agentName = config.agents[altAgent]?.name || tempAgents.get(altAgent)?.name || altAgent;
-        item.agentRole = config.agents[altAgent]?.role || tempAgents.get(altAgent)?.role || 'Agent';
-        delete item._agentBusySince;
-        delete item.skipReason;
+        assignPendingDispatchAgent(item, altAgent, config);
         log('info', `Reassigning ${item.id} from unspawned temp ${prevAgent} to ${altAgent} — temp agent never spawned`);
         // Persist reassignment to dispatch.json so it survives restarts/ticks
-        mutateDispatch((dp) => {
-          const p = (dp.pending || []).find(d => d.id === item.id);
-          if (p) {
-            p.agent = altAgent;
-            p.agentName = item.agentName;
-            p.agentRole = item.agentRole;
-            delete p._agentBusySince;
-            delete p.skipReason;
-          }
-          return dp;
-        });
+        persistPendingDispatchAgent(item);
       }
     }
     if (busyAgents.has(item.agent)) {
@@ -4014,30 +4046,30 @@ async function tickInner() {
       // try to find an alternative agent via routing. Skip explicitly assigned items.
       const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
       const isHardPinned = routing.isAgentHardPinned(item.meta?.item);
-      if (!isHardPinned && reassignMs > 0 && item._agentBusySince) {
+      if (isSoftFixDispatch(item)) {
+        const originalAgent = item.agent;
+        const altAgent = resolvePendingDispatchAgent(item, config);
+        if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
+          log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — soft fix suggestion unavailable`);
+          assignPendingDispatchAgent(item, altAgent, config);
+          persistPendingDispatchAgent(item);
+          // Fall through to branch mutex / concurrency checks below.
+        } else {
+          log('info', `Clearing busy soft fix agent on ${item.id} (${originalAgent}) — waiting for any available agent`);
+          clearPendingDispatchAgent(item);
+          persistPendingDispatchAgent(item);
+          continue;
+        }
+      } else if (!isHardPinned && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();
         if (Date.now() - busySinceMs > reassignMs) {
           const originalAgent = item.agent;
-          const altAgent = resolveAgent(routing.normalizeWorkType(item.type, WORK_TYPE.IMPLEMENT), config, { agentHints: routing.extractAgentHints(item.meta?.item) });
+          const altAgent = resolvePendingDispatchAgent(item, config);
           if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
             log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy > ${reassignMs}ms`);
-            item.agent = altAgent;
-            item.agentName = config.agents[altAgent]?.name || tempAgents.get(altAgent)?.name || altAgent;
-            item.agentRole = config.agents[altAgent]?.role || tempAgents.get(altAgent)?.role || 'Agent';
-            delete item._agentBusySince;
-            delete item.skipReason;
+            assignPendingDispatchAgent(item, altAgent, config);
             // Persist reassignment to dispatch.json
-            mutateDispatch((dp) => {
-              const p = (dp.pending || []).find(d => d.id === item.id);
-              if (p) {
-                p.agent = altAgent;
-                p.agentName = item.agentName;
-                p.agentRole = item.agentRole;
-                delete p._agentBusySince;
-                delete p.skipReason;
-              }
-              return dp;
-            });
+            persistPendingDispatchAgent(item);
             // Fall through to branch mutex / concurrency checks below
           } else {
             continue; // No alternative agent available — keep waiting
