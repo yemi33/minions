@@ -1752,7 +1752,10 @@ function parseStructuredCompletion(stdout, runtimeName) {
   while ((m = blockPattern.exec(text)) !== null) {
     lastMatch = m[1];
   }
-  if (!lastMatch) return parseCompletionKeyValues(extractTaskCompleteSummary(stdout) || text);
+  if (!lastMatch) {
+    const taskCompleteSummary = extractTaskCompleteSummary(stdout);
+    return taskCompleteSummary ? parseCompletionKeyValues(taskCompleteSummary) : null;
+  }
 
   return parseCompletionKeyValues(lastMatch);
 }

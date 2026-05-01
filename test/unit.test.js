@@ -32631,6 +32631,20 @@ async function testStructuredCompletion() {
     assert.strictEqual(result.pending, 'clean the worktree and rerun the fix');
   });
 
+  await test('parseStructuredCompletion ignores status-looking prose without task_complete or fenced block', () => {
+    const stdout = [
+      'Implementation succeeded.',
+      'The original bug report contained this example:',
+      'status: failed',
+      'failure_class: dirty-worktree',
+      'pending: clean or recreate the worktree',
+      'That failure path is now fixed.',
+    ].join('\n');
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null,
+      'plain prose/log excerpts must not be parsed as structured completion');
+  });
+
   await test('runPostCompletionHooks does not clear pendingFix when task_complete reports failed', async () => {
     const restore = createTestMinionsDir();
     try {
