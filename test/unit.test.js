@@ -4153,6 +4153,74 @@ async function testPrAttachmentContract() {
       assert.ok(!updated._missingPrAttachment, 'clean items must not get the hard flag');
     } finally { restore(); }
   });
+
+  await test('isPrAttachmentRequired returns false for FIX with meta.pr set', () => {
+    const lifecycle = require('../engine/lifecycle');
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.FIX,
+      { id: 'W-1' },
+      { pr: { id: 'PR-X' } },
+    );
+    assert.strictEqual(required, false,
+      'fix WIs dispatched against an existing PR must not require fresh PR attachment');
+  });
+
+  await test('isPrAttachmentRequired returns true for FIX without meta.pr (standalone)', () => {
+    const lifecycle = require('../engine/lifecycle');
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.FIX,
+      { id: 'W-1' },
+      {},
+    );
+    assert.strictEqual(required, true,
+      'standalone fix WIs (no meta.pr) still need a PR per the existing contract');
+  });
+
+  await test('isPrAttachmentRequired returns false for TEST with meta.pr set', () => {
+    const lifecycle = require('../engine/lifecycle');
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.TEST,
+      { id: 'W-1' },
+      { pr: { id: 'PR-X' } },
+    );
+    assert.strictEqual(required, false,
+      'test WIs from build-and-test action target an existing PR — no fresh attachment');
+  });
+
+  await test('isPrAttachmentRequired returns true for TEST without meta.pr', () => {
+    const lifecycle = require('../engine/lifecycle');
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.TEST,
+      { id: 'W-1' },
+      {},
+    );
+    assert.strictEqual(required, true,
+      'standalone test WIs (no meta.pr) still need a PR per the existing contract');
+  });
+
+  await test('isPrAttachmentRequired meta.pr exemption beats explicit requiresPr flag', () => {
+    const lifecycle = require('../engine/lifecycle');
+    // Even if a legacy fix item carries requiresPr:true, meta.pr existence wins.
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.FIX,
+      { id: 'W-1', requiresPr: true },
+      { pr: { id: 'PR-X' } },
+    );
+    assert.strictEqual(required, false,
+      'meta.pr short-circuit must beat the explicit-flag fallthrough for fix/test');
+  });
+
+  await test('isPrAttachmentRequired still requires PR for IMPLEMENT regardless of meta.pr', () => {
+    const lifecycle = require('../engine/lifecycle');
+    // IMPLEMENT items must always produce a fresh PR — meta.pr exemption is fix/test only.
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.IMPLEMENT,
+      { id: 'W-1' },
+      { pr: { id: 'PR-X' } },
+    );
+    assert.strictEqual(required, true,
+      'IMPLEMENT must still require fresh PR attachment — exemption is fix/test only');
+  });
 }
 
 // ─── queries.js Tests ────────────────────────────────────────────────────────

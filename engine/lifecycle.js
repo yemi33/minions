@@ -924,6 +924,15 @@ function isPrAttachmentRequired(type, item, meta = {}) {
     || item.requiresPullRequest === true
     || item.itemType === 'pr';
   if (meta.branchStrategy === 'shared-branch' && item.itemType !== 'pr' && !explicit) return false;
+
+  // Fix/test work items dispatched against an existing PR don't produce a new
+  // PR — the agent updates meta.pr in place. Only require fresh PR attachment
+  // when there's NO existing PR to operate on (rare: standalone fix dispatched
+  // from CC without a PR target). The meta.pr short-circuit beats the
+  // explicit-flag fallthrough so a legacy requiresPr:true fix doesn't trigger
+  // the contract when there's already a PR attached.
+  if ((type === WORK_TYPE.FIX || type === WORK_TYPE.TEST) && meta?.pr) return false;
+
   return explicit
     || type === WORK_TYPE.IMPLEMENT
     || type === WORK_TYPE.IMPLEMENT_LARGE
@@ -2558,4 +2567,5 @@ module.exports = {
   diagnoseEmptyOutput,
   processPendingRebases,
   findDependentActivePrs,
+  isPrAttachmentRequired,
 };
