@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1661 (2026-05-01)
+
+### Other
+- Harden Copilot steering resume flow
+
 ## 0.1.1660 (2026-05-01)
 
 ### Fixes
