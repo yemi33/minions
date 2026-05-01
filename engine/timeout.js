@@ -194,6 +194,29 @@ function isOsPidAliveForDispatch(itemId) {
   catch { return false; }
 }
 
+function readFileTail(filePath, maxBytes) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    const tailSize = Math.min(stat.size, maxBytes);
+    const buf = Buffer.alloc(tailSize);
+    fs.readSync(fd, buf, 0, tailSize, Math.max(0, stat.size - tailSize));
+    return buf.toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function parseProcessExitCode(logText) {
+  if (!logText) return null;
+  const exitPattern = /(?:^|\n)\[process-exit\]\s+(?:code=)?(-?\d+|spawn-failed)(?=\s|$)/g;
+  let lastMatch = null;
+  let m;
+  while ((m = exitPattern.exec(logText)) !== null) lastMatch = m;
+  if (!lastMatch) return null;
+  return lastMatch[1] === 'spawn-failed' ? -1 : parseInt(lastMatch[1], 10);
+}
+
 function checkTimeouts(config) {
   const activeProcesses = engine().activeProcesses;
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
@@ -224,6 +247,45 @@ function checkTimeouts(config) {
   const dispatchData = getDispatch();
   const deadItems = [];
   const legacyAnnotationClears = new Set();
+
+  function completeFromOutput(item, liveLogPath, processExitCode, detectedLogText, hasProcess) {
+    const isSuccess = processExitCode === 0;
+    log('info', `Agent ${item.agent} (${item.id}) completed via output detection (exit code ${processExitCode}, ${isSuccess ? 'success' : 'error'})`);
+
+    // Extract output text for the output.log — read full file for complete parsing
+    const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
+    try {
+      const fullLog = safeRead(liveLogPath) || detectedLogText;
+      const { text } = shared.parseStreamJsonOutput(fullLog);
+      safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${processExitCode}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
+    } catch (e) { log('warn', 'parse output result: ' + e.message); }
+
+    const fullLogForHooks = safeRead(liveLogPath) || detectedLogText;
+    let completionDetection = null;
+    let outputResultSummary = '';
+    try {
+      const runtimeName = item.meta?.runtimeName || item.runtimeName || 'claude';
+      outputResultSummary = parseAgentOutput(fullLogForHooks, runtimeName).resultSummary || '';
+      const gateSummary = outputResultSummary || (!fullLogForHooks.includes('"type":') ? fullLogForHooks : '');
+      completionDetection = isSuccess
+        ? detectNonTerminalResultSummary(gateSummary, parseStructuredCompletion(fullLogForHooks, runtimeName), parseCompletionReportFile(item))
+        : null;
+    } catch (e) { log('warn', 'completion summary gate: ' + e.message); }
+
+    completeDispatch(item.id, completionDetection ? DISPATCH_RESULT.ERROR : (isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR),
+      completionDetection ? completionDetection.reason : (isSuccess ? 'Completed (detected from output)' : `Exited with code ${processExitCode} (detected from output)`),
+      outputResultSummary,
+      completionDetection ? { processWorkItemFailure: false } : {});
+
+    // Run post-completion hooks via shared helper (async — fire and forget in timeout context).
+    // Pass the actual exit code so autoRecovery (PR-created-but-failed) still works correctly.
+    runPostCompletionHooks(item, item.agent, processExitCode, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
+
+    if (hasProcess) {
+      shared.killImmediate(activeProcesses.get(item.id)?.proc);
+      activeProcesses.delete(item.id);
+    }
+  }
 
   for (const item of (dispatchData.active || [])) {
     if (!item.agent) continue;
@@ -265,75 +327,21 @@ function checkTimeouts(config) {
     //
     // We tail 64KB — process-exit is always the last non-empty line of the file.
     // No time cap: a stuck dispatch whose process has exited must always be detected (#716).
-    let completedViaOutput = false;
+    // completedViaOutput detection is gated on a [process-exit] code=N sentinel;
+    // a "type":"result" event alone can race engine.js's close handler (#1792).
     try {
       let liveLogTail;
       try {
-        const fd = fs.openSync(liveLogPath, 'r');
-        try {
-          const stat = fs.fstatSync(fd);
-          const TAIL_SIZE = 65536; // 64KB
-          const tailSize = Math.min(stat.size, TAIL_SIZE);
-          const buf = Buffer.alloc(tailSize);
-          fs.readSync(fd, buf, 0, tailSize, Math.max(0, stat.size - tailSize));
-          liveLogTail = buf.toString('utf8');
-        } finally { fs.closeSync(fd); }
+        liveLogTail = readFileTail(liveLogPath, 65536); // 64KB
       } catch { /* ENOENT or read failure — liveLogTail stays undefined */ }
 
       // Parse the LAST [process-exit] sentinel — code=N or "spawn-failed".
       // Use the global regex with a manual loop so we always pick up the latest occurrence,
       // not the first (defends against logs that somehow contain stale sentinel lines).
-      let processExited = false;
-      let processExitCode = null;
-      if (liveLogTail) {
-        const exitPattern = /\n\[process-exit\]\s+(?:code=)?(-?\d+|spawn-failed)/g;
-        let lastMatch = null;
-        let m;
-        while ((m = exitPattern.exec(liveLogTail)) !== null) lastMatch = m;
-        if (lastMatch) {
-          processExited = true;
-          processExitCode = lastMatch[1] === 'spawn-failed' ? -1 : parseInt(lastMatch[1], 10);
-        }
-      }
+      const processExitCode = parseProcessExitCode(liveLogTail);
 
-      if (processExited) {
-        completedViaOutput = true;
-        const isSuccess = processExitCode === 0;
-        log('info', `Agent ${item.agent} (${item.id}) completed via output detection (exit code ${processExitCode}, ${isSuccess ? 'success' : 'error'})`);
-
-        // Extract output text for the output.log — read full file for complete parsing
-        const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
-        try {
-          const fullLog = safeRead(liveLogPath) || liveLogTail;
-          const { text } = shared.parseStreamJsonOutput(fullLog);
-          safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${processExitCode}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
-        } catch (e) { log('warn', 'parse output result: ' + e.message); }
-
-        const fullLogForHooks = safeRead(liveLogPath) || liveLogTail;
-        let completionDetection = null;
-        let outputResultSummary = '';
-        try {
-          const runtimeName = item.meta?.runtimeName || item.runtimeName || 'claude';
-          outputResultSummary = parseAgentOutput(fullLogForHooks, runtimeName).resultSummary || '';
-          const gateSummary = outputResultSummary || (!fullLogForHooks.includes('"type":') ? fullLogForHooks : '');
-          completionDetection = isSuccess
-            ? detectNonTerminalResultSummary(gateSummary, parseStructuredCompletion(fullLogForHooks, runtimeName), parseCompletionReportFile(item))
-            : null;
-        } catch (e) { log('warn', 'completion summary gate: ' + e.message); }
-
-        completeDispatch(item.id, completionDetection ? DISPATCH_RESULT.ERROR : (isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR),
-          completionDetection ? completionDetection.reason : (isSuccess ? 'Completed (detected from output)' : `Exited with code ${processExitCode} (detected from output)`),
-          outputResultSummary,
-          completionDetection ? { processWorkItemFailure: false } : {});
-
-        // Run post-completion hooks via shared helper (async — fire and forget in timeout context).
-        // Pass the actual exit code so autoRecovery (PR-created-but-failed) still works correctly.
-        runPostCompletionHooks(item, item.agent, processExitCode, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
-
-        if (hasProcess) {
-          shared.killImmediate(activeProcesses.get(item.id)?.proc);
-          activeProcesses.delete(item.id);
-        }
+      if (processExitCode !== null) {
+        completeFromOutput(item, liveLogPath, processExitCode, liveLogTail, hasProcess);
         continue; // Skip orphan/hung detection — we handled it
       }
       // Note: we DO NOT trigger on `"type":"result"` alone. There is a ~1s race between
@@ -392,8 +400,21 @@ function checkTimeouts(config) {
         log('info', `Orphan check: ${item.agent} (${item.id}) silent ${silentSec}s but OS PID is alive — keeping [${_logState}]`);
         continue;
       }
+      // Final safety scan: the normal 64KB tail scan can miss a clean exit if
+      // later runtime payloads or diagnostics push the sentinel outside the tail.
+      // Before declaring an orphan, inspect the full log and route terminal exits
+      // through the same completion path.
+      try {
+        const fullLog = safeRead(liveLogPath);
+        const processExitCode = parseProcessExitCode(fullLog);
+        if (processExitCode !== null) {
+          completeFromOutput(item, liveLogPath, processExitCode, fullLog, hasProcess);
+          continue;
+        }
+      } catch (e) { log('warn', 'orphan final output completion scan: ' + e.message); }
+
       // No tracked process AND no recent output past stale-orphan timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
-      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no live process tracked, silent for ${silentSec}s [${_logState}]`);
+      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no live process tracked, silent for ${silentSec}s [logExists/logSize=${_logState}]`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
       // Clear session so retry starts fresh
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
