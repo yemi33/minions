@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1658 (2026-05-01)
+
+### Fixes
+- trust structured completion status, drop prose regex
+
+### Other
+- Fix soft routing hints
+
 ## 0.1.1657 (2026-05-01)
 
 ### Other
