@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1665 (2026-05-01)
+
+### Features
+- treat failed task_complete as dispatch failure (#1954)
+- prevent duplicate PR fix dispatch (#1953)
+
+### Fixes
+- pre-dispatch agent starvation when only one agent is idle (closes #1940) (#1956)
+-  Engine clean-exit agent runs incorrectly marked Orphaned/silent (#1955)
+
 ## 0.1.1662 (2026-05-01)
 
 ### Other
