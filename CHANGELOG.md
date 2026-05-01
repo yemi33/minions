@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1654 (2026-05-01)
+
+### Fixes
+-  harden orchestration reliability
+
 ## 0.1.1653 (2026-05-01)
 
 ### Fixes
