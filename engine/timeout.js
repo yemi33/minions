@@ -147,7 +147,7 @@ function checkTimeouts(config) {
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
   const engineRestartGraceExempt = engine().engineRestartGraceExempt;
   const { completeDispatch } = dispatch();
-  const { runPostCompletionHooks } = require('./lifecycle');
+  const { runPostCompletionHooks, parseAgentOutput, parseStructuredCompletion, detectNonTerminalResultSummary } = require('./lifecycle');
 
   const timeout = config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout;
   const defaultStaleOrphanTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
@@ -257,12 +257,25 @@ function checkTimeouts(config) {
           safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${processExitCode}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
-        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR,
-          isSuccess ? 'Completed (detected from output)' : `Exited with code ${processExitCode} (detected from output)`);
+        const fullLogForHooks = safeRead(liveLogPath) || liveLogTail;
+        let completionDetection = null;
+        let outputResultSummary = '';
+        try {
+          const runtimeName = item.meta?.runtimeName || item.runtimeName || 'claude';
+          outputResultSummary = parseAgentOutput(fullLogForHooks, runtimeName).resultSummary || '';
+          const gateSummary = outputResultSummary || (!fullLogForHooks.includes('"type":') ? fullLogForHooks : '');
+          completionDetection = isSuccess
+            ? detectNonTerminalResultSummary(gateSummary, parseStructuredCompletion(fullLogForHooks, runtimeName))
+            : null;
+        } catch (e) { log('warn', 'completion summary gate: ' + e.message); }
+
+        completeDispatch(item.id, completionDetection ? DISPATCH_RESULT.ERROR : (isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR),
+          completionDetection ? completionDetection.reason : (isSuccess ? 'Completed (detected from output)' : `Exited with code ${processExitCode} (detected from output)`),
+          outputResultSummary,
+          completionDetection ? { processWorkItemFailure: false } : {});
 
         // Run post-completion hooks via shared helper (async — fire and forget in timeout context).
         // Pass the actual exit code so autoRecovery (PR-created-but-failed) still works correctly.
-        const fullLogForHooks = safeRead(liveLogPath) || liveLogTail;
         runPostCompletionHooks(item, item.agent, processExitCode, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
 
         if (hasProcess) {
