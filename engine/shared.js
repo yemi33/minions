@@ -720,6 +720,12 @@ const ENGINE_DEFAULTS = {
   autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoFixConflicts: true, // auto-dispatch fix agents when a PR has merge conflicts
   autoFixBuilds: true, // auto-dispatch fix agents when a PR build fails
+  autoReviewPrs: true, // auto-dispatch review agents for newly opened agent PRs
+  autoReReviewPrs: true, // auto-dispatch review agents after a PR fix is pushed
+  autoFixReviewFeedback: true, // auto-dispatch fix agents for minions review changes-requested verdicts
+  autoFixHumanComments: true, // auto-dispatch fix agents for actionable human PR comments
+  completionReportRetentionDays: 90, // retain completion report sidecars beyond capped dispatch history
+  completionReportMaxFiles: 5000, // hard cap for completion report sidecars during cleanup
   meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // legacy UI/config field; engine discovery no longer enforces review→fix cycle caps
@@ -1177,7 +1183,7 @@ const ESCALATION_POLICY = {
 };
 
 // Structured completion protocol — fields agents must produce in ```completion blocks
-const COMPLETION_FIELDS = ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict'];
+const COMPLETION_FIELDS = ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict', 'artifacts'];
 
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
@@ -1793,9 +1799,11 @@ function _jsonEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function _isPlainObject(value) {
+function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+// Backwards-compat alias for legacy in-file callers.
+const _isPlainObject = isPlainObject;
 
 function applyPrFieldDelta(target, before, after) {
   if (!target || typeof target !== 'object' || !after || typeof after !== 'object') return target;
@@ -2322,6 +2330,7 @@ module.exports = {
   mutatePullRequests,
   uid,
   uniquePath,
+  isPlainObject,
   truncateTextBytes,
   tailTextBytes,
   appendTextTail,

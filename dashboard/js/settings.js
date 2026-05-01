@@ -98,6 +98,10 @@ async function openSettings() {
         '<div style="margin-left:20px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
           settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Dispatch gate: auto-fix agent when build fails (downstream of ADO Polling)') +
           settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Dispatch gate: auto-fix agent when merge conflict detected (downstream of ADO Polling)') +
+          settingsToggle('Auto-review PRs', 'set-autoReviewPrs', e.autoReviewPrs !== false, 'Dispatch gate: review agent for newly opened agent PRs (throttle-aware)') +
+          settingsToggle('Auto-re-review PRs', 'set-autoReReviewPrs', e.autoReReviewPrs !== false, 'Dispatch gate: review agent after a fix push is awaiting re-review (throttle-aware)') +
+          settingsToggle('Auto-fix Review Feedback', 'set-autoFixReviewFeedback', e.autoFixReviewFeedback !== false, 'Dispatch gate: fix agent for minions changes-requested verdicts (throttle-aware)') +
+          settingsToggle('Auto-fix Human Comments', 'set-autoFixHumanComments', e.autoFixHumanComments !== false, 'Dispatch gate: fix agent for actionable human PR comments (throttle-aware)') +
         '</div>' +
       '</div>' +
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick (reconciliation always runs regardless)') +
@@ -547,6 +551,10 @@ async function saveSettings() {
       autoArchive: document.getElementById('set-autoArchive').checked,
       autoFixBuilds: document.getElementById('set-autoFixBuilds').checked,
       autoFixConflicts: document.getElementById('set-autoFixConflicts').checked,
+      autoReviewPrs: document.getElementById('set-autoReviewPrs').checked,
+      autoReReviewPrs: document.getElementById('set-autoReReviewPrs').checked,
+      autoFixReviewFeedback: document.getElementById('set-autoFixReviewFeedback').checked,
+      autoFixHumanComments: document.getElementById('set-autoFixHumanComments').checked,
       autoCompletePrs: document.getElementById('set-autoCompletePrs').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,

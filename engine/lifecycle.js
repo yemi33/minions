@@ -706,8 +706,9 @@ function reconcilePrdStatuses(config) {
 
 // ─── PR Sync from Output ─────────────────────────────────────────────────────
 
-function syncPrsFromOutput(output, agentId, meta, config) {
-
+function syncPrsFromOutput(output, agentId, meta, config, opts = {}) {
+  const { structuredCompletion = null } = opts;
+  const outputText = String(output || '');
   const prEvidence = new Map();
   const trustedPrCreateToolIds = new Set();
   const prUrlPattern = /(https?:\/\/github\.com\/[^\s"'\\)\]]+\/[^\s"'\\)\]]+\/pull\/(\d+)(?:[^\s"'\\)\]]*)?|https?:\/\/(?:dev\.azure\.com|[^/\s"'\\)\]]+\.visualstudio\.com)[^\s"'\\)\]]*?pullrequest\/(\d+)(?:[^\s"'\\)\]]*)?)/gi;
@@ -735,6 +736,21 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     }
   }
 
+  function addStructuredPrEvidence(completion) {
+    const raw = completion?.pr ?? completion?.pull_request ?? completion?.pullRequest;
+    if (raw == null) return;
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const value of values) {
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value || '');
+      if (!text || /^(?:n\/a|na|none|null|no pr|-)\s*$/i.test(text.trim())) continue;
+      const before = prEvidence.size;
+      addPrUrlEvidence(text);
+      if (prEvidence.size > before) continue;
+      const idMatch = text.match(/\b(?:PR|pull\s*request)?\s*#?\s*(\d{1,10})\b/i);
+      if (idMatch && !prEvidence.has(idMatch[1])) prEvidence.set(idMatch[1], '');
+    }
+  }
+
   function isTrustedPrCreateToolUse(block) {
     const name = String(block?.name || '');
     if (/(?:create|open|submit)[_-]?(?:pull[_-]?request|pr)|(?:pull[_-]?request|pr)[_-]?(?:create|open|submit)/i.test(name)) {
@@ -749,7 +765,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   }
 
   try {
-    const lines = output.split('\n');
+    const lines = outputText.split('\n');
     for (const line of lines) {
       try {
         if (!line.includes('"type":"assistant"') && !line.includes('"type":"result"') && !line.includes('"type":"user"')) continue;
@@ -779,13 +795,15 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     }
   } catch {}
 
+  addStructuredPrEvidence(structuredCompletion);
+
   // Accept inbox fallback ONLY when the agent's stdout is empty (rotated/lost).
   // The inbox note is the durable artifact for the "gh pr create ran in a sibling
   // dispatch whose stdout was rotated" case. When stdout has actual content (even
   // without PR evidence — e.g. the agent ran gh issue view but didn't create a PR),
   // we must NOT pull in PR URLs from leftover inbox files of prior dispatches —
   // those would falsely attribute unrelated PRs to this run.
-  if (!output || !String(output).trim()) {
+  if (!outputText.trim()) {
     const today = dateStamp();
     const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
     const currentItemId = meta?.item?.id ? String(meta.item.id) : '';
@@ -813,13 +831,15 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   // Match each PR to its correct project by finding which repo URL appears near the PR number in output
   function resolveProjectForPr(prId) {
+    const evidenceUrl = prEvidence.get(prId) || '';
+    const evidenceText = `${outputText}\n${evidenceUrl}`;
     for (const p of projects) {
       if (!p.prUrlBase) continue;
       const urlFragment = p.prUrlBase.replace(/pullrequest\/$/, '');
-      if (output.includes(urlFragment + 'pullrequest/' + prId) || output.includes(urlFragment + prId)) return p;
+      if (evidenceText.includes(urlFragment + 'pullrequest/' + prId) || evidenceText.includes(urlFragment + prId)) return p;
     }
     for (const p of projects) {
-      if (p.repoName && output.includes(`_git/${p.repoName}/pullrequest/${prId}`)) return p;
+      if (p.repoName && evidenceText.includes(`_git/${p.repoName}/pullrequest/${prId}`)) return p;
     }
     return defaultProject;
   }
@@ -847,7 +867,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     const fullId = shared.getCanonicalPrId(targetProject, prId, prUrl);
 
     let title = meta?.item?.title || '';
-    const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
+    const titleMatch = outputText.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
     if (titleMatch) title = titleMatch[1].trim();
     if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120 || /[{}"\[\]]/.test(title) || /^[0-9a-f-]{8,}$/i.test(title)) {
       title = meta?.item?.title || '';
@@ -902,7 +922,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         log('warn', `Duplicate PR detected: ${fullId} on branch ${entry.branch || entryBranch} — already tracked as ${duplicateOnBranch.id}. Skipping.`);
         // Best-effort close the duplicate on GitHub (non-blocking, fire-and-forget)
         try {
-          const ghSlug = output.match(/github\.com\/([^/]+\/[^/]+)/)?.[1];
+          const ghSlug = outputText.match(/github\.com\/([^/]+\/[^/]+)/)?.[1];
           if (ghSlug) {
             execAsync(`gh pr close ${prId} --repo ${ghSlug} --comment "Closing duplicate — ${duplicateOnBranch.id} already tracks this branch."`, { timeout: 15000 })
               .catch(() => {});
@@ -1750,11 +1770,16 @@ function parseStructuredCompletion(stdout, runtimeName) {
   return result;
 }
 
-function parseCompletionReportFile(dispatchItem) {
+function parseCompletionReportFile(dispatchItem, opts = {}) {
   const reportPath = dispatchItem?.meta?.completionReportPath || shared.dispatchCompletionReportPath(dispatchItem?.id);
-  if (!reportPath || !fs.existsSync(reportPath)) return null;
+  if (!reportPath || !fs.existsSync(reportPath)) {
+    if (opts.warnIfMissing && dispatchItem?.id) {
+      log('warn', `Completion report missing for ${dispatchItem.id}: ${reportPath || '(no path)'}`);
+    }
+    return null;
+  }
   const report = safeJson(reportPath);
-  if (!report || typeof report !== 'object' || Array.isArray(report)) {
+  if (!shared.isPlainObject(report)) {
     log('warn', `Ignoring malformed completion report for ${dispatchItem?.id || 'unknown'}: ${reportPath}`);
     return null;
   }
@@ -1765,6 +1790,29 @@ function parseCompletionReportFile(dispatchItem) {
   }
   report._source = 'report-file';
   report._path = reportPath;
+  return report;
+}
+
+function persistCompletionReport(dispatchItem, completion, source = 'fallback') {
+  if (!dispatchItem?.id || !completion || typeof completion !== 'object') return completion;
+  const reportPath = dispatchItem?.meta?.completionReportPath || shared.dispatchCompletionReportPath(dispatchItem.id);
+  if (!reportPath) return completion;
+  const report = {
+    ...completion,
+    status: completion.status || completion.outcome || 'unknown',
+    _source: source,
+    _path: reportPath,
+    dispatchId: dispatchItem.id,
+    agent: dispatchItem.agent || null,
+    type: dispatchItem.type || null,
+    completedAt: ts(),
+  };
+  try {
+    safeWrite(reportPath, report);
+    log('info', `Persisted ${source} completion report for ${dispatchItem.id}: ${reportPath}`);
+  } catch (err) {
+    log('warn', `Persist fallback completion report for ${dispatchItem.id}: ${err.message}`);
+  }
   return report;
 }
 
@@ -2045,8 +2093,9 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   let { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout, runtimeName);
 
   // Prefer the sidecar completion report; keep fenced output as a compatibility fallback.
-  const reportCompletion = parseCompletionReportFile(dispatchItem);
-  const structuredCompletion = reportCompletion || parseStructuredCompletion(stdout, runtimeName);
+  const reportCompletion = parseCompletionReportFile(dispatchItem, { warnIfMissing: true });
+  const fallbackCompletion = reportCompletion ? null : parseStructuredCompletion(stdout, runtimeName);
+  const structuredCompletion = reportCompletion || persistCompletionReport(dispatchItem, fallbackCompletion, 'fenced-completion');
   if (structuredCompletion) {
     if (structuredCompletion.summary) resultSummary = String(structuredCompletion.summary);
     log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}${structuredCompletion._source ? ` (${structuredCompletion._source})` : ''}`);
@@ -2073,7 +2122,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Always attempt PR sync — even failed/timed-out agents may have created PRs before dying
   let prsCreatedCount = 0;
   try {
-    prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
+    prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config, { structuredCompletion }) || 0;
   } catch (err) { log('warn', `PR sync from output: ${err.message}`); }
 
   // Structured completion may report PR even when regex didn't find it
@@ -2559,6 +2608,7 @@ module.exports = {
   parseStructuredCompletion,
   detectNonTerminalResultSummary,
   parseCompletionReportFile,
+  persistCompletionReport,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,

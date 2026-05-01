@@ -486,7 +486,7 @@ async function spawnAgent(dispatchItem, config) {
     '',
     `Before exiting, write a JSON completion report to: \`${completionReportPath}\``,
     '',
-    'Use this shape: {"status":"success|partial|failed","summary":"...","verdict":"approved|changes-requested|null","pr":"PR URL or id if relevant","failure_class":"...","retryable":true|false,"needs_rerun":true|false}.',
+    'Use this shape: {"status":"success|partial|failed","summary":"...","verdict":"approved|changes-requested|null","pr":"PR URL or id if relevant","failure_class":"...","retryable":true|false,"needs_rerun":true|false,"artifacts":[{"type":"note|plan|prd|pr|file","path":"relative/path/or/url","title":"short label"}]}.',
     'This report is the primary completion signal; fenced completion blocks are only a fallback.',
     '',
   ].join('\n') : '';
@@ -1336,13 +1336,19 @@ async function spawnAgent(dispatchItem, config) {
     const hardContractFail = completionContractFailure?.severity === 'hard'
       || completionContractFailure?.nonTerminal === true;
     const effectiveResult = hardContractFail ? DISPATCH_RESULT.ERROR : (((code === 0 && !agentReportedFailure) || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+    const completionReportPath = structuredCompletion?._path || dispatchItem.meta?.completionReportPath || shared.dispatchCompletionReportPath(id);
+    const completionOpts = {
+      ...(completionReportPath ? { completionReportPath } : {}),
+      ...(structuredCompletion ? { structuredCompletion } : {}),
+    };
     const completeOpts = hardContractFail
-      ? { processWorkItemFailure: false }
+      ? { ...completionOpts, processWorkItemFailure: false }
       : (effectiveResult === DISPATCH_RESULT.ERROR ? {
+          ...completionOpts,
           ...(failureClass ? { failureClass } : {}),
           ...(typeof retryableDecision === 'boolean' ? { agentRetryable: retryableDecision } : {}),
           ...(structuredCompletion?.failure_class ? { failureClass: structuredCompletion.failure_class } : {}),
-        } : {});
+        } : completionOpts);
     // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
     let errorReason = '';
     if (hardContractFail) {
@@ -1679,7 +1685,7 @@ function updateSnapshot(config) {
 // ─── Cooldowns (extracted to engine/cooldown.js) ─────────────────────────────
 
 const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
-  isOnCooldown, setCooldown, setCooldownWithContext, getCoalescedContexts,
+  isOnCooldown, setCooldown, setCooldownWithContext, drainCoalescedContexts,
   setCooldownFailure, clearCooldown, isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
 
 
@@ -2174,6 +2180,11 @@ async function discoverFromPrs(config, project) {
     ? (config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled)
     : (config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled);
   const evalLoopEnabled = config.engine?.evalLoop !== false;
+  const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
+  const autoReviewPrs = config.engine?.autoReviewPrs ?? ENGINE_DEFAULTS.autoReviewPrs;
+  const autoReReviewPrs = config.engine?.autoReReviewPrs ?? ENGINE_DEFAULTS.autoReReviewPrs;
+  const autoFixReviewFeedback = config.engine?.autoFixReviewFeedback ?? ENGINE_DEFAULTS.autoFixReviewFeedback;
+  const autoFixHumanComments = config.engine?.autoFixHumanComments ?? ENGINE_DEFAULTS.autoFixHumanComments;
 
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
@@ -2217,12 +2228,13 @@ async function discoverFromPrs(config, project) {
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
     // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
-    const reviewEnabled = evalLoopEnabled && pollEnabled;
+    const reviewEnabled = evalLoopEnabled && pollEnabled && autoReviewPrs;
+    const reReviewEnabled = evalLoopEnabled && pollEnabled && autoReReviewPrs;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${prDisplayId}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
       try {
@@ -2263,21 +2275,29 @@ async function discoverFromPrs(config, project) {
     // awaiting a stale-vote re-review or has build-fix retries escalated.
     const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+    if (autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
       const key = humanFixKey;
       let staleCoalesced = [];
       const alreadyDispatched = isAlreadyDispatched(key);
       const blockedByCooldown = isOnCooldown(key, cooldownMs);
+      const currentFeedback = pr.humanFeedback?.pendingFix ? pr.humanFeedback.feedbackContent : '';
+      const coalesceCurrentHumanFeedback = () => {
+        if (!currentFeedback) return;
+        setCooldownWithContext(key, { feedbackContent: currentFeedback, timestamp: ts() });
+        clearPendingHumanFeedbackFlag(projMeta, pr.id);
+      };
+      if (fixThrottled) {
+        coalesceCurrentHumanFeedback();
+        continue;
+      }
       if (blockedByCooldown && !alreadyDispatched) {
-        staleCoalesced = getCoalescedContexts(key);
+        staleCoalesced = drainCoalescedContexts(key);
         clearCooldown(key);
         log('info', `Cleared stale cooldown for ${key} — no matching dispatch history`);
       }
       if (alreadyDispatched || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch
-        if (pr.humanFeedback?.feedbackContent) {
-          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: ts() });
-        }
+        coalesceCurrentHumanFeedback();
         continue;
       }
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
@@ -2285,11 +2305,11 @@ async function discoverFromPrs(config, project) {
       const prBranch = ensurePrBranchForDispatch(project, pr, 'human-feedback fix');
       if (!prBranch) continue;
 
-      const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
-      let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
+      const coalesced = [...staleCoalesced, ...drainCoalescedContexts(key)];
+      let reviewNote = currentFeedback || 'See PR thread comments';
       if (coalesced.length > 0) {
         const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
-        if (earlier) reviewNote = earlier + '\n\n---\n\n' + reviewNote;
+        if (earlier) reviewNote = currentFeedback ? earlier + '\n\n---\n\n' + currentFeedback : earlier;
       }
       reviewNote = `New PR comments were observed. Read the full PR thread, decide whether the comments require code/documentation/test changes, make only necessary changes, and push if action is needed.\n\n${reviewNote}`;
 
@@ -2305,13 +2325,13 @@ async function discoverFromPrs(config, project) {
     // or when no minions review has completed yet (e.g. human-feedback-only fix path).
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
-    const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
+    const needsReReview = reReviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !fixDispatched;
     if (needsReReview) {
       const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
-      if (isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
       try {
@@ -2346,9 +2366,9 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix
     // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
-    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
+    if (evalLoopEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
       const prBranch = ensurePrBranchForDispatch(project, pr, 'fix');
@@ -2371,7 +2391,6 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled();
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -4082,7 +4101,7 @@ module.exports = {
   updateWorkItemStatus, handlePostMerge,
 
   // Cooldowns
-  loadCooldowns, setCooldownWithContext, getCoalescedContexts,
+  loadCooldowns, setCooldownWithContext, drainCoalescedContexts,
 
   // Budget
   getMonthlySpend,

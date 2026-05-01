@@ -62,6 +62,10 @@ function mutateDispatch(mutator) {
 function addToDispatch(item) {
   item.id = item.id || `${item.agent}-${item.type}-${shared.uid()}`;
   item.created_at = ts();
+  item.meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
+  if (!item.meta.completionReportPath) {
+    item.meta.completionReportPath = shared.dispatchCompletionReportPath(item.id);
+  }
   let added = false;
   mutateDispatch((dispatch) => {
     // Dedup: skip if same work item ID is already pending or active
@@ -262,6 +266,16 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
     if (failureClass && result === DISPATCH_RESULT.ERROR) item.failureClass = failureClass;
+    item.meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
+    if (opts.completionReportPath && !item.meta.completionReportPath) {
+      item.meta.completionReportPath = opts.completionReportPath;
+    }
+    if (opts.structuredCompletion && typeof opts.structuredCompletion === 'object') {
+      item.structuredCompletion = opts.structuredCompletion;
+      if (opts.structuredCompletion._path && !item.meta.completionReportPath) {
+        item.meta.completionReportPath = opts.structuredCompletion._path;
+      }
+    }
     // Drop prompt (and sidecar file, if any) — completed entries don't need
     // replayable content and it would accumulate forever (#1167).
     try { deleteDispatchPromptSidecar(item); } catch { /* best-effort */ }

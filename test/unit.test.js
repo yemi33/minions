@@ -8170,12 +8170,14 @@ async function testStateIntegrity() {
       'engine should not create a heartbeat timer for live-output');
   });
 
-  await test('Human feedback pendingFix is cleared only after dispatch enqueue', () => {
+  await test('Human feedback pendingFix is cleared after enqueue or durable coalescing', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(!src.includes('pr.humanFeedback.pendingFix = false'),
-      'discoverFromPrs should not clear pendingFix during discovery');
+      'pendingFix should be cleared through the shared helper, not by mutating stale in-memory PR objects');
     assert.ok(src.includes('clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id)'),
       'pendingFix should be cleared after addToDispatch in discoverWork');
+    assert.ok(src.includes('setCooldownWithContext(key') && src.includes('clearPendingHumanFeedbackFlag(projMeta, pr.id)'),
+      'pendingFix should also clear after feedback is durably coalesced into cooldown context');
   });
 
   await test('Discovery does not prematurely mark items as dispatched (#480)', () => {
@@ -10862,27 +10864,27 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
-  // ── getCoalescedContexts ──
+  // ── drainCoalescedContexts ──
 
-  await test('getCoalescedContexts returns the pendingContexts array', () => {
+  await test('drainCoalescedContexts returns the pendingContexts array', () => {
     const restore = createTestMinionsDir();
     try {
       const cooldown = _freshCooldownModule();
       cooldown.setCooldownWithContext('k', { a: 1 });
       cooldown.setCooldownWithContext('k', { a: 2 });
-      const out = cooldown.getCoalescedContexts('k');
+      const out = cooldown.drainCoalescedContexts('k');
       assert.deepStrictEqual(out, [{ a: 1 }, { a: 2 }]);
     } finally { restore(); }
   });
 
-  await test('getCoalescedContexts clears pendingContexts after a non-empty read', () => {
+  await test('drainCoalescedContexts clears pendingContexts after a non-empty read', () => {
     const restore = createTestMinionsDir();
     try {
       const cooldown = _freshCooldownModule();
       cooldown.setCooldownWithContext('k', { a: 1 });
-      const first = cooldown.getCoalescedContexts('k');
+      const first = cooldown.drainCoalescedContexts('k');
       assert.strictEqual(first.length, 1);
-      const second = cooldown.getCoalescedContexts('k');
+      const second = cooldown.drainCoalescedContexts('k');
       assert.deepStrictEqual(second, [],
         'Contexts must be cleared after retrieval so they are not re-processed');
       // And the entry's pendingContexts should now be empty
@@ -10890,11 +10892,11 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
-  await test('getCoalescedContexts returns [] for unknown key and does not create an entry', () => {
+  await test('drainCoalescedContexts returns [] for unknown key and does not create an entry', () => {
     const restore = createTestMinionsDir();
     try {
       const cooldown = _freshCooldownModule();
-      const out = cooldown.getCoalescedContexts('unknown');
+      const out = cooldown.drainCoalescedContexts('unknown');
       assert.deepStrictEqual(out, []);
       assert.ok(!cooldown.dispatchCooldowns.has('unknown'),
         'Reading for unknown key should not create a phantom entry');
@@ -12969,23 +12971,21 @@ async function testDiscoverFromPrs() {
 
   // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j, W-mo0cw3ne8l2t) ─────────
 
-  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
-    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
-    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
+  await test('discoverFromPrs uses independent review and re-review toggles with evalLoop + polling', () => {
     const fnStart = src.indexOf('async function discoverFromPrs(');
     const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
     const fnBody = src.slice(fnStart, fnEnd);
     assert.ok(fnBody.includes('pollEnabled'),
       'discoverFromPrs must resolve pollEnabled per project');
     assert.ok(fnBody.includes('reviewEnabled'),
-      'discoverFromPrs must use reviewEnabled as the single review gate');
-    assert.ok(!fnBody.includes('autoReview'),
-      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
-    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
-      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
+      'discoverFromPrs must use a reviewEnabled gate');
+    assert.ok(fnBody.includes('autoReviewPrs') && fnBody.includes('autoReReviewPrs'),
+      'review and re-review dispatches must have independent toggles');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled') && fnBody.includes('autoReviewPrs'),
+      'reviewEnabled must combine evalLoopEnabled, pollEnabled, and autoReviewPrs');
   });
 
-  await test('discoverFromPrs gates changes-requested fix dispatch on evalLoopEnabled', () => {
+  await test('discoverFromPrs gates changes-requested fix dispatch on evalLoopEnabled and autoFixReviewFeedback', () => {
     // evalLoop:false should suppress the review→fix cycle (changes-requested → fix dispatch)
     const fnStart = src.indexOf('async function discoverFromPrs(');
     const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
@@ -12998,6 +12998,33 @@ async function testDiscoverFromPrs() {
     const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
     assert.ok(changesBlock.includes('evalLoopEnabled'),
       'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+    assert.ok(changesBlock.includes('autoFixReviewFeedback'),
+      'changes-requested fix dispatch must be independently configurable');
+  });
+
+  await test('discoverFromPrs applies provider throttle to review, re-review, review-fix, and human-comment fix dispatches', () => {
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('const fixThrottled = isAdoProject ? isAdoThrottled() : isGhThrottled()'),
+      'discoverFromPrs must compute provider throttling once for PR automation');
+    const reviewBlock = fnBody.slice(fnBody.indexOf('PRs needing review'), fnBody.indexOf('let fixDispatched'));
+    assert.ok(reviewBlock.includes('fixThrottled || isAlreadyDispatched'),
+      'initial review dispatch must be throttle-aware');
+    const humanBlock = fnBody.slice(fnBody.indexOf('Fresh reviewer comments'), fnBody.indexOf('Re-review after fix'));
+    const throttleIdx = humanBlock.indexOf('if (fixThrottled)');
+    const throttleContinueIdx = humanBlock.indexOf('continue;', throttleIdx);
+    const throttleSkipBlock = humanBlock.slice(throttleIdx, throttleContinueIdx);
+    assert.ok(humanBlock.includes('autoFixHumanComments') && throttleIdx !== -1 && throttleContinueIdx !== -1,
+      'human-comment fix dispatch must be independently toggled and throttle-aware');
+    assert.ok(throttleSkipBlock.includes('coalesceCurrentHumanFeedback()'),
+      'human-comment feedback must be durably coalesced before a provider-throttle skip');
+    const rereviewBlock = fnBody.slice(fnBody.indexOf('Re-review after fix'), fnBody.indexOf('PRs with changes requested'));
+    assert.ok(rereviewBlock.includes('reReviewEnabled') && rereviewBlock.includes('fixThrottled || isOnCooldown'),
+      're-review dispatch must be independently toggled and throttle-aware');
+    const fixBlock = fnBody.slice(fnBody.indexOf('PRs with changes requested'), fnBody.indexOf('PRs with build failures'));
+    assert.ok(fixBlock.includes('autoFixReviewFeedback') && fixBlock.includes('fixThrottled || isAlreadyDispatched'),
+      'review-feedback fix dispatch must be independently toggled and throttle-aware');
   });
 
   await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
@@ -16170,8 +16197,8 @@ async function testWakeupCoalescing() {
       'Should track pendingContexts in cooldown entries');
   });
 
-  await test('getCoalescedContexts function exists', () => {
-    assert.ok(src.includes('getCoalescedContexts'),
+  await test('drainCoalescedContexts function exists', () => {
+    assert.ok(src.includes('drainCoalescedContexts'),
       'Should have function to retrieve coalesced contexts');
   });
 
@@ -16186,7 +16213,7 @@ async function testWakeupCoalescing() {
   });
 
   await test('coalesced contexts are merged into dispatch', () => {
-    assert.ok(src.includes('coalesced') || src.includes('getCoalescedContexts'),
+    assert.ok(src.includes('coalesced') || src.includes('drainCoalescedContexts'),
       'Should merge coalesced contexts into the dispatch');
   });
 
@@ -16458,6 +16485,72 @@ async function testDispatchPromptSidecar() {
         try { delete require.cache[require.resolve(mod)]; } catch {}
       }
     }
+  });
+
+  await test('addToDispatch and completeDispatch preserve completion report metadata for dashboard queries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const id = testDispatch.addToDispatch({
+        id: 'D-completion-meta',
+        agent: 'dallas',
+        type: 'fix',
+        task: 'Completion metadata',
+        meta: { item: { id: 'W-completion-meta' } },
+      });
+      const reportPath = freshShared.dispatchCompletionReportPath(id);
+      freshShared.safeWrite(reportPath, {
+        status: 'success',
+        summary: 'dashboard-visible report',
+        artifacts: [{ type: 'file', path: 'engine/lifecycle.js', title: 'Lifecycle changes' }],
+      });
+
+      testDispatch.mutateDispatch(dp => {
+        const idx = dp.pending.findIndex(d => d.id === id);
+        dp.active.push(dp.pending.splice(idx, 1)[0]);
+        return dp;
+      });
+      testDispatch.completeDispatch(id, freshShared.DISPATCH_RESULT.SUCCESS, '', 'done', {
+        processWorkItemFailure: false,
+        completionReportPath: reportPath,
+        structuredCompletion: { status: 'success', summary: 'dashboard-visible report', _path: reportPath },
+      });
+
+      const dispatch = testQueries.getDispatch();
+      const completed = dispatch.completed.find(d => d.id === id);
+      assert.strictEqual(completed.meta.completionReportPath, reportPath,
+        'completed dispatch should retain completion report path');
+      assert.strictEqual(completed.structuredCompletion.summary, 'dashboard-visible report',
+        'completed dispatch should retain parsed structured completion');
+      const queue = testQueries.getDispatchQueue();
+      const queuedCompleted = queue.completed.find(d => d.id === id);
+      assert.strictEqual(queuedCompleted.completionReport.available, true);
+      assert.strictEqual(queuedCompleted.completionReport.summary, 'dashboard-visible report');
+      assert.deepStrictEqual(queuedCompleted.completionReport.artifacts[0], { type: 'file', path: 'engine/lifecycle.js', title: 'Lifecycle changes' });
+      const reportPayload = testQueries.getDispatchCompletionReport(id);
+      assert.strictEqual(reportPayload.report.summary, 'dashboard-visible report');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('cleanup retains completion reports beyond capped dispatch history and prunes by retention policy', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    const block = src.slice(src.indexOf('Evict old completion reports'), src.indexOf('if (cleaned.ccSessions'));
+    assert.ok(block.includes('completionReportRetentionDays') && block.includes('completionReportMaxFiles'),
+      'completion report cleanup should use explicit age/count retention policy');
+    assert.ok(block.includes('protectedReportFiles') && block.includes('shared.dispatchCompletionReportPath(entry.id)'),
+      'completion report cleanup should protect current dispatch entries using the same sanitized report filename helper');
+    assert.ok(!block.includes('!activeIds.has(id)'),
+      'completion report cleanup must not delete reports solely because dispatch.completed rotated them out');
   });
 
   await test('completeDispatch does not retry completed work item after exit-time stderr (#1884)', () => {
@@ -22937,8 +23030,10 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    assert.ok(src.includes("const needsReReview = reviewEnabled && reviewStatus === 'waiting'"),
+    assert.ok(src.includes("const needsReReview = reReviewEnabled && reviewStatus === 'waiting'"),
       'Should define needsReReview for waiting PRs');
+    assert.ok(src.includes('autoReReviewPrs'),
+      'Re-review dispatch should be independently configurable');
     assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
       src.includes('!pr.lastReviewedAt ||') &&
       src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
@@ -23011,7 +23106,7 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    const reReviewIdx = src.indexOf("const needsReReview = reviewEnabled && reviewStatus === 'waiting'");
+    const reReviewIdx = src.indexOf("const needsReReview = reReviewEnabled && reviewStatus === 'waiting'");
     assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
     const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);
@@ -31720,7 +31815,7 @@ async function testStructuredCompletion() {
   await test('COMPLETION_FIELDS exported from engine/shared.js', () => {
     assert.ok(Array.isArray(shared.COMPLETION_FIELDS),
       'COMPLETION_FIELDS should be an array');
-    for (const field of ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict']) {
+    for (const field of ['status', 'summary', 'files_changed', 'tests', 'pr', 'pending', 'failure_class', 'retryable', 'needs_rerun', 'verdict', 'artifacts']) {
       assert.ok(shared.COMPLETION_FIELDS.includes(field), `Should include ${field}`);
     }
   });
@@ -31815,6 +31910,80 @@ async function testStructuredCompletion() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('structuredCompletion'),
       'Return object should include structuredCompletion');
+  });
+
+  await test('runPostCompletionHooks persists fenced completion fallback to completion report file', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const queriesInner = require('../engine/queries');
+      const dispatchItem = {
+        id: 'D-fenced-report',
+        type: 'fix',
+        task: 'Persist fallback report',
+        agent: 'dallas',
+        meta: {
+          item: { id: 'W-fenced-report', title: 'Persist fallback report', skipPr: true },
+          source: 'central-work-item',
+        },
+      };
+      const output = 'Done\n```completion\nstatus: success\nsummary: fallback persisted\npr: N/A\npending: none\n```\n';
+
+      const result = await lifecycleInner.runPostCompletionHooks(dispatchItem, 'dallas', 0, output, { agents: { dallas: {} }, projects: [] });
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-fenced-report');
+      assert.ok(fs.existsSync(reportPath), 'fenced fallback completion should be persisted to engine/completions');
+      const report = sharedInner.safeJson(reportPath);
+      assert.strictEqual(report.status, 'success');
+      assert.strictEqual(report.summary, 'fallback persisted');
+      assert.strictEqual(report._source, 'fenced-completion');
+      assert.strictEqual(result.structuredCompletion._path, reportPath);
+      const apiPayload = queriesInner.getDispatchCompletionReport('D-fenced-report');
+      assert.strictEqual(apiPayload.report.summary, 'fallback persisted',
+        'query API should read completion reports even when dispatch history has already rotated');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('syncPrsFromOutput trusts structured completion PR field as dispatch-owned evidence', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+      };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      sharedInner.safeWrite(path.join(testDir, 'config.json'), config);
+      sharedInner.safeWrite(sharedInner.projectPrPath(project), []);
+      const count = lifecycleInner.syncPrsFromOutput(
+        '',
+        'dallas',
+        { item: { id: 'W-structured-pr', title: 'Structured PR sync' }, branch: 'work/structured-pr', project: { name: 'demo' } },
+        config,
+        { structuredCompletion: { status: 'success', pr: 'https://github.com/octo/repo/pull/456' } }
+      );
+
+      assert.strictEqual(count, 1, 'structured completion PR should create/link one PR record');
+      const stored = sharedInner.safeJson(sharedInner.projectPrPath(project));
+      assert.strictEqual(stored[0].id, 'github:octo/repo#456');
+      assert.strictEqual(stored[0].url, 'https://github.com/octo/repo/pull/456');
+      assert.deepStrictEqual(stored[0].prdItems, ['W-structured-pr']);
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('runPostCompletionHooks writes an inbox report for partial structured completion', async () => {
@@ -33705,6 +33874,27 @@ async function testPrReviewFixFlows() {
   await test('settings.js saves autoFixBuilds on save', () => {
     const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
     assert.ok(settingsSrc.includes("getElementById('set-autoFixBuilds').checked"), 'saveSettings must read autoFixBuilds checkbox');
+  });
+
+  await test('PR automation dispatch toggles present in defaults and settings UI', () => {
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    for (const key of ['autoReviewPrs', 'autoReReviewPrs', 'autoFixReviewFeedback', 'autoFixHumanComments']) {
+      assert.strictEqual(ENGINE_DEFAULTS[key], true, `${key} should default to true for backward-compatible automation`);
+      assert.ok(settingsSrc.includes(key), `settings UI should render/save ${key}`);
+    }
+    for (const id of ['set-autoReviewPrs', 'set-autoReReviewPrs', 'set-autoFixReviewFeedback', 'set-autoFixHumanComments']) {
+      assert.ok(settingsSrc.includes(id), `settings UI should include checkbox ${id}`);
+      assert.ok(settingsSrc.includes(`getElementById('${id}').checked`), `saveSettings should read checkbox ${id}`);
+    }
+  });
+
+  await test('dashboard exposes dispatch completion report endpoint', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashboardSrc.includes('/^\\/api\\/dispatch\\/([\\w.-]+)\\/completion-report$/'),
+      'dashboard should register /api/dispatch/:id/completion-report endpoint');
+    assert.ok(dashboardSrc.includes('queries.getDispatchCompletionReport'),
+      'completion report endpoint should read through queries.getDispatchCompletionReport');
   });
 
   // ── Auto-complete ──

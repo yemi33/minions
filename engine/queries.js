@@ -168,14 +168,121 @@ function getDispatch() {
 }
 function invalidateDispatchCache() { _dispatchCache = null; _dispatchCacheAt = 0; }
 
+function _relativeStatePath(filePath) {
+  if (!filePath) return '';
+  try { return path.relative(MINIONS_DIR, filePath).replace(/\\/g, '/'); } catch { return filePath; }
+}
+
+function _findDispatchEntry(dispatch, id) {
+  for (const listName of ['pending', 'active', 'completed']) {
+    const entry = (dispatch[listName] || []).find(d => d.id === id);
+    if (entry) return entry;
+  }
+  return null;
+}
+
+function _completionReportPathForEntry(entryOrId) {
+  const id = typeof entryOrId === 'string' ? entryOrId : entryOrId?.id;
+  return (typeof entryOrId === 'object' && entryOrId?.meta?.completionReportPath)
+    || shared.dispatchCompletionReportPath(id);
+}
+
+// In-memory cache for completion report summaries, keyed by dispatch id.
+// /api/state polls at ~1Hz and re-reads ~40 completion-report files per call;
+// this cache turns those into stat-only checks unless mtime changed.
+const _completionReportCache = new Map();
+
+function _getCachedCompletionSummary(id) {
+  if (!id) return null;
+  const reportPath = shared.dispatchCompletionReportPath(id);
+  let stat;
+  try { stat = fs.statSync(reportPath); }
+  catch { _completionReportCache.delete(id); return null; }
+  const cached = _completionReportCache.get(id);
+  if (cached && cached.mtime === stat.mtimeMs) return cached.summary;
+  const report = safeJson(reportPath);
+  if (!shared.isPlainObject(report)) {
+    _completionReportCache.delete(id);
+    return null;
+  }
+  const summary = {
+    available: true,
+    path: _relativeStatePath(reportPath),
+    status: report.status || report.outcome || '',
+    summary: String(report.summary || '').slice(0, 500),
+    verdict: report.verdict || report.review_verdict || report.reviewVerdict || '',
+    pr: report.pr || report.pull_request || report.pullRequest || '',
+    source: report._source || '',
+  };
+  if (Array.isArray(report.artifacts)) summary.artifacts = report.artifacts.slice(0, 20);
+  _completionReportCache.set(id, { mtime: stat.mtimeMs, summary });
+  return summary;
+}
+
+function _pruneCompletionReportCache(activeIds) {
+  if (_completionReportCache.size < 200) return;
+  for (const id of _completionReportCache.keys()) {
+    if (!activeIds.has(id)) _completionReportCache.delete(id);
+  }
+}
+
+function getDispatchCompletionReport(id) {
+  if (!id) return null;
+  const dispatch = getDispatch();
+  const entry = _findDispatchEntry(dispatch, id);
+  const reportPath = _completionReportPathForEntry(entry || id);
+  // TOCTOU-safe: skip existsSync gate; treat null/non-object safeJson result as not-found.
+  const report = safeJson(reportPath);
+  if (!shared.isPlainObject(report)) return null;
+  return {
+    id,
+    path: _relativeStatePath(reportPath),
+    report,
+    dispatch: entry ? {
+      id: entry.id,
+      agent: entry.agent || '',
+      type: entry.type || '',
+      task: entry.task || '',
+      result: entry.result || '',
+      completed_at: entry.completed_at || '',
+    } : null,
+  };
+}
+
+function _completionReportSummary(entry) {
+  if (!entry?.id) return null;
+  const cached = _getCachedCompletionSummary(entry.id);
+  if (cached) return cached;
+  // Cache miss / file absent — return a "not available" stub keyed off the canonical path.
+  const reportPath = _completionReportPathForEntry(entry);
+  return { available: false, path: _relativeStatePath(reportPath) };
+}
+
+function _withCompletionReportSummary(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  return { ...entry, completionReport: _completionReportSummary(entry) };
+}
+
 function getDispatchQueue() {
   const d = getDispatch();
   const allCompleted = d.completed || [];
   // Lifetime total from metrics (dispatch.completed is capped at 100)
   const metrics = readJsonNoRestore(path.join(ENGINE_DIR, 'metrics.json')) || {};
-  d.completedTotal = Object.entries(metrics).filter(([k]) => !k.startsWith('_')).reduce((sum, [, m]) => sum + (m.tasksCompleted || 0) + (m.tasksErrored || 0), 0);
-  d.completed = allCompleted.slice(-20);
-  return d;
+  // Periodically prune cache entries for dispatches that have rotated out of the queue.
+  if (_completionReportCache.size >= 200) {
+    const activeIds = new Set();
+    for (const list of [d.pending, d.active, allCompleted]) {
+      for (const entry of list || []) { if (entry?.id) activeIds.add(entry.id); }
+    }
+    _pruneCompletionReportCache(activeIds);
+  }
+  return {
+    ...d,
+    pending: (d.pending || []).map(_withCompletionReportSummary),
+    active: (d.active || []).map(_withCompletionReportSummary),
+    completed: allCompleted.slice(-20).map(_withCompletionReportSummary),
+    completedTotal: Object.entries(metrics).filter(([k]) => !k.startsWith('_')).reduce((sum, [, m]) => sum + (m.tasksCompleted || 0) + (m.tasksErrored || 0), 0),
+  };
 }
 
 function getNotes() {
@@ -207,7 +314,7 @@ function getMetrics() {
     if (agentId.startsWith('_')) continue;
     metrics[agentId] = {
       ...DEFAULT_AGENT_METRICS,
-      ...(m && typeof m === 'object' && !Array.isArray(m) ? m : {}),
+      ...(shared.isPlainObject(m) ? m : {}),
     };
   }
 
@@ -352,6 +459,7 @@ function getAgentStatus(agentId) {
         started_at: latest.started_at || null,
         completed_at: latest.completed_at,
         resultSummary: latest.resultSummary || latest.reason || '',
+        completionReport: _completionReportSummary(latest),
       };
     }
   }
@@ -484,6 +592,7 @@ function getAgentDetail(id) {
         id: d.id, task: d.task || '', type: d.type || '',
         result: d.result || '', reason: d.reason || '',
         started_at: d.started_at || '', completed_at: d.completed_at || '',
+        completionReport: _completionReportSummary(d),
       }));
   } catch { /* optional */ }
 
@@ -1234,7 +1343,7 @@ module.exports = {
   invalidateKnowledgeBaseCache,
 
   // Core state
-  getConfig, getControl, getDispatch, getDispatchQueue, invalidateDispatchCache,
+  getConfig, getControl, getDispatch, getDispatchQueue, getDispatchCompletionReport, invalidateDispatchCache,
   getNotes, getNotesWithMeta, getEngineLog, getMetrics,
 
   // Inbox

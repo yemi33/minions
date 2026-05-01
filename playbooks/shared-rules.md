@@ -55,10 +55,10 @@ Treat a Minions assignment like the user typed the same task directly into a cap
 The engine provides a completion report path in the prompt and in `MINIONS_COMPLETION_REPORT`. Before exiting, write JSON there with the actual outcome:
 
 ```json
-{"status":"success","summary":"what changed and how it was validated","verdict":null,"pr":"PR id/url or N/A","failure_class":"N/A","retryable":false,"needs_rerun":false}
+{"status":"success","summary":"what changed and how it was validated","verdict":null,"pr":"PR id/url or N/A","failure_class":"N/A","retryable":false,"needs_rerun":false,"artifacts":[{"type":"note|plan|prd|pr|file","path":"relative/path/or/url","title":"short label"}]}
 ```
 
-Use `status: "failed"` plus an accurate `failure_class`, `retryable`, and `needs_rerun` when the task could not be completed. For PR reviews, set `verdict` to `approved` or `changes-requested`. Fenced `completion` blocks are still accepted as a fallback, but the JSON report is the primary signal.
+Use `status: "failed"` plus an accurate `failure_class`, `retryable`, and `needs_rerun` when the task could not be completed. For PR reviews, set `verdict` to `approved` or `changes-requested`. Include every durable artifact you created or updated in `artifacts` (PRs, notes, plans, PRDs, important files) so the dashboard can display them. Fenced `completion` blocks are still accepted as a fallback, but the JSON report is the primary signal.
 
 ## Long-Running Commands
 

@@ -6134,6 +6134,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, desc: 'Get detailed agent info', handler: handleAgentDetail },
+    { method: 'GET', path: /^\/api\/dispatch\/([\w.-]+)\/completion-report$/, desc: 'Read structured completion report for a dispatch', handler: (req, res, match) => {
+      const id = match && match[1];
+      const payload = queries.getDispatchCompletionReport(id);
+      if (!payload) return jsonReply(res, 404, { error: 'completion report not found' }, req);
+      return jsonReply(res, 200, payload, req);
+    } },
     { method: 'GET', path: '/api/agent-output', desc: 'Read agent output log file', params: 'file', handler: async (req, res) => {
       const file = new URL(req.url, 'http://localhost').searchParams.get('file');
       if (!file || file.includes('..') || file.includes('\0') || !file.startsWith('agents/')) return jsonReply(res, 400, { error: 'invalid file' });

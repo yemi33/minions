@@ -724,8 +724,63 @@ function runCleanup(config, verbose = false) {
   // 14. Scrub stale temp agent keys from metrics.json
   try { scrubStaleMetrics(); } catch { /* best-effort cleanup */ }
 
-  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed + cleaned.notesArchive > 0) {
-    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.notesArchive} archived notes, ${cleaned.pidFiles} PID files`);
+  // 15. Evict old completion reports — keep reports durable beyond the capped
+  // dispatch history, but bound disk growth by age/count.
+  cleaned.completionReports = 0;
+  try {
+    const dispatch = getDispatch();
+    const protectedReportFiles = new Set();
+    for (const queue of ['pending', 'active', 'completed']) {
+      for (const entry of dispatch[queue] || []) {
+        if (!entry?.id) continue;
+        const reportPath = shared.dispatchCompletionReportPath(entry.id);
+        if (reportPath) protectedReportFiles.add(path.basename(reportPath));
+      }
+    }
+    const configuredRetentionDays = Number(config?.engine?.completionReportRetentionDays ?? ENGINE_DEFAULTS.completionReportRetentionDays);
+    const configuredMaxReports = Number(config?.engine?.completionReportMaxFiles ?? ENGINE_DEFAULTS.completionReportMaxFiles);
+    const retentionDays = Number.isFinite(configuredRetentionDays) ? configuredRetentionDays : ENGINE_DEFAULTS.completionReportRetentionDays;
+    const maxReports = Number.isFinite(configuredMaxReports) ? configuredMaxReports : ENGINE_DEFAULTS.completionReportMaxFiles;
+    const retentionMs = retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : 0;
+    const cutoffMs = retentionMs > 0 ? Date.now() - retentionMs : 0;
+    const completionsDir = path.join(ENGINE_DIR, 'completions');
+    if (fs.existsSync(completionsDir)) {
+      const reports = fs.readdirSync(completionsDir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => {
+          const fp = path.join(completionsDir, f);
+          let mtimeMs = 0;
+          try { mtimeMs = fs.statSync(fp).mtimeMs; } catch {}
+          return { file: f, path: fp, mtimeMs, protected: protectedReportFiles.has(f) };
+        })
+        .filter(r => r.mtimeMs > 0)
+        .sort((a, b) => a.mtimeMs - b.mtimeMs);
+      const removeReport = (report) => {
+        try { fs.unlinkSync(report.path); cleaned.completionReports++; return true; } catch { return false; }
+      };
+      for (const report of reports) {
+        if (report.protected) continue;
+        if (cutoffMs > 0 && report.mtimeMs < cutoffMs) {
+          removeReport(report);
+        }
+      }
+      if (maxReports > 0) {
+        const remaining = reports.filter(r => fs.existsSync(r.path));
+        let overflow = remaining.length - maxReports;
+        for (const report of remaining) {
+          if (overflow <= 0) break;
+          if (report.protected) continue;
+          if (removeReport(report)) overflow--;
+        }
+      }
+      if (cleaned.completionReports > 0) {
+        log('info', `Cleanup: removed ${cleaned.completionReports} old completion report(s)`);
+      }
+    }
+  } catch (e) { log('warn', `cleanupCompletionReports: ${e.message}`); }
+
+  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed + cleaned.notesArchive + cleaned.completionReports > 0) {
+    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.notesArchive} archived notes, ${cleaned.pidFiles} PID files, ${cleaned.completionReports} completion reports`);
   }
 
   return cleaned;

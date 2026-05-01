@@ -117,12 +117,17 @@ function setCooldownWithContext(key, context) {
   saveCooldowns();
 }
 
-function getCoalescedContexts(key) {
+// Drain pending coalesced contexts for a key, clearing the entry's
+// pendingContexts and persisting the change. Returns [] for unknown / empty
+// keys without side effects (no save, no phantom entry creation).
+function drainCoalescedContexts(key) {
   const entry = dispatchCooldowns.get(key);
-  const contexts = entry?.pendingContexts || [];
-  if (contexts.length > 0 && entry) {
-    entry.pendingContexts = []; // Clear after retrieval
+  if (!entry || !Array.isArray(entry.pendingContexts) || entry.pendingContexts.length === 0) {
+    return [];
   }
+  const contexts = entry.pendingContexts;
+  entry.pendingContexts = [];
+  saveCooldowns();
   return contexts;
 }
 
@@ -181,7 +186,7 @@ module.exports = {
   isOnCooldown,
   setCooldown,
   setCooldownWithContext,
-  getCoalescedContexts,
+  drainCoalescedContexts,
   setCooldownFailure,
   clearCooldown,
   isAlreadyDispatched,
