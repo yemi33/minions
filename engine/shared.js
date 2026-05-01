@@ -563,7 +563,7 @@ function execSilent(cmd, opts = {}) {
 function execAsync(cmd, opts = {}) {
   const { timeout, ...rest } = opts;
   return new Promise((resolve, reject) => {
-    const child = _cbExec(cmd, { windowsHide: true, encoding: 'utf8', ...rest, timeout: timeout || 30000 }, (err, stdout, stderr) => {
+    _cbExec(cmd, { windowsHide: true, encoding: 'utf8', ...rest, timeout: timeout || 30000 }, (err, stdout, stderr) => {
       if (err) {
         err.stderr = stderr;
         err.stdout = stdout;
@@ -571,8 +571,6 @@ function execAsync(cmd, opts = {}) {
       }
       resolve(stdout);
     });
-    // Safety: ensure child is killed if parent process exits
-    child.unref && child.unref();
   });
 }
 
