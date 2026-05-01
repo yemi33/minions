@@ -647,52 +647,54 @@ async function pollPrStatus(config) {
       updated = true;
     }
 
-    if (buildStatusResolved && pr.buildStatus !== buildStatus) {
-      log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
-      pr.buildStatus = buildStatus;
-      if (buildFailReason) pr.buildFailReason = buildFailReason;
-      else delete pr.buildFailReason;
-      // Build transitioned — clear grace period and auto-complete flag
-      delete pr._buildFixPushedAt;
-      if (buildStatus === 'failing') delete pr._autoCompleted;
-      if (buildStatus !== 'failing') {
-        delete pr._buildFailNotified;
-        delete pr._buildStatusStale;
-        delete pr._buildStatusDetail;
-        // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
-        // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
-        // can also occur when ADO recomputes the merge commit after a target-branch
-        // update but no new builds have been triggered yet (filter by sourceVersion
-        // returns []), which previously wiped the last known error log and caused
-        // fix agents to be dispatched blind.
-        if (buildStatus === 'passing') {
-          delete pr.buildErrorLog;
-          // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
-          if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+    if (buildStatusResolved) {
+      if (pr.buildStatus !== buildStatus) {
+        log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+        pr.buildStatus = buildStatus;
+        if (buildFailReason) pr.buildFailReason = buildFailReason;
+        else delete pr.buildFailReason;
+        // Build transitioned — clear grace period and auto-complete flag
+        delete pr._buildFixPushedAt;
+        if (buildStatus === 'failing') delete pr._autoCompleted;
+        if (buildStatus !== 'failing') {
+          delete pr._buildFailNotified;
+          delete pr._buildStatusStale;
+          delete pr._buildStatusDetail;
+          // Preserve buildErrorLog + buildFixAttempts through transient 'none'/'running'
+          // transitions — only clear on confirmed 'passing' recovery. Issue #1232: 'none'
+          // can also occur when ADO recomputes the merge commit after a target-branch
+          // update but no new builds have been triggered yet (filter by sourceVersion
+          // returns []), which previously wiped the last known error log and caused
+          // fix agents to be dispatched blind.
+          if (buildStatus === 'passing') {
+            delete pr.buildErrorLog;
+            // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
+            if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
+          }
         }
-      }
-      updated = true;
+        updated = true;
 
-      // Fetch actual compiler/build error logs when transitioning to failing
-      if (buildStatus === 'failing') {
-        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
-        const logParts = [];
-        const seenBuildIds = new Set();
-        for (const failedStatusObj of failedStatusObjs) {
-          const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
-          if (errorLog) logParts.push(errorLog);
-        }
-        if (logParts.length > 0) {
-          pr.buildErrorLog = logParts.join('\n\n');
-          log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
-        }
+        // Fetch actual compiler/build error logs when transitioning to failing
+        if (buildStatus === 'failing') {
+          const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
+          const logParts = [];
+          const seenBuildIds = new Set();
+          for (const failedStatusObj of failedStatusObjs) {
+            const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
+            if (errorLog) logParts.push(errorLog);
+          }
+          if (logParts.length > 0) {
+            pr.buildErrorLog = logParts.join('\n\n');
+            log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
+          }
 
-        // Teams notification for build failure — non-blocking
-        try {
-          const teams = require('./teams');
-          const prFilePath = shared.projectPrPath(project);
-          teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
-        } catch {}
+          // Teams notification for build failure — non-blocking
+          try {
+            const teams = require('./teams');
+            const prFilePath = shared.projectPrPath(project);
+            teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+          } catch {}
+        }
       }
     }
 
