@@ -32,7 +32,7 @@ const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
 
-const MINIONS_DIR = __dirname;
+const MINIONS_DIR = shared.MINIONS_DIR;
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
 const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
 const ARCHIVE_DIR = path.join(MINIONS_DIR, 'notes', 'archive');
@@ -2745,9 +2745,9 @@ function discoverFromWorkItems(config, project) {
     }
     const agentHints = routing.extractAgentHints(item);
     const hasAgentHints = Array.isArray(agentHints) && agentHints.length > 0;
-    const hardPinRequested = routing.isAgentHardPinned(item);
-    let agentId = routing.getHardPinnedAgent(item, config.agents || {})
-      || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null);
+    const hardPinnedAgent = routing.getHardPinnedAgent(item, config.agents || {});
+    const hardPinRequested = !!hardPinnedAgent;
+    let agentId = hardPinnedAgent || resolveAgent(workType, config, { agentHints });
     let reservedAgentId = agentId;
     const cfgAgents = config.agents || {};
     const budgetBlocked = Object.keys(cfgAgents).some(id => {
@@ -2863,6 +2863,17 @@ function discoverFromWorkItems(config, project) {
   }
 
   return newWork;
+}
+
+
+function getSyntheticCentralProject() {
+  const base = path.basename(MINIONS_DIR);
+  const root = base === '.minions' ? path.dirname(MINIONS_DIR) : MINIONS_DIR;
+  return { name: 'root', localPath: root, repoHost: 'github', repoName: path.basename(root) || 'root', mainBranch: 'main', _synthetic: true };
+}
+
+function getCentralDispatchProjects(projects) {
+  return projects.length > 0 ? projects : [getSyntheticCentralProject()];
 }
 
 /**
@@ -3131,6 +3142,7 @@ function discoverCentralWorkItems(config) {
   const centralPath = path.join(MINIONS_DIR, 'work-items.json');
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
+  const dispatchProjects = getCentralDispatchProjects(projects);
   const newWork = [];
   // Collect mutations to apply atomically inside lock callback (avoids TOCTOU)
   const mutations = new Map(); // item.id → { field: value, ... }
@@ -3190,15 +3202,14 @@ function discoverCentralWorkItems(config) {
 
       const assignments = idleAgents.map((agent, i) => ({
         agent,
-        assignedProject: projects.length > 0 ? projects[i % projects.length] : null
+        assignedProject: dispatchProjects[i % dispatchProjects.length]
       }));
 
       for (const { agent, assignedProject } of assignments) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
 
-        const ap = assignedProject || (projects.length > 0 ? projects[0] : null);
-        if (!ap) { log('warn', `Fan-out: skipping ${fanKey} — no projects configured`); continue; }
+        const ap = assignedProject || dispatchProjects[0];
         const fanBranch = `fan/${item.id}/${agent.id}`;
         const vars = {
           ...buildBaseVars(agent.id, config, ap),
@@ -3208,7 +3219,7 @@ function discoverCentralWorkItems(config) {
           item_description: item.description || '',
           work_type: workType,
           additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
-          scope_section: buildProjectContext(projects, assignedProject, true, agent.name, agent.role),
+          scope_section: buildProjectContext(dispatchProjects, assignedProject, true, agent.name, agent.role),
           project_path: ap?.localPath || '',
           branch_name: fanBranch,
         };
@@ -3252,16 +3263,16 @@ function discoverCentralWorkItems(config) {
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
       const agentHints = routing.extractAgentHints(item);
-      const hardPinRequested = routing.isAgentHardPinned(item);
-      const agentId = routing.getHardPinnedAgent(item, config.agents || {})
-        || (!hardPinRequested ? resolveAgent(workType, config, { agentHints }) : null)
+      const hardPinnedAgent = routing.getHardPinnedAgent(item, config.agents || {});
+      const hardPinRequested = !!hardPinnedAgent;
+      const agentId = hardPinnedAgent
+        || resolveAgent(workType, config, { agentHints })
         || (!hardPinRequested && workType !== WORK_TYPE.FIX ? resolveAgentReservation(workType, config, { agentHints }) : null);
       if (!agentId) continue;
 
       const agentName = config.agents[agentId]?.name || agentId;
       const agentRole = config.agents[agentId]?.role || 'Agent';
-      const firstProject = projects.length > 0 ? projects[0] : null;
-      if (!firstProject) { log('warn', `Dispatch: skipping ${item.id} — no projects configured`); continue; }
+      const firstProject = dispatchProjects[0];
 
       // Branch mutex: skip if target branch is locked by an active dispatch
       const centralBranch = item.branch || item.featureBranch || `work/${item.id}`;
@@ -3282,7 +3293,7 @@ function discoverCentralWorkItems(config) {
         task_id: item.id,
         work_type: workType,
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
-        scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
+        scope_section: buildProjectContext(dispatchProjects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
         branch_name: centralBranch,
       };
@@ -3384,7 +3395,7 @@ function discoverCentralWorkItems(config) {
         agentRole,
         task: item.title || item.description?.slice(0, 80) || item.id,
         prompt,
-        meta: { dispatchKey: key, source: 'central-work-item', item: { ...item, ...mutations.get(item.id) }, planFileName: item.planFile || mutations.get(item.id)?._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}` }
+        meta: { dispatchKey: key, source: 'central-work-item', item: { ...item, ...mutations.get(item.id) }, planFileName: item.planFile || mutations.get(item.id)?._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}`, project: { name: firstProject.name, localPath: firstProject.localPath } }
       });
 
       setCooldown(key);
@@ -4026,7 +4037,19 @@ async function tickInner() {
         persistPendingDispatchAgent(item);
       } catch (e) { log('warn', `Persist agent resolution for ${item.id} failed: ${e.message}`); }
     }
-    // #1204: Pre-assigned unspawned temp agents never unblock naturally.
+    // Unknown configured agent: string ID that is neither configured nor a known temp agent
+    const isUnknownAssignedAgent = typeof item.agent === 'string' && !item.agent.startsWith('temp-') && !config.agents?.[item.agent] && !tempAgents.has(item.agent);
+    if (isUnknownAssignedAgent) {
+      const fallback = resolvePendingDispatchAgent(item, config);
+      if (!fallback) {
+        log('warn', `Pending dispatch ${item.id} has unknown agent ${item.agent} and no fallback available — skipping`);
+        continue;
+      }
+      log('info', `Pending dispatch ${item.id} unknown agent ${item.agent}; routed → ${fallback}`);
+      assignPendingDispatchAgent(item, fallback, config);
+      persistPendingDispatchAgent(item);
+    }
+        // #1204: Pre-assigned unspawned temp agents never unblock naturally.
     // When a batch discovery saturates maxConcurrent, resolveAgent hands out temp
     // IDs that get stamped onto pending items. Because those temp IDs are never
     // in busyAgents (they were never spawned), the agent-busy reassignment path
@@ -4044,43 +4067,28 @@ async function tickInner() {
       }
     }
     if (busyAgents.has(item.agent)) {
-      // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
-      // try to find an alternative agent via routing. Skip explicitly assigned items.
-      const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
-      const isHardPinned = routing.isAgentHardPinned(item.meta?.item);
-      if (isSoftFixDispatch(item)) {
-        const originalAgent = item.agent;
-        const altAgent = resolvePendingDispatchAgent(item, config);
-        if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
-          log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — soft fix suggestion unavailable`);
-          assignPendingDispatchAgent(item, altAgent, config);
-          persistPendingDispatchAgent(item);
-          // Fall through to branch mutex / concurrency checks below.
-        } else {
-          log('info', `Clearing busy soft fix agent on ${item.id} (${originalAgent}) — waiting for any available agent`);
-          clearPendingDispatchAgent(item);
-          persistPendingDispatchAgent(item);
-          continue;
-        }
-      } else if (!isHardPinned && reassignMs > 0 && item._agentBusySince) {
-        const busySinceMs = new Date(item._agentBusySince).getTime();
-        if (Date.now() - busySinceMs > reassignMs) {
-          const originalAgent = item.agent;
-          const altAgent = resolvePendingDispatchAgent(item, config);
-          if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
-            log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy > ${reassignMs}ms`);
-            assignPendingDispatchAgent(item, altAgent, config);
-            // Persist reassignment to dispatch.json
-            persistPendingDispatchAgent(item);
-            // Fall through to branch mutex / concurrency checks below
-          } else {
-            continue; // No alternative agent available — keep waiting
-          }
-        } else {
-          continue; // Below threshold — keep waiting
-        }
+      // Agent busy reassignment: compute hard-pin status; if hard-pinned keep waiting.
+      // For all non-hard-pinned items, reroute immediately (no threshold wait).
+      const originalAgent = item.agent;
+      const hardPinnedAgent = routing.getHardPinnedAgent(item.meta?.item, config.agents || {});
+      const isHardPinned = !!hardPinnedAgent && hardPinnedAgent === originalAgent;
+      if (isHardPinned) {
+        continue; // Valid hard pin — keep waiting for pinned agent
+      }
+      // agent busy and idle alternative available — reroute immediately (no threshold)
+      const altAgent = resolvePendingDispatchAgent(item, config);
+      if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
+        log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy and idle alternative available`);
+        assignPendingDispatchAgent(item, altAgent, config);
+        persistPendingDispatchAgent(item);
+        // Fall through to branch mutex / concurrency checks below
+      } else if (isSoftFixDispatch(item)) {
+        log('info', `Clearing busy soft fix agent on ${item.id} (${originalAgent}) — waiting for any available agent`);
+        clearPendingDispatchAgent(item);
+        persistPendingDispatchAgent(item);
+        continue;
       } else {
-        continue; // No _agentBusySince set yet or explicitly assigned — skip
+        continue; // No alternative agent available — keep waiting
       }
     }
     // Branch mutex: skip items targeting a branch already locked by an active or newly-dispatched task
@@ -4217,7 +4225,7 @@ module.exports = {
   spawnAgent, resolveAgent,
 
   // Discovery
-  discoverWork, discoverFromPrs, discoverFromWorkItems,
+  discoverWork, discoverFromPrs, discoverFromWorkItems, discoverCentralWorkItems,
   materializePlansAsWorkItems,
 
   // Shared helpers (used by lifecycle.js and tests)

@@ -35,6 +35,7 @@ const ISOLATED_MODULES = [
   '../engine/playbook',
   '../engine/routing',
   '../engine/issues',
+  '../engine.js',
 ];
 
 function createTmpDir() {
@@ -23436,6 +23437,9 @@ async function main() {
     // #1206: Undefined-agent guard in pending dispatch loop
     await testUndefinedAgentGuard();
 
+    // Synthetic project + hard-pin fallback
+    await testSyntheticProjectAndHardPinFallback();
+
     // #1204: Unspawned temp agent reassignment
     await testUnspawnedTempAgentReassignment();
 
@@ -36781,172 +36785,157 @@ async function testAgentBusyReassignment() {
       'Must clear _agentBusySince when item is no longer blocked on busy agent');
   });
 
-  // 4. Dispatch loop checks _agentBusySince threshold for reassignment
-  await test('dispatch loop checks agentBusyReassignMs threshold for reassignment', () => {
-    assert.ok(engineSrc.includes('agentBusyReassignMs'),
-      'Dispatch loop should reference agentBusyReassignMs config');
+  // 4. Dispatch loop reroutes non-hard-pinned busy items immediately (no threshold wait)
+  await test('dispatch loop reroutes non-hard-pinned busy items immediately without threshold', () => {
+    assert.ok(engineSrc.includes('agent busy and idle alternative available'),
+      'Dispatch loop should log when rerouting non-hard-pinned items immediately');
+    assert.ok(!engineSrc.includes('Date.now() - busySinceMs > reassignMs'),
+      'Dispatch loop must not gate busy rerouting on agentBusyReassignMs threshold');
     assert.ok(engineSrc.includes('Reassigning'),
       'Should log a message when reassignment occurs');
   });
 
-  // 5. Reassignment skips only explicitly hard-pinned items
-  await test('reassignment skips only explicitly hard-pinned items', () => {
-    assert.ok(engineSrc.includes('routing.isAgentHardPinned(item.meta?.item)'),
-      'Dispatch loop should check the explicit hard-pin flag, not soft agent hints');
+  // 5. Busy block uses getHardPinnedAgent for validated hard-pin check
+  await test('busy block uses getHardPinnedAgent for validated hard-pin check', () => {
+    assert.ok(engineSrc.includes('routing.getHardPinnedAgent(item.meta?.item, config.agents'),
+      'Busy block must use getHardPinnedAgent (validates agent against config) not isAgentHardPinned');
   });
 
-  // 6. Behavioral: item stays on busy agent below threshold
-  await test('item stays on busy agent below threshold (behavioral)', () => {
-    const { sanitizeBranch } = shared;
-    const now = Date.now();
-    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
-
+  // 6. Behavioral: non-hard-pinned item reroutes immediately to idle agent (no threshold)
+  await test('non-hard-pinned item reroutes immediately to idle agent (behavioral)', () => {
     const active = [
       { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
     ];
     const pending = [
       {
-        id: 'ralph-fix-1', agent: 'dallas', type: 'fix',
+        id: 'fix-1', agent: 'dallas', type: 'implement',
         meta: { item: {}, branch: 'work/P-fix' },
-        _agentBusySince: new Date(now - (reassignMs / 2)).toISOString(), // half threshold — below
+        // No _agentBusySince needed — new code reroutes immediately
       },
     ];
-
     const busyAgents = new Set(active.map(d => d.agent));
+    const availableAgents = ['ralph'];
     const toDispatch = [];
 
     for (const item of pending) {
       if (busyAgents.has(item.agent)) {
-        // Simulate reassignment check: below threshold → skip
-        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
-        if (busySince && (now - busySince) > reassignMs) {
-          toDispatch.push(item); // would reassign
-        }
-        // else: stays pending (not reassigned)
-        continue;
-      }
-      toDispatch.push(item);
-    }
-
-    assert.strictEqual(toDispatch.length, 0, 'Item should NOT be dispatched/reassigned below threshold');
-  });
-
-  // 7. Behavioral: item reassigned above threshold
-  await test('item reassigned to alternative agent above threshold (behavioral)', () => {
-    const now = Date.now();
-    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
-
-    const active = [
-      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
-    ];
-    const pending = [
-      {
-        id: 'ralph-fix-1', agent: 'dallas', type: 'fix',
-        meta: { item: {}, branch: 'work/P-fix' },
-        _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(), // above threshold
-      },
-    ];
-
-    const busyAgents = new Set(active.map(d => d.agent));
-    const availableAgents = ['ralph', 'ripley', 'lambert'];
-    const toDispatch = [];
-
-    for (const item of pending) {
-      if (busyAgents.has(item.agent)) {
-        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
-        if (busySince && (now - busySince) > reassignMs) {
-          // Find alternative agent
-          const altAgent = availableAgents.find(a => !busyAgents.has(a));
-          if (altAgent) {
-            item.agent = altAgent;
-            delete item._agentBusySince;
-            toDispatch.push(item);
-            busyAgents.add(altAgent);
-            continue;
-          }
-        }
-        continue;
-      }
-      toDispatch.push(item);
-    }
-
-    assert.strictEqual(toDispatch.length, 1, 'Item should be dispatched after reassignment');
-    assert.notStrictEqual(toDispatch[0].agent, 'dallas', 'Should not be assigned to original busy agent');
-    assert.ok(availableAgents.includes(toDispatch[0].agent), 'Should be assigned to an available agent');
-    assert.strictEqual(toDispatch[0]._agentBusySince, undefined, '_agentBusySince should be cleared after reassignment');
-  });
-
-  // 8. Behavioral: hard-pinned items are NOT reassigned even above threshold
-  await test('hard-pinned items are NOT reassigned (behavioral)', () => {
-    const now = Date.now();
-    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
-
-    const active = [
-      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
-    ];
-    const pending = [
-      {
-        id: 'fix-explicit', agent: 'dallas', type: 'fix',
-        meta: { item: { agent: 'dallas', agentLock: true }, branch: 'work/P-explicit' },
-        _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(),
-      },
-    ];
-
-    const busyAgents = new Set(active.map(d => d.agent));
-    const toDispatch = [];
-
-    for (const item of pending) {
-      if (busyAgents.has(item.agent)) {
-        const isHardPinned = !!item.meta?.item?.agentLock;
-        if (isHardPinned) { continue; } // hard-pinned items skip reassignment
-        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
-        if (busySince && (now - busySince) > reassignMs) {
-          item.agent = 'ralph';
+        // Simulate new behavior: reroute immediately for non-hard-pinned items
+        const hardPinnedAgent = (item.meta?.item?.agentLock && item.meta?.item?.agent) ? item.meta.item.agent : null;
+        const isHardPinned = !!hardPinnedAgent && hardPinnedAgent === item.agent;
+        if (isHardPinned) { continue; }
+        const altAgent = availableAgents.find(a => !busyAgents.has(a));
+        if (altAgent) {
+          item.agent = altAgent;
           toDispatch.push(item);
-          continue;
         }
         continue;
       }
       toDispatch.push(item);
     }
 
-    assert.strictEqual(toDispatch.length, 0, 'Hard-pinned item should NOT be reassigned');
+    assert.strictEqual(toDispatch.length, 1, 'Non-hard-pinned item should reroute immediately (no threshold needed)');
+    assert.strictEqual(toDispatch[0].agent, 'ralph', 'Should be rerouted to available agent ralph');
   });
 
-  await test('soft agent-hinted items ARE reassigned above threshold (behavioral)', () => {
-    const now = Date.now();
-    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
+  // 7. Behavioral: non-hard-pinned item stays pending when no idle agent available
+  await test('non-hard-pinned item stays pending when no idle agent available (behavioral)', () => {
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
+      { id: 'ralph-impl-1', agent: 'ralph', meta: { branch: 'work/P-active2' } },
+    ];
+    const pending = [
+      {
+        id: 'fix-1', agent: 'dallas', type: 'implement',
+        meta: { item: {}, branch: 'work/P-fix' },
+      },
+    ];
+    const busyAgents = new Set(active.map(d => d.agent));
+    const availableAgents = ['ralph']; // all agents are busy
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        const hardPinnedAgent = (item.meta?.item?.agentLock && item.meta?.item?.agent) ? item.meta.item.agent : null;
+        const isHardPinned = !!hardPinnedAgent && hardPinnedAgent === item.agent;
+        if (isHardPinned) { continue; }
+        const altAgent = availableAgents.find(a => !busyAgents.has(a));
+        if (altAgent) {
+          item.agent = altAgent;
+          toDispatch.push(item);
+        }
+        continue; // No idle agent available
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 0, 'Item should stay pending when no idle agent is available');
+  });
+
+  // 8. Behavioral: valid hard-pinned item waits for pinned agent (uses getHardPinnedAgent semantics)
+  await test('valid hard-pinned item waits for pinned agent (behavioral)', () => {
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
+    ];
+    const pending = [
+      {
+        id: 'fix-explicit', agent: 'dallas', type: 'implement',
+        meta: { item: { agent: 'dallas', agentLock: true }, branch: 'work/P-explicit' },
+      },
+    ];
+    const configAgents = { dallas: { name: 'Dallas' } };
+    const busyAgents = new Set(active.map(d => d.agent));
+    const availableAgents = ['ralph'];
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        // Simulate getHardPinnedAgent: agentLock=true AND agent matches a configured agent
+        const metaAgent = item.meta?.item?.agent;
+        const hardPinnedAgent = (item.meta?.item?.agentLock && metaAgent && configAgents[metaAgent]) ? metaAgent : null;
+        const isHardPinned = !!hardPinnedAgent && hardPinnedAgent === item.agent;
+        if (isHardPinned) { continue; } // valid hard pin — keep waiting
+        const altAgent = availableAgents.find(a => !busyAgents.has(a));
+        if (altAgent) { item.agent = altAgent; toDispatch.push(item); }
+        continue;
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 0, 'Valid hard-pinned item should NOT be rerouted — must wait for pinned agent');
+  });
+
+  await test('soft agent-hinted item (no agentLock) reroutes immediately to idle agent (behavioral)', () => {
     const active = [{ id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } }];
     const pending = [{
-      id: 'fix-hinted', agent: 'dallas', type: 'fix',
-      meta: { item: { agent: 'dallas' }, branch: 'work/P-hinted' },
-      _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(),
+      id: 'fix-hinted', agent: 'dallas', type: 'implement',
+      meta: { item: { agent: 'dallas' /* no agentLock */ }, branch: 'work/P-hinted' },
+      // No _agentBusySince needed — reroutes immediately
     }];
+    const configAgents = { dallas: { name: 'Dallas' }, ralph: { name: 'Ralph' } };
     const busyAgents = new Set(active.map(d => d.agent));
+    const availableAgents = ['ralph'];
     const toDispatch = [];
     for (const item of pending) {
       if (busyAgents.has(item.agent)) {
-        const isHardPinned = !!item.meta?.item?.agentLock;
+        const metaAgent = item.meta?.item?.agent;
+        const hardPinnedAgent = (item.meta?.item?.agentLock && metaAgent && configAgents[metaAgent]) ? metaAgent : null;
+        const isHardPinned = !!hardPinnedAgent && hardPinnedAgent === item.agent;
         if (isHardPinned) continue;
-        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
-        if (busySince && (now - busySince) > reassignMs) {
-          item.agent = 'ralph';
-          toDispatch.push(item);
-          continue;
-        }
+        const altAgent = availableAgents.find(a => !busyAgents.has(a));
+        if (altAgent) { item.agent = altAgent; toDispatch.push(item); }
         continue;
       }
       toDispatch.push(item);
     }
-    assert.strictEqual(toDispatch.length, 1, 'Soft-hinted item should be eligible for reassignment');
+    assert.strictEqual(toDispatch.length, 1, 'Soft-hinted item should reroute immediately when idle agent available');
     assert.strictEqual(toDispatch[0].agent, 'ralph');
   });
 
   await test('pending fix dispatches do not wait for busy-agent threshold', () => {
     assert.ok(engineSrc.includes('function isSoftFixDispatch(item)'),
       'Dispatch loop should identify fix dispatches whose agent is only a soft suggestion');
-    assert.ok(engineSrc.includes('soft fix suggestion unavailable'),
-      'Busy soft fix dispatches should be rerouted immediately when another agent is available');
+    assert.ok(engineSrc.includes('agent busy and idle alternative available'),
+      'Busy dispatches should be rerouted immediately when another idle agent is available');
     assert.ok(engineSrc.includes('Clearing busy soft fix agent'),
       'Busy soft fix dispatches should clear the suggested agent when no alternative is available');
   });
@@ -36980,6 +36969,183 @@ async function testAgentBusyReassignment() {
       'Both agent_busy and _agentBusySince should be present in the annotation logic');
   });
 }
+
+// ─── Synthetic project + hard-pin fallback tests ──────────────────────────────────
+
+async function testSyntheticProjectAndHardPinFallback() {
+  console.log('\n── Synthetic project + hard-pin fallback ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // a) Source: getSyntheticCentralProject and getCentralDispatchProjects exist
+  await test('engine.js exports getSyntheticCentralProject and getCentralDispatchProjects (source check)', () => {
+    assert.ok(engineSrc.includes('function getSyntheticCentralProject'),
+      'engine.js must define getSyntheticCentralProject');
+    assert.ok(engineSrc.includes('function getCentralDispatchProjects'),
+      'engine.js must define getCentralDispatchProjects');
+    assert.ok(engineSrc.includes('discoverCentralWorkItems'),
+      'engine.js must export discoverCentralWorkItems');
+  });
+
+  // b) Source: dispatch loop has isUnknownAssignedAgent + resolvePendingDispatchAgent + persistPendingDispatchAgent
+  await test('dispatch loop source: isUnknownAssignedAgent block with reroute and persist', () => {
+    assert.ok(engineSrc.includes('isUnknownAssignedAgent'),
+      'Dispatch loop must have isUnknownAssignedAgent variable');
+    assert.ok(engineSrc.includes('resolvePendingDispatchAgent(item, config)'),
+      'Unknown-agent block must call resolvePendingDispatchAgent');
+    const unknownIdx = engineSrc.indexOf('isUnknownAssignedAgent');
+    const nearSection = engineSrc.slice(unknownIdx, unknownIdx + 800);
+    assert.ok(nearSection.includes('persistPendingDispatchAgent'),
+      'Unknown-agent block must call persistPendingDispatchAgent to persist the fix');
+  });
+
+  // c) Source: busy block no longer uses threshold gating; uses getHardPinnedAgent instead
+  await test('busy block uses getHardPinnedAgent and does not contain threshold gating (source check)', () => {
+    assert.ok(engineSrc.includes('agent busy and idle alternative available'),
+      'Busy block must log "agent busy and idle alternative available" when rerouting');
+    assert.ok(!engineSrc.includes('Date.now() - busySinceMs > reassignMs'),
+      'Busy block must not contain _agentBusySince threshold gating');
+    assert.ok(engineSrc.includes('routing.getHardPinnedAgent(item.meta?.item, config.agents'),
+      'Busy block must use routing.getHardPinnedAgent to validate hard pins against config');
+  });
+
+  // d) Behavioral (real): invalid hard-pinned project work item falls back to idle configured agent
+  await test('invalid hard-pinned agent (agentLock + ghost not in config) falls back to dallas via discoverFromWorkItems (behavioral)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Minimal playbooks required by renderPlaybook
+      fs.mkdirSync(path.join(testDir, 'playbooks'), { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'implement.md'),
+        'Agent {{agent_id}} handles {{item_id}} {{item_name}} at {{project_path}} {{scope_section}}');
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'work-item.md'),
+        'Agent {{agent_id}} handles {{item_id}} {{item_name}}');
+
+      // Routing: implement -> dallas
+      fs.writeFileSync(path.join(testDir, 'routing.md'), [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| implement | dallas | dallas |',
+        '',
+      ].join('\n'));
+
+      const project = {
+        name: 'proj',
+        localPath: testDir,
+        workSources: { workItems: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: { allowTempAgents: false },
+      };
+
+      // Write on-disk config so renderPlaybook can resolve project vars
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
+
+      // Use fresh shared (MINIONS_TEST_DIR is set) to compute the project WI path
+      const freshShared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+      const wiPath = freshShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      fs.writeFileSync(wiPath, JSON.stringify([
+        {
+          id: 'P-invalid-pin', status: 'pending', type: 'implement',
+          title: 'Invalid pin task', description: 'Should fall back to dallas',
+          agent: 'ghost', agentLock: true,
+        },
+      ]));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries.js'));
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine.js'));
+      const newWork = engineModule.discoverFromWorkItems(config, project);
+
+      assert.strictEqual(newWork.length, 1,
+        'Should discover 1 work item even when hard-pinned agent is not in config');
+      assert.strictEqual(newWork[0].agent, 'dallas',
+        'Should fall back to dallas when ghost is not in config.agents');
+
+      // On-disk item must not be marked no_agent (it was dispatched, not skipped)
+      const persisted = freshShared.safeJson(wiPath);
+      assert.ok(Array.isArray(persisted), 'work-items.json should be readable after discovery');
+      const wiItem = persisted.find(i => i.id === 'P-invalid-pin');
+      assert.ok(wiItem, 'P-invalid-pin should still exist on disk');
+      assert.notStrictEqual(wiItem._pendingReason, 'no_agent',
+        'Item should not carry _pendingReason=no_agent when dispatched to a fallback agent');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/cooldown', '../engine/routing', '../engine/playbook', '../engine.js']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  // e) Behavioral (real): central work item dispatches to configured agent with zero configured projects
+  await test('central work item dispatches to configured agent when projects list is empty (behavioral)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+
+      // Minimal playbooks
+      fs.mkdirSync(path.join(testDir, 'playbooks'), { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'implement.md'),
+        'Agent {{agent_id}} handles {{item_id}} {{item_name}} at {{project_path}} {{scope_section}}');
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'work-item.md'),
+        'Agent {{agent_id}} handles {{item_id}} {{item_name}}');
+
+      // Routing: implement -> dallas
+      fs.writeFileSync(path.join(testDir, 'routing.md'), [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| implement | dallas | dallas |',
+        '',
+      ].join('\n'));
+
+      // Central work-items.json (at root of MINIONS_DIR, not under a project)
+      fs.writeFileSync(path.join(testDir, 'work-items.json'), JSON.stringify([
+        {
+          id: 'W-zero-project', status: 'pending', type: 'implement',
+          title: 'Zero project task', description: 'Should dispatch via synthetic project',
+        },
+      ]));
+
+      // On-disk config with no projects
+      const config = {
+        projects: [],
+        agents: { dallas: { name: 'Dallas', role: 'Engineer' } },
+        engine: { allowTempAgents: false },
+      };
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries.js'));
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine.js'));
+      const newWork = engineModule.discoverCentralWorkItems(config);
+
+      assert.strictEqual(newWork.length, 1,
+        'Should discover 1 central work item even with zero configured projects');
+      assert.strictEqual(newWork[0].agent, 'dallas',
+        'Should route to dallas via synthetic central project');
+      assert.ok(newWork[0].meta && newWork[0].meta.project,
+        'meta.project should be populated by synthetic project');
+      assert.strictEqual(newWork[0].meta.project.localPath, testDir,
+        'Synthetic central project localPath should equal MINIONS_TEST_DIR (MINIONS_DIR in test)');
+      assert.ok(newWork[0].prompt.includes('W-zero-project'),
+        'Rendered prompt should contain the work item id W-zero-project');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/cooldown', '../engine/routing', '../engine/playbook', '../engine.js']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+}
+
 
 // ─── #1206: Undefined-agent guard in pending dispatch loop ─────────────────
 //
