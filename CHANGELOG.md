@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1646 (2026-05-01)
+
+### Fixes
+- scope syncPrsFromOutput inbox fallback to empty stdout
+- execAsync no longer unref's child, fixes silent test exit
+
+### Other
+- Prevent CLI dispatch from orphaning agents
+- Harden eval loop gating audit
+- chore: gitignore agent runtime state and stray repo-root artifacts
+- revert: remove CC hallucination detector — too many false positives
+
 ## 0.1.1645 (2026-04-30)
 
 ### Other
