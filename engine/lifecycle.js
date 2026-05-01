@@ -778,24 +778,28 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     }
   } catch {}
 
-  // Accept inbox fallback only when stdout did not preserve usable content and
-  // the agent wrote the explicit PR-created protocol line; generic PR mentions
-  // in findings/review notes are not evidence.
-  if (prEvidence.size === 0 && String(output || '').trim()) return 0;
-  const today = dateStamp();
-  const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
-  const currentItemId = meta?.item?.id ? String(meta.item.id) : '';
-  function isCurrentItemInboxNote(fileName, content) {
-    if (!currentItemId) return true;
-    return String(fileName || '').includes(currentItemId) || String(content || '').includes(currentItemId);
-  }
-  for (const f of inboxFiles) {
-    const content = safeRead(path.join(INBOX_DIR, f));
-    if (!content) continue;
-    if (!isCurrentItemInboxNote(f, content)) continue;
-    const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
-    while ((match = prHeaderPattern.exec(content)) !== null) {
-      addPrUrlEvidence(match[1]);
+  // Accept inbox fallback ONLY when the agent's stdout is empty (rotated/lost).
+  // The inbox note is the durable artifact for the "gh pr create ran in a sibling
+  // dispatch whose stdout was rotated" case. When stdout has actual content (even
+  // without PR evidence — e.g. the agent ran gh issue view but didn't create a PR),
+  // we must NOT pull in PR URLs from leftover inbox files of prior dispatches —
+  // those would falsely attribute unrelated PRs to this run.
+  if (!output || !String(output).trim()) {
+    const today = dateStamp();
+    const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
+    const currentItemId = meta?.item?.id ? String(meta.item.id) : '';
+    function isCurrentItemInboxNote(fileName, content) {
+      if (!currentItemId) return true;
+      return String(fileName || '').includes(currentItemId) || String(content || '').includes(currentItemId);
+    }
+    for (const f of inboxFiles) {
+      const content = safeRead(path.join(INBOX_DIR, f));
+      if (!content) continue;
+      if (!isCurrentItemInboxNote(f, content)) continue;
+      const prHeaderPattern = /(?:^|\n)\s*\*{0,2}(?:PR|Pull\s+Request|E2E\s+PR)\s+(?:created|opened|submitted)\*{0,2}\s*[:\-]\s*([^\n]+)/gi;
+      while ((match = prHeaderPattern.exec(content)) !== null) {
+        addPrUrlEvidence(match[1]);
+      }
     }
   }
 

@@ -195,6 +195,19 @@ async function testSharedUtilities() {
   await test('safeReadDir returns empty array for missing dir', () => {
     assert.deepStrictEqual(shared.safeReadDir('/nonexistent/dir'), []);
   });
+
+  await test('execAsync keeps event loop alive (no premature unref)', async () => {
+    // Regression: execAsync used to call child.unref() which let Node exit
+    // before the promise resolved, abandoning awaiters. Spawn a child that
+    // takes ~500ms — if execAsync unref's the child, output will be empty
+    // because Node would exit before the child's stdout flushes back.
+    const cmd = process.platform === 'win32'
+      ? `"${process.execPath}" -e "setTimeout(() => process.stdout.write('alive'), 500)"`
+      : `${process.execPath} -e "setTimeout(() => process.stdout.write('alive'), 500)"`;
+    const out = await shared.execAsync(cmd, { timeout: 5000 });
+    assert.ok(out.includes('alive'),
+      'execAsync child must keep event loop alive — output was: ' + JSON.stringify(out));
+  });
 }
 
 async function testIdGeneration() {
@@ -16486,6 +16499,22 @@ async function testWakeupEndpoint() {
   await test('fast poll uses 3-second interval', () => {
     assert.ok(cliSrc.includes('3000') && cliSrc.includes('_wakeupAt'),
       'Fast poll should run every 3 seconds');
+  });
+
+  await test('dispatch command signals running daemon instead of running local tick', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('isEngineProcessAlive(control)'),
+      'dispatch command should check whether the daemon process is alive');
+    assert.ok(dispatchBody.includes('_wakeupAt') && dispatchBody.includes('safeWrite(CONTROL_PATH'),
+      'dispatch command should signal the running daemon via control.json wakeup');
+    assert.ok(!dispatchBody.includes('e.tick()'),
+      'dispatch command must not run tick() in the CLI process; it has no activeProcesses state');
+  });
+
+  await test('dispatch command refuses local tick when active dispatches exist without daemon', () => {
+    const dispatchBody = cliSrc.slice(cliSrc.indexOf('dispatch() {'), cliSrc.indexOf('spawn(agentId'));
+    assert.ok(dispatchBody.includes('getDispatch().active') && dispatchBody.includes('Refusing to run a local dispatch tick'),
+      'dispatch command should not orphan daemon-owned active work from a process with empty activeProcesses');
   });
 }
 
