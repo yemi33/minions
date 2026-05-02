@@ -2832,6 +2832,49 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(calls.length, 1);
   });
 
+  await test('injectAdoTokenEnv sets Azure DevOps PAT env vars from broker-only azureauth token', () => {
+    const env = {};
+    const calls = [];
+    const ok = spawnAgent.injectAdoTokenEnv(env, {
+      execSync: (cmd, opts) => {
+        calls.push({ cmd, opts });
+        return 'eyJagent-token\n';
+      },
+      warn: () => { throw new Error('should not warn on valid token'); },
+    });
+    assert.strictEqual(ok, true);
+    assert.strictEqual(env.AZURE_DEVOPS_EXT_PAT, 'eyJagent-token');
+    assert.strictEqual(env.AZURE_DEVOPS_EXT_AZURE_RM_PAT, 'eyJagent-token');
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].cmd, 'azureauth ado token --mode iwa --mode broker --output token --timeout 1');
+    assert.deepStrictEqual(calls[0].opts, {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  });
+
+  await test('injectAdoTokenEnv ignores invalid or failed token fetch without mutating env', () => {
+    const warnings = [];
+    const invalidEnv = { KEEP: 'yes' };
+    const invalid = spawnAgent.injectAdoTokenEnv(invalidEnv, {
+      execSync: () => 'not-a-jwt',
+      warn: (msg) => warnings.push(msg),
+    });
+    assert.strictEqual(invalid, false);
+    assert.deepStrictEqual(invalidEnv, { KEEP: 'yes' });
+
+    const failedEnv = {};
+    const failed = spawnAgent.injectAdoTokenEnv(failedEnv, {
+      execSync: () => { throw new Error('azureauth missing'); },
+      warn: (msg) => warnings.push(msg),
+    });
+    assert.strictEqual(failed, false);
+    assert.deepStrictEqual(failedEnv, {});
+    assert.ok(warnings.some(msg => msg.includes('invalid ADO token')));
+    assert.ok(warnings.some(msg => msg.includes('ADO token fetch failed')));
+  });
+
   await test('buildSpawnInvocation passes opts to runtime.buildPrompt', () => {
     const calls = [];
     const runtime = {
@@ -3019,6 +3062,7 @@ async function testSpawnAgentHelpers() {
   await test('spawn-agent.js exports parseSpawnArgs and buildSpawnInvocation', () => {
     assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
     assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
+    assert.strictEqual(typeof spawnAgent.injectAdoTokenEnv, 'function');
   });
 
   await test('normalizeRuntimeExit preserves code and maps signal/null exits', () => {
@@ -17498,6 +17542,18 @@ async function testSpawnAgentScript() {
   await test('spawn-agent.js writes PID file for engine reattachment', () => {
     assert.ok(src.includes('pidFile') && src.includes('writeFile') && src.includes('proc.pid'),
       'Should write PID file so engine can reattach on restart');
+  });
+
+  await test('spawn-agent.js injects ADO PAT env after cleanChildEnv without web auth fallback', () => {
+    const cleanIdx = src.indexOf('const env = cleanChildEnv();');
+    const injectIdx = src.indexOf('injectAdoTokenEnv(env);');
+    const runIdx = src.indexOf('runFile(execBin, execArgs');
+    assert.ok(cleanIdx >= 0, 'spawn-agent should build child env via cleanChildEnv');
+    assert.ok(injectIdx > cleanIdx, 'ADO token env injection must happen after cleanChildEnv');
+    assert.ok(runIdx > injectIdx, 'spawn-agent should pass the injected env to the spawned runtime');
+    assert.ok(src.includes('AZURE_DEVOPS_EXT_PAT'), 'spawn-agent should set Azure DevOps extension PAT env');
+    assert.ok(src.includes('AZURE_DEVOPS_EXT_AZURE_RM_PAT'), 'spawn-agent should set Azure RM PAT env for az extension auth');
+    assert.ok(!src.includes('--mode web'), 'spawn-agent must not fall back to browser/web azureauth mode');
   });
 
   await test('cli.js reads PID files from engine/tmp/ (same dir spawn-agent writes to)', () => {
