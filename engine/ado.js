@@ -138,16 +138,7 @@ function clearBuildStatusStale(pr) {
   if (pr._buildStatusDetail) delete pr._buildStatusDetail;
 }
 
-function isPlaceholderPrTitle(title, prNum) {
-  const text = String(title || '').trim();
-  if (!text) return true;
-  if (/\bpolling\.\.\./i.test(text)) return true;
-  if (String(prNum || '') && (text === `PR #${prNum}` || text === `PR-${prNum}`)) return true;
-  if (/[{}"\[\]]/.test(text)) return true;
-  return /^[0-9a-f-]{8,}$/i.test(text);
-}
-
-function applyAdoPrMetadata(pr, prData, prNum) {
+function applyAdoPrMetadata(pr, prData) {
   if (!pr || !prData) return false;
   let updated = false;
 
@@ -160,8 +151,9 @@ function applyAdoPrMetadata(pr, prData, prNum) {
   }
 
   const title = String(prData.title || '').trim();
-  if (title && isPlaceholderPrTitle(pr.title, prNum) && pr.title !== title.slice(0, 120)) {
-    pr.title = title.slice(0, 120);
+  const storedTitle = title.slice(0, 120);
+  if (storedTitle && pr.title !== storedTitle) {
+    pr.title = storedTitle;
     updated = true;
   }
 
@@ -496,7 +488,7 @@ async function pollPrStatus(config) {
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
-    if (applyAdoPrMetadata(pr, prData, prNum)) updated = true;
+    if (applyAdoPrMetadata(pr, prData)) updated = true;
 
     let newStatus = pr.status;
     if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
