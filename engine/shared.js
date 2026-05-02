@@ -445,12 +445,15 @@ function mutateCooldowns(mutator) {
   }, { defaultValue: {}, skipWriteIfUnchanged: true });
 }
 
+let _uidCounter = 0;
+
 /**
- * Generate a unique ID suffix: timestamp + 4 random chars.
+ * Generate a unique ID suffix: timestamp + monotonic counter + random chars.
  * Use for filenames that could collide (dispatch IDs, temp files, etc.)
  */
 function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  _uidCounter = (_uidCounter + 1) % 0x1000000;
+  return Date.now().toString(36) + _uidCounter.toString(36).padStart(4, '0') + crypto.randomBytes(2).toString('hex');
 }
 
 /**
