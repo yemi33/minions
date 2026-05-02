@@ -174,17 +174,17 @@ function main() {
     opts.sysPromptFile = sysTmpPath;
   }
 
-  // User asset discovery dirs — agents run with CWD set to an external repo
-  // worktree, so the adapter supplies any runtime-native global asset roots
-  // that should be visible from that cwd.
+  // Skill discovery dirs — agents run with CWD set to an external repo
+  // worktree, so runtime-native global assets would otherwise be invisible.
+  // The adapter owns both where those assets live and how to surface them.
   const minionsDir = path.resolve(__dirname, '..');
+  const addDirs = [minionsDir];
   const runtimeAssetDirs = typeof runtime.getUserAssetDirs === 'function'
     ? runtime.getUserAssetDirs({ homeDir: os.homedir() })
     : [];
-  const addDirs = [minionsDir];
-  for (const userAssetDir of runtimeAssetDirs) {
-    if (fs.existsSync(userAssetDir) && path.resolve(userAssetDir) !== path.resolve(minionsDir)) {
-      addDirs.push(userAssetDir);
+  for (const dir of runtimeAssetDirs) {
+    if (dir && fs.existsSync(dir) && path.resolve(dir) !== path.resolve(minionsDir)) {
+      addDirs.push(dir);
     }
   }
 

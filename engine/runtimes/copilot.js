@@ -270,6 +270,42 @@ function buildSpawnFlags(opts = {}) {
   return flags;
 }
 
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [
+    path.join(homeDir, '.copilot'),
+    path.join(homeDir, '.agents'),
+  ];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { scope: 'copilot', dir: path.join(homeDir, '.copilot', 'skills') },
+    { scope: 'agent-skill', dir: path.join(homeDir, '.agents', 'skills') },
+  ];
+  if (project?.localPath) {
+    roots.push(
+      {
+        scope: 'project',
+        projectName: project.name,
+        dir: path.join(project.localPath, '.github', 'skills'),
+      },
+      {
+        scope: 'project',
+        projectName: project.name,
+        dir: path.join(project.localPath, '.agents', 'skills'),
+      },
+    );
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  return {
+    personal: path.join(homeDir, '.copilot', 'skills'),
+    project: project?.localPath ? path.join(project.localPath, '.github', 'skills') : null,
+  };
+}
+
 function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
   if (!agentId || agentId.startsWith('temp-') || !agentsDir) return null;
   try {
@@ -347,41 +383,6 @@ function buildPrompt(promptText, sysPromptText, opts = {}) {
   if (opts && opts.sessionId) return user;
   if (sysPromptText == null || sysPromptText === '') return user;
   return `<system>\n${String(sysPromptText)}\n</system>\n\n${user}`;
-}
-
-function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
-  return [
-    path.join(homeDir, '.copilot'),
-    path.join(homeDir, '.agents'),
-  ];
-}
-
-function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
-  const roots = [
-    { dir: path.join(homeDir, '.copilot', 'skills'), scope: 'copilot' },
-    { dir: path.join(homeDir, '.agents', 'skills'), scope: 'agent-skill' },
-  ];
-  if (project?.localPath) {
-    for (const rel of [
-      ['.github', 'skills'],
-      ['.claude', 'skills'],
-      ['.agents', 'skills'],
-    ]) {
-      roots.push({
-        dir: path.resolve(project.localPath, ...rel),
-        scope: 'project',
-        projectName: project.name,
-      });
-    }
-  }
-  return roots;
-}
-
-function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
-  return {
-    personal: path.join(homeDir, '.copilot', 'skills'),
-    project: project?.localPath ? path.resolve(project.localPath, '.github', 'skills') : null,
-  };
 }
 
 // ── Output Parsing ──────────────────────────────────────────────────────────

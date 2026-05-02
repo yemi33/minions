@@ -395,7 +395,7 @@ function renderPlaybook(type, vars) {
   content += '````\n```skill\n';
   content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
-  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory\n`;
+  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory so they are available in normal runtime windows too\n`;
   content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to the selected runtime's native project skills directory\n`;
   content += `- Emit at most one skill block per task unless you uncovered two clearly distinct reusable workflows\n`;
   content += `- Do NOT create a skill for one-off bug fixes, isolated command output, obvious repo facts, or anything already covered by existing docs/playbooks/skills\n`;
@@ -546,7 +546,8 @@ function buildAgentContext(agentId, config, project) {
     context += `## Your Recent History (last 5 tasks)\n\n${trimmed}\n\n`;
   }
 
-  // Project conventions (from CLAUDE.md) — always relevant for code quality
+  // Project conventions and instruction files — explicit, inert context for
+  // every runtime. Runtime-native skills/commands stay in their native indexes.
   if (project.localPath) {
     appendContextFile('Project Conventions (from CLAUDE.md)', path.join(project.localPath, 'CLAUDE.md'), 8192);
     appendContextFile('Project Agent Instructions (from AGENTS.md)', path.join(project.localPath, 'AGENTS.md'), 8192,
