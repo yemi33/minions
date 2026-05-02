@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1688 (2026-05-02)
+
+### Fixes
+-  bug sweep — PRD races, hardcoded retries, capability-flag drift
+
 ## 0.1.1687 (2026-05-02)
 
 ### Other
