@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1676 (2026-05-02)
+
+### Other
+- Revert "fix: cap Signed Off By column width and wrap multi-reviewer overflow"
+- Revert "fix: widen Signed Off By column from 140px to 220px"
+
 ## 0.1.1675 (2026-05-02)
 
 ### Fixes
