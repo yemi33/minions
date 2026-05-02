@@ -1,24 +1,18 @@
 #!/usr/bin/env node
 /**
- * Wrapper for @azure-devops/mcp that fetches an ADO token via azureauth
- * broker (no browser popup) and sets AZURE_DEVOPS_EXT_PAT before launching
- * the MCP server.
+ * Wrapper for @azure-devops/mcp that fetches an ADO token via the shared
+ * az-first provider chain and sets AZURE_DEVOPS_EXT_PAT before launching the
+ * MCP server.
  */
-const { execSync, spawn } = require('child_process');
-const path = require('path');
+const { spawn } = require('child_process');
+const { acquireAdoTokenSync } = require('./ado-token');
 
-// Fetch token via azureauth broker (corp tool, no browser)
 let token;
 try {
-  token = execSync('azureauth ado token --mode broker --output token --timeout 1', {
-    encoding: 'utf8',
-    timeout: 30000,
-    windowsHide: true,
-  }).trim();
+  token = acquireAdoTokenSync().token;
 } catch (e) {
-  // Broker failed — do NOT fall back to web mode (opens browser in automated context)
-  process.stderr.write('ado-mcp-wrapper: Broker auth failed: ' + e.message + '\n');
-  process.stderr.write('ado-mcp-wrapper: Run "azureauth ado token --mode web" manually to refresh\n');
+  process.stderr.write('ado-mcp-wrapper: ADO auth failed: ' + e.message + '\n');
+  process.stderr.write('ado-mcp-wrapper: Run "az login" or refresh azureauth manually, then retry\n');
   process.exit(1);
 }
 
@@ -31,7 +25,7 @@ const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', [
   ...args
 ], {
   stdio: 'inherit',
-  env: { ...process.env, AZURE_DEVOPS_EXT_PAT: token },
+  env: { ...process.env, AZURE_DEVOPS_EXT_PAT: token, AZURE_DEVOPS_EXT_AZURE_RM_PAT: token },
   windowsHide: true,
   shell: false,
 });

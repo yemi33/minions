@@ -8,6 +8,7 @@ const shared = require('./shared');
 const { exec, execAsync, getAdoOrgBase, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
+const { acquireAdoToken } = require('./ado-token');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
 let _engine = null;
@@ -199,7 +200,7 @@ function votesToReviewStatus(votes) {
 // ─── ADO Token Cache ─────────────────────────────────────────────────────────
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
-let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
+let _adoTokenFailedUntil = 0; // backoff: skip token acquisition calls until this timestamp
 
 // ─── ADO Throttle State ─────────────────────────────────────────────────────
 // Tracks rate-limiting (HTTP 429/503) from ADO API responses.
@@ -224,23 +225,17 @@ async function getAdoToken() {
   if (_adoTokenCache.token && Date.now() < _adoTokenCache.expiresAt) {
     return _adoTokenCache.token;
   }
-  // If recent fetch failed, don't retry until backoff expires (avoids repeated browser popups)
+  // If recent fetch failed, don't retry until backoff expires.
   if (Date.now() < _adoTokenFailedUntil) return null;
   try {
-    // azureauth supports multiple --mode flags as an ordered fallback chain:
-    // tries IWA (Integrated Windows Auth) first, falls back to broker if unavailable.
-    // Uses execAsync to avoid blocking the event loop on Windows (spawnSync ETIMEDOUT).
-    const token = (await execAsync('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
-      timeout: 15000, encoding: 'utf-8', windowsHide: true    })).trim();
-    if (token && token.startsWith('eyJ')) {
-      _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
-      _adoTokenFailedUntil = 0;
-      return token;
-    }
+    const { token } = await acquireAdoToken({ execAsync, timeout: 15000 });
+    _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
+    _adoTokenFailedUntil = 0;
+    return token;
   } catch (e) {
     log('warn', `Failed to get ADO token: ${e.message}`);
   }
-  // Back off for 10 minutes to avoid spamming browser auth popups
+  // Back off for 10 minutes to avoid spamming auth commands.
   _adoTokenFailedUntil = Date.now() + 10 * 60 * 1000;
   return null;
 }

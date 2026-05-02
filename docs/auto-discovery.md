@@ -141,7 +141,7 @@ The engine directly polls the host REST API for **all** PR metadata: build/CI st
 | `buildStatus` | PR statuses (codecoverage/deploy/build/ci contexts) | `passing` / `failing` / `running` / `none` |
 | `buildFailReason` | Failed status description | Set on failure, cleared otherwise |
 
-**Auth:** Bearer token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1` (cached 30 minutes). The `--timeout 1` flag is required — without it, azureauth can hang indefinitely in headless sessions. (GitHub polling uses the ambient `gh` CLI credentials, not azureauth.)
+**Auth:** Bearer token via shared `engine/ado-token.js`: prefer `az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv`, then fall back to `azureauth ado token --mode iwa --mode broker --output token --timeout 1` (cached 30 minutes). The `--timeout 1` flag is required — without it, azureauth can hang indefinitely in headless sessions. (GitHub polling uses the ambient `gh` CLI credentials, not azureauth.)
 
 This feeds `discoverFromPrs` — when `buildStatus` flips to `"failing"`, the next discovery tick dispatches a fix agent. When `status` becomes `"merged"`, the PR drops out of active polling.
 

@@ -225,7 +225,7 @@ Context-only PRs (`_contextOnly: true`): polled for status/votes/builds, never d
 
 ## ADO Integration
 
-Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it the command can hang on interactive broker UI that never appears in headless agent sessions.
+Token via shared `engine/ado-token.js`: prefer `az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv`, then fall back to `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it the command can hang on interactive broker UI that never appears in headless agent sessions.
 
 For agent-driven ADO actions outside the engine pollers, use `az` CLI first; ADO MCP tools (`mcp__azure-ado__*`) only as fallback. **Never use `gh` for ADO repos.**
 
