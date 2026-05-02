@@ -26,7 +26,7 @@ function renderMeetings(meetings) {
   const visible = _showArchived ? meetings : active;
   if (visible.length === 0) {
     el.innerHTML = '<p class="empty">No active meetings.</p>';
-    if (archived.length) el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">Show ' + archived.length + ' archived</button></div>';
+    if (archived.length) el.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">Show ' + archived.length + ' archived</button></div>');
     return;
   }
 
@@ -66,17 +66,17 @@ function renderMeetings(meetings) {
   }).join('');
 
   if (visible.length > MTG_PER_PAGE) {
-    el.innerHTML += '<div class="pr-pager">' +
+    el.insertAdjacentHTML('beforeend', '<div class="pr-pager">' +
       '<span class="pr-page-info">Showing ' + (start + 1) + ' to ' + Math.min(start + MTG_PER_PAGE, visible.length) + ' of ' + visible.length + '</span>' +
       '<div class="pr-pager-btns">' +
         '<button class="pr-pager-btn ' + (_mtgPage === 0 ? 'disabled' : '') + '" onclick="_mtgPrev()">Prev</button>' +
         '<button class="pr-pager-btn ' + (_mtgPage >= totalPages - 1 ? 'disabled' : '') + '" onclick="_mtgNext()">Next</button>' +
-      '</div></div>';
+      '</div></div>');
   }
 
   if (archived.length > 0) {
-    el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">' +
-      (_showArchived ? 'Hide' : 'Show') + ' ' + archived.length + ' archived</button></div>';
+    el.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">' +
+      (_showArchived ? 'Hide' : 'Show') + ' ' + archived.length + ' archived</button></div>');
   }
   restoreNotifBadges();
 }
@@ -254,14 +254,14 @@ function openCreateMeetingModal() {
       '<div style="color:var(--text);font-size:var(--text-md)">Participants<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px" id="mtg-participants">' + agentOpts + '</div></div>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="_submitCreateMeeting()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Start Meeting</button>' +
+        '<button onclick="_submitCreateMeeting(event)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Start Meeting</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
 }
 
-async function _submitCreateMeeting() {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
+async function _submitCreateMeeting(e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
   const title = document.getElementById('mtg-title')?.value?.trim();
   const agenda = document.getElementById('mtg-agenda')?.value?.trim();
   if (!title || !agenda) { if (btn) { btn.disabled = false; btn.textContent = 'Start Meeting'; } alert('Title and agenda required'); return; }

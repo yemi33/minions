@@ -43,12 +43,12 @@ function renderInbox(inbox) {
     </div>`;
   }).join('');
   if (inbox.length > INBOX_PER_PAGE) {
-    list.innerHTML += '<div class="pr-pager">' +
+    list.insertAdjacentHTML('beforeend', '<div class="pr-pager">' +
       '<span class="pr-page-info">Showing ' + (inboxStart + 1) + ' to ' + Math.min(inboxStart + INBOX_PER_PAGE, inbox.length) + ' of ' + inbox.length + '</span>' +
       '<div class="pr-pager-btns">' +
         '<button class="pr-pager-btn ' + (_inboxPage === 0 ? 'disabled' : '') + '" onclick="_inboxPrev()">Prev</button>' +
         '<button class="pr-pager-btn ' + (_inboxPage >= totalInboxPages - 1 ? 'disabled' : '') + '" onclick="_inboxNext()">Next</button>' +
-      '</div></div>';
+      '</div></div>');
   }
   restoreNotifBadges();
 }

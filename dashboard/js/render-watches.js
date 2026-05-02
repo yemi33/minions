@@ -184,8 +184,10 @@ function toggleWatchPause(id, pause) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: id, status: newStatus })
-  }).then(function(res) { return res.json(); }).then(function(data) {
-    if (data.error) showToast('cmd-toast', 'Error: ' + data.error, false);
+  }).then(async function(res) {
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || data.error) showToast('cmd-toast', 'Error: ' + (data.error || ('HTTP ' + res.status)), false);
+    else if (typeof refresh === 'function') refresh();
   }).catch(function(err) {
     showToast('cmd-toast', 'Error: ' + err.message, false);
   });
@@ -297,12 +299,14 @@ function submitWatch() {
       stopAfter: stopAfter,
       onNotMet: onNotMet || null,
     })
-  }).then(function(res) { return res.json(); }).then(function(data) {
-    if (data.error) {
-      showToast('cmd-toast', 'Error: ' + data.error, false);
+  }).then(async function(res) {
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok || data.error) {
+      showToast('cmd-toast', 'Error: ' + (data.error || ('HTTP ' + res.status)), false);
     } else {
-      showToast('cmd-toast', 'Watch created: ' + data.watch.id, true);
+      showToast('cmd-toast', 'Watch created: ' + (data.watch && data.watch.id || ''), true);
       closeModal();
+      if (typeof refresh === 'function') refresh();
     }
   }).catch(function(err) {
     showToast('cmd-toast', 'Error: ' + err.message, false);

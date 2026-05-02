@@ -18,12 +18,7 @@ function renderEngineStatus(engine) {
   // Detect stale engine — says running but heartbeat is old (>2 min)
   if (state === 'running' && engine?.heartbeat) {
     staleMs = Date.now() - engine.heartbeat;
-    if (staleMs > 120000) {
-      state = 'stale';
-    }
-  } else if (state === 'running' && !engine?.heartbeat) {
-    // Running but no heartbeat yet — engine just started or old version
-    state = 'running';
+    if (staleMs > 120000) state = 'stale';
   }
 
   badge.className = 'engine-badge ' + (state === 'stale' ? 'stopped' : state);
@@ -172,12 +167,12 @@ function renderDispatch(dispatch) {
         '</tr>';
       }).join('') + '</tbody></table>';
     if (completed.length > COMPLETED_PER_PAGE) {
-      completedEl.innerHTML += '<div class="pr-pager">' +
+      completedEl.insertAdjacentHTML('beforeend', '<div class="pr-pager">' +
         '<span class="pr-page-info">Showing ' + (compStart + 1) + ' to ' + Math.min(compStart + COMPLETED_PER_PAGE, completed.length) + ' of ' + completed.length + '</span>' +
         '<div class="pr-pager-btns">' +
           '<button class="pr-pager-btn ' + (_completedPage === 0 ? 'disabled' : '') + '" onclick="_completedPrev()">Prev</button>' +
           '<button class="pr-pager-btn ' + (_completedPage >= totalCompPages - 1 ? 'disabled' : '') + '" onclick="_completedNext()">Next</button>' +
-        '</div></div>';
+        '</div></div>');
     }
   } else {
     completedEl.innerHTML = '<p class="empty">No completed dispatches yet.</p>';
@@ -206,12 +201,12 @@ function renderEngineLog(log) {
     '</div>'
   ).join('');
   if (reversed.length > LOG_PER_PAGE) {
-    el.innerHTML += '<div class="pr-pager">' +
+    el.insertAdjacentHTML('beforeend', '<div class="pr-pager">' +
       '<span class="pr-page-info">Showing ' + (logStart + 1) + ' to ' + Math.min(logStart + LOG_PER_PAGE, reversed.length) + ' of ' + reversed.length + '</span>' +
       '<div class="pr-pager-btns">' +
         '<button class="pr-pager-btn ' + (_logPage === 0 ? 'disabled' : '') + '" onclick="_logPrev()">Prev</button>' +
         '<button class="pr-pager-btn ' + (_logPage >= totalLogPages - 1 ? 'disabled' : '') + '" onclick="_logNext()">Next</button>' +
-      '</div></div>';
+      '</div></div>');
   }
 }
 
@@ -228,7 +223,7 @@ async function showErrorDetails(agentId, reason, task) {
   document.getElementById('modal').classList.add('open');
 
   try {
-    const output = await fetch('/api/agent/' + agentId + '/output').then(r => r.text());
+    const output = await safeFetch('/api/agent/' + agentId + '/output').then(r => r.text());
     const lines = output.split('\n');
     const stderrIdx = lines.findIndex(l => l.startsWith('## stderr'));
     let summary = '';

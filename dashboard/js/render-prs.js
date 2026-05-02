@@ -134,15 +134,15 @@ function openAddPrModal() {
       '<div style="font-size:11px;color:var(--muted);margin-top:-4px;padding-left:24px">Off = context only (e.g. teammate\'s PR). On = agents actively monitor and fix issues.</div>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="_submitLinkPr()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Link PR</button>' +
+        '<button onclick="_submitLinkPr(event)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Link PR</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
   setTimeout(() => document.getElementById('pr-link-url')?.focus(), 100);
 }
 
-async function _submitLinkPr() {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Linking...'; }
+async function _submitLinkPr(e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Linking...'; }
   const url = document.getElementById('pr-link-url')?.value?.trim();
   if (!url) { if (btn) { btn.disabled = false; btn.textContent = 'Link PR'; } alert('PR URL is required'); return; }
   const title = document.getElementById('pr-link-title')?.value?.trim() || '';
@@ -166,7 +166,8 @@ async function unlinkPr(id) {
   if (!confirm('Remove ' + id + ' from tracking?')) return;
   showToast('cmd-toast', id + ' removed', true);
   markDeleted('pr:' + id);
-  const row = document.querySelector('[data-pr-id="' + id + '"]')?.closest('tr');
+  const escId = window.CSS && CSS.escape ? CSS.escape(id) : id;
+  const row = document.querySelector('[data-pr-id="' + escId + '"]')?.closest('tr');
   if (row) row.remove();
   try {
     const res = await fetch('/api/pull-requests/delete', {

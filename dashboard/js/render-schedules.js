@@ -292,7 +292,7 @@ function renderSchedules(schedules) {
       const lastRun = s._lastRun ? timeAgo(s._lastRun) : 'never';
       const typeBadge = '<span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span>';
       const humanCron = _cronToHuman(s.cron || '');
-      html += '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
+      html += '<tr data-sched-id="' + escHtml(s.id || '') + '" style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
         '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
         '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
         '<td><span title="' + escHtml(s.cron || '') + '" style="font-size:11px;color:var(--blue)">' + escHtml(humanCron) + '</span></td>' +
@@ -459,7 +459,7 @@ function _scheduleFormHtml(sched, isEdit) {
     '</label>' +
     '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
       '<button onclick="closeModal()" class="pr-pager-btn" style="padding:6px 16px;font-size:var(--text-md)">Cancel</button>' +
-      '<button onclick="submitSchedule(' + isEdit + ')" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">' + (isEdit ? 'Save' : 'Create') + '</button>' +
+      '<button onclick="submitSchedule(' + isEdit + ',event)" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">' + (isEdit ? 'Save' : 'Create') + '</button>' +
     '</div>' +
   '</div>';
 }
@@ -487,8 +487,8 @@ function openEditScheduleModal(id) {
   _updateCronPreview();
 }
 
-async function submitSchedule(isEdit) {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = isEdit ? 'Saving...' : 'Creating...'; }
+async function submitSchedule(isEdit, e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = isEdit ? 'Saving...' : 'Creating...'; }
   _showScheduleError('');
   const title = document.getElementById('sched-edit-title').value.trim();
   const cron = window._schedComputedCron || '';
@@ -505,7 +505,7 @@ async function submitSchedule(isEdit) {
     id = _generateScheduleId(title);
   }
 
-  function _resetSchedBtn() { if (btn) { btn.disabled = false; btn.textContent = isEdit ? 'Save Changes' : 'Create Schedule'; } }
+  function _resetSchedBtn() { if (btn) { btn.disabled = false; btn.textContent = isEdit ? 'Save' : 'Create'; } }
   if (!title) { _resetSchedBtn(); _showScheduleError('Title is required'); return; }
   if (!cron) { _resetSchedBtn(); _showScheduleError('Schedule is required \u2014 select days and time, or use natural language'); return; }
 
@@ -523,9 +523,15 @@ async function submitSchedule(isEdit) {
   } catch (e) { _resetSchedBtn(); _showScheduleError('Error: ' + e.message); }
 }
 
+function _findSchedRow(id) {
+  var sel = 'tr[data-sched-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]';
+  return document.querySelector(sel);
+}
+
 async function toggleScheduleEnabled(id, enabled) {
   // Optimistic toggle — swap badge text immediately
-  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) { var badge = r.querySelector('.status-badge'); if (badge) badge.textContent = enabled ? 'ENABLED' : 'DISABLED'; } });
+  var row = _findSchedRow(id);
+  if (row) { var badge = row.querySelector('.status-badge'); if (badge) badge.textContent = enabled ? 'ENABLED' : 'DISABLED'; }
   try {
     const res = await fetch('/api/schedules/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -542,7 +548,8 @@ async function deleteSchedule(id) {
   if (!confirm('Delete scheduled task "' + id + '"?')) return;
   showToast('cmd-toast', 'Schedule deleted', true);
   markDeleted('sched:' + id);
-  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  var row = _findSchedRow(id);
+  if (row) row.remove();
   try {
     const res = await fetch('/api/schedules/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

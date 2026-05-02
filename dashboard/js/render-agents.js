@@ -39,7 +39,7 @@ function renderAgents(agents) {
   agentData = agents;
   const grid = document.getElementById('agents-grid');
   grid.innerHTML = agents.map(a => `
-    <div class="agent-card ${statusColor(a.status)}" onclick="if(shouldIgnoreSelectionClick(event))return;openAgentDetail('${escapeHtml(a.id)}')">
+    <div class="agent-card ${statusColor(a.status)}" data-agent-id="${escapeHtml(a.id)}" onclick="if(shouldIgnoreSelectionClick(event))return;openAgentDetail(this.dataset.agentId)">
       <div class="agent-card-header">
         <span class="agent-name"><span class="agent-emoji">${escapeHtml(a.emoji)}</span>${escapeHtml(a.name)}${_runtimeTagHtml(a.runtime)}</span>
         <span class="status-badge ${escapeHtml(a.status)}">${escapeHtml(a.status)}</span>
@@ -116,7 +116,7 @@ async function openAgentDetail(id) {
     document.getElementById('detail-content').innerHTML =
       '<div style="padding:24px;text-align:center">' +
         '<div style="color:var(--red);margin-bottom:12px">Error loading agent detail: ' + escapeHtml(e.message) + '</div>' +
-        '<button onclick="openAgentDetail(\'' + escapeHtml(id) + '\')" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px">Retry</button>' +
+        '<button data-agent-id="' + escapeHtml(id) + '" onclick="openAgentDetail(this.dataset.agentId)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px">Retry</button>' +
         ' <button onclick="closeDetail()" style="padding:6px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:12px;color:var(--text)">Close</button>' +
       '</div>';
   }

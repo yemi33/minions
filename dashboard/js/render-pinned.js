@@ -4,7 +4,7 @@ function renderPinned(entries) {
   entries = (entries || []).filter(function(e) { return !isDeleted('pin:' + e.title); });
   const el = document.getElementById('pinned-content');
   if (!el) return;
-  if (!entries || entries.length === 0) {
+  if (entries.length === 0) {
     el.innerHTML = '<p class="empty">No pinned notes. Pin important context that all agents should see.</p>';
     return;
   }
@@ -40,7 +40,7 @@ async function submitPinnedNote(e) {
   const title = document.getElementById('pin-title').value;
   const content = document.getElementById('pin-content').value;
   const level = document.getElementById('pin-level').value;
-  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Pin Note'; } alert('Title and content required'); return; }
+  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Pin'; } alert('Title and content required'); return; }
   try { closeModal(); } catch { /* may not be open */ }
 
   // Optimistic render: append the new entry to the pinned list and re-render immediately

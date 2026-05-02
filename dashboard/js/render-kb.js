@@ -134,12 +134,12 @@ function renderKnowledgeBase() {
     '</div>';
   }).join('');
   if (items.length > KB_PER_PAGE) {
-    listEl.innerHTML += '<div class="pr-pager">' +
+    listEl.insertAdjacentHTML('beforeend', '<div class="pr-pager">' +
       '<span class="pr-page-info">Showing ' + (kbStart + 1) + ' to ' + Math.min(kbStart + KB_PER_PAGE, items.length) + ' of ' + items.length + '</span>' +
       '<div class="pr-pager-btns">' +
         '<button class="pr-pager-btn ' + (_kbPage === 0 ? 'disabled' : '') + '" onclick="_kbPrev()">Prev</button>' +
         '<button class="pr-pager-btn ' + (_kbPage >= totalKbPages - 1 ? 'disabled' : '') + '" onclick="_kbNext()">Next</button>' +
-      '</div></div>';
+      '</div></div>');
   }
   restoreNotifBadges();
 }
@@ -242,18 +242,18 @@ function openCreateKbModal() {
         '<textarea id="kb-new-content" rows="8" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit" placeholder="Write your knowledge entry..."></textarea></label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="submitKbEntry()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
+        '<button onclick="submitKbEntry(event)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
 }
 
-async function submitKbEntry() {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+async function submitKbEntry(e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const category = document.getElementById('kb-new-category').value;
   const title = document.getElementById('kb-new-title').value;
   const content = document.getElementById('kb-new-content').value;
-  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } alert('Title and content are required'); return; }
+  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Title and content are required'); return; }
   try {
     showToast('cmd-toast', 'KB entry created', true);
     const res = await fetch('/api/knowledge', {
@@ -261,8 +261,8 @@ async function submitKbEntry() {
       body: JSON.stringify({ category, title, content })
     });
     if (res.ok) { closeModal(); refreshKnowledgeBase(); }
-    else { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'KB create failed: ' + (d.error || 'unknown'), false); }
-  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } showToast('cmd-toast', 'Error: ' + e.message, false); }
+    else { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'KB create failed: ' + (d.error || 'unknown'), false); }
+  } catch (err) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } showToast('cmd-toast', 'Error: ' + err.message, false); }
 }
 
 async function kbOpenItem(category, file) {

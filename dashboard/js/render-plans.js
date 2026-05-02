@@ -21,15 +21,15 @@ function openCreatePlanModal() {
       '<div style="font-size:11px;color:var(--muted)">After creating, click Execute on the plan card to have an agent convert it into a PRD with work items.</div>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="_submitCreatePlan()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create Plan</button>' +
+        '<button onclick="_submitCreatePlan(event)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create Plan</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
   setTimeout(() => document.getElementById('plan-new-title')?.focus(), 100);
 }
 
-async function _submitCreatePlan() {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+async function _submitCreatePlan(e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   const title = document.getElementById('plan-new-title')?.value?.trim();
   const content = document.getElementById('plan-new-content')?.value?.trim();
   if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Create Plan'; } alert('Title is required'); return; }
@@ -144,16 +144,13 @@ function renderPlans(plans) {
     }
   }
 
-  // Link .md plans to their PRD .json — if a PRD is being worked on, the source plan is too
-  // Convention: plan-w025-2026-03-15.md → officeagent-2026-03-15.json (same date, different prefix)
+  // Link .md plans to their PRD .json — if a PRD is being worked on, the source plan is too.
+  // The .md → .json mapping is materialized in planToPrdFile below; here we only need to
+  // know whether any PRD is active to mark all candidate source .md plans as working.
   const workingJsons = new Set([...workingPlanFiles].filter(f => f.endsWith('.json')));
   if (workingJsons.size > 0) {
     for (const p of plans) {
-      if (p.format === 'draft' && p.file.endsWith('.md')) {
-        // A .md plan is "working" if any PRD .json has active dispatches
-        // (since the .md is the source that generated those PRDs)
-        if (workingJsons.size > 0) workingPlanFiles.add(p.file);
-      }
+      if (p.format === 'draft' && p.file.endsWith('.md')) workingPlanFiles.add(p.file);
     }
   }
 

@@ -40,7 +40,7 @@ function wiRow(item) {
     : (item.branchStrategy === 'shared-branch' && item.status === 'done')
       ? '<span style="font-size:9px;color:var(--muted)" title="Part of shared branch — aggregate PR created at verify stage">shared branch</span>'
       : '<span style="color:var(--muted)">—</span>';
-  return '<tr style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail(\'' + escapeHtml(item.id) + '\')">' +
+  return '<tr data-wi-id="' + escapeHtml(item.id) + '" style="cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openWorkItemDetail(\'' + escapeHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escapeHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml((item.title || '').slice(0, 200)) + '">' + escapeHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escapeHtml(item._source || '') + '</span>' +
@@ -195,12 +195,16 @@ async function submitWorkItemEdit(id, source, e) {
   } catch (e) { alert('Update error: ' + e.message); editWorkItem(id, source); }
 }
 
+function _removeWiRow(id) {
+  var sel = 'tr[data-wi-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]';
+  document.querySelectorAll(sel).forEach(function(r) { r.remove(); });
+}
+
 async function deleteWorkItem(id, source) {
   if (!confirm('Delete work item ' + id + '? This will kill any running agent and remove all dispatch history.')) return;
   showToast('cmd-toast', 'Work item deleted', true);
   markDeleted('wi:' + id);
-  var wiTable = document.getElementById('work-items-content');
-  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  _removeWiRow(id);
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -214,8 +218,7 @@ async function cancelWorkItem(id, source) {
   if (!confirm('Cancel work item ' + id + '? This will kill any running agent and mark it cancelled.')) return;
   showToast('cmd-toast', 'Work item cancelled', true);
   markDeleted('wi:' + id);
-  var wiTable = document.getElementById('work-items-content');
-  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  _removeWiRow(id);
   try {
     const res = await fetch('/api/work-items/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -228,8 +231,7 @@ async function cancelWorkItem(id, source) {
 async function archiveWorkItem(id, source) {
   showToast('cmd-toast', 'Archived ' + id, true);
   markDeleted('wi:' + id);
-  var wiTable = document.getElementById('work-items-content');
-  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  _removeWiRow(id);
   try {
     const res = await fetch('/api/work-items/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
