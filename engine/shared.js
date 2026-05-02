@@ -793,6 +793,8 @@ const ENGINE_DEFAULTS = {
   minRetryGapMs: 120000, // 2min — minimum gap between retry dispatches for the same work item; prevents tight retry loops when an idempotent agent (e.g. review bailing out on a duplicate) cannot produce the expected output (#1770)
   pipelineApiRetries: 2, // max attempts for pipeline API calls
   pipelineApiRetryDelay: 2000, // ms delay between pipeline API retries
+  prAutoLinkRetries: 3, // max attempts for gh pr list lookup when auto-linking PR after merge (3s backoff between attempts)
+  rebaseQueueRetries: 3, // max rebase attempts per queued PR before giving up
   versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
   logFlushInterval: 5000, // 5s — how often to flush buffered log entries to disk
   logBufferSize: 50, // flush immediately when buffer exceeds this many entries
@@ -1096,15 +1098,19 @@ function runtimeConfigWarnings(config, registeredRuntimes) {
     }
   }
 
-  // 3. Bare-mode misconfig: claudeBareMode + Claude as CC runtime + no explicit
-  // CC system prompt. `--bare` suppresses CLAUDE.md auto-discovery; CC will
-  // lose project context unless the user wires an explicit prompt.
+  // 3. Bare-mode misconfig: claudeBareMode + a CC runtime that honours
+  // `--bare` + no explicit CC system prompt. `--bare` suppresses CLAUDE.md
+  // auto-discovery; CC will lose project context unless the user wires an
+  // explicit prompt. Gated on `capabilities.bareMode` rather than runtime
+  // name so any future runtime that adopts the same flag is covered.
   if (engine.claudeBareMode === true) {
     const ccCli = resolveCcCli(engine);
-    if (ccCli === 'claude' && !_isMeaningful(engine.ccSystemPrompt)) {
+    let ccRuntime = null;
+    try { ccRuntime = require('./runtimes').resolveRuntime(ccCli); } catch { /* unknown runtime — skip */ }
+    if (ccRuntime?.capabilities?.bareMode === true && !_isMeaningful(engine.ccSystemPrompt)) {
       warnings.push({
         id: 'bare-mode-misconfig',
-        message: 'engine.claudeBareMode is true but CC runs on Claude with no engine.ccSystemPrompt — CLAUDE.md auto-discovery is suppressed and CC will lose project context.',
+        message: `engine.claudeBareMode is true but CC runs on ${ccCli} (which honours --bare) with no engine.ccSystemPrompt — CLAUDE.md auto-discovery is suppressed and CC will lose project context.`,
       });
     }
   }

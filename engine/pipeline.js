@@ -730,14 +730,17 @@ function isStageComplete(stage, stageState, run, config) {
       if (stage.autoApprove && artifacts.prds?.length > 0) {
         for (const prdFile of artifacts.prds) {
           const prdPath = path.join(prdDir, prdFile);
-          const prd = safeJson(prdPath);
-          if (prd && prd.status === PLAN_STATUS.AWAITING_APPROVAL) {
-            prd.status = PLAN_STATUS.APPROVED;
-            prd.approvedAt = ts();
-            prd.approvedBy = 'pipeline:' + run.pipelineId;
-            safeWrite(prdPath, prd);
-            log('info', `Pipeline ${run.pipelineId}: auto-approved PRD ${prdFile}`);
-          }
+          let approved = false;
+          mutateJsonFileLocked(prdPath, (prd) => {
+            if (prd && prd.status === PLAN_STATUS.AWAITING_APPROVAL) {
+              prd.status = PLAN_STATUS.APPROVED;
+              prd.approvedAt = ts();
+              prd.approvedBy = 'pipeline:' + run.pipelineId;
+              approved = true;
+            }
+            return prd;
+          }, { skipWriteIfUnchanged: true });
+          if (approved) log('info', `Pipeline ${run.pipelineId}: auto-approved PRD ${prdFile}`);
         }
       }
 

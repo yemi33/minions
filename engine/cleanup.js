@@ -621,17 +621,20 @@ function runCleanup(config, verbose = false) {
     catch { orphanPrdEntries = []; }
     for (const pf of orphanPrdEntries) {
       const prdPath = path.join(PRD_DIR, pf);
-      const prd = safeJson(prdPath);
-      if (!prd?.missing_features) continue;
+      const peek = safeJson(prdPath);
+      if (!peek?.missing_features) continue;
       let reset = 0;
-      for (const feat of prd.missing_features) {
-        if ((feat.status === shared.WI_STATUS.DISPATCHED || feat.status === shared.WI_STATUS.FAILED) && !wiIds.has(feat.id)) {
-          feat.status = shared.WI_STATUS.PENDING;
-          reset++;
+      mutateJsonFileLocked(prdPath, (prd) => {
+        if (!prd?.missing_features) return prd;
+        for (const feat of prd.missing_features) {
+          if ((feat.status === shared.WI_STATUS.DISPATCHED || feat.status === shared.WI_STATUS.FAILED) && !wiIds.has(feat.id)) {
+            feat.status = shared.WI_STATUS.PENDING;
+            reset++;
+          }
         }
-      }
+        return prd;
+      }, { skipWriteIfUnchanged: true });
       if (reset > 0) {
-        safeWrite(prdPath, prd);
         log('info', `Reset ${reset} orphaned PRD item status(es) → pending in ${pf}`);
         cleaned.orphanedPrdStatuses += reset;
       }

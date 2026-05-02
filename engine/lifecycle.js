@@ -1037,7 +1037,8 @@ async function findOpenPrForBranch(meta, config) {
   if (host === 'github') {
     const ghSlug = projectObj.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
     if (!ghSlug) return null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const maxAttempts = ENGINE_DEFAULTS.prAutoLinkRetries;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
       let raw = '';
       try {
@@ -1047,13 +1048,13 @@ async function findOpenPrForBranch(meta, config) {
         if (hits.length > 0 && hits[0].state === 'OPEN') {
           return { project: projectObj, prNumber: hits[0].number, url: hits[0].url };
         }
-        if (attempt === 2) {
-          log('warn', `Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts (raw: ${(raw || '').slice(0, 200)})`);
+        if (attempt === maxAttempts - 1) {
+          log('warn', `Auto-link fallback: no open PR found on branch ${meta.branch} after ${maxAttempts} attempts (raw: ${(raw || '').slice(0, 200)})`);
         }
       } catch (err) {
-        if (attempt === 2) {
+        if (attempt === maxAttempts - 1) {
           const rawSuffix = raw ? ` (raw: ${raw.slice(0, 200)})` : '';
-          log('warn', `Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}${rawSuffix}`);
+          log('warn', `Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after ${maxAttempts} attempts: ${err.message}${rawSuffix}`);
         }
       }
     }
@@ -1475,7 +1476,7 @@ async function processPendingRebases(config) {
     const result = await rebaseBranchOntoMain(pr, project, config);
     if (!result.success) {
       entry.attempts = (entry.attempts || 0) + 1;
-      if (entry.attempts < 3) {
+      if (entry.attempts < ENGINE_DEFAULTS.rebaseQueueRetries) {
         remaining.push(entry);
       } else {
         log('warn', `Rebase failed after retries for ${pr.id} on ${pr.branch}: ${result.error}`);

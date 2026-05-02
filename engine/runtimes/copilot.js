@@ -798,6 +798,11 @@ function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
   ];
 }
 
+// Copilot CLI reads project skills from .github/skills, .claude/skills, AND
+// .agents/skills per the official docs (see "Adding agent skills for GitHub
+// Copilot CLI"). Listing all three keeps the dashboard accurate and ensures
+// spawned Copilot agents receive `--add-dir` for every dir Copilot would
+// natively read from.
 function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
   const roots = [
     { dir: path.join(homeDir, '.copilot', 'skills'), scope: 'copilot' },
@@ -807,6 +812,7 @@ function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
     const projectName = project.name || path.basename(project.localPath);
     roots.push(
       { dir: path.join(project.localPath, '.github', 'skills'), scope: 'project', projectName },
+      { dir: path.join(project.localPath, '.claude', 'skills'), scope: 'project', projectName },
       { dir: path.join(project.localPath, '.agents', 'skills'), scope: 'project', projectName },
     );
   }

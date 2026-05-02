@@ -1256,10 +1256,23 @@ async function testRuntimeAdapters() {
   await test('claude adapter owns Claude-native asset and skill roots', () => {
     const homeDir = path.join('C:', 'Users', 'dev');
     const project = { name: 'Repo', localPath: path.join(homeDir, 'repo') };
-    assert.deepStrictEqual(claude.getUserAssetDirs({ homeDir }), [path.join(homeDir, '.claude')]);
+    // Claude exposes its own ~/.claude AND the cross-runtime ~/.agents location
+    // so skills placed under ~/.agents/skills (the portable bucket) are visible
+    // to Claude agents the same way they are to Copilot agents.
+    assert.deepStrictEqual(claude.getUserAssetDirs({ homeDir }), [
+      path.join(homeDir, '.claude'),
+      path.join(homeDir, '.agents'),
+    ]);
     const roots = claude.getSkillRoots({ homeDir, project });
     assert.ok(roots.some(r => r.scope === 'claude-code' && r.dir === path.join(homeDir, '.claude', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'agent-skill' && r.dir === path.join(homeDir, '.agents', 'skills')),
+      'Claude must surface ~/.agents/skills as agent-skill scope (cross-runtime portable)');
     assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.claude', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.agents', 'skills')),
+      'Claude must surface project .agents/skills (cross-runtime portable in-repo skills)');
+    // Write targets stay Claude-native — extracted skills land under ~/.claude
+    // and project/.claude so they don't accidentally get committed to a folder
+    // owned by another runtime's convention.
     assert.deepStrictEqual(claude.getSkillWriteTargets({ homeDir, project }), {
       personal: path.join(homeDir, '.claude', 'skills'),
       project: path.join(project.localPath, '.claude', 'skills'),
@@ -1668,7 +1681,11 @@ async function testCopilotAdapter() {
     const roots = copilot.getSkillRoots({ homeDir, project });
     assert.ok(roots.some(r => r.scope === 'copilot' && r.dir === path.join(homeDir, '.copilot', 'skills')));
     assert.ok(roots.some(r => r.scope === 'agent-skill' && r.dir === path.join(homeDir, '.agents', 'skills')));
+    // Per GitHub Copilot CLI docs, project skills are read from all three of
+    // .github/skills, .claude/skills, and .agents/skills.
     assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.github', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.claude', 'skills')),
+      'Copilot must also surface project .claude/skills (docs: "Adding agent skills for GitHub Copilot CLI")');
     assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.agents', 'skills')));
     assert.deepStrictEqual(copilot.getSkillWriteTargets({ homeDir, project }), {
       personal: path.join(homeDir, '.copilot', 'skills'),
@@ -2873,6 +2890,71 @@ async function testSpawnAgentHelpers() {
     assert.deepStrictEqual(failedEnv, {});
     assert.ok(warnings.some(msg => msg.includes('invalid ADO token')));
     assert.ok(warnings.some(msg => msg.includes('ADO token fetch failed')));
+  });
+
+  // ── computeAddDirs (bridges getUserAssetDirs → spawn --add-dir flags) ─────
+
+  await test('computeAddDirs always includes minionsDir first', () => {
+    const runtime = { getUserAssetDirs: () => [] };
+    const dirs = spawnAgent.computeAddDirs({
+      runtime, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.deepStrictEqual(dirs, ['/repo/minions']);
+  });
+
+  await test('computeAddDirs appends every existing runtime asset dir after minionsDir', () => {
+    const runtime = { getUserAssetDirs: ({ homeDir }) => [path.join(homeDir, '.claude'), path.join(homeDir, '.agents')] };
+    const dirs = spawnAgent.computeAddDirs({
+      runtime, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.deepStrictEqual(dirs, ['/repo/minions', path.join('/h', '.claude'), path.join('/h', '.agents')]);
+  });
+
+  await test('computeAddDirs drops asset dirs that do not exist on disk', () => {
+    const presentDirs = new Set(['/repo/minions', path.join('/h', '.claude')]);
+    const runtime = { getUserAssetDirs: ({ homeDir }) => [path.join(homeDir, '.claude'), path.join(homeDir, '.agents')] };
+    const dirs = spawnAgent.computeAddDirs({
+      runtime, minionsDir: '/repo/minions', homeDir: '/h', exists: (d) => presentDirs.has(d),
+    });
+    // ~/.agents missing → not emitted; ~/.claude present → emitted
+    assert.deepStrictEqual(dirs, ['/repo/minions', path.join('/h', '.claude')]);
+  });
+
+  await test('computeAddDirs dedups when an asset dir resolves to minionsDir', () => {
+    const runtime = { getUserAssetDirs: () => ['/repo/minions'] };
+    const dirs = spawnAgent.computeAddDirs({
+      runtime, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.deepStrictEqual(dirs, ['/repo/minions']);
+  });
+
+  await test('computeAddDirs handles runtimes without getUserAssetDirs (legacy adapter shape)', () => {
+    const dirs = spawnAgent.computeAddDirs({
+      runtime: { /* no getUserAssetDirs */ }, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.deepStrictEqual(dirs, ['/repo/minions']);
+  });
+
+  await test('computeAddDirs wires Claude adapter → minions + ~/.claude + ~/.agents', () => {
+    const dirs = spawnAgent.computeAddDirs({
+      runtime: claudeAdapter, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.ok(dirs.includes('/repo/minions'), 'minionsDir always emitted');
+    assert.ok(dirs.includes(path.join('/h', '.claude')), 'Claude must inject ~/.claude');
+    assert.ok(dirs.includes(path.join('/h', '.agents')),
+      'Claude must inject ~/.agents — cross-runtime portable skills bucket');
+  });
+
+  await test('computeAddDirs wires Copilot adapter → minions + ~/.copilot + ~/.agents', () => {
+    const copilotAdapter = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dirs = spawnAgent.computeAddDirs({
+      runtime: copilotAdapter, minionsDir: '/repo/minions', homeDir: '/h', exists: () => true,
+    });
+    assert.ok(dirs.includes('/repo/minions'));
+    assert.ok(dirs.includes(path.join('/h', '.copilot')), 'Copilot must inject ~/.copilot');
+    assert.ok(dirs.includes(path.join('/h', '.agents')), 'Copilot must inject ~/.agents');
+    assert.ok(!dirs.includes(path.join('/h', '.claude')),
+      'Copilot must NOT inject Claude-native ~/.claude — runtime isolation');
   });
 
   await test('buildSpawnInvocation passes opts to runtime.buildPrompt', () => {
@@ -16022,23 +16104,25 @@ async function testSyncPrsFromOutput() {
   });
 
   await test('syncPrsFromOutput retries GitHub branch lookup when PR list is initially empty', () => {
-    assert.ok(src.includes('for (let attempt = 0; attempt < 3; attempt++)'),
-      'Should retry GitHub branch lookup up to 3 times for freshly created PRs');
+    assert.ok(src.includes('for (let attempt = 0; attempt < maxAttempts; attempt++)'),
+      'Should retry GitHub branch lookup up to ENGINE_DEFAULTS.prAutoLinkRetries times for freshly created PRs');
+    assert.ok(src.includes('const maxAttempts = ENGINE_DEFAULTS.prAutoLinkRetries;'),
+      'Retry budget should be sourced from ENGINE_DEFAULTS.prAutoLinkRetries, not a magic number');
     assert.ok(src.includes("if (attempt > 0) await new Promise(r => setTimeout(r, 3000));"),
       'Should wait briefly between retry attempts so GitHub indexing can catch up');
   });
 
   await test('syncPrsFromOutput warns when GitHub branch lookup stays empty after retries', () => {
-    assert.ok(src.includes('if (attempt === 2)'),
+    assert.ok(src.includes('if (attempt === maxAttempts - 1)'),
       'Should only warn after the final empty GitHub branch lookup attempt');
-    assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts'),
+    assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after ${maxAttempts} attempts'),
       'Should log a warning when GitHub branch lookup stays empty after all retries');
     assert.ok(src.includes("(raw: ${(raw || '').slice(0, 200)})"),
       'Should include raw CLI output in the warning to aid debugging empty fallback results');
   });
 
   await test('syncPrsFromOutput keeps retry loop alive when gh output is invalid JSON', () => {
-    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3; attempt++)');
+    const retryIdx = src.indexOf('for (let attempt = 0; attempt < maxAttempts; attempt++)');
     assert.ok(retryIdx > -1, 'Should have a GitHub branch lookup retry loop');
     const retryBlock = src.slice(retryIdx, src.indexOf("if (host === 'ado')", retryIdx));
     assert.ok(retryBlock.includes("let raw = '';"),
@@ -16047,7 +16131,7 @@ async function testSyncPrsFromOutput() {
       'Retry loop should guard gh output parsing with a local try block');
     assert.ok(retryBlock.includes('} catch (err) {'),
       'Retry loop should catch gh CLI and JSON parse errors without aborting retries');
-    assert.ok(retryBlock.includes('Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}'),
+    assert.ok(retryBlock.includes('Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after ${maxAttempts} attempts: ${err.message}'),
       'Should warn with the gh CLI error on the final failed retry');
   });
 
@@ -29904,12 +29988,13 @@ async function testEngineAuditCritical() {
     assert.ok(fn.includes('queuePendingRebase'), 'handlePostMerge must queue deferred rebase when branch active');
   });
 
-  await test('processPendingRebases retries up to 3 attempts', () => {
+  await test('processPendingRebases retries up to ENGINE_DEFAULTS.rebaseQueueRetries attempts', () => {
     const fn = lifecycleSrcForRebase.slice(
       lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
       lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
     );
-    assert.ok(fn.includes('attempts < 3'), 'processPendingRebases must cap retries at 3');
+    assert.ok(fn.includes('attempts < ENGINE_DEFAULTS.rebaseQueueRetries'),
+      'processPendingRebases must cap retries via ENGINE_DEFAULTS.rebaseQueueRetries');
     assert.ok(!fn.includes('writeToInbox'), 'processPendingRebases must not write inbox alerts on give-up');
     assert.ok(fn.includes('log(\'warn\''), 'processPendingRebases should log give-up failures');
   });

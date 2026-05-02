@@ -146,21 +146,18 @@ function _parseRuntimeFlags(args) {
  * Heuristic flag for "this model is obviously wrong for this runtime". Used
  * to surface the "pass --model '' to clear" hint when a user switches CLIs
  * but leaves a stale model behind. Errs on the side of false-negatives —
- * unknown runtime → no opinion, unknown model on Copilot → no opinion.
+ * unknown runtime → no opinion, runtime adapter without `modelLooksFamiliar`
+ * → no opinion. Runtime-specific knowledge lives in the adapter (see
+ * claude.js#modelLooksFamiliar) so adding a new runtime never requires
+ * editing cli.js.
  */
 function _modelLooksIncompatible(runtime, model) {
   if (!model) return false;
-  const m = String(model).toLowerCase();
-  if (runtime === 'claude') {
-    if (m.startsWith('claude-')) return false;
-    if (m === 'sonnet' || m === 'opus' || m === 'haiku') return false;
-    return true; // gpt-*, o3-*, codex, etc. — wrong CLI for these
-  }
-  if (runtime === 'copilot') {
-    // Copilot adapter maps Minions' family aliases before spawning.
-    return false;
-  }
-  return false;
+  let adapter;
+  try { adapter = require('./runtimes').resolveRuntime(runtime); }
+  catch { return false; } // unknown runtime → no opinion
+  if (typeof adapter.modelLooksFamiliar !== 'function') return false; // adapter doesn't claim a model namespace → no opinion
+  return !adapter.modelLooksFamiliar(model);
 }
 
 /**

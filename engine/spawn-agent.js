@@ -201,6 +201,36 @@ async function writeProcessExitSentinel({
   return { sentinel, stdoutFlushed, outputPathWritten };
 }
 
+/**
+ * Build the `--add-dir` list passed to the runtime CLI. Pure: takes
+ * `{ runtime, minionsDir, homeDir, exists }` and returns an ordered, deduped
+ * array of dirs the agent should be able to read from outside its worktree.
+ *
+ * Order: minionsDir first (so playbooks/system-prompt are always reachable),
+ * followed by every existing dir from `runtime.getUserAssetDirs({ homeDir })`.
+ * Non-existent asset dirs are dropped — Claude CLI rejects unknown `--add-dir`
+ * entries. The dedup compares resolved paths so we never emit minionsDir twice
+ * (e.g. when runtime asset dir IS the minions repo in unusual setups).
+ *
+ * `exists` is injectable for tests; defaults to `fs.existsSync`.
+ */
+function computeAddDirs({ runtime, minionsDir, homeDir, exists = fs.existsSync } = {}) {
+  const out = [minionsDir];
+  const seen = new Set([path.resolve(minionsDir)]);
+  const assetDirs = typeof runtime?.getUserAssetDirs === 'function'
+    ? runtime.getUserAssetDirs({ homeDir })
+    : [];
+  for (const d of assetDirs) {
+    if (!d) continue;
+    const resolved = path.resolve(d);
+    if (seen.has(resolved)) continue;
+    if (!exists(d)) continue;
+    out.push(d);
+    seen.add(resolved);
+  }
+  return out;
+}
+
 // ─── Main script execution ──────────────────────────────────────────────────
 
 function _installHint(name, runtime) {
@@ -252,15 +282,7 @@ function main() {
   // worktree, so runtime-native global assets would otherwise be invisible.
   // The adapter owns both where those assets live and how to surface them.
   const minionsDir = path.resolve(__dirname, '..');
-  const addDirs = [minionsDir];
-  const runtimeAssetDirs = typeof runtime.getUserAssetDirs === 'function'
-    ? runtime.getUserAssetDirs({ homeDir: os.homedir() })
-    : [];
-  for (const dir of runtimeAssetDirs) {
-    if (dir && fs.existsSync(dir) && path.resolve(dir) !== path.resolve(minionsDir)) {
-      addDirs.push(dir);
-    }
-  }
+  const addDirs = computeAddDirs({ runtime, minionsDir, homeDir: os.homedir() });
 
   let resolved;
   try { resolved = runtime.resolveBinary({ env }); }
@@ -378,6 +400,6 @@ function main() {
   });
 }
 
-module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv, writeProcessExitSentinel };
+module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv, writeProcessExitSentinel, computeAddDirs };
 
 if (require.main === module) main();

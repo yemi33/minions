@@ -69,12 +69,14 @@ function renderSkills(skills) {
   }
   html += '</div>';
 
-  // Note clarifying skill visibility — agents read these on demand, runtime
-  // assets (~/.claude/skills, ~/.copilot/skills) are not auto-injected for
-  // the OTHER runtime. A Copilot agent only sees Copilot-native + plugin skills.
+  // Note clarifying skill visibility — agents read these on demand. Runtime-
+  // native locations (~/.claude/skills, ~/.copilot/skills, plugin skills) are
+  // only visible to that runtime. The "agent" tab (~/.agents/skills) is the
+  // cross-runtime portable bucket and IS visible to every runtime.
   html += '<div style="font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4">' +
     'Skills are reference docs agents read on demand — they are not injected wholesale into prompts. ' +
-    'Each tab reflects what the matching runtime would see; cross-runtime skills are NOT visible to a different runtime.' +
+    'Each tab reflects what the matching runtime would see; runtime-native skills are NOT cross-visible. ' +
+    'The agent tab (~/.agents/skills) is the cross-runtime portable bucket — visible to every runtime.' +
     '</div>';
 
   // Filter by tab

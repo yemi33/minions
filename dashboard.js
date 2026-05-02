@@ -4502,39 +4502,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const source = params.get('source') || '';
     if (!_isValidSkillFileName(file)) { res.statusCode = 400; res.end('Invalid file'); return; }
 
-    let content = '';
     const skillPath = _resolveSkillReadPath({ file, dir, source, config: CONFIG });
-    if (skillPath) content = safeRead(skillPath) || '';
-    // Fallback when caller didn't supply `dir`: try the source's known native
-    // locations. `_resolveSkillReadPath` only matches entries returned by
-    // `collectSkillFiles`, so a skill that already has `dir` will resolve there.
-    if (!content && !dir) {
-      const home = os.homedir();
-      const skillStem = file.replace(/\.md$/, '').replace(/^SKILL$/, '');
-      const candidates = [];
-      if (source === 'claude-code' || !source) {
-        candidates.push(path.join(home, '.claude', 'skills', skillStem, 'SKILL.md'));
-      }
-      if (source === 'copilot') {
-        candidates.push(path.join(home, '.copilot', 'skills', skillStem, 'SKILL.md'));
-      }
-      if (source === 'agent-skill') {
-        candidates.push(path.join(home, '.agents', 'skills', skillStem, 'SKILL.md'));
-      }
-      if (source.startsWith('project:')) {
-        const proj = PROJECTS.find(p => p.name === source.slice('project:'.length));
-        if (proj?.localPath) {
-          for (const sub of ['.claude', '.github', '.agents']) {
-            candidates.push(path.join(proj.localPath, sub, 'skills', file));
-            candidates.push(path.join(proj.localPath, sub, 'skills', skillStem, 'SKILL.md'));
-          }
-        }
-      }
-      for (const c of candidates) {
-        content = safeRead(c) || '';
-        if (content) break;
-      }
-    }
+    const content = skillPath ? (safeRead(skillPath) || '') : '';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content || 'Skill not found.');

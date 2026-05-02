@@ -640,20 +640,28 @@ const capabilities = {
 // (fatal error message). Multi-line so all platforms see actionable guidance.
 const INSTALL_HINT = 'install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
 
+// Asset roots passed to spawn as `--add-dir` so worktrees can read globally
+// installed skills. `~/.agents/skills` is the cross-runtime portable location;
+// every runtime adapter exposes it so a skill placed there is genuinely visible
+// to every runtime (matches the directory name's promise).
 function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
-  return [path.join(homeDir, '.claude')];
+  return [
+    path.join(homeDir, '.claude'),
+    path.join(homeDir, '.agents'),
+  ];
 }
 
 function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
   const roots = [
     { dir: path.join(homeDir, '.claude', 'skills'), scope: 'claude-code' },
+    { dir: path.join(homeDir, '.agents', 'skills'), scope: 'agent-skill' },
   ];
   if (project?.localPath) {
-    roots.push({
-      dir: path.join(project.localPath, '.claude', 'skills'),
-      scope: 'project',
-      projectName: project.name || path.basename(project.localPath),
-    });
+    const projectName = project.name || path.basename(project.localPath);
+    roots.push(
+      { dir: path.join(project.localPath, '.claude', 'skills'), scope: 'project', projectName },
+      { dir: path.join(project.localPath, '.agents', 'skills'), scope: 'project', projectName },
+    );
   }
   return roots;
 }
@@ -664,6 +672,19 @@ function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
     targets.project = path.join(project.localPath, '.claude', 'skills');
   }
   return targets;
+}
+
+// Heuristic: does `model` look like a Claude model identifier? Powers the
+// preflight "stale model after CLI switch" warning in cli.js. Returning false
+// means "this looks wrong for Claude" — gpt-5.4 / o3-* / codex etc. Keep this
+// here (not in cli.js) so the runtime owns its own model namespace and adding
+// a future runtime never requires editing cli.js.
+function modelLooksFamiliar(model) {
+  if (!model) return true;
+  const m = String(model).toLowerCase();
+  if (m.startsWith('claude-')) return true;
+  if (m === 'sonnet' || m === 'opus' || m === 'haiku') return true;
+  return false;
 }
 
 module.exports = {
@@ -688,6 +709,7 @@ module.exports = {
   usesSystemPromptFile,
   classifyFailure,
   resolveModel,
+  modelLooksFamiliar,
   parseOutput,
   parseStreamChunk,
   parseError,
