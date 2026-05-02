@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1673 (2026-05-02)
+
+### Fixes
+-  cap Signed Off By column width and wrap multi-reviewer overflow
+
 ## 0.1.1672 (2026-05-02)
 
 ### Features
