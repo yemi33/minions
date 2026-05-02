@@ -16942,6 +16942,19 @@ async function testVerifyWorkflow() {
     assert.ok(postHooks.includes('Archive is manual'), 'Should note archive is manual');
   });
 
+  await test('docs describe manual archive lifecycle, not auto-archive after verify', () => {
+    const lifecycleDoc = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'plan-lifecycle.md'), 'utf8');
+    const claudeDoc = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    for (const [name, doc] of [['docs/plan-lifecycle.md', lifecycleDoc], ['CLAUDE.md', claudeDoc]]) {
+      assert.ok(doc.includes('Manual Archive Lifecycle'),
+        `${name} should document the manual archive lifecycle`);
+      assert.ok(doc.includes('/api/plans/archive'),
+        `${name} should identify the dashboard archive endpoint`);
+      assert.ok(!doc.includes('After verify completes') && !doc.includes('Plan archived'),
+        `${name} should not describe automatic archiving after verify`);
+    }
+  });
+
   // ── 11. Source code: syncPrsFromOutput still runs for verify tasks ──
   await test('verify: syncPrsFromOutput still runs even though archive is manual', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
