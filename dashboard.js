@@ -170,10 +170,20 @@ function _normalizeSkillDirForCompare(dir) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+// Mirrors the source string emitted by `getSkills()` so `_resolveSkillReadPath`
+// can match a request's `source` param against the entries collectSkillFiles returns.
+const _SKILL_ENTRY_SOURCE_BY_SCOPE = {
+  'claude-code': 'claude-code',
+  'copilot': 'copilot',
+  'agent-skill': 'agent-skill',
+  'plugin': 'plugin',
+  'copilot-plugin': 'copilot-plugin',
+};
+
 function _skillEntrySource(entry) {
   if (!entry) return '';
-  if (entry.scope === 'claude-code') return 'claude-code';
-  if (entry.scope === 'plugin') return 'plugin';
+  const mapped = _SKILL_ENTRY_SOURCE_BY_SCOPE[entry.scope];
+  if (mapped) return mapped;
   if (entry.scope === 'project') return 'project:' + entry.projectName;
   return entry.scope || '';
 }
@@ -4495,16 +4505,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     let content = '';
     const skillPath = _resolveSkillReadPath({ file, dir, source, config: CONFIG });
     if (skillPath) content = safeRead(skillPath) || '';
+    // Fallback when caller didn't supply `dir`: try the source's known native
+    // locations. `_resolveSkillReadPath` only matches entries returned by
+    // `collectSkillFiles`, so a skill that already has `dir` will resolve there.
     if (!content && !dir) {
-      // Fallback: search Claude Code skills, then project skills
       const home = os.homedir();
-      const claudePath = path.join(home, '.claude', 'skills', file.replace('.md', '').replace('SKILL', ''), 'SKILL.md');
-      content = safeRead(claudePath) || '';
-      if (!content) {
-        if (source.startsWith('project:')) {
-          const proj = PROJECTS.find(p => p.name === source.replace('project:', ''));
-          if (proj) content = safeRead(path.join(proj.localPath, '.claude', 'skills', file)) || '';
+      const skillStem = file.replace(/\.md$/, '').replace(/^SKILL$/, '');
+      const candidates = [];
+      if (source === 'claude-code' || !source) {
+        candidates.push(path.join(home, '.claude', 'skills', skillStem, 'SKILL.md'));
+      }
+      if (source === 'copilot') {
+        candidates.push(path.join(home, '.copilot', 'skills', skillStem, 'SKILL.md'));
+      }
+      if (source === 'agent-skill') {
+        candidates.push(path.join(home, '.agents', 'skills', skillStem, 'SKILL.md'));
+      }
+      if (source.startsWith('project:')) {
+        const proj = PROJECTS.find(p => p.name === source.slice('project:'.length));
+        if (proj?.localPath) {
+          for (const sub of ['.claude', '.github', '.agents']) {
+            candidates.push(path.join(proj.localPath, sub, 'skills', file));
+            candidates.push(path.join(proj.localPath, sub, 'skills', skillStem, 'SKILL.md'));
+          }
         }
+      }
+      for (const c of candidates) {
+        content = safeRead(c) || '';
+        if (content) break;
       }
     }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');

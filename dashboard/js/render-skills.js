@@ -13,13 +13,28 @@ function renderSkills(skills) {
     return;
   }
 
-  const sourceIcon = (s) => s === 'claude-code' ? '⚡' : s === 'plugin' ? '🔌' : s?.startsWith('project:') ? '📁' : '🔧';
-  const sourceLabel = (s) => s === 'plugin' ? 'plugin' : s?.startsWith('project:') ? s.replace('project:', '') : 'global';
+  const SOURCE_META = {
+    'claude-code':    { icon: '⚡', label: 'global',  group: 'global'  },
+    'copilot':        { icon: '🤖', label: 'copilot', group: 'copilot' },
+    'agent-skill':    { icon: '🤝', label: 'agent',   group: 'agent'   },
+    'plugin':         { icon: '🔌', label: 'plugin',  group: 'plugins' },
+    'copilot-plugin': { icon: '🤖', label: 'copilot', group: 'copilot' },
+  };
+  const metaOf = (s) => {
+    if (SOURCE_META[s]) return SOURCE_META[s];
+    if (s && s.startsWith('project:')) {
+      const name = s.slice('project:'.length);
+      return { icon: '📁', label: name, group: name };
+    }
+    return { icon: '🔧', label: 'global', group: 'global' };
+  };
+  const sourceIcon = (s) => metaOf(s).icon;
+  const sourceLabel = (s) => metaOf(s).label;
 
   // Group by source
   const groups = {};
   for (const r of skills) {
-    const key = r.source === 'plugin' ? 'plugins' : r.source?.startsWith('project:') ? r.source.replace('project:', '') : 'global';
+    const key = metaOf(r.source).group;
     if (!groups[key]) groups[key] = [];
     groups[key].push(r);
   }
