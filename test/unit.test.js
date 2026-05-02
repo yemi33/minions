@@ -3027,6 +3027,61 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, 'SIGTERM'), 128);
     assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, null), 1);
   });
+
+  await test('writeProcessExitSentinel waits for stdout flush before resolving (#1971)', async () => {
+    let flush;
+    const fakeStdout = {
+      write(chunk, cb) {
+        assert.strictEqual(chunk, '\n[process-exit] code=7\n');
+        flush = cb;
+        return true;
+      },
+    };
+
+    let settled = false;
+    const pending = spawnAgent.writeProcessExitSentinel({
+      exitCode: 7,
+      signal: null,
+      stdout: fakeStdout,
+      timeoutMs: 50,
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.strictEqual(settled, false,
+      'Sentinel writer must not let spawn-agent exit before stdout reports the write flushed');
+    flush();
+
+    const result = await pending;
+    assert.strictEqual(result.stdoutFlushed, true);
+    assert.strictEqual(result.outputPathWritten, false);
+  });
+
+  await test('writeProcessExitSentinel sync-writes fallback output path when stdout stalls (#1971)', async () => {
+    const dir = createTmpDir();
+    const liveOutputPath = path.join(dir, 'live-output.log');
+    fs.writeFileSync(liveOutputPath, 'prior output\n');
+    const fakeStdout = {
+      write() {
+        return false; // Never invokes the callback: simulates a lost/stalled Windows pipe flush.
+      },
+    };
+
+    const result = await spawnAgent.writeProcessExitSentinel({
+      exitCode: 1,
+      signal: 'SIGTERM',
+      stdout: fakeStdout,
+      outputPath: liveOutputPath,
+      timeoutMs: 5,
+    });
+
+    assert.strictEqual(result.stdoutFlushed, false);
+    assert.strictEqual(result.outputPathWritten, true);
+    assert.ok(fs.readFileSync(liveOutputPath, 'utf8').includes('\n[process-exit] code=1 signal=SIGTERM\n'),
+      'Fallback path must durably record the sentinel even if stdout never drains');
+  });
 }
 
 async function testClassifyInboxItem() {
@@ -20119,6 +20174,67 @@ async function testTimeoutBehavioral() {
     } finally { env.restore(); }
   });
 
+  await test('checkTimeouts: recent terminal result WITHOUT [process-exit] stays active (#1792/#1971)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'recent-terminal-result';
+      const startedAt = new Date(Date.now() - 60000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(liveLogPath,
+        JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, terminal_reason: 'max_turns', result: 'Max turns reached.' }) + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Recent terminal result without [process-exit] must not complete during the close-handler race window');
+      assert.strictEqual((dp.completed || []).length, 0);
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: stale terminal result WITHOUT [process-exit] completes as error fallback (#1971)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'stale-terminal-result';
+      const startedAt = new Date(Date.now() - 1000000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(liveLogPath, [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Working until max turns.' }] } }),
+        JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, terminal_reason: 'max_turns', result: 'Max turns reached.' }),
+      ].join('\n') + '\n');
+      const oldTime = new Date(Date.now() - 1000000);
+      fs.utimesSync(liveLogPath, oldTime, oldTime);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Stale terminal result should be recovered instead of remaining stuck active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Recovered stale terminal result should land in completed list');
+      assert.strictEqual(completed.result, 'error',
+        'Terminal max_turns result without an OS sentinel must be recovered conservatively as ERROR');
+      assert.ok(!/Orphaned/.test(completed.reason || ''),
+        'Fallback should preserve terminal-output context instead of reporting a generic orphan');
+    } finally { env.restore(); }
+  });
+
   await test('checkTimeouts: arbitrary live command stays active until hard timeout', () => {
     const env = setupIsolated();
     try {
@@ -35953,8 +36069,10 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
     assert.ok(src.includes('[process-exit]'),
       'spawn-agent.js should write [process-exit] sentinel to stdout on close');
-    assert.ok(src.includes("process.stdout.write"),
-      'Sentinel should be written to stdout (not stderr or file)');
+    assert.ok(src.includes('writeProcessExitSentinel'),
+      'Sentinel should flow through the bounded flush helper before spawn-agent exits');
+    assert.ok(src.includes('MINIONS_LIVE_OUTPUT_PATH'),
+      'Sentinel helper should have an engine-known live-output fallback path');
   });
 
   // 6. Legacy blocking annotations are cleared instead of extending timeouts
@@ -37081,6 +37199,18 @@ async function testAdoTokenInjection() {
     const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 500);
     assert.ok(steeringSection.includes('MINIONS_ADO_TOKEN'),
       'Steering spawn path should also inject MINIONS_ADO_TOKEN');
+  });
+
+  await test('engine.js injects MINIONS_LIVE_OUTPUT_PATH into spawn-agent environments (#1971)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const spawnAgentIdx = src.indexOf('async function spawnAgent(');
+    assert.ok(spawnAgentIdx > -1, 'spawnAgent function should exist');
+    const spawnSection = src.slice(spawnAgentIdx);
+    const matches = spawnSection.match(/MINIONS_LIVE_OUTPUT_PATH/g) || [];
+    assert.ok(matches.length >= 2,
+      'Both initial spawn and steering-resume spawn should pass the live-output path for sentinel fallback writes');
+    assert.ok(spawnSection.includes('childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath'),
+      'spawn-agent must receive the exact liveOutputPath owned by engine.js');
   });
 
   await test('cleanChildEnv does not filter MINIONS_* keys (source check)', () => {
