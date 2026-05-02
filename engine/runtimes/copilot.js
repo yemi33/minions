@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const https = require('https');
+const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
 const { FAILURE_CLASS, safeWrite, ts } = require('../shared');
@@ -267,6 +268,42 @@ function buildSpawnFlags(opts = {}) {
   if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
   if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
   return flags;
+}
+
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [
+    path.join(homeDir, '.copilot'),
+    path.join(homeDir, '.agents'),
+  ];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { scope: 'copilot', dir: path.join(homeDir, '.copilot', 'skills') },
+    { scope: 'agent-skill', dir: path.join(homeDir, '.agents', 'skills') },
+  ];
+  if (project?.localPath) {
+    roots.push(
+      {
+        scope: 'project',
+        projectName: project.name,
+        dir: path.join(project.localPath, '.github', 'skills'),
+      },
+      {
+        scope: 'project',
+        projectName: project.name,
+        dir: path.join(project.localPath, '.agents', 'skills'),
+      },
+    );
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  return {
+    personal: path.join(homeDir, '.copilot', 'skills'),
+    project: project?.localPath ? path.join(project.localPath, '.github', 'skills') : null,
+  };
 }
 
 function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
@@ -767,6 +804,9 @@ module.exports = {
   buildSpawnFlags,
   buildArgs,
   buildPrompt,
+  getUserAssetDirs,
+  getSkillRoots,
+  getSkillWriteTargets,
   getResumeSessionId,
   saveSession,
   detectPermissionGate,

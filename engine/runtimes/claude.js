@@ -16,6 +16,9 @@
  *   - spawnScript: absolute path of the spawn wrapper (or null if direct-only)
  *   - buildArgs(opts) → string[] — CLI args excluding the binary
  *   - buildPrompt(promptText, sysPromptText) → string — final prompt delivered
+ *   - getUserAssetDirs(opts) → string[] — runtime-native global asset roots
+ *   - getSkillRoots(opts) → {scope,dir,projectName?}[] — skill discovery roots
+ *   - getSkillWriteTargets(opts) → {personal,project} — extraction targets
  *   - resolveModel(input) → string|undefined — shorthand expansion / passthrough
  *   - parseOutput(raw) → { text, usage, sessionId, model }
  *   - parseStreamChunk(line) → parsed event object or null
@@ -245,6 +248,31 @@ function buildSpawnFlags(opts = {}) {
   if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
   if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
   return flags;
+}
+
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [path.join(homeDir, '.claude')];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { scope: 'claude-code', dir: path.join(homeDir, '.claude', 'skills') },
+  ];
+  if (project?.localPath) {
+    roots.push({
+      scope: 'project',
+      projectName: project.name,
+      dir: path.join(project.localPath, '.claude', 'skills'),
+    });
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  return {
+    personal: path.join(homeDir, '.claude', 'skills'),
+    project: project?.localPath ? path.join(project.localPath, '.claude', 'skills') : null,
+  };
 }
 
 function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
@@ -624,6 +652,9 @@ module.exports = {
   buildSpawnFlags,
   buildArgs,
   buildPrompt,
+  getUserAssetDirs,
+  getSkillRoots,
+  getSkillWriteTargets,
   getResumeSessionId,
   saveSession,
   detectPermissionGate,
