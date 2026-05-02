@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1687 (2026-05-02)
+
+### Other
+- Show scan add feedback in modal
+
 ## 0.1.1686 (2026-05-02)
 
 ### Fixes
