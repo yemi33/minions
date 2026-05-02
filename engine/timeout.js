@@ -217,6 +217,38 @@ function parseProcessExitCode(logText) {
   return lastMatch[1] === 'spawn-failed' ? -1 : parseInt(lastMatch[1], 10);
 }
 
+function terminalResultIndicatesError(obj) {
+  const subtype = String(obj?.subtype || '');
+  const terminalReason = String(obj?.terminal_reason || obj?.terminalReason || '');
+  return obj?.is_error === true ||
+    /^error/i.test(subtype) ||
+    /max[_-]?turns|error|fail|cancel|timeout/i.test(terminalReason);
+}
+
+function parseTerminalResultFallbackExitCode(logText) {
+  if (!logText) return null;
+  let exitCode = null;
+  for (const line of String(logText).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.includes('"result"') ||
+        (!trimmed.includes('terminal_reason') && !trimmed.includes('terminalReason'))) continue;
+
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj?.type === 'result' && (obj.terminal_reason || obj.terminalReason) && terminalResultIndicatesError(obj)) {
+        exitCode = 1;
+      }
+      continue;
+    } catch { /* fall through to regex fallback for diagnostic-prefixed JSON */ }
+
+    if (/"type"\s*:\s*"result"/.test(trimmed) &&
+        /"terminal_?reason"\s*:\s*"[^"]*(?:max[_-]?turns|error|fail|cancel|timeout)[^"]*"/i.test(trimmed)) {
+      exitCode = 1;
+    }
+  }
+  return exitCode;
+}
+
 function checkTimeouts(config) {
   const activeProcesses = engine().activeProcesses;
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
@@ -409,6 +441,12 @@ function checkTimeouts(config) {
         const processExitCode = parseProcessExitCode(fullLog);
         if (processExitCode !== null) {
           completeFromOutput(item, liveLogPath, processExitCode, fullLog, hasProcess);
+          continue;
+        }
+        const terminalResultExitCode = parseTerminalResultFallbackExitCode(fullLog);
+        if (terminalResultExitCode !== null) {
+          log('info', `Agent ${item.agent} (${item.id}) completed via stale terminal result fallback (exit code ${terminalResultExitCode})`);
+          completeFromOutput(item, liveLogPath, terminalResultExitCode, fullLog, hasProcess);
           continue;
         }
       } catch (e) { log('warn', 'orphan final output completion scan: ' + e.message); }

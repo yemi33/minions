@@ -201,4 +201,5 @@ module.exports = {
   clearCooldown,
   isAlreadyDispatched,
   isBranchActive,
+  _truncateContextEntry, // exported for testing
 };

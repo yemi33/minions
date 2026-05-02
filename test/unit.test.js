@@ -3071,6 +3071,61 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, 'SIGTERM'), 128);
     assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, null), 1);
   });
+
+  await test('writeProcessExitSentinel waits for stdout flush before resolving (#1971)', async () => {
+    let flush;
+    const fakeStdout = {
+      write(chunk, cb) {
+        assert.strictEqual(chunk, '\n[process-exit] code=7\n');
+        flush = cb;
+        return true;
+      },
+    };
+
+    let settled = false;
+    const pending = spawnAgent.writeProcessExitSentinel({
+      exitCode: 7,
+      signal: null,
+      stdout: fakeStdout,
+      timeoutMs: 50,
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.strictEqual(settled, false,
+      'Sentinel writer must not let spawn-agent exit before stdout reports the write flushed');
+    flush();
+
+    const result = await pending;
+    assert.strictEqual(result.stdoutFlushed, true);
+    assert.strictEqual(result.outputPathWritten, false);
+  });
+
+  await test('writeProcessExitSentinel sync-writes fallback output path when stdout stalls (#1971)', async () => {
+    const dir = createTmpDir();
+    const liveOutputPath = path.join(dir, 'live-output.log');
+    fs.writeFileSync(liveOutputPath, 'prior output\n');
+    const fakeStdout = {
+      write() {
+        return false; // Never invokes the callback: simulates a lost/stalled Windows pipe flush.
+      },
+    };
+
+    const result = await spawnAgent.writeProcessExitSentinel({
+      exitCode: 1,
+      signal: 'SIGTERM',
+      stdout: fakeStdout,
+      outputPath: liveOutputPath,
+      timeoutMs: 5,
+    });
+
+    assert.strictEqual(result.stdoutFlushed, false);
+    assert.strictEqual(result.outputPathWritten, true);
+    assert.ok(fs.readFileSync(liveOutputPath, 'utf8').includes('\n[process-exit] code=1 signal=SIGTERM\n'),
+      'Fallback path must durably record the sentinel even if stdout never drains');
+  });
 }
 
 async function testClassifyInboxItem() {
@@ -11589,6 +11644,80 @@ function _freshCooldownModule() {
 async function testCooldownBehavioral() {
   console.log('\n── engine/cooldown.js — Behavioral ──');
 
+  // ── _truncateContextEntry ──
+
+  await test('_truncateContextEntry keeps strings exactly at the byte limit and truncates limit+1', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const atLimit = 'abcdefgh';
+      const overLimit = 'abcdefghi';
+      assert.strictEqual(cooldown._truncateContextEntry(atLimit, 8), atLimit,
+        'String exactly at the limit should remain unchanged');
+
+      const truncated = cooldown._truncateContextEntry(overLimit, 8);
+      assert.ok(truncated.length < overLimit.length + 80,
+        'Truncated string should not retain the full oversized payload');
+      assert.ok(truncated.startsWith('abcdefgh'), 'Truncated value should keep the leading bytes');
+      assert.ok(truncated.includes('truncated'), 'Truncated value should include a marker');
+    } finally { restore(); }
+  });
+
+  await test('_truncateContextEntry truncates oversized string elements in array entries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const oversized = 'x'.repeat(12);
+      const input = ['small', oversized, 7];
+      const out = cooldown._truncateContextEntry(input, 5);
+      assert.deepStrictEqual(out[0], 'small');
+      assert.strictEqual(out[2], 7);
+      assert.ok(out[1].startsWith('xxxxx'), 'Oversized array string should keep its prefix');
+      assert.ok(out[1].includes('truncated'), 'Oversized array string should carry a marker');
+      assert.notStrictEqual(out, input, 'Array truncation should return a new array entry');
+    } finally { restore(); }
+  });
+
+  await test('_truncateContextEntry truncates only oversized object string fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const input = { large: 'L'.repeat(12), small: 'ok', count: 2 };
+      const out = cooldown._truncateContextEntry(input, 6);
+      assert.ok(out.large.startsWith('LLLLLL'), 'Oversized object field should keep its prefix');
+      assert.ok(out.large.includes('truncated'), 'Oversized object field should carry a marker');
+      assert.strictEqual(out.small, 'ok', 'Small string field should be preserved unchanged');
+      assert.strictEqual(out.count, 2, 'Non-string field should be preserved unchanged');
+      assert.notStrictEqual(out, input, 'Object truncation should return a new object entry');
+    } finally { restore(); }
+  });
+
+  await test('_truncateContextEntry returns primitive and null entries unchanged', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      assert.strictEqual(cooldown._truncateContextEntry(42, 5), 42);
+      assert.strictEqual(cooldown._truncateContextEntry(true, 5), true);
+      assert.strictEqual(cooldown._truncateContextEntry(null, 5), null);
+    } finally { restore(); }
+  });
+
+  await test('_truncateContextEntry honors a custom maxBytes override', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const payload = 'z'.repeat(20);
+      assert.strictEqual(cooldown._truncateContextEntry(payload), payload,
+        'Default ENGINE_DEFAULTS limit should not truncate this small payload');
+      const truncated = cooldown._truncateContextEntry(payload, 4);
+      assert.ok(truncated.startsWith('zzzz'), 'Custom maxBytes should set the prefix length');
+      assert.ok(truncated.includes('truncated'), 'Custom maxBytes should force truncation');
+      assert.ok(freshShared.ENGINE_DEFAULTS.maxPendingContextEntryBytes > payload.length,
+        'Test payload must remain under the default limit');
+    } finally { restore(); }
+  });
+
   // ── loadCooldowns ──
 
   await test('loadCooldowns tolerates a missing cooldowns.json', () => {
@@ -11638,6 +11767,54 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
+  await test('loadCooldowns prunes entries exactly at the 24-hour boundary', () => {
+    const restore = createTestMinionsDir();
+    const origNow = Date.now;
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const now = new Date('2026-05-02T12:00:00.000Z').getTime();
+      const day = 24 * 60 * 60 * 1000;
+      Date.now = () => now;
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {
+        boundary: { timestamp: now - day, failures: 0 },
+        inside: { timestamp: now - day + 1, failures: 0 },
+      });
+      cooldown.loadCooldowns();
+      assert.ok(!cooldown.dispatchCooldowns.has('boundary'),
+        'Exactly 24h old entry should be pruned because load uses a strict < comparison');
+      assert.ok(cooldown.dispatchCooldowns.has('inside'),
+        'Entry 1ms inside the 24h window should load');
+    } finally {
+      Date.now = origNow;
+      restore();
+    }
+  });
+
+  await test('loadCooldowns tolerates corrupt cooldowns.json without populating the map', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      fs.writeFileSync(cooldown.COOLDOWN_PATH, '{ invalid json');
+      assert.doesNotThrow(() => cooldown.loadCooldowns(),
+        'Corrupt cooldowns.json should be treated like an empty/missing file');
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 0,
+        'Corrupt cooldowns.json should leave dispatchCooldowns empty');
+    } finally { restore(); }
+  });
+
+  await test('loadCooldowns loads an empty cooldown object as an empty map', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(cooldown.COOLDOWN_PATH, {});
+      cooldown.loadCooldowns();
+      assert.strictEqual(cooldown.dispatchCooldowns.size, 0,
+        'Empty cooldowns.json object should load successfully without entries');
+    } finally { restore(); }
+  });
+
   // ── saveCooldowns (debounced — one write test that waits the full 1100ms) ──
 
   await test('saveCooldowns round-trips entries to disk (debounced)', async () => {
@@ -11654,6 +11831,77 @@ async function testCooldownBehavioral() {
       assert.strictEqual(typeof saved['persist-me'].timestamp, 'number');
       assert.strictEqual(saved['persist-me'].failures, 0);
     } finally { restore(); }
+  });
+
+  await test('saveCooldowns coalesces rapid setCooldown calls and persists the latest state', async () => {
+    const restore = createTestMinionsDir();
+    const origNow = Date.now;
+    const origRenameSync = fs.renameSync;
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const base = new Date('2026-05-02T12:00:00.000Z').getTime();
+      let now = base;
+      let cooldownWrites = 0;
+      fs.renameSync = (oldPath, newPath) => {
+        if (newPath === cooldown.COOLDOWN_PATH) cooldownWrites++;
+        return origRenameSync(oldPath, newPath);
+      };
+
+      Date.now = () => now;
+      cooldown.setCooldown('same-key');
+      now = base + 500;
+      cooldown.setCooldown('same-key');
+      now = base + 750;
+      cooldown.setCooldown('other-key');
+
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = freshShared.safeJson(cooldown.COOLDOWN_PATH);
+      assert.strictEqual(cooldownWrites, 1,
+        'Rapid setCooldown calls should reset the debounce timer and produce one cooldowns.json write');
+      assert.strictEqual(saved['same-key'].timestamp, base + 500,
+        'Latest in-memory value for the repeated key should win');
+      assert.strictEqual(saved['other-key'].timestamp, base + 750,
+        'State from the final setCooldown call should be persisted');
+    } finally {
+      fs.renameSync = origRenameSync;
+      Date.now = origNow;
+      restore();
+    }
+  });
+
+  await test('saveCooldowns with no entries leaves the empty state durable-equivalent', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      cooldown.saveCooldowns();
+      await new Promise(r => setTimeout(r, 1100));
+      const saved = fs.existsSync(cooldown.COOLDOWN_PATH)
+        ? JSON.parse(fs.readFileSync(cooldown.COOLDOWN_PATH, 'utf8'))
+        : {};
+      assert.deepStrictEqual(saved, {},
+        'No cooldown entries should persist as an empty object or absent cooldowns.json');
+    } finally { restore(); }
+  });
+
+  await test('saveCooldowns logs mutateCooldowns failures from the timer without throwing to caller', async () => {
+    const restore = createTestMinionsDir();
+    const origLog = console.log;
+    try {
+      const cooldown = _freshCooldownModule();
+      const logs = [];
+      console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+      cooldown.dispatchCooldowns.set('will-fail', { timestamp: Date.now(), failures: 0 });
+      fs.mkdirSync(cooldown.COOLDOWN_PATH, { recursive: true });
+      assert.doesNotThrow(() => cooldown.saveCooldowns(),
+        'saveCooldowns should schedule the debounced write without throwing synchronously');
+      await new Promise(r => setTimeout(r, 1100));
+      assert.ok(logs.some(line => line.includes('saveCooldowns failed writing')),
+        'Timer failure should be logged for operators');
+    } finally {
+      console.log = origLog;
+      restore();
+    }
   });
 
   await test('saveCooldowns does not resurrect entries deleted by locked external cleanup', async () => {
@@ -12106,6 +12354,123 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
+  await test('isAlreadyDispatched ignores completed entries with invalid completed_at', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [{ id: 'd1', result: 'success', completed_at: 'not-a-date',
+          meta: { dispatchKey: 'bad-date' } }],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('bad-date'), false,
+        'Invalid completed_at produces NaN and must not count as a recent completion');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched tolerates active entries with undefined meta', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [],
+        active: [{ id: 'no-meta' }, { id: 'match', meta: { dispatchKey: 'active-match' } }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('active-match'), true,
+        'Undefined meta on another active entry should not prevent matching active dispatches');
+      assert.strictEqual(cooldown.isAlreadyDispatched('missing'), false,
+        'Undefined meta on active entries should not throw or create a false positive');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched detects duplicate pending and active entries for the same key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'pending-dup', meta: { dispatchKey: 'dupe-key' } }],
+        active: [{ id: 'active-dup', meta: { dispatchKey: 'dupe-key' } }],
+        completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('dupe-key'), true,
+        'A key present in both pending and active should still be detected as in-flight');
+    } finally { restore(); }
+  });
+
+  await test('isAlreadyDispatched excludes completed entries exactly at success and error windows', () => {
+    const restore = createTestMinionsDir();
+    const origNow = Date.now;
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      const now = new Date('2026-05-02T12:00:00.000Z').getTime();
+      Date.now = () => now;
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [],
+        completed: [
+          { id: 'success-boundary', result: 'success',
+            completed_at: new Date(now - 60 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'success-boundary' } },
+          { id: 'error-boundary', result: 'error',
+            completed_at: new Date(now - 15 * 60 * 1000).toISOString(),
+            meta: { dispatchKey: 'error-boundary' } },
+          { id: 'success-inside', result: 'success',
+            completed_at: new Date(now - 60 * 60 * 1000 + 1).toISOString(),
+            meta: { dispatchKey: 'success-inside' } },
+          { id: 'error-inside', result: 'error',
+            completed_at: new Date(now - 15 * 60 * 1000 + 1).toISOString(),
+            meta: { dispatchKey: 'error-inside' } },
+        ],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('success-boundary'), false,
+        'Success completion exactly 1h old should be outside the strict recent window');
+      assert.strictEqual(cooldown.isAlreadyDispatched('error-boundary'), false,
+        'Error completion exactly 15min old should be outside the strict recent window');
+      assert.strictEqual(cooldown.isAlreadyDispatched('success-inside'), true,
+        'Success completion 1ms inside the 1h window should count');
+      assert.strictEqual(cooldown.isAlreadyDispatched('error-inside'), true,
+        'Error completion 1ms inside the 15min window should count');
+    } finally {
+      Date.now = origNow;
+      restore();
+    }
+  });
+
+  await test('isAlreadyDispatched tolerates dispatch.completed being undefined', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [{ id: 'pending-match', meta: { dispatchKey: 'pending-only' } }],
+        active: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      assert.strictEqual(cooldown.isAlreadyDispatched('pending-only'), true,
+        'Missing completed array should not break pending in-flight detection');
+      assert.strictEqual(cooldown.isAlreadyDispatched('unknown'), false,
+        'Missing completed array should not throw for non-matching keys');
+    } finally { restore(); }
+  });
+
   // ── isBranchActive ──
 
   await test('isBranchActive returns null for falsy branch input', () => {
@@ -12173,6 +12538,46 @@ async function testCooldownBehavioral() {
       const hit = cooldown.isBranchActive('work/weird branch');
       assert.ok(hit, 'Both sides should run through sanitizeBranch, producing equal keys');
       assert.strictEqual(hit.id, 'dY');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive normalizes mixed slash and backslash branch names', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'mixed-slashes', meta: { branch: 'work\\mixed/branch' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work-mixed/branch');
+      assert.ok(hit, 'Backslashes should normalize through sanitizeBranch before comparison');
+      assert.strictEqual(hit.id, 'mixed-slashes');
+    } finally { restore(); }
+  });
+
+  await test('isBranchActive returns a matching dispatch when multiple active entries share a branch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const dispatchPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'dispatch.json');
+      freshShared.safeWrite(dispatchPath, {
+        pending: [], active: [
+          { id: 'first-match', meta: { branch: 'work/duplicate' } },
+          { id: 'second-match', meta: { branch: 'work/duplicate' } },
+        ], completed: [],
+      });
+      freshQueries.invalidateDispatchCache();
+      const hit = cooldown.isBranchActive('work/duplicate');
+      assert.ok(hit, 'At least one matching active dispatch should be returned');
+      assert.ok(new Set(['first-match', 'second-match']).has(hit.id),
+        'Returned dispatch should be one of the active branch matches');
     } finally { restore(); }
   });
 
@@ -20172,6 +20577,67 @@ async function testTimeoutBehavioral() {
         'Item must remain active when only "type":"result" is in the log (no [process-exit] yet) — close handler will fire shortly');
       assert.strictEqual((dp.completed || []).length, 0,
         'Must NOT prematurely complete on result event alone — that races with engine.js close handler');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: recent terminal result WITHOUT [process-exit] stays active (#1792/#1971)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'recent-terminal-result';
+      const startedAt = new Date(Date.now() - 60000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(liveLogPath,
+        JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, terminal_reason: 'max_turns', result: 'Max turns reached.' }) + '\n');
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1,
+        'Recent terminal result without [process-exit] must not complete during the close-handler race window');
+      assert.strictEqual((dp.completed || []).length, 0);
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: stale terminal result WITHOUT [process-exit] completes as error fallback (#1971)', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'stale-terminal-result';
+      const startedAt = new Date(Date.now() - 1000000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: 'bot', started_at: startedAt, workType: 'implement', meta: {} }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.engineRestartGraceUntil = Date.now() - 1000;
+
+      const agentDir = path.join(env.testDir, 'agents', 'bot');
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(liveLogPath, [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Working until max turns.' }] } }),
+        JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, terminal_reason: 'max_turns', result: 'Max turns reached.' }),
+      ].join('\n') + '\n');
+      const oldTime = new Date(Date.now() - 1000000);
+      fs.utimesSync(liveLogPath, oldTime, oldTime);
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000 } });
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0,
+        'Stale terminal result should be recovered instead of remaining stuck active');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Recovered stale terminal result should land in completed list');
+      assert.strictEqual(completed.result, 'error',
+        'Terminal max_turns result without an OS sentinel must be recovered conservatively as ERROR');
+      assert.ok(!/Orphaned/.test(completed.reason || ''),
+        'Fallback should preserve terminal-output context instead of reporting a generic orphan');
     } finally { env.restore(); }
   });
 
@@ -36009,8 +36475,10 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
     assert.ok(src.includes('[process-exit]'),
       'spawn-agent.js should write [process-exit] sentinel to stdout on close');
-    assert.ok(src.includes("process.stdout.write"),
-      'Sentinel should be written to stdout (not stderr or file)');
+    assert.ok(src.includes('writeProcessExitSentinel'),
+      'Sentinel should flow through the bounded flush helper before spawn-agent exits');
+    assert.ok(src.includes('MINIONS_LIVE_OUTPUT_PATH'),
+      'Sentinel helper should have an engine-known live-output fallback path');
   });
 
   // 6. Legacy blocking annotations are cleared instead of extending timeouts
@@ -37137,6 +37605,18 @@ async function testAdoTokenInjection() {
     const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 500);
     assert.ok(steeringSection.includes('MINIONS_ADO_TOKEN'),
       'Steering spawn path should also inject MINIONS_ADO_TOKEN');
+  });
+
+  await test('engine.js injects MINIONS_LIVE_OUTPUT_PATH into spawn-agent environments (#1971)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const spawnAgentIdx = src.indexOf('async function spawnAgent(');
+    assert.ok(spawnAgentIdx > -1, 'spawnAgent function should exist');
+    const spawnSection = src.slice(spawnAgentIdx);
+    const matches = spawnSection.match(/MINIONS_LIVE_OUTPUT_PATH/g) || [];
+    assert.ok(matches.length >= 2,
+      'Both initial spawn and steering-resume spawn should pass the live-output path for sentinel fallback writes');
+    assert.ok(spawnSection.includes('childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath'),
+      'spawn-agent must receive the exact liveOutputPath owned by engine.js');
   });
 
   await test('cleanChildEnv does not filter MINIONS_* keys (source check)', () => {

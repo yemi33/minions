@@ -150,6 +150,57 @@ function injectAdoTokenEnv(env, { execSync: _execSync = execSync, warn = (msg) =
   return true;
 }
 
+const PROCESS_EXIT_SENTINEL_FLUSH_TIMEOUT_MS = 2000;
+
+function formatProcessExitSentinel(exitCode, signal) {
+  return `\n[process-exit] code=${exitCode}${signal ? ` signal=${signal}` : ''}\n`;
+}
+
+function _appendSentinelFallback(outputPath, sentinel) {
+  if (!outputPath) return false;
+  try {
+    fs.appendFileSync(outputPath, sentinel);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _writeStdoutWithTimeout(stdout, sentinel, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (flushed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(flushed);
+    };
+    const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+    try {
+      if (!stdout || typeof stdout.write !== 'function') {
+        finish(false);
+        return;
+      }
+      stdout.write(sentinel, () => finish(true));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+async function writeProcessExitSentinel({
+  exitCode,
+  signal = null,
+  stdout = process.stdout,
+  outputPath = process.env.MINIONS_LIVE_OUTPUT_PATH,
+  timeoutMs = PROCESS_EXIT_SENTINEL_FLUSH_TIMEOUT_MS,
+} = {}) {
+  const sentinel = formatProcessExitSentinel(exitCode, signal);
+  const stdoutFlushed = await _writeStdoutWithTimeout(stdout, sentinel, timeoutMs);
+  const outputPathWritten = stdoutFlushed ? false : _appendSentinelFallback(outputPath, sentinel);
+  return { sentinel, stdoutFlushed, outputPathWritten };
+}
+
 // ─── Main script execution ──────────────────────────────────────────────────
 
 function _installHint(name, runtime) {
@@ -197,17 +248,17 @@ function main() {
     opts.sysPromptFile = sysTmpPath;
   }
 
-  // User asset discovery dirs — agents run with CWD set to an external repo
-  // worktree, so the adapter supplies any runtime-native global asset roots
-  // that should be visible from that cwd.
+  // Skill discovery dirs — agents run with CWD set to an external repo
+  // worktree, so runtime-native global assets would otherwise be invisible.
+  // The adapter owns both where those assets live and how to surface them.
   const minionsDir = path.resolve(__dirname, '..');
+  const addDirs = [minionsDir];
   const runtimeAssetDirs = typeof runtime.getUserAssetDirs === 'function'
     ? runtime.getUserAssetDirs({ homeDir: os.homedir() })
     : [];
-  const addDirs = [minionsDir];
-  for (const userAssetDir of runtimeAssetDirs) {
-    if (fs.existsSync(userAssetDir) && path.resolve(userAssetDir) !== path.resolve(minionsDir)) {
-      addDirs.push(userAssetDir);
+  for (const dir of runtimeAssetDirs) {
+    if (dir && fs.existsSync(dir) && path.resolve(dir) !== path.resolve(minionsDir)) {
+      addDirs.push(dir);
     }
   }
 
@@ -310,20 +361,23 @@ function main() {
   }, MCP_STARTUP_TIMEOUT);
   proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });
 
-  proc.on('close', (code, signal) => {
+  proc.on('close', async (code, signal) => {
     clearTimeout(startupTimer);
     const exitCode = normalizeRuntimeExit(code, signal);
-    // Write process-exit sentinel to stdout so the engine can detect completion (#716).
-    try { process.stdout.write(`\n[process-exit] code=${exitCode}${signal ? ` signal=${signal}` : ''}\n`); } catch { /* stdout may be closed */ }
+    const sentinelResult = await writeProcessExitSentinel({ exitCode, signal });
     fs.appendFileSync(debugPath, `EXIT: code=${exitCode}${signal ? ` signal=${signal}` : ''}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
+    if (!sentinelResult.stdoutFlushed && sentinelResult.outputPathWritten) {
+      fs.appendFileSync(debugPath, `EXIT SENTINEL FALLBACK: ${process.env.MINIONS_LIVE_OUTPUT_PATH}\n`);
+    }
     process.exit(exitCode);
   });
-  proc.on('error', (err) => {
+  proc.on('error', async (err) => {
     fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
+    await writeProcessExitSentinel({ exitCode: 1 });
     process.exit(1);
   });
 }
 
-module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv };
+module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv, writeProcessExitSentinel };
 
 if (require.main === module) main();
