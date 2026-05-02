@@ -995,6 +995,7 @@ async function spawnAgent(dispatchItem, config) {
   //   2. Log has stub only    → process started but died before its first write
   //   3. Log has stub + ...   → process alive but hung (the only case that warrants orphan kill+retry)
   const liveOutputPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+  childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath;
 
   // Rotate previous live output to preserve session history (fixes #543: orphan recovery overwrites)
   // Only rotate if the existing file has meaningful content (beyond just the header stub)
@@ -1186,6 +1187,7 @@ async function spawnAgent(dispatchItem, config) {
       const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
       const childEnv = shared.cleanChildEnv();
       if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
+      childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath;
       // Inject cached ADO token for steering session too (#998)
       try {
         const adoToken = await getAdoToken();
