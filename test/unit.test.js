@@ -8853,6 +8853,30 @@ async function testStateIntegrity() {
       'engine should not create a heartbeat timer for live-output');
   });
 
+  await test('PR-targeted fix work items carry PR metadata through discovery', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function resolveWorkItemPrRecord'),
+      'engine discovery must resolve structured work-item PR references');
+    assert.ok(src.includes('const promptItem = linkedPr ? withWorkItemPrContext(item, linkedPr) : item'),
+      'engine discovery must enrich PR-targeted work items before rendering prompts');
+    assert.ok(src.includes('useExistingBranch: !!(isPrTargeted'),
+      'PR-targeted work items must reuse the existing PR branch');
+    assert.ok(src.includes('...(linkedPr ? { pr: linkedPr } : {})'),
+      'dispatch metadata must include meta.pr for linked PR work items');
+  });
+
+  await test('Command Center dispatch preserves PR references on work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function copyWorkItemPrFields'),
+      'dashboard must copy structured PR fields into created work items');
+    assert.ok(src.includes('const prRef = getWorkItemPrRef(action)'),
+      'Command Center dispatch must read action.pr/targetPr fields');
+    assert.ok(src.includes('copyWorkItemPrFields(item, action, linkedPr)'),
+      'Command Center-created work items must preserve resolved PR context');
+    assert.ok(src.includes('PR not found: ${prRef}'),
+      'PR-targeted CC fix/review/test actions must fail explicitly when the PR is unknown');
+  });
+
   await test('Human feedback pendingFix is cleared after enqueue or durable coalescing', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(!src.includes('pr.humanFeedback.pendingFix = false'),
@@ -12824,6 +12848,12 @@ async function testSelectPlaybook() {
     const result = selectPlaybook('fix', {});
     assert.strictEqual(result, 'work-item',
       'fix work items should use work-item playbook (fix.md is PR-fix specific)');
+  });
+
+  await test('selectPlaybook routes PR-targeted fix work items to fix playbook', () => {
+    const result = selectPlaybook('fix', { targetPr: 'PR-123', pr_id: 'PR-123' });
+    assert.strictEqual(result, 'fix',
+      'fix work items with structured PR context should use the PR-fix playbook');
   });
 
   await test('selectPlaybook routes explore type to explore playbook', () => {

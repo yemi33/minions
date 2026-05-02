@@ -628,8 +628,12 @@ function selectPlaybook(workType, item) {
   if (workType === WORK_TYPE.IMPLEMENT || workType === WORK_TYPE.IMPLEMENT_LARGE) {
     return 'implement';
   }
-  if (workType === WORK_TYPE.REVIEW && !item?._pr && !item?.pr_id) {
+  const hasPrContext = !!(item?._pr || item?.pr_id || item?.targetPr || item?.sourcePr || item?.pr);
+  if (workType === WORK_TYPE.REVIEW && !hasPrContext) {
     return 'work-item';
+  }
+  if (workType === WORK_TYPE.FIX && hasPrContext) {
+    return 'fix';
   }
   const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'docs', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];
   return typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';

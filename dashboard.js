@@ -110,6 +110,22 @@ function normalizePrMetadata(metadata) {
   };
 }
 
+function getWorkItemPrRef(input) {
+  if (!input || typeof input !== 'object') return null;
+  return input.targetPr || input.pr || input.prId || input.prNumber || input.pullRequest || input.sourcePr || input.prUrl || null;
+}
+
+function copyWorkItemPrFields(item, input, pr = null) {
+  const prRef = getWorkItemPrRef(input);
+  if (!prRef && !pr) return;
+  const prNumber = pr ? shared.getPrNumber(pr) : shared.getPrNumber(prRef);
+  item.targetPr = pr?.id || prRef;
+  item.pr_id = pr?.id || (typeof prRef === 'string' ? prRef : '');
+  if (prNumber != null) item.prNumber = prNumber;
+  if (pr?.branch || input.prBranch) item.prBranch = pr?.branch || input.prBranch;
+  if (pr?.title || input.prTitle) item.prTitle = pr?.title || input.prTitle;
+  if (pr?.url || input.prUrl) item.prUrl = pr?.url || input.prUrl;
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -1395,6 +1411,8 @@ async function executeCCActions(actions) {
           const workType = routing.normalizeWorkType(action.workType || (action.type !== 'dispatch' ? action.type : WORK_TYPE.IMPLEMENT), WORK_TYPE.IMPLEMENT);
           const id = 'W-' + shared.uid();
           const project = action.project || '';
+          const prRef = getWorkItemPrRef(action);
+          let linkedPr = null;
 
           // Strict project resolution. Silent fallback to PROJECTS[0] when the model named an unknown
           // project caused work items to land in the wrong repo. Now: unknown name → error; ambiguous
@@ -1408,6 +1426,18 @@ async function executeCCActions(actions) {
               results.push({ type: action.type, error: `Project "${project}" not found. Known projects: ${known}` });
               break;
             }
+          } else if (prRef) {
+            const allPrs = getPullRequests().filter(p => !p._ghost);
+            linkedPr = shared.findPrRecord(allPrs, prRef) || null;
+            if (linkedPr?._project && linkedPr._project !== 'central') {
+              targetProject = PROJECTS.find(p => p.name?.toLowerCase() === String(linkedPr._project).toLowerCase()) || null;
+            }
+            if (!targetProject && PROJECTS.length > 1) {
+              results.push({ type: action.type, error: `project field is required when ${PROJECTS.length} projects are configured: ${PROJECTS.map(p => p.name).join(', ')}` });
+              break;
+            } else if (!targetProject && PROJECTS.length === 1) {
+              targetProject = PROJECTS[0];
+            }
           } else if (PROJECTS.length > 1) {
             results.push({ type: action.type, error: `project field is required when ${PROJECTS.length} projects are configured: ${PROJECTS.map(p => p.name).join(', ')}` });
             break;
@@ -1415,6 +1445,16 @@ async function executeCCActions(actions) {
             targetProject = PROJECTS[0];
           }
           // PROJECTS.length === 0 → targetProject stays null, falls back to root work-items.json (existing behavior).
+
+          if (prRef && !linkedPr && targetProject) {
+            const projectPrs = shared.safeJson(shared.projectPrPath(targetProject)) || [];
+            shared.normalizePrRecords(projectPrs, targetProject);
+            linkedPr = shared.findPrRecord(projectPrs, prRef, targetProject) || null;
+          }
+          if (prRef && (workType === WORK_TYPE.FIX || workType === WORK_TYPE.REVIEW || workType === WORK_TYPE.TEST) && !linkedPr) {
+            results.push({ type: action.type, error: `PR not found: ${prRef}` });
+            break;
+          }
 
           const wiPath = targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json');
 
@@ -1438,14 +1478,16 @@ async function executeCCActions(actions) {
           const isOneShot = action.oneShot === true || (action.oneShot !== false && ccOneShotTypes.has(workType));
           shared.mutateJsonFileLocked(wiPath, items => {
             if (!Array.isArray(items)) items = [];
-            items.push({
+            const item = {
               id, title: action.title, type: workType,
               priority: action.priority || 'medium', description: action.description || '',
               status: WI_STATUS.PENDING, created: new Date().toISOString(),
-              createdBy: 'command-center', project,
+              createdBy: 'command-center', project: targetProject?.name || project,
               ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
               ...(isOneShot ? { oneShot: true } : {}),
-            });
+            };
+            copyWorkItemPrFields(item, action, linkedPr);
+            items.push(item);
             return items;
           }, { defaultValue: [] });
           results.push({ type: action.type, id, ok: true });
@@ -2740,6 +2782,7 @@ const server = http.createServer(async (req, res) => {
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr) item.skipPr = true;
       if (body.oneShot) item.oneShot = true;
+      copyWorkItemPrFields(item, body);
       let dupId = null;
       mutateJsonFileLocked(wiPath, (items) => {
         if (!Array.isArray(items)) items = [];

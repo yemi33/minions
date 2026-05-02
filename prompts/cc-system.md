@@ -80,8 +80,8 @@ I'll dispatch dallas to fix that bug.
 - `knowledge`: `title`, `content`, and `category` REQUIRED. Valid categories: architecture, conventions, project-notes, build-reports, reviews.
 
 Core action types:
-- **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project), description
-  workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
+- **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project unless `pr` resolves to a tracked PR), description, pr (optional PR number/id/url for work that targets an existing PR)
+  workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (standalone bug fix creates a PR; include `pr` when fixing review comments/build failures on an existing PR), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
   If the user wants a design/architecture artifact committed through a PR, dispatch `implement` or `docs` rather than `explore`.
   When the user names a specific agent ("assign this to lambert"), put exactly that one name in `agents` (e.g. `"agents": ["lambert"]`). A single-agent assignment is hard-pinned by the server — it will queue for that agent only and skip the routing table. Use multi-agent arrays only when the user names multiple agents or asks for fan-out.
 - **build-and-test**: pr, project (optional), agent (optional) — Run the build-and-test playbook against a PR. The agent will checkout the PR branch, run the project's build/test commands, and report results. Use when the user asks to "run tests on PR X" or "build PR X" or after a fix to verify nothing regressed.

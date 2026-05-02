@@ -2592,6 +2592,14 @@ function renderProjectWorkItemPromptForAgent(item, workType, agentId, config, pr
     worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', `${branchName}`),
     commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
     notes_content: '',
+    pr_id: item.pr_id || item._pr || item.targetPr || item.sourcePr || item.pr || '',
+    pr_number: item.prNumber || item.pr_number || '',
+    pr_title: item.pr_title || item.prTitle || '',
+    pr_branch: item.pr_branch || item.prBranch || '',
+    pr_author: item.pr_author || item.prAuthor || '',
+    pr_url: item.pr_url || item.prUrl || '',
+    reviewer: item.reviewer || 'Reviewer',
+    review_note: item.review_note || item.reviewNote || item.description || item.title || 'See PR thread comments',
   };
   const cpResult = buildWorkItemDispatchVars(item, vars, config, {
     worktreePath: vars.worktree_path || root,
@@ -2612,6 +2620,38 @@ function renderProjectWorkItemPromptForAgent(item, workType, agentId, config, pr
   };
 }
 
+function getWorkItemPrRef(item) {
+  if (!item || typeof item !== 'object') return null;
+  return item.targetPr || item.pr || item.pr_id || item.sourcePr || item.pullRequest || item.prUrl || item.prNumber || null;
+}
+
+function resolveWorkItemPrRecord(item, project) {
+  if (!project) return null;
+  const prRef = getWorkItemPrRef(item);
+  if (!prRef) return null;
+  const prs = safeJson(projectPrPath(project)) || [];
+  shared.normalizePrRecords(prs, project);
+  return shared.findPrRecord(prs, prRef, project);
+}
+
+function withWorkItemPrContext(item, pr) {
+  if (!pr) return item;
+  const prNumber = shared.getPrNumber(pr);
+  return {
+    ...item,
+    _pr: pr.id,
+    pr_id: pr.id,
+    targetPr: item.targetPr || pr.id,
+    prNumber: prNumber ?? item.prNumber,
+    pr_number: prNumber ?? item.pr_number,
+    pr_title: pr.title || item.pr_title || item.prTitle || '',
+    pr_branch: pr.branch || item.pr_branch || item.prBranch || '',
+    pr_author: pr.agent || item.pr_author || item.prAuthor || '',
+    pr_url: pr.url || item.pr_url || item.prUrl || '',
+    reviewer: item.reviewer || 'Reviewer',
+    review_note: item.review_note || item.reviewNote || item.description || item.title || 'See PR thread comments',
+  };
+}
 function projectFromDispatchMeta(metaProject, config) {
   if (!metaProject) return null;
   const projects = getProjects(config);
@@ -2775,8 +2815,17 @@ function discoverFromWorkItems(config, project) {
       skipped.noAgent++; continue;
     }
 
+    const linkedPr = resolveWorkItemPrRecord(item, project);
+    const promptItem = linkedPr ? withWorkItemPrContext(item, linkedPr) : item;
+    const prBranch = linkedPr?.branch || '';
+    const isPrTargeted = !!(linkedPr && (workType === WORK_TYPE.FIX || workType === WORK_TYPE.REVIEW || workType === WORK_TYPE.TEST));
+    if (!linkedPr && getWorkItemPrRef(item) && (workType === WORK_TYPE.FIX || workType === WORK_TYPE.REVIEW || workType === WORK_TYPE.TEST)) {
+      if (item._pendingReason !== 'pr_not_found') { item._pendingReason = 'pr_not_found'; needsWrite = true; }
+      log('warn', `Work item ${item.id} references PR ${getWorkItemPrRef(item)} but no tracked PR record was found`);
+      continue;
+    }
     const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
-    const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
+    const branchName = isPrTargeted && prBranch ? prBranch : (isShared ? item.featureBranch : (item.branch || `work/${item.id}`));
     const deferredAgentResolution = agentId === routing.ANY_AGENT;
 
     // Branch mutex: skip if target branch is locked by an active dispatch
@@ -2789,7 +2838,7 @@ function discoverFromWorkItems(config, project) {
     }
 
     const promptAgentId = deferredAgentResolution ? reservedAgentId : agentId;
-    const promptResult = renderProjectWorkItemPromptForAgent(item, workType, promptAgentId, config, project, root, branchName);
+    const promptResult = renderProjectWorkItemPromptForAgent(promptItem, workType, promptAgentId, config, project, root, branchName);
     if (promptResult.needsReview) {
       log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as failed for manual intervention`);
       item.status = WI_STATUS.FAILED;
@@ -2827,7 +2876,7 @@ function discoverFromWorkItems(config, project) {
       agentRole: config.agents[agentId]?.role || tempAgents.get(agentId)?.role || 'Agent',
       task: `[${project?.name || 'project'}] ${item.title || item.description?.slice(0, 80) || item.id}`,
       prompt,
-      meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(item.branchStrategy === 'shared-branch' && item.featureBranch), item, project: { name: project?.name, localPath: project?.localPath }, deferAgentResolution: deferredAgentResolution }
+      meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(isPrTargeted || (item.branchStrategy === 'shared-branch' && item.featureBranch)), item: promptItem, project: { name: project?.name, localPath: project?.localPath }, deferAgentResolution: deferredAgentResolution, ...(linkedPr ? { pr: linkedPr } : {}) }
     });
 
     setCooldown(key);
