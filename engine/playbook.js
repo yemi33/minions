@@ -5,6 +5,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
@@ -394,8 +395,8 @@ function renderPlaybook(type, vars) {
   content += '````\n```skill\n';
   content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
-  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory so they are available in normal runtime windows too\n`;
-  content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to <project>/.claude/skills/\n`;
+  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory\n`;
+  content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to the selected runtime's native project skills directory\n`;
   content += `- Emit at most one skill block per task unless you uncovered two clearly distinct reusable workflows\n`;
   content += `- Do NOT create a skill for one-off bug fixes, isolated command output, obvious repo facts, or anything already covered by existing docs/playbooks/skills\n`;
 
@@ -503,7 +504,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
   prompt += `4. Write learnings to the path specified in the task prompt (format: \`notes/inbox/{agent}-{work-item-id}-{date}-{time}.md\`)\n`;
   prompt += `5. Agent status is managed by the engine via dispatch.json — agents do not need to track their own status\n`;
-  prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — minions-scoped skills are auto-extracted to ~/.claude/skills/ so they are available in normal Claude windows too\n\n`;
+  prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — minions-scoped skills are auto-extracted to the selected runtime's native personal skills directory\n\n`;
 
   return prompt;
 }
@@ -513,6 +514,26 @@ function buildSystemPrompt(agentId, config, project) {
 function buildAgentContext(agentId, config, project) {
   project = project || getProjects(config)[0] || {};
   let context = '';
+
+  function appendContextFile(heading, filePath, maxBytes, extra = '') {
+    if (!filePath) return;
+    const content = safeRead(filePath);
+    if (!content || !content.trim()) return;
+    const truncated = Buffer.byteLength(content, 'utf8') > maxBytes
+      ? truncateTextBytes(content, maxBytes, '\n\n_...truncated; read the full file if needed_')
+      : content;
+    context += `## ${heading}\n\n`;
+    if (extra) context += `${extra}\n\n`;
+    context += `${truncated}\n\n`;
+  }
+
+  function appendIndex(heading, body, maxBytes) {
+    if (!body || !String(body).trim()) return;
+    const truncated = Buffer.byteLength(body, 'utf8') > maxBytes
+      ? truncateTextBytes(body, maxBytes, '\n\n_...index truncated; use Glob/Read for the full list_')
+      : body;
+    context += `## ${heading}\n\n${truncated.replace(/^## .+\n\n/, '')}\n`;
+  }
 
 
   // Agent history — last 5 tasks only (keeps it relevant, avoids 37KB dumps)
@@ -527,29 +548,19 @@ function buildAgentContext(agentId, config, project) {
 
   // Project conventions (from CLAUDE.md) — always relevant for code quality
   if (project.localPath) {
-    const claudeMd = safeRead(path.join(project.localPath, 'CLAUDE.md'));
-    if (claudeMd && claudeMd.trim()) {
-      const truncated = claudeMd.length > 8192 ? claudeMd.slice(0, 8192) + '\n\n...(truncated)' : claudeMd;
-      context += `## Project Conventions (from CLAUDE.md)\n\n${truncated}\n\n`;
-    }
-
-    const agentsMd = safeRead(path.join(project.localPath, 'AGENTS.md'));
-    if (agentsMd && agentsMd.trim()) {
-      const truncated = agentsMd.length > 8192 ? agentsMd.slice(0, 8192) + '\n\n...(truncated)' : agentsMd;
-      context += `## Project Agent Instructions (from AGENTS.md)\n\n${truncated}\n\n`;
-    }
-
-    const copilotInstructions = safeRead(path.join(project.localPath, '.github', 'copilot-instructions.md'));
-    if (copilotInstructions && copilotInstructions.trim()) {
-      const truncated = copilotInstructions.length > 8192 ? copilotInstructions.slice(0, 8192) + '\n\n...(truncated)' : copilotInstructions;
-      context += `## Project Copilot Instructions\n\n${truncated}\n\n`;
-    }
+    appendContextFile('Project Conventions (from CLAUDE.md)', path.join(project.localPath, 'CLAUDE.md'), 8192);
+    appendContextFile('Project Agent Instructions (from AGENTS.md)', path.join(project.localPath, 'AGENTS.md'), 8192,
+      'These instructions are explicitly injected because some runtimes suppress automatic AGENTS.md loading. Follow them unless they conflict with the Minions task contract or playbook.');
+    appendContextFile('Project Copilot Instructions (from .github/copilot-instructions.md)', path.join(project.localPath, '.github', 'copilot-instructions.md'), 8192,
+      'Follow these repository instructions unless they conflict with the Minions task contract or playbook.');
   }
 
-  const kbIndex = getKnowledgeBaseIndex();
-  if (kbIndex) context += kbIndex;
+  appendContextFile('User Claude Instructions (from ~/.claude/CLAUDE.md)', path.join(os.homedir(), '.claude', 'CLAUDE.md'), 8192,
+    'These are the user-level Claude Code instructions available in regular Claude usage. Follow them unless they conflict with the Minions task contract or playbook.');
 
-  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Runtime-native skills and commands are left to the selected CLI runtime instead of being duplicated into every prompt. Use Glob/Read when relevant.\n\n`;
+  appendIndex('Knowledge Base Reference', getKnowledgeBaseIndex(), 8192);
+
+  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`, and project-local playbooks live in \`projects/<project>/playbooks/\`. Runtime-native skills and commands are left to the selected CLI runtime; Minions does not inject their contents into the task prompt.\n\n`;
 
   // Minions awareness: what's in flight, who's doing what
   const dispatch = getDispatch();

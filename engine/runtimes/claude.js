@@ -322,6 +322,29 @@ function buildPrompt(promptText, /* sysPromptText */ _sys) {
   return String(promptText == null ? '' : promptText);
 }
 
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [path.join(homeDir, '.claude')];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [{ dir: path.join(homeDir, '.claude', 'skills'), scope: 'claude-code' }];
+  if (project?.localPath) {
+    roots.push({
+      dir: path.resolve(project.localPath, '.claude', 'skills'),
+      scope: 'project',
+      projectName: project.name,
+    });
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  return {
+    personal: path.join(homeDir, '.claude', 'skills'),
+    project: project?.localPath ? path.resolve(project.localPath, '.claude', 'skills') : null,
+  };
+}
+
 // ── Output Parsing ───────────────────────────────────────────────────────────
 
 /**

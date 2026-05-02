@@ -349,6 +349,41 @@ function buildPrompt(promptText, sysPromptText, opts = {}) {
   return `<system>\n${String(sysPromptText)}\n</system>\n\n${user}`;
 }
 
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [
+    path.join(homeDir, '.copilot'),
+    path.join(homeDir, '.agents'),
+  ];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { dir: path.join(homeDir, '.copilot', 'skills'), scope: 'copilot' },
+    { dir: path.join(homeDir, '.agents', 'skills'), scope: 'agent-skill' },
+  ];
+  if (project?.localPath) {
+    for (const rel of [
+      ['.github', 'skills'],
+      ['.claude', 'skills'],
+      ['.agents', 'skills'],
+    ]) {
+      roots.push({
+        dir: path.resolve(project.localPath, ...rel),
+        scope: 'project',
+        projectName: project.name,
+      });
+    }
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  return {
+    personal: path.join(homeDir, '.copilot', 'skills'),
+    project: project?.localPath ? path.resolve(project.localPath, '.github', 'skills') : null,
+  };
+}
+
 // ── Output Parsing ──────────────────────────────────────────────────────────
 //
 // Whitelist of event types observed during the spike (docs/copilot-cli-schema.md

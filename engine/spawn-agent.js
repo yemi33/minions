@@ -174,16 +174,15 @@ function main() {
     opts.sysPromptFile = sysTmpPath;
   }
 
-  // Skill discovery dirs — agents run with CWD set to an external repo
-  // worktree, so skills in the minions repo and the user's global ~/.claude
-  // dir are otherwise invisible. The adapter decides how to surface them
-  // (Claude → `--add-dir <path>`; Copilot → ignored).
+  // User asset discovery dirs — agents run with CWD set to an external repo
+  // worktree, so the adapter supplies any runtime-native global asset roots
+  // that should be visible from that cwd.
   const minionsDir = path.resolve(__dirname, '..');
-  const addDirs = [minionsDir];
-  const userAssetDirs = typeof runtime.getUserAssetDirs === 'function'
+  const runtimeAssetDirs = typeof runtime.getUserAssetDirs === 'function'
     ? runtime.getUserAssetDirs({ homeDir: os.homedir() })
     : [];
-  for (const userAssetDir of userAssetDirs) {
+  const addDirs = [minionsDir];
+  for (const userAssetDir of runtimeAssetDirs) {
     if (fs.existsSync(userAssetDir) && path.resolve(userAssetDir) !== path.resolve(minionsDir)) {
       addDirs.push(userAssetDir);
     }
