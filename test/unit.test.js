@@ -7080,8 +7080,38 @@ async function testPrdStaleInvalidation() {
 
   await test('handlePlansApprove clears _completionNotified for re-completion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('delete plan._completionNotified'),
+    assert.ok(src.includes('delete data._completionNotified') || src.includes('delete plan._completionNotified'),
       'Resume should clear _completionNotified so completion can re-fire');
+  });
+
+  await test('dashboard PRD status handlers use mutateJsonFileLocked for PRD file writes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    function handlerBody(name) {
+      const start = src.indexOf(`async function ${name}(`);
+      assert.ok(start > -1, `${name} should exist`);
+      const end = src.indexOf('\n  async function', start + 1);
+      return src.slice(start, end > -1 ? end : start + 5000);
+    }
+
+    for (const name of ['handlePlansApprove', 'handlePlansPause', 'handlePlansReject', 'handlePlansRevise']) {
+      const body = handlerBody(name);
+      assert.ok(body.includes('mutateJsonFileLocked(planPath'),
+        `${name} should mutate the PRD/plan JSON under the planPath lock`);
+      assert.ok(!body.includes('safeWrite(planPath'),
+        `${name} must not write the PRD/plan JSON with unlocked safeWrite(planPath, ...)`);
+    }
+
+    const triggerBody = handlerBody('handlePlansTriggerVerify');
+    assert.ok(triggerBody.includes('mutateJsonFileLocked(activePath'),
+      'handlePlansTriggerVerify should restore/clear PRD status fields under the activePath lock');
+    assert.ok(!triggerBody.includes('safeWrite(activePath'),
+      'handlePlansTriggerVerify must not write active PRD JSON with unlocked safeWrite(activePath, ...)');
+
+    const archiveBody = handlerBody('handlePlansArchive');
+    assert.ok(archiveBody.includes('mutateJsonFileLocked(archivePath'),
+      'handlePlansArchive should mark archived PRD status under the archivePath lock');
+    assert.ok(!archiveBody.includes('safeWrite(archivePath'),
+      'handlePlansArchive must not write archived PRD JSON with unlocked safeWrite(archivePath, ...)');
   });
 
   await test('plan-to-prd playbook has diff-aware update instructions', () => {
