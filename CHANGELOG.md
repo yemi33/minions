@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1677 (2026-05-02)
+
+### Fixes
+-  process bot PR comments as actionable
+
 ## 0.1.1676 (2026-05-02)
 
 ### Other
