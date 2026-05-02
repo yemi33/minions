@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1675 (2026-05-02)
+
+### Fixes
+-  widen Signed Off By column from 140px to 220px
+
 ## 0.1.1674 (2026-05-02)
 
 ### Other
