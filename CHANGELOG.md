@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1679 (2026-05-02)
+
+### Fixes
+-  preserve PR context for linked fix work items
+
 ## 0.1.1678 (2026-05-02)
 
 ### Fixes
