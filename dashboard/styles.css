@@ -251,7 +251,7 @@
   .pr-table-wrap { overflow-x: auto; }
   .pr-table { width: 100%; border-collapse: collapse; font-size: var(--text-md); table-layout: auto; }
   .pr-table th:last-child, .pr-table td:last-child { width: 36px; min-width: 36px; text-align: center; }
-  .pr-table th.pr-col-signoff, .pr-table td.pr-col-signoff { width: 140px; max-width: 140px; white-space: normal; word-break: break-word; }
+  .pr-table th.pr-col-signoff, .pr-table td.pr-col-signoff { width: 220px; max-width: 220px; white-space: normal; word-break: break-word; }
   .pr-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: var(--text-base); text-transform: uppercase; letter-spacing: 0.5px; padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
   .pr-table td { padding: var(--space-5); border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; }
   .pr-table tr:last-child td { border-bottom: none; }
