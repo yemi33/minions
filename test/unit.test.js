@@ -20553,6 +20553,8 @@ async function testMeetings() {
   await test('lifecycle collects meeting findings on completion', () => {
     assert.ok(lifecycleSrc.includes('collectMeetingFindings') && (lifecycleSrc.includes("type === WORK_TYPE.MEETING") || lifecycleSrc.includes("type === 'meeting'")),
       'runPostCompletionHooks should call collectMeetingFindings for meeting type');
+    assert.ok(lifecycleSrc.includes('collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion)'),
+      'runPostCompletionHooks should pass structured completion data to meeting ingestion');
   });
 
   // Playbooks
@@ -21221,9 +21223,24 @@ async function testMeetingsExtendedBehavioral() {
     } catch {}
   }
 
+  function cleanupFile(fp) {
+    try { fs.unlinkSync(fp); } catch {}
+  }
+
   // Helper to produce stream-json output that parseStreamJsonOutput understands
   function makeOutput(text) {
     return JSON.stringify({ type: 'result', result: text });
+  }
+
+  function writeInboxArtifact(filename, content) {
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const abs = path.join(inboxDir, filename);
+    fs.writeFileSync(abs, content);
+    return { abs, rel: `notes/inbox/${filename}` };
+  }
+
+  function structuredSuccess(summary, artifacts) {
+    return { status: 'success', summary, artifacts };
   }
 
   // ── collectMeetingFindings ──
@@ -21325,6 +21342,146 @@ async function testMeetingsExtendedBehavioral() {
       assert.ok(!m.findings.alice, 'Should NOT record placeholder findings');
     } finally {
       cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings records structured note artifact when inline investigate output is empty', () => {
+    const testId = 'TEST-EXT-artifact-inv-' + Date.now();
+    const note = writeInboxArtifact(`${testId}.md`, '# Dallas Finding\n\nDurable note content from artifact.');
+    meetingMod.saveMeeting({
+      id: testId, title: 'Artifact Investigate', status: 'investigating', round: 1,
+      participants: ['dallas'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(
+        testId,
+        'dallas',
+        'investigate',
+        makeOutput(''),
+        structuredSuccess('Summary should not replace readable note', [{ type: 'note', path: note.rel, title: 'Dallas note' }])
+      );
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.findings.dallas, 'Should record finding from structured note artifact');
+      assert.strictEqual(m.findings.dallas.content, '# Dallas Finding\n\nDurable note content from artifact.');
+      assert.strictEqual(m.transcript[0].content, '# Dallas Finding\n\nDurable note content from artifact.');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupFile(note.abs);
+    }
+  });
+
+  await test('collectMeetingFindings uses structured note artifact fallback for debate and conclude rounds', () => {
+    const testId = 'TEST-EXT-artifact-rounds-' + Date.now();
+    const debateNote = writeInboxArtifact(`${testId}-debate.md`, '# Debate\n\nArtifact debate response.');
+    const concludeNote = writeInboxArtifact(`${testId}-conclude.md`, '# Conclusion\n\nArtifact conclusion response.');
+    meetingMod.saveMeeting({
+      id: testId, title: 'Artifact Rounds', status: 'debating', round: 2,
+      participants: ['dallas'],
+      findings: { dallas: { content: 'Finding already recorded' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(
+        testId,
+        'dallas',
+        'debate',
+        makeOutput(''),
+        structuredSuccess('Debate summary', [{ type: 'note', path: debateNote.rel }])
+      );
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.debate.dallas.content, '# Debate\n\nArtifact debate response.');
+      assert.strictEqual(m.status, 'concluding', 'single participant debate should advance to conclusion');
+
+      meetingMod.collectMeetingFindings(
+        testId,
+        'dallas',
+        'conclude',
+        makeOutput(''),
+        structuredSuccess('Conclusion summary', [{ type: 'note', path: concludeNote.rel }])
+      );
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.conclusion.content, '# Conclusion\n\nArtifact conclusion response.');
+      assert.strictEqual(m.status, 'completed');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+      cleanupFile(debateNote.abs);
+      cleanupFile(concludeNote.abs);
+    }
+  });
+
+  await test('collectMeetingFindings falls back to structured summary when listed note artifact cannot be read', () => {
+    const testId = 'TEST-EXT-artifact-summary-' + Date.now();
+    const missingRel = `notes/inbox/${testId}-missing.md`;
+    meetingMod.saveMeeting({
+      id: testId, title: 'Missing Artifact Summary', status: 'investigating', round: 1,
+      participants: ['lambert'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(
+        testId,
+        'lambert',
+        'investigate',
+        makeOutput(''),
+        structuredSuccess('Structured summary fallback from completion report.', [{ type: 'note', path: missingRel }])
+      );
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.findings.lambert.content, 'Structured summary fallback from completion report.');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings rejects empty structured completion with no usable artifact', () => {
+    const testId = 'TEST-EXT-empty-structured-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Empty Structured', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(
+        testId,
+        'alice',
+        'investigate',
+        makeOutput(''),
+        structuredSuccess('Summary without a note artifact must not count.', [])
+      );
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should reject successful completion that has no note artifact to ingest');
+      assert.strictEqual(m.status, 'investigating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings scopes structured note artifacts to notes/inbox markdown paths', () => {
+    const testId = 'TEST-EXT-artifact-scope-' + Date.now();
+    const outside = path.join(createTmpDir(), `${testId}-outside.md`);
+    fs.writeFileSync(outside, '# Outside\n\nThis content must not be ingested.');
+    meetingMod.saveMeeting({
+      id: testId, title: 'Artifact Scope', status: 'investigating', round: 1,
+      participants: ['rebecca'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(
+        testId,
+        'rebecca',
+        'investigate',
+        makeOutput(''),
+        structuredSuccess('Safe summary after unsafe artifact path was ignored.', [{ type: 'note', path: outside }])
+      );
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.findings.rebecca.content, 'Safe summary after unsafe artifact path was ignored.');
+      assert.ok(!m.findings.rebecca.content.includes('This content must not be ingested'),
+        'unsafe absolute artifact path must not be read');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupFile(outside);
     }
   });
 

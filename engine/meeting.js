@@ -19,6 +19,86 @@ const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 // Derive from shared.MINIONS_DIR so createTestMinionsDir()/MINIONS_TEST_DIR
 // tests can redirect the meetings directory without patching module internals.
 const MEETINGS_DIR = path.join(shared.MINIONS_DIR, 'meetings');
+const MEETING_NOTE_ARTIFACT_ROOT = path.join(shared.MINIONS_DIR, 'notes', 'inbox');
+
+function isEmptyMeetingContent(text) {
+  const value = String(text || '').trim();
+  return !value || EMPTY_OUTPUT_PATTERNS.includes(value);
+}
+
+function isSuccessfulStructuredCompletion(completion) {
+  const status = String(completion?.status || completion?.outcome || '').trim().toLowerCase();
+  return ['success', 'succeeded', 'complete', 'completed', 'done', 'ok', 'passed'].includes(status);
+}
+
+function getStructuredNoteArtifacts(structuredCompletion) {
+  const artifacts = structuredCompletion?.artifacts;
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts.filter(artifact =>
+    artifact &&
+    typeof artifact === 'object' &&
+    String(artifact.type || '').toLowerCase() === 'note' &&
+    typeof artifact.path === 'string' &&
+    artifact.path.trim()
+  );
+}
+
+function isPathInside(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function resolveMeetingNoteArtifactPath(artifactPath) {
+  const raw = String(artifactPath || '').trim();
+  if (!raw || raw.includes('\0')) return null;
+  const resolved = path.resolve(path.isAbsolute(raw) ? raw : path.join(shared.MINIONS_DIR, raw));
+  const root = path.resolve(MEETING_NOTE_ARTIFACT_ROOT);
+  if (!isPathInside(root, resolved)) return null;
+  if (path.extname(resolved).toLowerCase() !== '.md') return null;
+  return resolved;
+}
+
+function readMeetingNoteArtifact(artifactPath) {
+  const resolved = resolveMeetingNoteArtifactPath(artifactPath);
+  if (!resolved) {
+    log('warn', `Ignoring unsafe meeting note artifact path: ${artifactPath || '(empty)'}`);
+    return '';
+  }
+  try {
+    const realRoot = fs.realpathSync(MEETING_NOTE_ARTIFACT_ROOT);
+    const realPath = fs.realpathSync(resolved);
+    if (!isPathInside(realRoot, realPath)) {
+      log('warn', `Ignoring meeting note artifact outside notes/inbox: ${artifactPath}`);
+      return '';
+    }
+    const content = fs.readFileSync(realPath, 'utf8');
+    return isEmptyMeetingContent(content) ? '' : content;
+  } catch (err) {
+    log('warn', `Meeting note artifact unreadable (${artifactPath}): ${err.message}`);
+    return '';
+  }
+}
+
+function resolveStructuredMeetingContent(structuredCompletion) {
+  if (!isSuccessfulStructuredCompletion(structuredCompletion)) return '';
+  const noteArtifacts = getStructuredNoteArtifacts(structuredCompletion);
+  if (noteArtifacts.length === 0) return '';
+
+  for (const artifact of noteArtifacts) {
+    const content = readMeetingNoteArtifact(artifact.path);
+    if (content) return content;
+  }
+
+  const summary = String(structuredCompletion.summary || '').trim();
+  return isEmptyMeetingContent(summary) ? '' : summary;
+}
+
+function resolveMeetingContributionContent(output, structuredCompletion) {
+  const { text } = shared.parseStreamJsonOutput(output, { maxTextLength: 50000 });
+  const rawContent = (text || '').trim();
+  if (!isEmptyMeetingContent(rawContent)) return rawContent;
+  return resolveStructuredMeetingContent(structuredCompletion);
+}
 
 function truncateMeetingContext(text, maxBytes, label) {
   return shared.truncateTextBytes(text, maxBytes, `\n\n_...${label} truncated — review the meeting transcript if needed._`);
@@ -323,7 +403,7 @@ function discoverMeetingWork(config) {
  * Collect findings from a completed meeting agent.
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
-function collectMeetingFindings(meetingId, agentId, roundName, output) {
+function collectMeetingFindings(meetingId, agentId, roundName, output, structuredCompletion = null) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
   if (meeting.status === 'completed' || meeting.status === 'archived') {
@@ -331,17 +411,15 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     return;
   }
 
-  const { text } = shared.parseStreamJsonOutput(output, { maxTextLength: 50000 });
-  const rawContent = (text || '').trim();
+  const content = resolveMeetingContributionContent(output, structuredCompletion);
 
   // Validate output — reject empty or placeholder responses
-  if (!rawContent || EMPTY_OUTPUT_PATTERNS.includes(rawContent)) {
+  if (isEmptyMeetingContent(content)) {
     log('warn', `Meeting ${meetingId}: agent ${agentId} returned empty output for ${roundName} — rejecting`);
     // Don't record it — agent will be re-dispatched on next tick
     saveMeeting(meeting);
     return;
   }
-  const content = rawContent;
 
   if (roundName === 'investigate') {
     meeting.findings[agentId] = { content, submittedAt: ts() };
