@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1674 (2026-05-02)
+
+### Other
+- refactor: collapse needs-human-review into failed + simplify migration paths
+
 ## 0.1.1673 (2026-05-02)
 
 ### Fixes
