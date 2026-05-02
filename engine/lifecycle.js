@@ -69,6 +69,12 @@ function checkPlanCompletion(meta, config) {
 
   const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
   const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED || w.status === WI_STATUS.CANCELLED);
+  const isActiveVerify = (wi) => wi && (
+    wi.status === WI_STATUS.PENDING ||
+    wi.status === WI_STATUS.QUEUED ||
+    wi.status === WI_STATUS.DISPATCHED
+  );
+  const isReopenableVerify = (wi) => wi && (DONE_STATUSES.has(wi.status) || wi.status === WI_STATUS.FAILED);
 
   if (failedItems.length > 0) {
     const failDetails = failedItems.map(w =>
@@ -166,6 +172,7 @@ function checkPlanCompletion(meta, config) {
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
       mutateWorkItems(wiPath, workItems => {
+        if (workItems.some(w => w.sourcePlan === planFile && w.itemType === 'pr')) return workItems;
         workItems.push({
           id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
           type: 'implement', priority: 'high',
@@ -181,9 +188,23 @@ function checkPlanCompletion(meta, config) {
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   // Only one verify per PRD — skip if pending/dispatched, re-open if done/failed (PRD was modified)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (existingVerify && (existingVerify.status === WI_STATUS.PENDING || existingVerify.status === WI_STATUS.DISPATCHED)) {
+  if (isActiveVerify(existingVerify)) {
     log('info', `Plan ${planFile}: verify WI ${existingVerify.id} already ${existingVerify.status} — skipping`);
-  } else if (doneItems.length > 0) {
+  } else if (isReopenableVerify(existingVerify) && doneItems.length > 0) {
+    const verifyProject = existingVerify.project || projectName;
+    const vWiPath = shared.projectWorkItemsPath(
+      projects.find(p => p.name?.toLowerCase() === verifyProject?.toLowerCase()) || primaryProject
+    );
+    let reopenedVerify = false;
+    mutateWorkItems(vWiPath, items => {
+      const v = items.find(w => w.id === existingVerify.id);
+      if (isReopenableVerify(v)) {
+        shared.reopenWorkItem(v);
+        reopenedVerify = true;
+      }
+    });
+    if (reopenedVerify) log('info', `Re-opened verification work item ${existingVerify.id} for modified plan ${planFile}`);
+  } else if (!existingVerify && doneItems.length > 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -276,7 +297,17 @@ function checkPlanCompletion(meta, config) {
       prSummary,
     ].join('\n');
 
+    let createdVerify = false;
+    let reopenedVerifyId = null;
     mutateWorkItems(wiPath, workItems => {
+      const v = workItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
+      if (v) {
+        if (isReopenableVerify(v)) {
+          shared.reopenWorkItem(v);
+          reopenedVerifyId = v.id;
+        }
+        return workItems;
+      }
       workItems.push({
         id: verifyId,
         title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
@@ -290,32 +321,19 @@ function checkPlanCompletion(meta, config) {
         itemType: 'verify',
         project: projectName,
       });
+      createdVerify = true;
     });
-    log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+    if (createdVerify) {
+      log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
 
-    // Teams notification for verify creation — non-blocking
-    try {
-      const teams = require('./teams');
-      teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
-    } catch {}
-  } else if (existingVerify && DONE_STATUSES.has(existingVerify.status) && doneItems.length > 0) {
-    // PRD was modified and re-completed — re-open the existing verify instead of creating a duplicate
-    const verifyProject = existingVerify.project || projectName;
-    const vWiPath = shared.projectWorkItemsPath(
-      projects.find(p => p.name?.toLowerCase() === verifyProject?.toLowerCase()) || primaryProject
-    );
-    mutateWorkItems(vWiPath, items => {
-      const v = items.find(w => w.id === existingVerify.id);
-      if (v && DONE_STATUSES.has(v.status)) {
-        v.status = WI_STATUS.PENDING;
-        v._reopened = true;
-        delete v.completedAt;
-        delete v.dispatched_to;
-        delete v.dispatched_at;
-        v._retryCount = 0;
-      }
-    });
-    log('info', `Re-opened verification work item ${existingVerify.id} for modified plan ${planFile}`);
+      // Teams notification for verify creation — non-blocking
+      try {
+        const teams = require('./teams');
+        teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
+      } catch {}
+    } else if (reopenedVerifyId) {
+      log('info', `Re-opened verification work item ${reopenedVerifyId} for modified plan ${planFile}`);
+    }
   }
 
   // Archive deferred until verify completes

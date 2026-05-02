@@ -15956,6 +15956,43 @@ async function testCheckPlanCompletionIdempotency() {
       'Second call should not create additional PR work items');
   }, cleanup);
 
+  // ── Test 6: Existing completed/failed verify WI is re-opened, not duplicated ──
+  await test('checkPlanCompletion reopens existing terminal verify item instead of duplicating it', () => {
+    for (const status of ['done', 'failed']) {
+      cleanup();
+      const existingVerifyId = `PL-existing-${status}`;
+      shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+      shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+        ...makeWorkItems(),
+        {
+          id: existingVerifyId,
+          title: 'Verify plan: Test idempotency plan',
+          type: 'verify',
+          status,
+          sourcePlan: testPlanFile,
+          itemType: 'verify',
+          completedAt: '2026-01-01T03:00:00Z',
+          dispatched_at: '2026-01-01T02:30:00Z',
+          dispatched_to: 'dallas',
+          _retryCount: 2,
+        },
+      ]);
+
+      lifecycle.checkPlanCompletion(meta, config);
+
+      const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+      const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+      assert.strictEqual(verifyItems.length, 1, `Should not duplicate existing ${status} verify item`);
+      assert.strictEqual(verifyItems[0].id, existingVerifyId, `Should keep the existing ${status} verify item`);
+      assert.strictEqual(verifyItems[0].status, 'pending', `Should re-open ${status} verify item`);
+      assert.strictEqual(verifyItems[0]._reopened, true, `Should mark ${status} verify item as reopened`);
+      assert.strictEqual(verifyItems[0]._retryCount, 0, `Should reset retry count for ${status} verify item`);
+      assert.ok(!verifyItems[0].completedAt, `Should clear completedAt for ${status} verify item`);
+      assert.ok(!verifyItems[0].dispatched_at, `Should clear dispatched_at for ${status} verify item`);
+      assert.ok(!verifyItems[0].dispatched_to, `Should clear dispatched_to for ${status} verify item`);
+    }
+  }, cleanup);
+
   restore();
 }
 
