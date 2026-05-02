@@ -17,6 +17,14 @@ Branch: `{{pr_branch}}`
 
 {{review_note}}
 
+## Finding Triage
+
+Before editing, split the feedback into:
+
+- **Blocking findings to fix:** correctness, safety, build/test failure, missing requested behavior, broken compatibility, or review comments explicitly required for approval.
+- **Findings to answer with rationale:** comments where the current approach is intentionally correct, the reviewer misunderstood the code, or the requested change would broaden the PR beyond its purpose.
+- **Non-blocking suggestions:** style, optional refactors, extra docs, or enhancements that are not required for approval. Do not implement these unless they are necessary to resolve a blocking issue.
+
 ## Health Check
 
 Before starting work, run `git status` and verify the worktree is clean and on the expected branch (`{{pr_branch}}`). If the worktree is dirty or on the wrong branch, report the issue and stop.
@@ -42,6 +50,7 @@ Before pushing, prove the review fix did not break the branch:
 
 - Use the project's source of truth for commands: `CLAUDE.md`, README, package scripts, Makefile, or equivalent build config.
 - Run checks that are relevant to the addressed findings. Prefer the full suite when practical.
+- Capture the exact commands run and meaningful results in the PR comment and completion report.
 - Fix regressions you introduced. If failures are pre-existing or unrelated, capture the evidence and include it in the PR comment.
 - Do not push code that breaks existing tests or the build because of your changes.
 

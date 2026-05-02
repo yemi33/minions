@@ -23,7 +23,14 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
    git diff {{main_branch}}...origin/{{pr_branch}}
    ```
 
-2. For each changed file, verify:
+2. Think about deploy risk before commenting:
+   - What user-visible behavior changed?
+   - What dependencies, callers, or tests could be affected?
+   - What security, data-loss, concurrency, or compatibility risks are plausible for this diff?
+
+3. Run or inspect the repo's documented checks when practical. Use `CLAUDE.md`, README, package scripts, Makefile, or equivalent as the command source of truth, and record the exact commands/results in the review body.
+
+4. For each changed file, verify:
    - Does it follow existing patterns?
    - Are file paths and imports correct?
    - Follows the project's logging conventions (check CLAUDE.md)?
@@ -31,14 +38,19 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
    - Tests cover the important logic?
    - No security issues (injection, unsanitized input)?
 
-3. Do NOT blindly approve. If you find real issues:
+5. Classify findings by ship risk:
+   - **Blocking:** failing checks, security/data-loss risk, broken existing behavior, missing requested behavior, invalid API/schema/data migration, or tests that do not cover changed critical logic.
+   - **Non-blocking:** style preferences, minor refactors, optional documentation, low-risk performance ideas, or additional tests that are useful but not required for safety.
+
+6. Do NOT blindly approve. If you find real blocking issues:
    - Verdict: **REQUEST_CHANGES**
    - List specific issues with file paths and line numbers
    - Describe what needs to change
 
-4. If the code is genuinely ready:
+7. If the code is genuinely ready:
    - Verdict: **APPROVE**
    - Note any minor non-blocking suggestions
+   - Do not request changes for nits, speculative edge cases, or unrelated improvements
 
 ## Post Review — Submit your verdict
 
@@ -54,6 +66,19 @@ Your review body **MUST** start with one of these verdict lines (exactly as show
 
 Follow the verdict line with your detailed review findings, then sign off:
 - Sign: `Review by Minions ({{agent_name}} — {{agent_role}})`
+
+Use this structure after the verdict:
+
+```markdown
+Automated checks:
+- `<command>`: pass/fail/skipped — short result or reason
+
+Blocking issues:
+- None, or `path:line` — issue and required fix
+
+Non-blocking suggestions:
+- None, or `path:line` — suggestion
+```
 
 After running the command, confirm it succeeded (check the command output for errors). If it fails, retry once.
 

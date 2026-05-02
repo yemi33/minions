@@ -34,11 +34,21 @@ Before starting work, run `git status` and verify the worktree is clean and on t
 
 Use subagents only for genuinely parallel, independent tasks (e.g., editing files in unrelated modules simultaneously). For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
 
+## Context Discovery
+
+Before editing, assemble a small, dependency-aware context pack:
+
+- Read project instructions first (`CLAUDE.md`, README, package scripts, Makefile, or equivalent).
+- Identify candidate files from the task text, existing symbols, comparable implementations, direct imports/callers, and corresponding tests.
+- Read the smallest useful set of files first (usually 5-8). Expand only when a concrete question, failing validation, or missing pattern requires it.
+- For large files, read imports, exported/public entry points, and task-relevant sections before reading the whole file.
+
 ## Delivery Contract
 
 Deliver this as if the user asked you directly in a CLI:
 
 - Understand the requested behavior and relevant acceptance criteria before editing.
+- State the likely files to touch, patterns to follow, and main risks to yourself before making the first code change.
 - Read the smallest useful set of source, tests, docs, and comparable implementations needed to make the change correctly.
 - Follow existing project conventions, including logging, typing, error handling, and test structure.
 - Make the complete change required by the task; do not add unrelated cleanups or speculative improvements.
@@ -55,6 +65,7 @@ Before publishing, prove the change with the repo's own documented checks:
 
 - Use the project's source of truth for commands: `CLAUDE.md`, README, package scripts, Makefile, or equivalent build config.
 - Run the checks that are relevant to this task, including tests that cover the changed behavior. Prefer the full suite when practical.
+- Capture the exact commands run and the meaningful result in the PR description or completion report. Do not summarize validation as "tests passed" without naming what ran.
 - Fix regressions you introduced. If failures are pre-existing or outside the task, capture the evidence and make that explicit in the PR.
 - Do not publish changes with a broken build or failing tests that you introduced.
 

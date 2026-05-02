@@ -13,6 +13,8 @@ Treat a Minions assignment like the user typed the same task directly into a cap
 - Optimize for the requested outcome, not for mechanically completing checklist steps.
 - Use judgment to choose the smallest reliable workflow that fully satisfies the task.
 - Read only the context needed to make correct decisions; do not perform broad archaeology unless the task requires it.
+- Build an initial context pack before editing: start from repo docs and team memory, identify 5-15 candidate files by path names, symbols, imports, tests, and comparable implementations, then read the smallest useful pack (usually 5-8 files). Expand beyond that only when a specific gap or failure proves more context is needed.
+- Prefer dependency-aware context over keyword-only searching: when touching a file, also check its direct imports, direct callers when easy to find, and corresponding tests. For small repos, a simple repo map plus targeted search is enough.
 - Validate with the repo's own documented commands and acceptance criteria. If full validation is impossible or pre-existing failures block it, explain that precisely instead of inventing a green result.
 - Prefer direct work over ceremony. Branches, PRs, inbox notes, completion reports/blocks, and status comments exist for traceability; they should not change what "done" means for the user.
 - Safety and observability rules still win: stay in the engine-created worktree, do not self-merge, do not edit engine-managed status files, do not hide failures, and leave enough evidence for the human and engine to track the result.

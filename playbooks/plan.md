@@ -28,12 +28,14 @@ A user has described a feature they want built. Your job is to create a detailed
 - Map the areas of code that this feature will touch
 - Identify existing patterns, conventions, and extension points
 - Note dependencies and potential conflicts with in-progress work
+- Build a concise context pack before planning: start with 5-15 candidate files from paths, symbols, comparable implementations, imports/callers, and tests; read the smallest useful set (usually 5-8 files) and expand only for specific unknowns
 
 ### 3. Design the Approach
 - Outline the high-level architecture for the feature
 - Identify what needs to be created vs modified
 - Consider edge cases, error handling, and backwards compatibility
 - Note any prerequisites or migrations needed
+- Record non-obvious design decisions with the alternatives considered and why the chosen option best fits existing architecture
 
 ### 4. Break Down into Work Items
 - Decompose into discrete, PR-sized chunks of work
