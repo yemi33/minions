@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1681 (2026-05-02)
+
+### Features
+-  plan completion lifecycle audit fixes (#1982)
+
 ## 0.1.1680 (2026-05-02)
 
 ### Other
