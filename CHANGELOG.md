@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1686 (2026-05-02)
+
+### Fixes
+- prevent interactive az auth in agents (#1991)
+
 ## 0.1.1685 (2026-05-02)
 
 ### Features
