@@ -2976,6 +2976,13 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
     assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
   });
+
+  await test('normalizeRuntimeExit preserves code and maps signal/null exits', () => {
+    assert.strictEqual(spawnAgent.normalizeRuntimeExit(0, null), 0);
+    assert.strictEqual(spawnAgent.normalizeRuntimeExit(2, null), 2);
+    assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, 'SIGTERM'), 128);
+    assert.strictEqual(spawnAgent.normalizeRuntimeExit(null, null), 1);
+  });
 }
 
 async function testClassifyInboxItem() {
@@ -12056,6 +12063,36 @@ async function testResolveAgent() {
     } finally { restore(); }
   });
 
+  await test('resolveAgent lowercases normalized work type for routing lookup', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const routingPath = path.join(process.env.MINIONS_TEST_DIR, 'routing.md');
+      fs.writeFileSync(routingPath, [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| implement | dallas | ralph |',
+        '| review | ripley | rebecca |',
+        ''
+      ].join('\n'));
+      for (const m of ['../engine/shared', '../engine/queries', '../engine/routing']) {
+        try { delete require.cache[require.resolve(m)]; } catch {}
+      }
+      const routing = require(path.join(MINIONS_DIR, 'engine', 'routing'));
+      routing.resetClaimedAgents();
+      const config = {
+        agents: {
+          dallas: { name: 'Dallas' },
+          ralph: { name: 'Ralph' },
+          ripley: { name: 'Ripley' },
+          rebecca: { name: 'Rebecca' },
+        },
+        engine: { allowTempAgents: false },
+      };
+      assert.strictEqual(routing.resolveAgent('Review', config), 'ripley');
+    } finally { restore(); }
+  });
+
   await test('engine work-item discovery passes preferred_agent/agents to resolveAgent', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
@@ -20064,6 +20101,18 @@ async function testDispatchCycleIntegration() {
       'engine.js must define tickInner');
     assert.ok(engineSrc.includes('slotsAvailable') && engineSrc.includes('maxConcurrent'),
       'tickInner must check slotsAvailable derived from maxConcurrent');
+  });
+
+  await test('resolveMaxConcurrent preserves zero and rejects empty legacy fallback', () => {
+    const engine = require(path.join(MINIONS_DIR, 'engine.js'));
+    assert.strictEqual(engine.resolveMaxConcurrent({ engine: { maxConcurrent: 0 } }), 0);
+    assert.strictEqual(engine.resolveMaxConcurrent({ engine: { maxConcurrent: '0' } }), 0);
+    assert.strictEqual(
+      engine.resolveMaxConcurrent({ engine: { maxConcurrent: '' } }),
+      shared.ENGINE_DEFAULTS.maxConcurrent
+    );
+    assert.ok(!engineSrcRaw.includes('config.engine?.maxConcurrent || 5'),
+      'engine.js must not use || fallback that ignores maxConcurrent:0');
   });
 
   // ── Agent spawn (3 tests) ──

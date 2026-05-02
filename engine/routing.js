@@ -125,7 +125,8 @@ function normalizeWorkType(workType, fallback = WORK_TYPE.IMPLEMENT) {
 
 function routeForWorkType(workType) {
   const routes = getRoutingTableCached();
-  return routes[normalizeWorkType(workType)] || routes[WORK_TYPE.IMPLEMENT] || { preferred: ANY_AGENT, fallback: ANY_AGENT };
+  const routeKey = normalizeWorkType(workType).toLowerCase();
+  return routes[routeKey] || routes[WORK_TYPE.IMPLEMENT] || { preferred: ANY_AGENT, fallback: ANY_AGENT };
 }
 
 function isAgentHardPinned(item) {

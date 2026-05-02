@@ -122,6 +122,12 @@ function buildSpawnInvocation({ runtime, resolved, promptText, sysPromptText, op
   };
 }
 
+function normalizeRuntimeExit(code, signal) {
+  if (Number.isInteger(code)) return code;
+  if (signal) return 128;
+  return 1;
+}
+
 // ─── Main script execution ──────────────────────────────────────────────────
 
 function _installHint(name, runtime) {
@@ -278,12 +284,13 @@ function main() {
   }, MCP_STARTUP_TIMEOUT);
   proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });
 
-  proc.on('close', (code) => {
+  proc.on('close', (code, signal) => {
     clearTimeout(startupTimer);
+    const exitCode = normalizeRuntimeExit(code, signal);
     // Write process-exit sentinel to stdout so the engine can detect completion (#716).
-    try { process.stdout.write(`\n[process-exit] code=${code}\n`); } catch { /* stdout may be closed */ }
-    fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
-    process.exit(code || 0);
+    try { process.stdout.write(`\n[process-exit] code=${exitCode}${signal ? ` signal=${signal}` : ''}\n`); } catch { /* stdout may be closed */ }
+    fs.appendFileSync(debugPath, `EXIT: code=${exitCode}${signal ? ` signal=${signal}` : ''}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
+    process.exit(exitCode);
   });
   proc.on('error', (err) => {
     fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
@@ -291,6 +298,6 @@ function main() {
   });
 }
 
-module.exports = { parseSpawnArgs, buildSpawnInvocation };
+module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit };
 
 if (require.main === module) main();

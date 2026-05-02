@@ -3543,7 +3543,7 @@ async function discoverWork(config) {
   );
   if (hasIncompleteImplements) {
     const activeCount = (getDispatch().active || []).length;
-    const maxConcurrent = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
+    const maxConcurrent = resolveMaxConcurrent(config);
     const freeSlots = Math.max(0, maxConcurrent - activeCount);
     if (freeSlots === 0) {
       if (allReviews.length > 0) {
@@ -3628,6 +3628,13 @@ function persistPendingDispatchAgent(item) {
 
 function isSoftFixDispatch(item) {
   return item?.type === WORK_TYPE.FIX && !routing.isAgentHardPinned(item.meta?.item);
+}
+
+function resolveMaxConcurrent(config) {
+  const raw = config?.engine?.maxConcurrent;
+  if (raw === undefined || raw === null || raw === '') return ENGINE_DEFAULTS.maxConcurrent;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : ENGINE_DEFAULTS.maxConcurrent;
 }
 
 // ─── Main Tick ──────────────────────────────────────────────────────────────
@@ -3936,7 +3943,7 @@ async function tickInner() {
   {
     const dispatchPre = getDispatch();
     const activeCountPre = (dispatchPre.active || []).length;
-    const maxC = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
+    const maxC = resolveMaxConcurrent(config);
     setTempBudget(Math.max(0, maxC - activeCountPre));
   }
   try { pruneStalePrDispatches(config); } catch (e) { log('warn', 'prune stale PR dispatches: ' + e.message); }
@@ -3954,7 +3961,7 @@ async function tickInner() {
   // 5. Process pending dispatches — auto-spawn agents
   const dispatch = getDispatch();
   const activeCount = (dispatch.active || []).length;
-  const maxConcurrent = config.engine?.maxConcurrent || 5;
+  const maxConcurrent = resolveMaxConcurrent(config);
 
   const slotsAvailable = Math.max(0, maxConcurrent - activeCount);
 
@@ -4254,7 +4261,7 @@ module.exports = {
 
   // Tick
   tick,
-  _pollIntervalMsFromTicks, _shouldRunPeriodicPhase, // exported for testing
+  resolveMaxConcurrent, _pollIntervalMsFromTicks, _shouldRunPeriodicPhase, // exported for testing
 };
 
 // ─── Entrypoint ─────────────────────────────────────────────────────────────
