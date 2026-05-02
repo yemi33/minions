@@ -1767,6 +1767,16 @@ function buildWiDescription(item, planFile) {
 
 function materializePlansAsWorkItems(config) {
   if (!fs.existsSync(PRD_DIR)) { try { fs.mkdirSync(PRD_DIR, { recursive: true }); } catch (e) { log('warn', 'create PRD directory: ' + e.message); } }
+  const writePrdLocked = (fileName, data) => {
+    return mutateJsonFileLocked(path.join(PRD_DIR, fileName), () => data, { defaultValue: data });
+  };
+  const mutatePrdLocked = (fileName, fallback, mutator, options = {}) => {
+    return mutateJsonFileLocked(path.join(PRD_DIR, fileName), (current) => {
+      if (!current?.missing_features && fallback?.missing_features) current = fallback;
+      if (!current || Array.isArray(current) || typeof current !== 'object') current = {};
+      return mutator(current) || current;
+    }, { defaultValue: fallback || {}, ...options });
+  };
 
   // Enforce: PRDs must be .json — auto-rename .md files that contain valid PRD JSON
   // Check both prd/ and plans/ (agents may still write JSON to plans/)
@@ -1782,7 +1792,7 @@ function materializePlansAsWorkItems(config) {
           const parsed = JSON.parse(stripped);
           if (parsed.missing_features) {
             const jsonName = mf.replace(/\.md$/, '.json');
-            safeWrite(path.join(PRD_DIR, jsonName), parsed);
+            writePrdLocked(jsonName, parsed);
             try { fs.unlinkSync(path.join(checkDir, mf)); } catch { /* cleanup */ }
             log('info', `Plan enforcement: moved ${mf} → prd/${jsonName} (PRDs must be .json in prd/)`);
           }
@@ -1797,7 +1807,7 @@ function materializePlansAsWorkItems(config) {
           try {
             const parsed = safeJson(path.join(PLANS_DIR, jf));
             if (parsed?.missing_features) {
-              safeWrite(path.join(PRD_DIR, jf), parsed);
+              writePrdLocked(jf, parsed);
               try { fs.unlinkSync(path.join(PLANS_DIR, jf)); } catch { /* cleanup */ }
               log('info', `Auto-migrated PRD ${jf} from plans/ to prd/`);
             }
@@ -1814,7 +1824,7 @@ function materializePlansAsWorkItems(config) {
   const SEQUENTIAL_ID_RE = /^P-?\d+$/;
 
   for (const file of planFiles) {
-    const plan = safeJson(path.join(PRD_DIR, file));
+    let plan = safeJson(path.join(PRD_DIR, file));
     if (!plan?.missing_features) continue;
 
     // ID collision prevention: remap sequential IDs (P-001, P-002) to globally unique P-<uid> IDs.
@@ -1826,19 +1836,25 @@ function materializePlansAsWorkItems(config) {
         const anyMaterialized = plan.missing_features.some(f =>
           SEQUENTIAL_ID_RE.test(f.id) && allWorkItems.some(w => w.id === f.id && w.sourcePlan === file));
         if (!anyMaterialized) {
-          const idMap = new Map();
-          for (const f of plan.missing_features) {
-            if (SEQUENTIAL_ID_RE.test(f.id)) {
-              const newId = 'P-' + shared.uid();
-              idMap.set(f.id, newId);
-              f.id = newId;
+          let remappedCount = 0;
+          plan = mutatePrdLocked(file, plan, (current) => {
+            const features = Array.isArray(current.missing_features) ? current.missing_features : [];
+            if (!features.some(f => SEQUENTIAL_ID_RE.test(f.id))) return current;
+            const idMap = new Map();
+            for (const f of features) {
+              if (SEQUENTIAL_ID_RE.test(f.id)) {
+                const newId = 'P-' + shared.uid();
+                idMap.set(f.id, newId);
+                f.id = newId;
+              }
             }
-          }
-          for (const f of plan.missing_features) {
-            if (f.depends_on) f.depends_on = f.depends_on.map(d => idMap.get(d) || d);
-          }
-          safeWrite(path.join(PRD_DIR, file), plan);
-          log('info', `Remapped ${idMap.size} sequential ID(s) in ${file} to prevent cross-PRD collisions`);
+            for (const f of features) {
+              if (f.depends_on) f.depends_on = f.depends_on.map(d => idMap.get(d) || d);
+            }
+            remappedCount = idMap.size;
+            return current;
+          });
+          if (remappedCount > 0) log('info', `Remapped ${remappedCount} sequential ID(s) in ${file} to prevent cross-PRD collisions`);
         }
       }
     } catch (e) { log('warn', `Sequential ID remapping failed for ${file}: ${e.message}`); }
@@ -1851,25 +1867,26 @@ function materializePlansAsWorkItems(config) {
         const recorded = plan.sourcePlanModifiedAt ? new Date(plan.sourcePlanModifiedAt).getTime() : null;
         if (!recorded) {
           // First time seeing this plan — record baseline mtime (no clean needed)
-          plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
-          safeWrite(path.join(PRD_DIR, file), plan);
+          plan = mutatePrdLocked(file, plan, (current) => {
+            if (!current.sourcePlanModifiedAt) current.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
+            return current;
+          }, { skipWriteIfUnchanged: true });
         } else if (sourceMtime > recorded) {
           // Source plan changed — auto-clean pending/failed items so they re-materialize with updated data
           log('info', `Source plan ${plan.source_plan} updated — re-syncing PRD ${file}`);
           autoCleanPrdWorkItems(file, config);
-          plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
-          plan.lastSyncedFromPlan = ts();
 
           // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          // Flag stale for all statuses — user decides when to regenerate/resume from dashboard
-          if (prdStatus) {
-            plan.planStale = true;
-            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
-          }
-
-          safeWrite(path.join(PRD_DIR, file), plan);
+          plan = mutatePrdLocked(file, plan, (current) => {
+            current.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
+            current.lastSyncedFromPlan = ts();
+            const currentPrdStatus = current.status || (current.requires_approval ? 'awaiting-approval' : null);
+            if (currentPrdStatus) current.planStale = true;
+            return current;
+          });
+          if (prdStatus) log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
         }
       } catch (e) { log('warn', 'plan staleness check: ' + e.message); }
     }
@@ -1879,10 +1896,12 @@ function materializePlansAsWorkItems(config) {
     const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
     if (planStatus === 'awaiting-approval') {
       if (config.engine?.autoApprovePlans) {
-        plan.status = 'approved';
-        plan.approvedAt = ts();
-        plan.approvedBy = 'auto-mode';
-        safeWrite(path.join(PRD_DIR, file), plan);
+        plan = mutatePrdLocked(file, plan, (current) => {
+          current.status = 'approved';
+          current.approvedAt = ts();
+          current.approvedBy = 'auto-mode';
+          return current;
+        });
         log('info', `Auto-approved plan: ${file}`);
       } else {
         continue; // Skip — waiting for human approval

@@ -6800,7 +6800,7 @@ async function testPrdStaleInvalidation() {
 
   await test('engine.js flags all revised PRDs as stale (user decides when to regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'Should set planStale flag when source plan changes');
     assert.ok(src.includes('user can regenerate from dashboard'),
       'Should log that user can regenerate');
@@ -6808,7 +6808,7 @@ async function testPrdStaleInvalidation() {
 
   await test('All PRD statuses flagged stale on plan revision (no auto-regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'All statuses should be flagged stale');
     assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
       'Should NOT auto-delete/regenerate awaiting-approval PRDs');
@@ -6846,7 +6846,7 @@ async function testPrdStaleInvalidation() {
 
   await test('Stale flag set for all statuses with single code path', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'Should set planStale flag');
     assert.ok(src.includes('user can regenerate from dashboard'),
       'Should log that user can regenerate');
@@ -20541,6 +20541,16 @@ async function testDispatchCycleIntegration() {
       'engine.js must update depends_on references when remapping IDs');
     assert.ok(engineSrc.includes('Remapped'),
       'engine.js must log when sequential IDs are remapped');
+  });
+
+  await test('materializePlansAsWorkItems writes PRD JSON via mutateJsonFileLocked', () => {
+    const fnStart = engineSrc.indexOf('function materializePlansAsWorkItems');
+    const fnEnd = engineSrc.indexOf('\n// buildBaseVars', fnStart);
+    const fnBody = engineSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 12000);
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'materializePlansAsWorkItems should use mutateJsonFileLocked for PRD JSON writes');
+    assert.ok(!fnBody.includes('safeWrite(path.join(PRD_DIR'),
+      'materializePlansAsWorkItems must not safeWrite PRD files outside the PRD file lock');
   });
 
   await test('SEQUENTIAL_ID_RE matches sequential patterns and rejects uuid patterns', () => {
