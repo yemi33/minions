@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1669 (2026-05-02)
+
+### Features
+- gate pendingFix clear (#1964)
+
 ## 0.1.1668 (2026-05-01)
 
 ### Fixes
