@@ -498,7 +498,6 @@ function openWorkItemDetail(id) {
       }
     });
   }
-  if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escapeHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escapeHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 
   if (item._totalCostUsd != null) html += field('Cumulative Cost', '$' + Number(item._totalCostUsd).toFixed(4));
