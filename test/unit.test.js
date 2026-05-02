@@ -181,6 +181,20 @@ async function testSharedUtilities() {
     assert.deepStrictEqual(shared.safeJson(fp), { deep: true });
   });
 
+  await test('neutralizeJsonBackupSidecar surfaces fallback write failures', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'plan.json');
+    const backupPath = fp + '.backup';
+    fs.mkdirSync(backupPath);
+
+    const result = shared.neutralizeJsonBackupSidecar(fp);
+
+    assert.strictEqual(result.ok, false, 'cleanup should fail when unlink and fallback write both fail');
+    assert.strictEqual(result.backupPath, backupPath);
+    assert.ok(result.unlinkError, 'unlink error should be surfaced');
+    assert.ok(result.writeError, 'fallback write error should be surfaced');
+  });
+
   await test('mutateControl preserves concurrent control.json fields', () => {
     const restore = createTestMinionsDir();
     try {
@@ -7146,6 +7160,10 @@ async function testPrdStaleInvalidation() {
       'handlePlansArchive should mark archived PRD status under the archivePath lock');
     assert.ok(!archiveBody.includes('safeWrite(archivePath'),
       'handlePlansArchive must not write archived PRD JSON with unlocked safeWrite(archivePath, ...)');
+    assert.ok(archiveBody.includes('neutralizeJsonBackupSidecar(planPath'),
+      'handlePlansArchive should neutralize stale active PRD backup sidecars through the shared helper');
+    assert.ok(archiveBody.includes('archiveWarnings') && archiveBody.includes('payload.warnings'),
+      'handlePlansArchive should surface backup cleanup failures in the API response');
   });
 
   await test('plan-to-prd playbook has diff-aware update instructions', () => {
@@ -16882,6 +16900,15 @@ async function testVerifyWorkflow() {
     assert.ok(fs.existsSync(path.join(prdArchiveDir, testPlanFile)),
       'Archived PRD should still exist');
   }, cleanup);
+
+  await test('verify: archivePlan surfaces backup cleanup failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const archiveFn = src.slice(src.indexOf('function archivePlan'), src.indexOf('/**', src.indexOf('function archivePlan')));
+    assert.ok(archiveFn.includes('neutralizeJsonBackupSidecar(planPath'),
+      'archivePlan should use the shared backup cleanup helper');
+    assert.ok(archiveFn.includes('Archive backup cleanup failed') && archiveFn.includes("log('warn'"),
+      'archivePlan should warn when backup removal and fallback neutralization both fail');
+  });
 
   // ── 7. Plan status persisted to disk before archive ──
   await test('verify: plan status=completed and _completionNotified persisted to disk', () => {

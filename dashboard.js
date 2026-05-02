@@ -3921,6 +3921,7 @@ const server = http.createServer(async (req, res) => {
 
       let archivedSource = null;
       let plan = {};
+      const archiveWarnings = [];
       if (isPrd) {
         try {
           plan = mutateJsonFileLocked(archivePath, (data) => {
@@ -3932,9 +3933,11 @@ const server = http.createServer(async (req, res) => {
           // Without removing the .backup sidecar, safeJson would auto-restore the
           // pre-completion snapshot on engine restart, re-triggering plan completion
           // and spawning duplicate verify tasks (regression of #f28162b0).
-          const backupPath = planPath + '.backup';
-          try { fs.unlinkSync(backupPath); } catch {
-            try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { /* best-effort */ }
+          const backupCleanup = shared.neutralizeJsonBackupSidecar(planPath);
+          if (!backupCleanup.ok) {
+            const warning = `Archive backup cleanup failed for ${body.file}: unlink failed (${backupCleanup.unlinkError}); fallback neutralize failed (${backupCleanup.writeError})`;
+            archiveWarnings.push(warning);
+            console.warn(warning);
           }
           if (plan.source_plan) {
             const mdPath = path.join(PLANS_DIR, plan.source_plan);
@@ -3973,7 +3976,9 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { console.error('plan worktree cleanup:', e.message); }
 
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource, cancelledItems });
+      const payload = { ok: true, archived: body.file, archivedSource, cancelledItems };
+      if (archiveWarnings.length > 0) payload.warnings = archiveWarnings;
+      return jsonReply(res, 200, payload);
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 

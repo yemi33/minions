@@ -212,6 +212,33 @@ function safeUnlink(p) {
   try { fs.unlinkSync(p); } catch { /* cleanup */ }
 }
 
+function neutralizeJsonBackupSidecar(filePath, inertData = { status: 'archived' }) {
+  const backupPath = filePath + '.backup';
+  try {
+    fs.unlinkSync(backupPath);
+    return { ok: true, action: 'removed', backupPath };
+  } catch (unlinkErr) {
+    if (unlinkErr.code === 'ENOENT') return { ok: true, action: 'absent', backupPath };
+    try {
+      safeWrite(backupPath, inertData);
+      return {
+        ok: true,
+        action: 'neutralized',
+        backupPath,
+        unlinkError: unlinkErr.message,
+      };
+    } catch (writeErr) {
+      return {
+        ok: false,
+        action: 'failed',
+        backupPath,
+        unlinkError: unlinkErr.message,
+        writeError: writeErr.message,
+      };
+    }
+  }
+}
+
 // ── Dispatch Prompt Sidecar (#1167) ─────────────────────────────────────────
 // Large prompts (PR diffs, build error logs, coalesced human feedback) inlined
 // into dispatch.json caused hundreds-of-MB bloat per entry and eventual V8 OOM
@@ -2387,6 +2414,7 @@ module.exports = {
   safeJson, safeJsonObj, safeJsonArr,
   safeWrite,
   safeUnlink,
+  neutralizeJsonBackupSidecar,
   PROMPT_CONTEXTS_DIR,
   dispatchPromptSidecarPath,
   dispatchCompletionReportPath,

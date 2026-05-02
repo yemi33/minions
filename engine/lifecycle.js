@@ -368,9 +368,9 @@ function archivePlan(planFile, plan, projects, config) {
     // plan completion and spawning duplicate verify tasks for already-archived plans.
     // On Windows, the unlink can fail due to file locking; overwrite with archived status
     // as a fallback so a restored backup is inert even if deletion fails.
-    const backupPath = planPath + '.backup';
-    try { fs.unlinkSync(backupPath); } catch {
-      try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { }
+    const backupCleanup = shared.neutralizeJsonBackupSidecar(planPath);
+    if (!backupCleanup.ok) {
+      log('warn', `Archive backup cleanup failed for ${planFile}: unlink failed (${backupCleanup.unlinkError}); fallback neutralize failed (${backupCleanup.writeError})`);
     }
   } catch (err) {
     log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
