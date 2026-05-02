@@ -35,6 +35,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execSync } = require('child_process');
 const { runFile, cleanChildEnv, killGracefully, killImmediate, ts } = require('./shared');
 const { resolveRuntime } = require('./runtimes');
 
@@ -128,6 +129,27 @@ function normalizeRuntimeExit(code, signal) {
   return 1;
 }
 
+function injectAdoTokenEnv(env, { execSync: _execSync = execSync, warn = (msg) => process.stderr.write(msg + '\n') } = {}) {
+  let token;
+  try {
+    token = String(_execSync('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    }) || '').trim();
+  } catch (err) {
+    warn(`spawn-agent.js: ADO token fetch failed: ${err.message}`);
+    return false;
+  }
+  if (!token || !token.startsWith('eyJ')) {
+    warn('spawn-agent.js: invalid ADO token from azureauth; continuing without Azure DevOps PAT env');
+    return false;
+  }
+  env.AZURE_DEVOPS_EXT_PAT = token;
+  env.AZURE_DEVOPS_EXT_AZURE_RM_PAT = token;
+  return true;
+}
+
 const PROCESS_EXIT_SENTINEL_FLUSH_TIMEOUT_MS = 2000;
 
 function formatProcessExitSentinel(exitCode, signal) {
@@ -200,6 +222,7 @@ function main() {
   const { promptFile, sysPromptFile, runtimeName, opts, passthrough } = parsed;
 
   const env = cleanChildEnv();
+  injectAdoTokenEnv(env);
 
   let runtime;
   try { runtime = resolveRuntime(runtimeName); }
@@ -355,6 +378,6 @@ function main() {
   });
 }
 
-module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, writeProcessExitSentinel };
+module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv, writeProcessExitSentinel };
 
 if (require.main === module) main();
