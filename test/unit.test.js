@@ -15378,6 +15378,29 @@ async function testExtractSkills() {
     }
   });
 
+  await test('extractSkillsFromOutput uses Copilot-native personal skill target for Copilot agents', () => {
+    const tmpHome = createTmpDir();
+    // Restore via delete-when-originally-unset; otherwise `process.env.X = undefined`
+    // sets the var to the literal string "undefined" and pollutes later tests.
+    const hadHome = 'HOME' in process.env;
+    const hadUserProfile = 'USERPROFILE' in process.env;
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    try {
+      const output = '```skill\n---\nname: copilot-workflow\ndescription: Copilot workflow\nscope: minions\n---\n\n# Copilot Workflow\n```';
+      lifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-001b', meta: { runtimeName: 'copilot' } }, testConfig);
+      const skillPath = path.join(tmpHome, '.copilot', 'skills', 'copilot-workflow', 'SKILL.md');
+      assert.ok(fs.existsSync(skillPath), 'Copilot-backed agents should write personal skills to ~/.copilot/skills');
+      assert.ok(!fs.existsSync(path.join(tmpHome, '.claude', 'skills', 'copilot-workflow', 'SKILL.md')),
+        'Copilot-backed agents should not write new personal skills to Claude-only directories');
+    } finally {
+      if (hadHome) process.env.HOME = origHome; else delete process.env.HOME;
+      if (hadUserProfile) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    }
+  });
+
   await test('extractSkillsFromOutput skips skill without name', () => {
     const output = '```skill\n---\ndescription: no name here\n---\n\n# Content\n```';
     // Should not throw — just logs a warning and skips
@@ -15432,8 +15455,28 @@ async function testExtractSkills() {
     const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
     assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
     assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
-    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item path should use directory/SKILL.md format, not flat .md');
+    assert.ok(skillWi.description.replace(/\\/g, '/').includes('app-deploy/SKILL.md'), 'Work item path should use directory/SKILL.md format, not flat .md');
     assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item path should NOT use flat .md format');
+  });
+
+  await test('extractSkillsFromOutput queues Copilot project skills to .github/skills', () => {
+    const testMinionsDir = process.env.MINIONS_TEST_DIR;
+    const projectDir = path.join(testMinionsDir, 'copilot-repo');
+    const projConfig = {
+      agents: { testbot: { name: 'TestBot' } }, engine: {},
+      projects: [{ name: 'CopilotApp', localPath: projectDir, repoHost: 'github' }]
+    };
+    fs.writeFileSync(path.join(testMinionsDir, 'config.json'), JSON.stringify(projConfig));
+    try { delete require.cache[require.resolve('../engine/shared')]; } catch {}
+    try { delete require.cache[require.resolve('../engine/lifecycle')]; } catch {}
+    const freshLifecycle = require('../engine/lifecycle');
+    const output = '```skill\n---\nname: copilot-project-skill\ndescription: Copilot project steps\nscope: project\nproject: CopilotApp\n---\n\n# Copilot Project Skill\n```';
+    freshLifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-007b', meta: { runtimeName: 'copilot' } }, projConfig);
+    const wi = JSON.parse(fs.readFileSync(path.join(testMinionsDir, 'work-items.json'), 'utf8'));
+    const skillWi = wi.find(w => w.title && w.title.includes('Add skill: copilot-project-skill'));
+    assert.ok(skillWi, 'Should queue a work item to PR the Copilot project-scoped skill');
+    assert.ok(skillWi.description.replace(/\\/g, '/').includes('.github/skills/copilot-project-skill/SKILL.md'),
+      'Copilot project skills should target .github/skills');
   });
 
   restore();
