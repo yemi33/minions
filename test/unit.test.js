@@ -5829,8 +5829,32 @@ async function testSyncPrdItemStatus() {
     assert.ok(fn.includes('queries.getWorkItems'),
       'reconcilePrdStatuses must use queries.getWorkItems to scan all work items');
     // Must write back modified PRD files
-    assert.ok(fn.includes('safeWrite'),
-      'reconcilePrdStatuses must write back modified PRD files');
+    assert.ok(fn.includes('mutateJsonFileLocked'),
+      'reconcilePrdStatuses must write back modified PRD files under the PRD file lock');
+    assert.ok(!fn.includes('safeWrite('),
+      'reconcilePrdStatuses must not safeWrite PRD files outside mutateJsonFileLocked');
+  });
+
+  await test('lifecycle PRD sync writes use mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const syncFn = src.slice(src.indexOf('function syncPrdItemStatus'), src.indexOf('// ─── PRD Backward-Scan'));
+    const reconcileFn = src.slice(src.indexOf('function reconcilePrdStatuses'), src.indexOf('// ─── PR Sync from Output'));
+    const postMergeStart = src.indexOf('// Mark PRD feature as implemented');
+    const postMergeEnd = src.indexOf('// Mark work item as done', postMergeStart);
+    const postMergePrdSync = src.slice(postMergeStart, postMergeEnd);
+
+    for (const [name, body] of [
+      ['syncPrdItemStatus', syncFn],
+      ['reconcilePrdStatuses', reconcileFn],
+      ['post-merge PRD sync', postMergePrdSync],
+    ]) {
+      assert.ok(body.includes('mutateJsonFileLocked'),
+        `${name} should use mutateJsonFileLocked for PRD JSON writes`);
+      assert.ok(!body.includes('safeWrite('),
+        `${name} must not safeWrite PRD files outside the PRD file lock`);
+      assert.ok(!body.includes('withFileLock'),
+        `${name} should use the shared JSON lock helper instead of hand-rolled file locking`);
+    }
   });
 
   await test('reconcilePrdStatuses does not crash when no PRD files exist (#929)', () => {

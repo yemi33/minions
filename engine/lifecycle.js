@@ -660,15 +660,14 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
       const feature = plan?.missing_features?.find(f => f.id === itemId);
       if (!feature || feature.status === status) continue;
       let updated = false;
-      shared.withFileLock(`${fpath}.lock`, () => {
-        const fresh = safeJson(fpath);
+      mutateJsonFileLocked(fpath, (fresh) => {
         const f = fresh?.missing_features?.find(x => x.id === itemId);
         if (f && f.status !== status) {
           f.status = status;
-          safeWrite(fpath, fresh);
           updated = true;
         }
-      });
+        return fresh;
+      }, { skipWriteIfUnchanged: true });
       if (updated) return;
     }
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
@@ -700,31 +699,28 @@ function reconcilePrdStatuses(config) {
   for (const file of prdFiles) {
     try {
       const fpath = path.join(PRD_DIR, file);
-      const plan = safeJson(fpath);
-      if (!plan?.missing_features) continue;
-      // Skip completed/archived PRDs — no reconciliation needed
-      if (plan.status === PLAN_STATUS.COMPLETED) continue;
+      const logMessages = [];
+      mutateJsonFileLocked(fpath, (plan) => {
+        if (!plan?.missing_features) return plan;
+        // Skip completed/archived PRDs — no reconciliation needed
+        if (plan.status === PLAN_STATUS.COMPLETED) return plan;
 
-      let modified = false;
-      for (const feature of plan.missing_features) {
-        if (feature.status === PRD_ITEM_STATUS.MISSING && doneWiById.has(feature.id)) {
-          feature.status = PRD_ITEM_STATUS.UPDATED;
-          modified = true;
-          log('info', `PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+        for (const feature of plan.missing_features) {
+          if (feature.status === PRD_ITEM_STATUS.MISSING && doneWiById.has(feature.id)) {
+            feature.status = PRD_ITEM_STATUS.UPDATED;
+            logMessages.push(`PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+          }
+          // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
+          // happens when fix work items complete with a different ID than the original PRD feature
+          else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
+            const prev = feature.status;
+            feature.status = WI_STATUS.DONE;
+            logMessages.push(`PRD backward-scan: promoted ${feature.id} from ${prev}→done in ${file} (done work item exists)`);
+          }
         }
-        // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
-        // happens when fix work items complete with a different ID than the original PRD feature
-        else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
-          const prev = feature.status;
-          feature.status = WI_STATUS.DONE;
-          modified = true;
-          log('info', `PRD backward-scan: promoted ${feature.id} from ${prev}→done in ${file} (done work item exists)`);
-        }
-      }
-
-      if (modified) {
-        safeWrite(fpath, plan);
-      }
+        return plan;
+      }, { skipWriteIfUnchanged: true });
+      for (const message of logMessages) log('info', message);
     } catch (err) { log('warn', `PRD backward-scan for ${file}: ${err.message}`); }
   }
 }
@@ -1626,19 +1622,17 @@ async function handlePostMerge(pr, project, config, newStatus) {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
       for (const pf of planFiles) {
-        const plan = safeJson(path.join(prdDir, pf));
-        if (!plan?.missing_features) continue;
-        let changed = false;
-        for (const feature of plan.missing_features) {
-          if (mergedItemSet.has(feature.id) && feature.status !== WI_STATUS.DONE) {
-            feature.status = WI_STATUS.DONE;
-            changed = true;
-            updated++;
+        const planPath = path.join(prdDir, pf);
+        mutateJsonFileLocked(planPath, (plan) => {
+          if (!plan?.missing_features) return plan;
+          for (const feature of plan.missing_features) {
+            if (mergedItemSet.has(feature.id) && feature.status !== WI_STATUS.DONE) {
+              feature.status = WI_STATUS.DONE;
+              updated++;
+            }
           }
-        }
-        if (changed) {
-          shared.safeWrite(path.join(prdDir, pf), plan);
-        }
+          return plan;
+        }, { skipWriteIfUnchanged: true });
       }
       if (updated > 0) log('info', `Post-merge: marked ${mergedItemIds.join(', ')} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
