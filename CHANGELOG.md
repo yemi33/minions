@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1683 (2026-05-02)
+
+### Fixes
+- rename Claude tab, merge plugins by runtime, fix detection and escaping
+
 ## 0.1.1682 (2026-05-02)
 
 ### Features
