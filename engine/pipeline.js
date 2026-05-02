@@ -486,6 +486,7 @@ async function executePlanStage(stage, stageState, run, config) {
     const fullPrompt = meetingContext + '\n\n---\n\n' + planPrompt;
     const result = await llm.callLLM(fullPrompt, '', {
       timeout: 120000, label: 'pipeline-plan', model: 'sonnet', maxTurns: 1,
+      engineConfig: config.engine,
     });
     if (result.text) {
       content = result.text;

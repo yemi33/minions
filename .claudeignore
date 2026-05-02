@@ -1,0 +1,5 @@
+agents/
+engine/tmp/
+engine/contexts/
+prd/*.backup
+plans/archive/

@@ -20,7 +20,7 @@
 | `capabilities.systemPromptFile` | **`false`** | No `--system-prompt-file` flag exists. Inject system prompt via a `<system>` block prepended to stdin. |
 | `capabilities.effortLevels` | **`true`** | `--effort` accepts `low|medium|high|xhigh` (no `max`). Adapter must map `'max' → 'xhigh'`. |
 | `capabilities.costTracking` | **`false`** | `result.usage` contains `premiumRequests` (count, not USD), no token counts, no cost. |
-| `capabilities.modelShorthands` | **`false`** | Models are full IDs (`claude-sonnet-4.5`, `gpt-5.4`). No `sonnet`/`opus`/`haiku` aliasing on the Copilot side. |
+| `capabilities.modelShorthands` | **`false`** | The Copilot CLI requires full model IDs (`claude-sonnet-4.5`, `gpt-5.4`). Minions may accept internal aliases (`haiku`, `sonnet`, `opus`), but the adapter translates them to Copilot model IDs before invoking the CLI. |
 | `capabilities.budgetCap` | **`false`** | No `--max-budget-usd` flag. |
 | `capabilities.bareMode` | **`false`** | No `--bare`. Closest equivalent is `--no-custom-instructions` (suppresses AGENTS.md only, not all auto-discovery). |
 | `capabilities.fallbackModel` | **`false`** | No `--fallback-model` flag. |
@@ -594,9 +594,11 @@ When implementing `engine/runtimes/copilot.js`:
    **Never** emit `--verbose`.
 4. `buildPrompt()` injects `<system>...</system>\n\n` block when sysprompt is
    non-empty; passthrough otherwise (§2).
-5. `resolveModel()` is verbatim passthrough; emit a one-time `console.warn`
-   when input is `'sonnet' | 'opus' | 'haiku'` (Claude shorthand the user
-   probably meant to set on the Claude adapter).
+5. `resolveModel()` translates Minions internal aliases before the CLI boundary:
+   `'haiku'` → `'claude-haiku-4.5'`, `'sonnet'` → `'claude-sonnet-4.5'`, and
+   `'opus'` → `'claude-opus-4.5'`. All other model IDs pass through unchanged.
+   Keep `capabilities.modelShorthands` false because aliases are never passed
+   to the Copilot CLI.
 6. `_mapEffort()` private helper does `'max' → 'xhigh'`; pass through otherwise.
 7. `parseOutput(raw)` produces:
    - `text`: concatenation of all `assistant.message.data.content` (multi-turn

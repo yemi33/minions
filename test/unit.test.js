@@ -1829,7 +1829,7 @@ async function testCopilotAdapter() {
     assert.strictEqual(out, '<system>\nsys\n</system>\n\n');
   });
 
-  // ── resolveModel + Claude-shorthand warning ──────────────────────────────
+  // ── resolveModel + Minions alias mapping ────────────────────────────────
 
   await test('copilot.resolveModel passes full model IDs verbatim', () => {
     assert.strictEqual(copilot.resolveModel('claude-sonnet-4.5'), 'claude-sonnet-4.5');
@@ -1838,25 +1838,18 @@ async function testCopilotAdapter() {
   });
 
   await test('copilot.resolveModel returns undefined for nullish/empty input (omit --model)', () => {
-    copilot._resetShorthandWarning();
     assert.strictEqual(copilot.resolveModel(null), undefined);
     assert.strictEqual(copilot.resolveModel(undefined), undefined);
     assert.strictEqual(copilot.resolveModel(''), undefined);
   });
 
-  await test('copilot.resolveModel logs ONE-TIME warning on Claude family shorthand', () => {
-    copilot._resetShorthandWarning();
+  await test('copilot.resolveModel maps Minions family aliases to Copilot model IDs without warning', () => {
     const warnings = [];
     const logger = { warn: (msg) => warnings.push(msg) };
-    // First shorthand call → emits warning AND passes value through verbatim
-    assert.strictEqual(copilot.resolveModel('sonnet', { logger }), 'sonnet');
-    assert.strictEqual(warnings.length, 1, 'expected 1 warning on first shorthand');
-    assert.ok(/sonnet/.test(warnings[0]));
-    // Subsequent calls: no additional warnings
-    copilot.resolveModel('opus', { logger });
-    copilot.resolveModel('haiku', { logger });
-    copilot.resolveModel('claude-opus-4.5', { logger });
-    assert.strictEqual(warnings.length, 1, 'shorthand warning must be one-time per process');
+    assert.strictEqual(copilot.resolveModel('haiku', { logger }), 'claude-haiku-4.5');
+    assert.strictEqual(copilot.resolveModel('sonnet', { logger }), 'claude-sonnet-4.5');
+    assert.strictEqual(copilot.resolveModel('opus', { logger }), 'claude-opus-4.5');
+    assert.strictEqual(warnings.length, 0, 'alias translation should not warn');
   });
 
   // ── _mapEffort (private helper, exposed for testing) ─────────────────────
@@ -3463,6 +3456,22 @@ async function testRuntimeFleetHelpers() {
     );
     assert.ok(/listRuntimes\(\)/.test(handler),
       'CLI validation must consult engine/runtimes.listRuntimes() so a typo in the dashboard cannot pin the fleet to a non-existent runtime');
+  });
+
+  await test('dashboard.js handleSettingsUpdate validates published runtime models after adapter alias resolution', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    assert.ok(handler.includes('resolveRuntime(runtimeName)') && handler.includes('adapter.resolveModel(modelStr)'),
+      'fleet/agent validation must share a helper that routes through the runtime adapter for alias resolution');
+    assert.ok(handler.includes('knownForResolved.has(runtimeModelStr)'),
+      'fleet model validation must compare the adapter-resolved model ID against known model IDs');
+    assert.ok(handler.includes('_resolveModelForRuntime(candidate, resolvedCli)') && handler.includes('knownModels.has(runtimeModelStr)'),
+      'per-agent model validation must compare adapter-resolved model IDs against known model IDs');
+    assert.ok(handler.includes('config.agents[id].model = candidate') && handler.includes('config.engine.defaultModel = candidate'),
+      'settings must still store the user-provided model string after validation');
   });
 
   await test('dashboard.js handleSettingsUpdate clears overrides on empty string ("Default (CLI chooses)")', () => {
@@ -7360,6 +7369,7 @@ async function testLlmModule() {
       '_resetBinCache',
       '_resolveBin',
       '_resolveModelFor',
+      '_resolveModelForRuntime',
       '_resolveRuntimeFeatureOpts',
       '_resolveRuntimeFor',
       'callLLM',
@@ -7766,6 +7776,19 @@ async function testWorktreeManagement() {
     // Should NOT have the old fuzzy bidirectional matching
     assert.ok(!src.includes("d.meta.branch.includes(dir)"),
       'Should not use bidirectional substring matching for dispatch protection');
+  });
+
+  await test('cleanup.js orphan PID safety check allows registered runtime process names', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes("require('./runtimes').listRuntimes()"),
+      'orphan PID process-name allowlist must come from the runtime registry');
+    assert.ok(src.includes("names.has('copilot')") && src.includes("names.add('gh')"),
+      'gh fallback should only be allowed when the copilot runtime is registered');
+    assert.ok(src.includes('_processNameAllowedForOrphanKill(taskLower)') && src.includes('_processNameAllowedForOrphanKill(psOut)'),
+      'recycled-PID safety checks must use the registered runtime process-name allowlist');
+    const legacyTaskCheck = ['taskLower', ".includes('node') && !", 'taskLower', ".includes('claude')"].join('');
+    assert.ok(!src.includes(legacyTaskCheck),
+      'orphan PID verification must not be hardcoded to the legacy two-name allowlist');
   });
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
@@ -31539,6 +31562,35 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(llm._resolveModelFor({ engineConfig: {} }), undefined);
   });
 
+  await test('_resolveModelForRuntime: Copilot maps Minions haiku alias to Copilot model ID', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const m = llm._resolveModelForRuntime(copilot, { model: 'haiku' });
+    assert.strictEqual(m, 'claude-haiku-4.5');
+  });
+
+  await test('_resolveModelForRuntime: Claude keeps haiku shorthand for Claude CLI expansion', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const m = llm._resolveModelForRuntime(claude, { model: 'haiku' });
+    assert.strictEqual(m, 'haiku');
+  });
+
+  await test('internal LLM callers pass engineConfig for configured runtime model resolution', () => {
+    const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
+    assert.ok(consolidationSrc.includes('engineConfig: config.engine'),
+      'consolidation LLM calls should receive config.engine for runtime/model resolution');
+    const kbSweepSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'kb-sweep.js'), 'utf8');
+    assert.ok(kbSweepSrc.includes('engineConfig: opts.engineConfig'),
+      'KB sweep LLM calls should forward opts.engineConfig');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(pipelineSrc.includes("label: 'pipeline-plan', model: 'sonnet'") && pipelineSrc.includes('engineConfig: config.engine'),
+      'pipeline-plan LLM calls should pass config.engine while keeping model: sonnet');
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashboardSrc.includes("label: 'schedule-parse'") && dashboardSrc.includes('engineConfig: CONFIG.engine'),
+      'schedule parse LLM calls should pass CONFIG.engine');
+    assert.ok(dashboardSrc.includes('runKbSweep({ pinnedKeys: body.pinnedKeys, engineConfig: CONFIG.engine })'),
+      'dashboard KB sweep background should pass CONFIG.engine into runKbSweep');
+  });
+
   await test('_resolveBin returns leadingArgs from runtime.resolveBinary', () => {
     // Synthetic adapter that returns leadingArgs: ['copilot'] (gh-extension shape).
     // _resolveBin must propagate them so the spawn invocation prepends them
@@ -42733,16 +42785,17 @@ async function testCliCommandHandlers() {
     } finally { h.restore(); }
   });
 
-  await test('_modelLooksIncompatible: detects Claude shorthand only for Copilot defaults', () => {
+  await test('_modelLooksIncompatible: accepts Copilot aliases and catches Claude stale models', () => {
     const h = setupHarness();
     try {
-      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'sonnet'), true);
-      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'Opus'), true);
-      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'haiku'), true);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'sonnet'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'Opus'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'haiku'), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'gpt-5.4'), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('copilot', 'claude-sonnet-4.5'), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'sonnet'), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'claude-sonnet-4.5'), false);
+      assert.strictEqual(h.cli._modelLooksIncompatible('claude', 'gpt-5.4'), true);
       assert.strictEqual(h.cli._modelLooksIncompatible('future-runtime', 'sonnet'), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('copilot', null), false);
       assert.strictEqual(h.cli._modelLooksIncompatible('copilot', undefined), false);

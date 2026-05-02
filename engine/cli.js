@@ -157,8 +157,8 @@ function _modelLooksIncompatible(runtime, model) {
     return true; // gpt-*, o3-*, codex, etc. — wrong CLI for these
   }
   if (runtime === 'copilot') {
-    // Copilot accepts the full catalog by ID; only Claude shorthands are wrong.
-    return m === 'sonnet' || m === 'opus' || m === 'haiku';
+    // Copilot adapter maps Minions' family aliases before spawning.
+    return false;
   }
   return false;
 }

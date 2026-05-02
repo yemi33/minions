@@ -39,6 +39,30 @@ function worktreeDirMatchesBranch(dirLower, branch) {
   return dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug);
 }
 
+let _orphanPidProcessNamesCache = null;
+function _orphanPidProcessNames() {
+  if (_orphanPidProcessNamesCache) return _orphanPidProcessNamesCache;
+  const names = new Set(['node']);
+  try {
+    for (const name of require('./runtimes').listRuntimes()) names.add(String(name).toLowerCase());
+    // Copilot can run through the GitHub CLI fallback (`gh copilot`), so allow
+    // gh only when the copilot runtime is registered.
+    if (names.has('copilot')) names.add('gh');
+  } catch {
+    names.add('claude');
+  }
+  _orphanPidProcessNamesCache = names;
+  return names;
+}
+
+function _processNameAllowedForOrphanKill(processText) {
+  const firstLine = String(processText || '').trim().split(/\r?\n/).find(Boolean) || '';
+  const imageName = path.basename(firstLine.trim().split(/\s+/)[0] || '').toLowerCase().replace(/\.exe$/, '');
+  if (!imageName) return false;
+  return _orphanPidProcessNames().has(imageName);
+}
+
+
 /**
  * Kill orphaned processes whose dispatch ID appears in the worktree dir name.
  * Only kills processes NOT in the active dispatch queue — never kills live agents.
@@ -68,18 +92,18 @@ function _killProcessInWorktree(dir, activeProcesses, activeIds) {
       if (isActive) continue; // still active — do not kill
       const pid = parseInt(fs.readFileSync(path.join(tmpDir, f), 'utf8').trim(), 10);
       if (pid > 0) {
-        // Verify the process is actually a node/claude process before killing
+        // Verify the PID still belongs to a Minions runtime process before killing
         try {
           if (process.platform === 'win32') {
             const taskInfo = exec(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
             const taskLower = taskInfo.toLowerCase();
-            if (!taskLower.includes('node') && !taskLower.includes('claude')) continue;
+            if (!_processNameAllowedForOrphanKill(taskLower)) continue;
             exec(`taskkill /F /T /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
           } else {
-            // Verify it's a node process before killing (prevent recycled PID kill)
+            // Verify the process name before killing (prevent recycled PID kill)
             try {
               const psOut = exec(`ps -p ${pid} -o comm=`, { encoding: 'utf8', timeout: 3000 }).trim();
-              if (!psOut.includes('node') && !psOut.includes('claude')) continue;
+              if (!_processNameAllowedForOrphanKill(psOut)) continue;
             } catch { continue; } // process dead or ps failed
             try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); }
           }
@@ -331,7 +355,7 @@ function runCleanup(config, verbose = false) {
     } // end worktreeRoots loop
   }
 
-  // 4. Kill zombie claude processes not tracked by the engine
+  // 4. Kill zombie agent processes not tracked by the engine
   // List all node processes, check if any are running spawn-agent.js for our minions
   try {
     const dispatch = getDispatch();

@@ -104,7 +104,7 @@ function _hashDedup(manifest, opts = {}) {
 }
 
 /** Batched LLM sweep — finds within-batch dupes, reclassifies, removes stale. */
-async function _llmBatchSweep(manifest, callLLM, trackEngineUsage) {
+async function _llmBatchSweep(manifest, callLLM, trackEngineUsage, opts = {}) {
   const plan = { duplicates: [], reclassify: [], remove: [] };
   const batches = [];
   for (let i = 0; i < manifest.length; i += LLM_BATCH_SIZE) {
@@ -130,7 +130,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
     let result;
     try {
-      result = await callLLM(prompt, 'Output only JSON.', { timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1, direct: true });
+      result = await callLLM(prompt, 'Output only JSON.', {
+        timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1, direct: true,
+        engineConfig: opts.engineConfig,
+      });
       trackEngineUsage('kb-sweep', result.usage);
     } catch (e) { log('warn', `[kb-sweep] batch ${b + 1} LLM error: ${e.message}`); continue; }
 
@@ -206,6 +209,7 @@ ${body}`;
       try {
         const result = await callLLM(REWRITE_PROMPT(c.entry, c.body), 'Output ONLY the template body.', {
           timeout: 120000, label: 'kb-rewrite', model: 'haiku', maxTurns: 1, direct: true,
+          engineConfig: opts.engineConfig,
         });
         trackEngineUsage('kb-sweep', result.usage);
         let newBody = (result.text || '').trim();
@@ -326,7 +330,7 @@ async function runKbSweep(opts = {}) {
   // 2. LLM batch sweep — within-batch dupes + reclassify + remove stale
   // Only runs against survivors, but we need indices that match the LIST sent to the LLM
   const llmManifest = afterHash;
-  const plan = await _llmBatchSweep(llmManifest, callLLM, trackEngineUsage);
+  const plan = await _llmBatchSweep(llmManifest, callLLM, trackEngineUsage, opts);
   const llmActions = _applyLlmPlan(plan, llmManifest, opts);
   summary.llmDuplicatesArchived = llmActions.merged;
   summary.staleRemoved = llmActions.removed;

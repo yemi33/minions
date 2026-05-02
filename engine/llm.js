@@ -403,6 +403,12 @@ function _resolveModelFor(callOpts) {
   return undefined;
 }
 
+function _resolveModelForRuntime(runtime, callOpts) {
+  const selected = _resolveModelFor(callOpts || {});
+  if (!runtime || typeof runtime.resolveModel !== 'function') return selected;
+  return runtime.resolveModel(selected);
+}
+
 function _resolveRuntimeFeatureOpts({
   stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
 } = {}) {
@@ -431,7 +437,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
   } = opts;
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
-  const model = _resolveModelFor({ model: modelOverride, engineConfig });
+  const model = _resolveModelForRuntime(runtime, { model: modelOverride, engineConfig });
   const runtimeFeatureOpts = _resolveRuntimeFeatureOpts({
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
   });
@@ -528,7 +534,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
   } = opts;
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
-  const model = _resolveModelFor({ model: modelOverride, engineConfig });
+  const model = _resolveModelForRuntime(runtime, { model: modelOverride, engineConfig });
   const runtimeFeatureOpts = _resolveRuntimeFeatureOpts({
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries, engineConfig,
   });
@@ -619,5 +625,6 @@ module.exports = {
   _resetBinCache,
   _resolveRuntimeFor,
   _resolveModelFor,
+  _resolveModelForRuntime,
   _resolveRuntimeFeatureOpts,
 };

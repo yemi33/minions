@@ -15,10 +15,10 @@
  *                                    buildPrompt() prepends a <system> block.
  *   - costTracking: false           — result.usage has premiumRequests count
  *                                    and durations only; no USD or per-token.
- *   - modelShorthands: false        — full model IDs like "claude-sonnet-4.5",
- *                                    "gpt-5.4". Bare "sonnet" / "opus" / "haiku"
- *                                    is a Claude-ism — log a one-time warning
- *                                    when seen so the user notices the mistake.
+ *   - modelShorthands: false        — Copilot itself expects full model IDs like
+ *                                    "claude-sonnet-4.5" or "gpt-5.4". The
+ *                                    adapter translates Minions' internal family
+ *                                    aliases before argv construction.
  *   - modelDiscovery: true          — GET https://api.githubcopilot.com/models
  *                                    with `gh auth token` Bearer returns the
  *                                    catalog (24 models on the test account).
@@ -152,26 +152,23 @@ function resolveBinary({ env = process.env } = {}) {
 
 // ── Model Resolution ────────────────────────────────────────────────────────
 //
-// Copilot models are full IDs (`claude-sonnet-4.5`, `gpt-5.4`, ...). The
-// adapter passes them through verbatim. When we see a Claude shorthand
-// ('sonnet', 'opus', 'haiku') we log ONCE — a stronger signal than silently
-// passing it to Copilot, which would respond with an unknown-model error.
+// Copilot models are full IDs (`claude-sonnet-4.5`, `gpt-5.4`, ...). Minions
+// still uses the family aliases `haiku` / `sonnet` / `opus` internally, so this
+// adapter maps those aliases to Copilot model IDs while passing all other input
+// through verbatim. The capability remains false: Copilot CLI does not accept
+// these aliases directly.
 
-const _CLAUDE_SHORTHANDS = new Set(['sonnet', 'opus', 'haiku']);
-let _shorthandWarningLogged = false;
+const _MINIONS_MODEL_ALIASES = {
+  haiku: 'claude-haiku-4.5',
+  sonnet: 'claude-sonnet-4.5',
+  opus: 'claude-opus-4.5',
+};
 
-function _resetShorthandWarning() { _shorthandWarningLogged = false; }
-
-function resolveModel(input, { logger = console } = {}) {
+function resolveModel(input) {
   if (input == null || input === '') return undefined;
   const s = String(input);
-  if (_CLAUDE_SHORTHANDS.has(s.toLowerCase()) && !_shorthandWarningLogged) {
-    _shorthandWarningLogged = true;
-    try {
-      const warn = (logger && typeof logger.warn === 'function') ? logger.warn.bind(logger) : null;
-      if (warn) warn(`[copilot] "${s}" is a Claude family shorthand; Copilot expects a full model id (e.g. claude-sonnet-4.5). Passing through verbatim — Copilot will likely reject it.`);
-    } catch { /* logger may be unwired during tests */ }
-  }
+  const mapped = _MINIONS_MODEL_ALIASES[s.toLowerCase()];
+  if (mapped) return mapped;
   return s;
 }
 
@@ -783,8 +780,7 @@ module.exports = {
   createStreamConsumer,
   // Exposed for unit tests — engine code MUST go through resolveRuntime + the
   // adapter contract; never reach into these helpers directly.
-  _CLAUDE_SHORTHANDS,
-  _resetShorthandWarning,
+  _MINIONS_MODEL_ALIASES,
   _mapEffort,
   _copilotAssistantMessageHasTools,
   KNOWN_EVENT_TYPES,

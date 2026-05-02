@@ -8,11 +8,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const shared = require('./shared');
-const { safeRead, safeWrite, safeUnlink, runFile, cleanChildEnv,
-  parseStreamJsonOutput, classifyInboxItem, KB_CATEGORIES, log, ts, dateStamp } = shared;
-const { trackEngineUsage } = require('./llm');
+const { safeRead, safeWrite,
+  classifyInboxItem, KB_CATEGORIES, log, ts, dateStamp } = shared;
+const { callLLM, trackEngineUsage } = require('./llm');
 const queries = require('./queries');
-const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR, MINIONS_DIR,
+const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR,
   NOTES_PATH, KNOWLEDGE_DIR, ARCHIVE_DIR } = queries;
 
 // Track in-flight LLM consolidation to prevent concurrent runs
@@ -150,51 +150,18 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   });
 
   const prompt = buildConsolidationPrompt(items, existingNotes, kbPaths);
-
-  const tmpDir = path.join(ENGINE_DIR, 'tmp');
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const promptPath = path.join(tmpDir, 'consolidate-prompt.md');
-  safeWrite(promptPath, prompt);
-
   const sysPrompt = 'You are a concise knowledge manager. Output only markdown. No preamble. No code fences around your output.';
-  const sysPromptPath = path.join(tmpDir, 'consolidate-sysprompt.md');
-  safeWrite(sysPromptPath, sysPrompt);
 
-  const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-  const args = [
-    '--output-format', 'stream-json',
-    '--max-turns', '1',
-    '--model', 'haiku',
-    '--permission-mode', 'bypassPermissions',
-    '--verbose',
-  ];
+  log('info', 'Starting LLM consolidation...');
 
-  log('info', 'Spawning Haiku for LLM consolidation...');
+  let _cleared = false; // idempotency guard — timeout and promise resolution can race
+  let timeoutHandle = null;
+  let fallbackDone = false;
 
-  const proc = runFile(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
-    cwd: MINIONS_DIR,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: cleanChildEnv()
-  });
-
-  let stdout = '';
-  let stderr = '';
-  proc.stdout.on('data', d => { stdout += d.toString(); if (stdout.length > 100000) stdout = stdout.slice(-50000); });
-  proc.stderr.on('data', d => { stderr += d.toString(); if (stderr.length > 50000) stderr = stderr.slice(-25000); });
-
-  const timeout = setTimeout(() => {
-    log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
-    shared.killGracefully(proc, 10000);
-    _forceResetTimeout = setTimeout(() => {
-      if (!_cleared) log('warn', 'Consolidation flag force-reset after SIGKILL');
-      _clearProcessingState();
-    }, 10000);
-  }, 180000);
-
-  let _cleared = false; // idempotency guard — both 'error' and 'close' can fire for the same process
   function _clearProcessingState() {
     if (_cleared) return;
     _cleared = true;
+    clearTimeout(timeoutHandle);
     clearTimeout(_forceResetTimeout);
     _forceResetTimeout = null;
     for (const f of files) _processingFiles.delete(f);
@@ -202,17 +169,43 @@ function consolidateWithLLM(items, existingNotes, files, config) {
     _consolidationStartedAt = 0;
   }
 
-  proc.on('close', (code) => {
-    clearTimeout(timeout);
-    try { safeUnlink(promptPath); } catch (err) { log('warn', `Temp file cleanup failed: ${promptPath} — ${err.message}`); }
-    try { safeUnlink(sysPromptPath); } catch (err) { log('warn', `Temp file cleanup failed: ${sysPromptPath} — ${err.message}`); }
+  function _fallback(message, err) {
+    if (_cleared || fallbackDone) return;
+    fallbackDone = true;
+    if (message) log('warn', message);
+    if (err?.message) log('debug', `LLM error: ${err.message}`);
+    consolidateWithRegex(items, files);
+  }
 
-    const parsed = parseStreamJsonOutput(stdout);
-    const extractedText = parsed.text;
-    trackEngineUsage('consolidation', parsed.usage);
+  const llmCall = callLLM(prompt, sysPrompt, {
+    timeout: 180000,
+    label: 'consolidation',
+    model: 'haiku',
+    maxTurns: 1,
+    direct: true,
+    engineConfig: config.engine,
+  });
 
-    if (code === 0 && (extractedText || stdout).trim().length > 50) {
-      let digest = (extractedText || stdout).trim();
+  timeoutHandle = setTimeout(() => {
+    if (_cleared) return;
+    log('warn', 'LLM consolidation timed out after 3m — aborting and falling back to regex');
+    try { if (llmCall && typeof llmCall.abort === 'function') llmCall.abort(); } catch { /* ignore */ }
+    _forceResetTimeout = setTimeout(() => {
+      if (!_cleared) log('warn', 'Consolidation flag force-reset after timeout');
+      _fallback();
+      _clearProcessingState();
+    }, 10000);
+  }, 180000);
+
+  llmCall.then((result) => {
+    if (_cleared) return;
+    clearTimeout(timeoutHandle);
+    trackEngineUsage('consolidation', result.usage);
+
+    const extractedText = result.text || '';
+    const rawText = result.raw || '';
+    if (result.code === 0 && (extractedText || rawText).trim().length > 50) {
+      let digest = (extractedText || rawText).trim();
       digest = digest.replace(/^\`\`\`\w*\n?/gm, '').replace(/\n?\`\`\`$/gm, '').trim();
 
       if (!digest.startsWith('### ')) {
@@ -220,9 +213,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
         if (sectionIdx >= 0) {
           digest = digest.slice(sectionIdx);
         } else {
-          log('warn', 'LLM consolidation output missing expected format — falling back to regex');
-          consolidateWithRegex(items, files);
-          _clearProcessingState();
+          _fallback('LLM consolidation output missing expected format — falling back to regex');
           return;
         }
       }
@@ -257,21 +248,15 @@ function consolidateWithLLM(items, existingNotes, files, config) {
       });
       classifyToKnowledgeBase(items);
       archiveInboxFiles(files);
-      log('info', `LLM consolidation complete: ${files.length} notes processed by Haiku`);
+      log('info', `LLM consolidation complete: ${files.length} notes processed`);
     } else {
-      log('warn', `LLM consolidation failed (code=${code}) — falling back to regex`);
-      if (stderr) log('debug', `LLM stderr: ${stderr.slice(0, 500)}`);
-      consolidateWithRegex(items, files);
+      _fallback(`LLM consolidation failed (code=${result.code}) — falling back to regex`, result.stderr ? { message: result.stderr.slice(0, 500) } : null);
     }
-    _clearProcessingState();
-  });
-
-  proc.on('error', (err) => {
-    clearTimeout(timeout);
-    log('warn', `LLM consolidation spawn error: ${err.message} — falling back to regex`);
-    try { safeUnlink(promptPath); } catch (unlinkErr) { log('warn', `Temp file cleanup failed: ${promptPath} — ${unlinkErr.message}`); }
-    try { safeUnlink(sysPromptPath); } catch (unlinkErr) { log('warn', `Temp file cleanup failed: ${sysPromptPath} — ${unlinkErr.message}`); }
-    consolidateWithRegex(items, files);
+  }).catch((err) => {
+    if (_cleared) return;
+    clearTimeout(timeoutHandle);
+    _fallback(`LLM consolidation error: ${err.message} — falling back to regex`, err);
+  }).finally(() => {
     _clearProcessingState();
   });
 }
