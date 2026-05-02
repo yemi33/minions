@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1682 (2026-05-02)
+
+### Features
+- index Copilot plugin skills and surface as separate dashboard tab
+
+### Other
+- test(meeting): add direct unit tests for internal scoring/formatting/path-resolution helpers (#1985)
+- docs: document new optional runtime adapter methods for skills
+- Keep runtime skills adapter-owned
+- docs: update copilot instructions
+
 ## 0.1.1681 (2026-05-02)
 
 ### Features
