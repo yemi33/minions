@@ -135,6 +135,5 @@ After PRs are created, humans can leave comments containing `@minions` to trigge
 | `playbooks/verify.md` | Verification task playbook |
 | `playbooks/implement.md` | Implementation playbook |
 | `playbooks/plan-to-prd.md` | Plan → PRD conversion playbook |
-| `engine/lifecycle.js` | `checkPlanCompletion`, `chainPlanToPrd` |
+| `engine/lifecycle.js` | `checkPlanCompletion`, completion hooks, PRD sync |
 | `engine.js` | `spawnAgent` (dependency merging), `resolveDependencyBranches` |
-

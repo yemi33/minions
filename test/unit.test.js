@@ -6754,6 +6754,16 @@ async function testPlanLifecycle() {
       'chainPlanToPrd should not be exported — auto-chaining is removed');
   });
 
+  await test('lifecycle.js removes dead chainPlanToPrd helper and queue artifacts', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'dead chainPlanToPrd helper should be removed, not left as unused code');
+    assert.ok(!src.includes("createdBy: 'engine:chain'"),
+      'dead plan-to-PRD chaining work-item creation should be removed');
+    assert.ok(!src.includes('Chained from plan task'),
+      'dead plan-to-PRD chaining description should be removed');
+  });
+
   await test('runPostCompletionHooks does not chain plan-to-prd on plan success', () => {
     // Verify the chain call was removed from runPostCompletionHooks
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
@@ -15334,13 +15344,11 @@ async function testLifecycleDataSafety() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
 
-  await test('chainPlanToPrd uses atomic writes on work-items.json', () => {
-    // chainPlanToPrd should use mutateJsonFileLocked, not raw readFileSync+safeWrite
-    const chainFn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
-    if (chainFn) {
-      assert.ok(chainFn[0].includes('mutateJsonFileLocked'),
-        'chainPlanToPrd must use mutateJsonFileLocked for atomic writes');
-    }
+  await test('dead chainPlanToPrd work-items writer is removed', () => {
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'chainPlanToPrd should not remain as dead lifecycle code');
+    assert.ok(!src.includes("createdBy: 'engine:chain'"),
+      'dead chainPlanToPrd work item writer should be removed');
   });
 
   await test('updatePrAfterReview logs defined variable, not minionsVerdict', () => {
@@ -26657,10 +26665,9 @@ async function testEmptyProjectsGuards() {
       'Should return early when no project available');
   });
 
-  await test('chainPlanToPrd guards empty projects array before accessing projects[0]', () => {
-    const fnBody = src.slice(src.indexOf('function chainPlanToPrd'), src.indexOf('function syncPrsFromOutput'));
-    assert.ok(fnBody.includes('projects.length === 0'),
-      'Should check for empty projects array before accessing projects[0]');
+  await test('removed chainPlanToPrd cannot access projects[0]', () => {
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'Removed chainPlanToPrd has no projects[0] access path to guard');
   });
 
   await test('syncPrsFromOutput guards empty projects with early return 0', () => {
@@ -28827,14 +28834,12 @@ async function testEngineAuditMedium() {
       'must clear markDeleted on API failure to prevent phantom invisible meeting');
   });
 
-  await test('chainPlanToPrd uses mutateJsonFileLocked', () => {
+  await test('chainPlanToPrd dead helper stays removed', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const fn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
-    assert.ok(fn, 'chainPlanToPrd must exist');
-    assert.ok(fn[0].includes('mutateJsonFileLocked'),
-      'chainPlanToPrd must use mutateJsonFileLocked for atomic read-modify-write on work-items.json');
-    assert.ok(!fn[0].includes('safeWrite(wiPath'),
-      'chainPlanToPrd must not use unlocked safeWrite on work-items.json');
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'chainPlanToPrd should not be reintroduced as dead lifecycle code');
+    assert.ok(!src.includes('Plan chaining: queuing plan-to-prd'),
+      'dead automatic plan-to-PRD queueing should stay removed');
   });
 }
 

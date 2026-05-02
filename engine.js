@@ -3359,7 +3359,7 @@ function discoverCentralWorkItems(config) {
         vars.plan_file = planFileName;
         vars.task_description = item.title;
         // Notes already populated by buildWorkItemDispatchVars — no need to re-read
-        // Track expected plan filename in meta for chainPlanToPrd
+        // Track expected plan filename for artifacts and follow-up plan-to-prd prompts.
         mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _planFileName: planFileName }));
       }
 
