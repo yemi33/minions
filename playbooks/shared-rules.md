@@ -64,6 +64,18 @@ Use `status: "failed"` plus an accurate `failure_class`, `retryable`, and `needs
 
 Builds, dependency installs, tests, and local servers can be quiet for long periods. Run the repo's normal CLI commands and let them finish; do not add artificial progress output, heartbeat loops, or command-specific workarounds just to keep Minions active.
 
+## Done = pushed + local validation. Do NOT wait for remote pipelines.
+
+Your dispatch is **done** the moment (1) your fix is pushed to the branch and (2) any local validation you ran has finished. Write the completion JSON and exit immediately. **Do not** wait for the remote PR pipeline (Android OCM PR build, Espresso CloudTest, GitHub Actions, etc.) to finish before declaring done.
+
+This applies to **every** fix dispatch, including `build-fix` tasks. Pipeline failures route back through separate engine paths (a new `build-fix` dispatch will be queued if the remote build fails); your job ends at push.
+
+Concretely:
+- After `git push`, write the completion report and exit. Do not start a `monitor`/`read_powershell`/`watch` loop on the pipeline.
+- Do not sleep or busy-wait for `mergeStatus`, `buildStatus`, or any ADO/GitHub API to flip from `running` to `passing`.
+- If you skipped local validation, say so in the completion JSON (e.g. `tests: skipped — relying on PR pipeline`) and still exit.
+- Holding a slot to watch a pipeline is wasted capacity; the engine has its own pipeline-monitoring path.
+
 ## Checking PR and Build Status
 
 When asked to check build status, CI results, or review state for a PR:
