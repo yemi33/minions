@@ -335,6 +335,7 @@ async function openScanProjectsModal() {
         '<button onclick="_runProjectScan()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap">Scan</button>' +
       '</div>' +
       '<div id="scan-results" style="color:var(--muted);font-size:12px">Click Scan to find git repos in the directory.</div>' +
+      '<div class="cmd-toast" id="scan-toast" style="margin-top:0"></div>' +
     '</div>';
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
@@ -410,19 +411,20 @@ async function _addSelectedProjects() {
       var data = await res.json().catch(function() { return {}; });
       if (res.ok) {
         added++;
+        var addedName = data.name || repo.name;
         optimisticallyAddProject({
-          name: data.name || repo.name,
+          name: addedName,
           description: (data.detected && data.detected.description) || repo.description || '',
           path: data.path || repo.path,
           localPath: data.path || repo.path,
         });
         cb.disabled = true;
         cb.closest('label').style.opacity = '0.5';
+        showToast('scan-toast', added + ' project(s) added', true);
       }
     } catch { /* continue with next */ }
   }
   if (added > 0) {
-    showToast('cmd-toast', added + ' project(s) added', true);
     refresh();
   }
 }

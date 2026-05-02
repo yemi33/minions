@@ -32119,6 +32119,14 @@ async function testAutoRecoveryAndAtomicity() {
     const scanAddBody = otherSrc.slice(scanAddStart, scanAddEnd);
     assert.ok(scanAddBody.includes('optimisticallyAddProject({'),
       '_addSelectedProjects should update project chips immediately for each successfully added repo');
+    assert.ok(otherSrc.includes('id="scan-toast"'),
+      'scan project modal should render an in-modal toast target');
+    const scanToastIdx = scanAddBody.indexOf("showToast('scan-toast'");
+    const scanRefreshIdx = scanAddBody.indexOf('refresh()');
+    assert.ok(scanToastIdx > 0,
+      '_addSelectedProjects should show success feedback inside the scan modal');
+    assert.ok(scanRefreshIdx > scanToastIdx,
+      '_addSelectedProjects should show the in-modal toast before asking refresh for status');
   });
 
   await test('settings removeProject optimistically removes the settings card before fetch', () => {
