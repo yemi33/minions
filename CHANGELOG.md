@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1671 (2026-05-02)
+
+### Features
+- durable meeting artifact ingestion (#1972)
+
+### Fixes
+-  shared-rules.md — declare done after push, do not wait for remote pipelines (#1970)
+-  sync pipeline card with modal after retrigger/abort/continue
+-  harden maxConcurrent parsing, routing case, and runtime exit codes
+
+### Other
+- docs: condense CLAUDE.md
+
 ## 0.1.1669 (2026-05-02)
 
 ### Features
