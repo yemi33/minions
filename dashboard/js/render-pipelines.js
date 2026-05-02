@@ -434,6 +434,7 @@ async function _refreshPipelineDetail(id) {
     if (fresh) {
       _pipelinesData = _pipelinesData.map(function(x) { return x.id === id ? fresh : x; });
       _pipelinePollHash = JSON.stringify({ runs: fresh.runs || [], enabled: fresh.enabled, _stoppedBy: fresh._stoppedBy, _stopReason: fresh._stopReason });
+      renderPipelines(_pipelinesData);
       openPipelineDetail(id);
     }
   } catch (e) { /* silent — next poll will catch up */ }
