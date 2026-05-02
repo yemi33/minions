@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1684 (2026-05-02)
+
+### Other
+- test(cooldown): add edge-case unit tests for _truncateContextEntry, loadCooldowns boundaries, isAlreadyDispatched (#1986)
+
 ## 0.1.1683 (2026-05-02)
 
 ### Fixes
