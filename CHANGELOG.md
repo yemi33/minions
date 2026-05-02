@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1678 (2026-05-02)
+
+### Fixes
+-  dashboard screen audit — bug fixes across 11 renderers
+
 ## 0.1.1677 (2026-05-02)
 
 ### Fixes
