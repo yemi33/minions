@@ -1626,9 +1626,23 @@ function checkForLearnings(agentId, agentInfo, taskDesc) {
   log('warn', `${agentInfo?.name || agentId} didn't write learnings — no follow-up queued`);
 }
 
-function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
+function skillWriteTargets(runtimeName, project = null) {
+  try {
+    const runtime = resolveRuntime(runtimeName || 'claude');
+    if (typeof runtime.getSkillWriteTargets === 'function') {
+      return runtime.getSkillWriteTargets({ homeDir: os.homedir(), project });
+    }
+  } catch { /* fall through to Claude-compatible legacy target */ }
+  return {
+    personal: path.join(os.homedir(), '.claude', 'skills'),
+    project: project?.localPath ? path.resolve(project.localPath, '.claude', 'skills') : null,
+  };
+}
+
+function extractSkillsFromOutput(output, agentId, dispatchItem, config, runtimeName = null) {
 
   if (!output) return;
+  const effectiveRuntime = runtimeName || dispatchItem?.meta?.runtimeName || dispatchItem?.runtimeName || 'claude';
   let fullText = '';
   for (const line of output.split('\n')) {
     try {
@@ -1666,6 +1680,9 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
+        const projectSkillRoot = skillWriteTargets(effectiveRuntime, proj).project
+          || path.resolve(proj.localPath, '.claude', 'skills');
+        const projectSkillPath = path.join(projectSkillRoot, skillDirName, 'SKILL.md');
         const centralPath = path.join(MINIONS_DIR, 'work-items.json');
         let skillId = null;
         mutateJsonFileLocked(centralPath, data => {
@@ -1673,7 +1690,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
           if (data.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED)) return data;
           skillId = `SK${String(data.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           data.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
-            description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${skillDirName}/SKILL.md\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
+            description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${projectSkillPath}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           return data;
         }, { skipWriteIfUnchanged: true });
@@ -1682,18 +1699,18 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
         }
       }
     } else {
-      // Write in Claude Code native format: ~/.claude/skills/<name>/SKILL.md
-      const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills');
-      const skillDir = path.join(claudeSkillsDir, name.replace(/[^a-z0-9-]/g, '-'));
+      const personalSkillRoot = skillWriteTargets(effectiveRuntime).personal;
+      const skillDir = path.join(personalSkillRoot, name.replace(/[^a-z0-9-]/g, '-'));
       const skillPath = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillPath)) {
-        // Convert to Claude Code format: only name + description in frontmatter
+        // Native skill format: only name + description in frontmatter.
         const description = m('description') || m('trigger') || `Auto-extracted skill from ${agentName}`;
         const body = fmMatch[2] || '';
         const ccContent = `---\nname: ${name}\ndescription: ${description}\n---\n\n${body.trim()}\n`;
         if (!fs.existsSync(skillDir)) fs.mkdirSync(skillDir, { recursive: true });
         shared.safeWrite(skillPath, ccContent);
-        log('info', `Extracted skill "${name}" from ${agentName} → ~/.claude/skills/${name.replace(/[^a-z0-9-]/g, '-')}/SKILL.md`);
+        try { require('./queries').invalidateSkillsCache(); } catch {}
+        log('info', `Extracted skill "${name}" from ${agentName} → ${skillPath}`);
       } else {
         log('info', `Skill "${name}" already exists, skipping`);
       }

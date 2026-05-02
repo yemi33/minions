@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const https = require('https');
+const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
 const { FAILURE_CLASS, safeWrite, ts } = require('../shared');
@@ -754,6 +755,36 @@ const capabilities = {
 //   - Direct:    download from https://github.com/github/copilot-cli/releases
 const INSTALL_HINT = 'install via WinGet (winget install --id GitHub.cli && gh extension install github/gh-copilot), Homebrew (brew install gh && gh extension install github/gh-copilot), or download standalone copilot from https://github.com/github/copilot-cli/releases';
 
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [
+    path.join(homeDir, '.copilot'),
+    path.join(homeDir, '.agents'),
+  ];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { dir: path.join(homeDir, '.copilot', 'skills'), scope: 'copilot' },
+    { dir: path.join(homeDir, '.agents', 'skills'), scope: 'agent-skill' },
+  ];
+  if (project?.localPath) {
+    const projectName = project.name || path.basename(project.localPath);
+    roots.push(
+      { dir: path.join(project.localPath, '.github', 'skills'), scope: 'project', projectName },
+      { dir: path.join(project.localPath, '.agents', 'skills'), scope: 'project', projectName },
+    );
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  const targets = { personal: path.join(homeDir, '.copilot', 'skills') };
+  if (project?.localPath) {
+    targets.project = path.join(project.localPath, '.github', 'skills');
+  }
+  return targets;
+}
+
 module.exports = {
   name: 'copilot',
   capabilities,
@@ -767,6 +798,9 @@ module.exports = {
   buildSpawnFlags,
   buildArgs,
   buildPrompt,
+  getUserAssetDirs,
+  getSkillRoots,
+  getSkillWriteTargets,
   getResumeSessionId,
   saveSession,
   detectPermissionGate,

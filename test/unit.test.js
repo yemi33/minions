@@ -1231,7 +1231,7 @@ async function testRuntimeAdapters() {
     const required = [
       'name', 'capabilities', 'resolveBinary', 'capsFile',
       'listModels', 'modelsCache', 'spawnScript',
-      'buildArgs', 'buildPrompt', 'resolveModel',
+      'buildArgs', 'buildPrompt', 'getUserAssetDirs', 'getSkillRoots', 'getSkillWriteTargets', 'resolveModel',
       'parseOutput', 'parseStreamChunk', 'parseError',
     ];
     for (const k of required) {
@@ -1241,6 +1241,9 @@ async function testRuntimeAdapters() {
     assert.strictEqual(typeof claude.listModels, 'function');
     assert.strictEqual(typeof claude.buildArgs, 'function');
     assert.strictEqual(typeof claude.buildPrompt, 'function');
+    assert.strictEqual(typeof claude.getUserAssetDirs, 'function');
+    assert.strictEqual(typeof claude.getSkillRoots, 'function');
+    assert.strictEqual(typeof claude.getSkillWriteTargets, 'function');
     assert.strictEqual(typeof claude.resolveModel, 'function');
     assert.strictEqual(typeof claude.parseOutput, 'function');
     assert.strictEqual(typeof claude.parseStreamChunk, 'function');
@@ -1248,6 +1251,19 @@ async function testRuntimeAdapters() {
     assert.strictEqual(typeof claude.capsFile, 'string');
     assert.strictEqual(typeof claude.modelsCache, 'string');
     assert.strictEqual(typeof claude.spawnScript, 'string');
+  });
+
+  await test('claude adapter owns Claude-native asset and skill roots', () => {
+    const homeDir = path.join('C:', 'Users', 'dev');
+    const project = { name: 'Repo', localPath: path.join(homeDir, 'repo') };
+    assert.deepStrictEqual(claude.getUserAssetDirs({ homeDir }), [path.join(homeDir, '.claude')]);
+    const roots = claude.getSkillRoots({ homeDir, project });
+    assert.ok(roots.some(r => r.scope === 'claude-code' && r.dir === path.join(homeDir, '.claude', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.claude', 'skills')));
+    assert.deepStrictEqual(claude.getSkillWriteTargets({ homeDir, project }), {
+      personal: path.join(homeDir, '.claude', 'skills'),
+      project: path.join(project.localPath, '.claude', 'skills'),
+    });
   });
 
   // ── Capabilities (AC #3) ──────────────────────────────────────────────────
@@ -1620,7 +1636,7 @@ async function testCopilotAdapter() {
     const required = [
       'name', 'capabilities', 'resolveBinary', 'capsFile',
       'listModels', 'modelsCache', 'spawnScript',
-      'buildArgs', 'buildPrompt', 'resolveModel',
+      'buildArgs', 'buildPrompt', 'getUserAssetDirs', 'getSkillRoots', 'getSkillWriteTargets', 'resolveModel',
       'parseOutput', 'parseStreamChunk', 'parseError',
     ];
     for (const k of required) {
@@ -1630,6 +1646,9 @@ async function testCopilotAdapter() {
     assert.strictEqual(typeof copilot.listModels, 'function');
     assert.strictEqual(typeof copilot.buildArgs, 'function');
     assert.strictEqual(typeof copilot.buildPrompt, 'function');
+    assert.strictEqual(typeof copilot.getUserAssetDirs, 'function');
+    assert.strictEqual(typeof copilot.getSkillRoots, 'function');
+    assert.strictEqual(typeof copilot.getSkillWriteTargets, 'function');
     assert.strictEqual(typeof copilot.resolveModel, 'function');
     assert.strictEqual(typeof copilot.parseOutput, 'function');
     assert.strictEqual(typeof copilot.parseStreamChunk, 'function');
@@ -1637,6 +1656,24 @@ async function testCopilotAdapter() {
     assert.strictEqual(typeof copilot.capsFile, 'string');
     assert.strictEqual(typeof copilot.modelsCache, 'string');
     assert.strictEqual(typeof copilot.spawnScript, 'string');
+  });
+
+  await test('copilot adapter owns Copilot-native asset and skill roots', () => {
+    const homeDir = path.join('C:', 'Users', 'dev');
+    const project = { name: 'Repo', localPath: path.join(homeDir, 'repo') };
+    assert.deepStrictEqual(copilot.getUserAssetDirs({ homeDir }), [
+      path.join(homeDir, '.copilot'),
+      path.join(homeDir, '.agents'),
+    ]);
+    const roots = copilot.getSkillRoots({ homeDir, project });
+    assert.ok(roots.some(r => r.scope === 'copilot' && r.dir === path.join(homeDir, '.copilot', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'agent-skill' && r.dir === path.join(homeDir, '.agents', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.github', 'skills')));
+    assert.ok(roots.some(r => r.scope === 'project' && r.projectName === 'Repo' && r.dir === path.join(project.localPath, '.agents', 'skills')));
+    assert.deepStrictEqual(copilot.getSkillWriteTargets({ homeDir, project }), {
+      personal: path.join(homeDir, '.copilot', 'skills'),
+      project: path.join(project.localPath, '.github', 'skills'),
+    });
   });
 
   await test('copilot.capsFile points at engine/copilot-caps.json', () => {
@@ -5098,6 +5135,92 @@ async function testQueriesSkills() {
     assert.ok(typeof index === 'string');
   });
 
+  await test('collectSkillFiles discovers personal Copilot and agent skills', () => {
+    const restore = createTestMinionsDir();
+    const origHome = os.homedir;
+    try {
+      const homeDir = createTmpDir();
+      os.homedir = () => homeDir;
+      const copilotSkillDir = path.join(homeDir, '.copilot', 'skills', 'copilot-personal');
+      const agentsSkillDir = path.join(homeDir, '.agents', 'skills', 'agents-personal');
+      fs.mkdirSync(copilotSkillDir, { recursive: true });
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(copilotSkillDir, 'SKILL.md'), '---\nname: copilot-personal\ndescription: Personal Copilot skill\n---\n# Copilot');
+      fs.writeFileSync(path.join(agentsSkillDir, 'SKILL.md'), '---\nname: agents-personal\ndescription: Personal agent skill\n---\n# Agent');
+
+      const freshQueries = require('../engine/queries');
+      const skills = freshQueries.getSkills();
+      assert.ok(skills.some(s => s.scope === 'copilot' && s.source === 'copilot' && s.name === 'copilot-personal'),
+        'personal ~/.copilot/skills entries should be discovered');
+      assert.ok(skills.some(s => s.scope === 'agent-skill' && s.source === 'agent-skill' && s.name === 'agents-personal'),
+        'personal ~/.agents/skills entries should be discovered');
+    } finally {
+      os.homedir = origHome;
+      restore();
+    }
+  });
+
+  await test('collectSkillFiles discovers Copilot project skill directories', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'repo');
+      const githubSkillDir = path.join(projectDir, '.github', 'skills', 'github-actions-debugging');
+      const agentsSkillDir = path.join(projectDir, '.agents', 'skills', 'repo-agent-skill');
+      fs.mkdirSync(githubSkillDir, { recursive: true });
+      fs.mkdirSync(agentsSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(githubSkillDir, 'SKILL.md'), '---\nname: github-actions-debugging\ndescription: Debug Actions\n---\n# Debug');
+      fs.writeFileSync(path.join(agentsSkillDir, 'SKILL.md'), '---\nname: repo-agent-skill\ndescription: Repo agent skill\n---\n# Repo');
+      const config = { projects: [{ name: 'Repo', localPath: projectDir }], agents: {}, engine: {} };
+
+      const freshQueries = require('../engine/queries');
+      const skills = freshQueries.collectSkillFiles(config);
+      assert.ok(skills.some(s => s.scope === 'project' && s.projectName === 'Repo' && s.skillName === 'github-actions-debugging'),
+        'project .github/skills entries should be discovered');
+      assert.ok(skills.some(s => s.scope === 'project' && s.projectName === 'Repo' && s.skillName === 'repo-agent-skill'),
+        'project .agents/skills entries should be discovered');
+    } finally { restore(); }
+  });
+
+  await test('collectCommandFiles discovers project command markdown', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'repo');
+      const commandsDir = path.join(projectDir, '.claude', 'commands', 'review');
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, 'triage.md'), '---\ndescription: Triage review findings\n---\n# Triage');
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'Repo', localPath: projectDir }],
+        agents: {},
+        engine: {},
+      }));
+
+      const freshQueries = require('../engine/queries');
+      const commands = freshQueries.collectCommandFiles();
+      assert.ok(commands.some(c => c.scope === 'project' && c.projectName === 'Repo' && c.commandName === 'review/triage'),
+        'project .claude/commands markdown should be discoverable as command docs');
+    } finally { restore(); }
+  });
+
+  await test('getCommandIndex lists project command docs with descriptions', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'repo');
+      const commandsDir = path.join(projectDir, '.claude', 'commands');
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, 'ship.md'), '---\ndescription: Ship safely\n---\n# Ship');
+      const config = { projects: [{ name: 'Repo', localPath: projectDir }], agents: {}, engine: {} };
+
+      const freshQueries = require('../engine/queries');
+      const index = freshQueries.getCommandIndex(config);
+      assert.ok(index.includes('/ship'), 'command name should appear in index');
+      assert.ok(index.includes('Ship safely'), 'frontmatter description should appear in index');
+      assert.ok(index.includes('project:Repo'), 'project scope should appear in index');
+    } finally { restore(); }
+  });
+
   await test('collectSkillFiles discovers plugin skills from installed_plugins.json', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('installed_plugins.json'),
@@ -5118,12 +5241,35 @@ async function testQueriesSkills() {
     }
   });
 
+  await test('copilot-plugin skills appear in getSkills with source copilot-plugin', () => {
+    const skills = queries.getSkills();
+    const copilotSkills = skills.filter(s => s.scope === 'copilot-plugin');
+    for (const s of copilotSkills) {
+      assert.strictEqual(s.source, 'copilot-plugin',
+        `copilot plugin skill ${s.name} should have source copilot-plugin`);
+      assert.ok(s.name, `copilot plugin skill missing name`);
+    }
+  });
+
   await test('getSkills includes all scope types', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
-    // source mapping should handle all scopes
-    assert.ok(src.includes("scope === 'claude-code'"), 'should handle claude-code scope');
-    assert.ok(src.includes("scope === 'plugin'"), 'should handle plugin scope');
+    // source mapping (SKILL_SOURCE_BY_SCOPE) should cover all scopes
+    assert.ok(src.includes("'claude-code': 'claude-code'"), 'should map claude-code scope');
+    assert.ok(src.includes("'plugin': 'plugin'"), 'should map plugin scope');
+    assert.ok(src.includes("'copilot-plugin': 'copilot-plugin'"), 'should map copilot-plugin scope');
+    assert.ok(src.includes("'copilot': 'copilot'"), 'should map copilot personal skill scope');
+    assert.ok(src.includes("'agent-skill': 'agent-skill'"), 'should map portable agent skill scope');
     assert.ok(src.includes("scope === 'project'"), 'should handle project scope');
+  });
+
+  await test('collectSkillFiles discovers copilot plugin skills under ~/.copilot/installed-plugins', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes("'.copilot'"),
+      'collectSkillFiles should reference ~/.copilot');
+    assert.ok(src.includes('installed-plugins'),
+      'collectSkillFiles should scan ~/.copilot/installed-plugins');
+    assert.ok(src.includes("'copilot-plugin'"),
+      'copilot plugin skills should have scope copilot-plugin');
   });
 }
 
@@ -12557,9 +12703,9 @@ async function testRenderPlaybook() {
       'Should discourage unnecessary skill creation in injected guidance');
   });
 
-  await test('renderPlaybook clarifies minions skills are user-level Claude skills', () => {
-    assert.ok(src.includes('available in normal Claude windows too') && src.includes('scope: minions'),
-      'Should explain that minions-scoped skills become user-level Claude skills');
+  await test('renderPlaybook keeps skill extraction runtime-native', () => {
+    assert.ok(src.includes("selected runtime's native personal skills directory") && src.includes('scope: minions'),
+      'Should explain that minions-scoped skills use the selected runtime native target');
   });
 
   await test('renderPlaybook renders docs playbook successfully with typical vars', () => {
@@ -12650,6 +12796,49 @@ async function testBuildAgentContext() {
         'String _context values should keep their existing prompt formatting');
       assert.ok(!context.includes('[object Object]'),
         'Malformed object context must not be implicitly stringified');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('buildAgentContext surfaces instruction files and KB without duplicating native runtime assets', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const playbook = require('../engine/playbook');
+      const minionsDir = freshShared.MINIONS_DIR;
+      const project = { name: 'Repo', localPath: path.join(minionsDir, 'repo') };
+      fs.mkdirSync(path.join(project.localPath, '.github'), { recursive: true });
+      fs.mkdirSync(path.join(project.localPath, '.claude', 'commands'), { recursive: true });
+      fs.mkdirSync(path.join(project.localPath, '.claude', 'skills', 'repo-skill'), { recursive: true });
+      fs.mkdirSync(path.join(minionsDir, 'knowledge', 'conventions'), { recursive: true });
+
+      fs.writeFileSync(path.join(project.localPath, 'CLAUDE.md'), '# Project Claude Rules\nFollow project style.');
+      fs.writeFileSync(path.join(project.localPath, 'AGENTS.md'), '# Project Agent Rules\nFollow agent style.');
+      fs.writeFileSync(path.join(project.localPath, '.github', 'copilot-instructions.md'), '# Copilot Rules\nFollow copilot style.');
+      fs.writeFileSync(path.join(project.localPath, '.claude', 'commands', 'audit.md'), '---\ndescription: Audit carefully\n---\n# Audit');
+      fs.writeFileSync(path.join(project.localPath, '.claude', 'skills', 'repo-skill', 'SKILL.md'), '---\nname: repo-skill\ndescription: Repo skill\n---\n# Repo Skill');
+      fs.writeFileSync(path.join(minionsDir, 'knowledge', 'conventions', 'repo-rule.md'), '# Repo Rule\nUse the shared helper.');
+
+      const config = { projects: [project], agents: {}, engine: {} };
+      fs.writeFileSync(path.join(minionsDir, 'config.json'), JSON.stringify(config));
+
+      const context = playbook.buildAgentContext('dallas', config, project);
+      assert.ok(context.includes('Project Conventions (from CLAUDE.md)'), 'CLAUDE.md should be injected');
+      assert.ok(context.includes('Project Agent Instructions (from AGENTS.md)'), 'AGENTS.md should be injected explicitly');
+      assert.ok(context.includes('Project Copilot Instructions'), 'Copilot instructions should be injected explicitly');
+      assert.ok(context.includes('knowledge/conventions/repo-rule.md'), 'KB index should be included');
+      assert.ok(context.includes('Runtime-native skills and commands are left to the selected CLI runtime'),
+        'context should document that native assets are runtime-owned');
+      assert.ok(!context.includes('## Available Minions Skills'), 'native skill indexes should not be injected into prompts');
+      assert.ok(!context.includes('## Available User Commands'), 'native command indexes should not be injected into prompts');
+      assert.ok(!context.includes('/audit') && !context.includes('Audit carefully'), 'command docs should stay runtime-native');
     } finally {
       restore();
       for (const mod of ['../engine/shared', '../engine/queries', '../engine/playbook']) {
@@ -17306,7 +17495,7 @@ async function testSpawnAgentScript() {
   // After P-9c4f2d6a these are behavioral tests against the pure helpers —
   // the literal --add-dir flag now lives in the Claude adapter, not in
   // spawn-agent.js itself.
-  await test('spawn-agent.js sources skill-discovery dirs from minions repo + ~/.claude', () => {
+  await test('spawn-agent.js sources user asset dirs from the runtime adapter', () => {
     // Smoke: spawn-agent.js still imports os and resolves minionsDir from __dirname.
     // These are the inputs to the addDirs array passed to runtime.buildArgs().
     assert.ok(src.includes("require('os')"),
@@ -17315,8 +17504,10 @@ async function testSpawnAgentScript() {
       'Should resolve minions project dir via path.resolve(__dirname, "..")');
     assert.ok(src.includes('os.homedir()'),
       'Should use os.homedir() (not process.env.HOME) for cross-platform compat');
-    assert.ok(src.includes("'.claude'"),
-      'Should target the .claude subdirectory under home for global skill discovery');
+    assert.ok(src.includes('runtime.getUserAssetDirs'),
+      'Runtime-specific global asset roots should come from the selected adapter');
+    assert.ok(!src.includes("'.claude'") && !src.includes("'.copilot'") && !src.includes("'.agents'"),
+      'spawn-agent must not hardcode runtime-native asset directory names');
   });
 
   await test('addDirs flow through to Claude adapter as --add-dir flags', () => {

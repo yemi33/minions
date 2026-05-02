@@ -722,31 +722,120 @@ function buildPrUrlFromId(prId, pr, projects) {
 
 // ── Skills ──────────────────────────────────────────────────────────────────
 
+// Walk a `skills/` dir and push SKILL.md entries — handles both flat
+// (skills/SKILL.md → pluginName) and nested (skills/<entry>/SKILL.md →
+// pluginName:entry) layouts. Used by both Claude and Copilot plugin scans.
+function _collectPluginSkillsDir(skillsDir, pluginName, scope, seenSet, out) {
+  let entries;
+  try { entries = fs.readdirSync(skillsDir, { withFileTypes: true }); } catch { return; }
+  for (const dirent of entries) {
+    const entry = dirent.name;
+    const entryPath = path.join(skillsDir, entry);
+    if (entry === 'SKILL.md') {
+      if (!seenSet.has(pluginName)) {
+        out.push({ file: 'SKILL.md', dir: skillsDir, scope, skillName: pluginName });
+        seenSet.add(pluginName);
+      }
+    } else if (dirent.isDirectory()) {
+      const nestedSkill = path.join(entryPath, 'SKILL.md');
+      if (fs.existsSync(nestedSkill)) {
+        const name = pluginName + ':' + entry;
+        if (!seenSet.has(name)) {
+          out.push({ file: 'SKILL.md', dir: entryPath, scope, skillName: name });
+          seenSet.add(name);
+        }
+      }
+    }
+  }
+}
+
+function _collectNativeSkillsDir(skillsDir, scope, seenSet, out, extra = {}) {
+  let entries;
+  try { entries = fs.readdirSync(skillsDir, { withFileTypes: true }); } catch { return; }
+  for (const dirent of entries) {
+    const entry = dirent.name;
+    if (entry === 'README.md') continue;
+    const entryPath = path.join(skillsDir, entry);
+    if (dirent.isDirectory()) {
+      const skillFile = path.join(entryPath, 'SKILL.md');
+      const nestedSkillFile = path.join(entryPath, 'skills', 'SKILL.md');
+      if (fs.existsSync(skillFile) && !seenSet.has(entry)) {
+        out.push({ file: 'SKILL.md', dir: entryPath, scope, skillName: entry, ...extra });
+        seenSet.add(entry);
+      } else if (fs.existsSync(nestedSkillFile) && !seenSet.has(entry)) {
+        out.push({ file: 'SKILL.md', dir: path.join(entryPath, 'skills'), scope, skillName: entry, ...extra });
+        seenSet.add(entry);
+      }
+    } else if (entry.endsWith('.md') && scope === 'project') {
+      const key = extra.projectName ? `${extra.projectName}:${entry}` : entry;
+      if (seenSet.has(key)) continue;
+      out.push({ file: entry, dir: skillsDir, scope, ...extra });
+      seenSet.add(key);
+    }
+  }
+}
+
+let _skillsCache = null;
+let _skillsCacheTs = 0;
+let _skillsCacheKey = null;
+let _skillIndexCache = null;
+let _skillIndexCacheTs = 0;
+let _skillIndexCacheKey = null;
+const SKILLS_CACHE_TTL = 30000; // 30s — skill files change rarely (agent extraction, manual authoring)
+
+function invalidateSkillsCache() {
+  _skillsCache = null;
+  _skillsCacheTs = 0;
+  _skillsCacheKey = null;
+  _skillIndexCache = null;
+  _skillIndexCacheTs = 0;
+  _skillIndexCacheKey = null;
+}
+
+function _skillsCacheKeyFor(config, homeDir) {
+  const projects = getProjects(config).map(p => [p.name || '', p.localPath || '']);
+  return JSON.stringify({ homeDir, projects });
+}
+
 function collectSkillFiles(config) {
+  const now = Date.now();
   config = config || getConfig();
+  const homeDir = os.homedir();
+  const projects = getProjects(config);
+  const cacheKey = _skillsCacheKeyFor(config, homeDir);
+  if (_skillsCache && _skillsCacheKey === cacheKey && (now - _skillsCacheTs) < SKILLS_CACHE_TTL) return _skillsCache;
   const skillFiles = [];
   const seen = new Set(); // dedup by name
 
-  // 1. Claude Code native skills: ~/.claude/skills/<name>/SKILL.md
-  const homeDir = os.homedir();
-  const claudeSkillsDir = path.join(homeDir, '.claude', 'skills');
+  // 1. Runtime-native skills. Runtime adapters own their native locations so
+  // Minions stays a thin orchestration layer rather than a parallel skills system.
+  const seenByScope = new Map();
+  function seenFor(scope, projectName) {
+    const key = scope === 'project' ? `project:${projectName || ''}` : scope;
+    if (!seenByScope.has(key)) seenByScope.set(key, new Set());
+    return seenByScope.get(key);
+  }
   try {
-    const dirs = fs.readdirSync(claudeSkillsDir).filter(d => {
-      try { return fs.statSync(path.join(claudeSkillsDir, d)).isDirectory(); } catch { return false; }
-    });
-    for (const d of dirs) {
-      // Check both <name>/SKILL.md and <name>/skills/SKILL.md (Claude Code uses both)
-      const skillFile = path.join(claudeSkillsDir, d, 'SKILL.md');
-      const nestedSkillFile = path.join(claudeSkillsDir, d, 'skills', 'SKILL.md');
-      if (fs.existsSync(skillFile)) {
-        skillFiles.push({ file: 'SKILL.md', dir: path.join(claudeSkillsDir, d), scope: 'claude-code', skillName: d });
-        seen.add(d);
-      } else if (fs.existsSync(nestedSkillFile)) {
-        skillFiles.push({ file: 'SKILL.md', dir: path.join(claudeSkillsDir, d, 'skills'), scope: 'claude-code', skillName: d });
-        seen.add(d);
+    const { listRuntimes, resolveRuntime } = require('./runtimes');
+    for (const runtimeName of listRuntimes()) {
+      const runtime = resolveRuntime(runtimeName);
+      if (typeof runtime.getSkillRoots !== 'function') continue;
+      for (const root of runtime.getSkillRoots({ homeDir })) {
+        _collectNativeSkillsDir(root.dir, root.scope, seenFor(root.scope, root.projectName), skillFiles, {
+          projectName: root.projectName,
+        });
+      }
+      for (const project of projects) {
+        if (!project.localPath) continue;
+        for (const root of runtime.getSkillRoots({ homeDir, project })) {
+          if (root.scope !== 'project') continue;
+          _collectNativeSkillsDir(root.dir, root.scope, seenFor(root.scope, root.projectName), skillFiles, {
+            projectName: root.projectName,
+          });
+        }
       }
     }
-  } catch { /* optional */ }
+  } catch { /* runtime registry optional in partial installs */ }
 
   // 1b. Installed plugin skills: ~/.claude/plugins/installed_plugins.json
   // Plugins use commands/*.md and/or skills/<name>/SKILL.md and/or skills/SKILL.md
@@ -772,59 +861,41 @@ function collectSkillFiles(config) {
       } catch { /* optional */ }
 
       // skills/<name>/SKILL.md or skills/SKILL.md (newer style)
-      const skillsDir = path.join(install.installPath, 'skills');
-      try {
-        const entries = fs.readdirSync(skillsDir);
-        for (const entry of entries) {
-          const entryPath = path.join(skillsDir, entry);
-          if (entry === 'SKILL.md') {
-            // Flat: skills/SKILL.md
-            const name = pluginName;
-            if (!seen.has(name)) {
-              skillFiles.push({ file: 'SKILL.md', dir: skillsDir, scope: 'plugin', skillName: name });
-              seen.add(name);
-            }
-          } else {
-            try {
-              if (!fs.statSync(entryPath).isDirectory()) continue;
-            } catch { continue; }
-            // Nested: skills/<name>/SKILL.md
-            const nestedSkill = path.join(entryPath, 'SKILL.md');
-            if (fs.existsSync(nestedSkill)) {
-              const name = pluginName + ':' + entry;
-              if (!seen.has(name)) {
-                skillFiles.push({ file: 'SKILL.md', dir: entryPath, scope: 'plugin', skillName: name });
-                seen.add(name);
-              }
-            }
-          }
-        }
-      } catch { /* optional */ }
+      _collectPluginSkillsDir(path.join(install.installPath, 'skills'), pluginName, 'plugin', seen, skillFiles);
     }
   } catch { /* optional */ }
 
-  // 2. Project-specific skills: <project>/.claude/skills/<name>.md or <name>/SKILL.md
-  for (const project of getProjects(config)) {
-    const projectSkillsDir = path.resolve(project.localPath, '.claude', 'skills');
-    try {
-      const entries = fs.readdirSync(projectSkillsDir);
-      for (const entry of entries) {
-        if (entry === 'README.md') continue;
-        const entryPath = path.join(projectSkillsDir, entry);
-        const stat = fs.statSync(entryPath);
-        if (stat.isDirectory()) {
-          const skillFile = path.join(entryPath, 'SKILL.md');
-          if (fs.existsSync(skillFile)) {
-            skillFiles.push({ file: 'SKILL.md', dir: entryPath, scope: 'project', projectName: project.name, skillName: entry });
-          }
-        } else if (entry.endsWith('.md')) {
-          skillFiles.push({ file: entry, dir: projectSkillsDir, scope: 'project', projectName: project.name });
-        }
+  // 1c. Copilot installed plugin skills:
+  //   ~/.copilot/installed-plugins/<source>/<plugin>/skills/<skill>/SKILL.md
+  // Separate dedup set so plugins installed in both engines surface in both tabs.
+  const copilotSeen = new Set();
+  try {
+    const sources = fs.readdirSync(path.join(homeDir, '.copilot', 'installed-plugins'), { withFileTypes: true });
+    for (const sourceDirent of sources) {
+      if (!sourceDirent.isDirectory()) continue;
+      const sourceDir = path.join(homeDir, '.copilot', 'installed-plugins', sourceDirent.name);
+      let plugins;
+      try { plugins = fs.readdirSync(sourceDir, { withFileTypes: true }); } catch { continue; }
+      for (const pluginDirent of plugins) {
+        if (!pluginDirent.isDirectory()) continue;
+        _collectPluginSkillsDir(path.join(sourceDir, pluginDirent.name, 'skills'), pluginDirent.name, 'copilot-plugin', copilotSeen, skillFiles);
       }
-    } catch { /* optional */ }
-  }
+    }
+  } catch { /* optional */ }
+
+  _skillsCache = skillFiles;
+  _skillsCacheTs = now;
+  _skillsCacheKey = cacheKey;
   return skillFiles;
 }
+
+const SKILL_SOURCE_BY_SCOPE = {
+  'claude-code': 'claude-code',
+  'copilot': 'copilot',
+  'agent-skill': 'agent-skill',
+  'plugin': 'plugin',
+  'copilot-plugin': 'copilot-plugin',
+};
 
 function getSkills(config) {
   const all = [];
@@ -835,9 +906,10 @@ function getSkills(config) {
       if (scope === 'project' && meta.project === 'any') meta.project = projectName;
       // Check if auto-generated by an agent
       const isAutoGenerated = content.includes('Auto-extracted') || content.includes('author:') || content.includes('createdBy:');
+      const source = SKILL_SOURCE_BY_SCOPE[scope] || (scope === 'project' ? 'project:' + projectName : 'minions');
       all.push({
         ...meta, file: f, dir: dir.replace(/\\/g, '/'),
-        source: scope === 'claude-code' ? 'claude-code' : scope === 'plugin' ? 'plugin' : scope === 'project' ? 'project:' + projectName : 'minions',
+        source,
         scope,
         autoGenerated: isAutoGenerated,
       });
@@ -847,8 +919,17 @@ function getSkills(config) {
 }
 
 function getSkillIndex(config) {
+  const now = Date.now();
+  config = config || getConfig();
+  const cacheKey = _skillsCacheKeyFor(config, os.homedir());
+  if (_skillIndexCache !== null && _skillIndexCacheKey === cacheKey && (now - _skillIndexCacheTs) < SKILLS_CACHE_TTL) return _skillIndexCache;
   try {
-    const skillFiles = collectSkillFiles(config);
+    const skillFiles = collectSkillFiles(config).sort((a, b) => {
+      const priority = { project: 0, plugin: 1, 'copilot-plugin': 1, copilot: 2, 'agent-skill': 2, 'claude-code': 2 };
+      return (priority[a.scope] ?? 9) - (priority[b.scope] ?? 9)
+        || String(a.projectName || '').localeCompare(String(b.projectName || ''))
+        || String(a.skillName || a.file || '').localeCompare(String(b.skillName || b.file || ''));
+    });
     if (skillFiles.length === 0) return '';
 
     let index = '## Available Minions Skills\n\n';
@@ -866,7 +947,110 @@ function getSkillIndex(config) {
       index += `**File:** \`${dir}/${f}\`\n`;
       index += `Read the full skill file before following the steps.\n\n`;
     }
+    _skillIndexCache = index;
+    _skillIndexCacheTs = now;
+    _skillIndexCacheKey = cacheKey;
     return index;
+  } catch { return ''; }
+}
+
+// ── Claude/Copilot command docs ──────────────────────────────────────────────
+
+function _collectMarkdownFilesRecursive(rootDir, maxFiles = 100) {
+  const found = [];
+  function walk(dir, relPrefix = '') {
+    if (found.length >= maxFiles) return;
+    let entries;
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const entry of entries) {
+      if (found.length >= maxFiles) return;
+      if (entry === 'README.md') continue;
+      const full = path.join(dir, entry);
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (stat.isDirectory()) {
+        walk(full, path.join(relPrefix, entry));
+      } else if (entry.endsWith('.md')) {
+        found.push({ file: entry, dir, rel: path.join(relPrefix, entry).replace(/\\/g, '/') });
+      }
+    }
+  }
+  walk(rootDir);
+  return found;
+}
+
+function collectCommandFiles(config) {
+  config = config || getConfig();
+  const commandFiles = [];
+  const seen = new Set();
+  const homeDir = os.homedir();
+
+  function addCommandDir(rootDir, scope, extra = {}) {
+    const root = path.resolve(rootDir);
+    for (const cmd of _collectMarkdownFilesRecursive(root)) {
+      const key = `${scope}:${extra.projectName || ''}:${root}:${cmd.rel}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const commandName = cmd.rel.replace(/\.md$/, '').replace(/\\/g, '/');
+      commandFiles.push({ ...cmd, root, scope, commandName, ...extra });
+    }
+  }
+
+  addCommandDir(path.join(homeDir, '.claude', 'commands'), 'claude-code');
+
+  try {
+    const pluginsFile = path.join(homeDir, '.claude', 'plugins', 'installed_plugins.json');
+    const registry = JSON.parse(safeRead(pluginsFile) || '{}');
+    for (const [pluginKey, installs] of Object.entries(registry.plugins || {})) {
+      if (!Array.isArray(installs) || installs.length === 0) continue;
+      const install = installs[0];
+      if (!install.installPath) continue;
+      const pluginName = pluginKey.split('@')[0];
+      addCommandDir(path.join(install.installPath, 'commands'), 'plugin', { pluginName });
+    }
+  } catch { /* optional */ }
+
+  for (const project of getProjects(config)) {
+    if (!project.localPath) continue;
+    addCommandDir(path.resolve(project.localPath, '.claude', 'commands'), 'project', { projectName: project.name });
+  }
+
+  return commandFiles;
+}
+
+function _commandTitle(content, fallback) {
+  const description = content.match(/^description:\s*["']?(.+?)["']?\s*$/m);
+  if (description) return description[1].trim();
+  const heading = content.match(/^#\s+(.+)/m);
+  if (heading) return heading[1].trim();
+  return fallback;
+}
+
+function getCommandIndex(config) {
+  try {
+    const commandFiles = collectCommandFiles(config).sort((a, b) => {
+      const priority = { project: 0, plugin: 1, 'claude-code': 2 };
+      return (priority[a.scope] ?? 9) - (priority[b.scope] ?? 9)
+        || String(a.projectName || '').localeCompare(String(b.projectName || ''))
+        || String(a.commandName || '').localeCompare(String(b.commandName || ''));
+    });
+    if (commandFiles.length === 0) return '';
+
+    let index = '## Available User Commands\n\n';
+    index += 'Claude/Copilot command markdown discovered from user, plugin, and project command packs. Read the file and adapt its workflow when it matches the task; do not assume slash-command invocation works inside non-interactive agent runs.\n\n';
+
+    for (const { file: f, dir, scope, projectName, pluginName, commandName } of commandFiles) {
+      const content = safeRead(path.join(dir, f)) || '';
+      const title = _commandTitle(content, commandName);
+      const label = scope === 'project'
+        ? `project:${projectName || 'unknown'}`
+        : scope === 'plugin'
+          ? `plugin:${pluginName || 'unknown'}`
+          : 'claude-code';
+      index += `- \`/${commandName}\` (${label}) — ${title}\n`;
+      index += `  File: \`${dir.replace(/\\/g, '/')}/${f}\`\n`;
+    }
+    return index + '\n';
   } catch { return ''; }
 }
 
@@ -1370,7 +1554,10 @@ module.exports = {
   getPrs, getPullRequests,
 
   // Skills
-  collectSkillFiles, getSkills, getSkillIndex,
+  collectSkillFiles, getSkills, getSkillIndex, invalidateSkillsCache,
+
+  // Commands
+  collectCommandFiles, getCommandIndex,
 
   // Knowledge base
   getKnowledgeBaseEntries, getKnowledgeBaseIndex,

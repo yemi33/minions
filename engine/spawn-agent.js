@@ -179,10 +179,14 @@ function main() {
   // dir are otherwise invisible. The adapter decides how to surface them
   // (Claude → `--add-dir <path>`; Copilot → ignored).
   const minionsDir = path.resolve(__dirname, '..');
-  const userClaudeDir = path.join(os.homedir(), '.claude');
   const addDirs = [minionsDir];
-  if (fs.existsSync(userClaudeDir) && path.resolve(userClaudeDir) !== path.resolve(minionsDir)) {
-    addDirs.push(userClaudeDir);
+  const userAssetDirs = typeof runtime.getUserAssetDirs === 'function'
+    ? runtime.getUserAssetDirs({ homeDir: os.homedir() })
+    : [];
+  for (const userAssetDir of userAssetDirs) {
+    if (fs.existsSync(userAssetDir) && path.resolve(userAssetDir) !== path.resolve(minionsDir)) {
+      addDirs.push(userAssetDir);
+    }
   }
 
   let resolved;

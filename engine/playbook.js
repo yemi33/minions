@@ -10,7 +10,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
-const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
+const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, getKnowledgeBaseIndex, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
 const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
@@ -394,7 +394,7 @@ function renderPlaybook(type, vars) {
   content += '````\n```skill\n';
   content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
-  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to ~/.claude/skills/ so they are available in normal Claude windows too\n`;
+  content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory so they are available in normal runtime windows too\n`;
   content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to <project>/.claude/skills/\n`;
   content += `- Emit at most one skill block per task unless you uncovered two clearly distinct reusable workflows\n`;
   content += `- Do NOT create a skill for one-off bug fixes, isolated command output, obvious repo facts, or anything already covered by existing docs/playbooks/skills\n`;
@@ -532,11 +532,24 @@ function buildAgentContext(agentId, config, project) {
       const truncated = claudeMd.length > 8192 ? claudeMd.slice(0, 8192) + '\n\n...(truncated)' : claudeMd;
       context += `## Project Conventions (from CLAUDE.md)\n\n${truncated}\n\n`;
     }
+
+    const agentsMd = safeRead(path.join(project.localPath, 'AGENTS.md'));
+    if (agentsMd && agentsMd.trim()) {
+      const truncated = agentsMd.length > 8192 ? agentsMd.slice(0, 8192) + '\n\n...(truncated)' : agentsMd;
+      context += `## Project Agent Instructions (from AGENTS.md)\n\n${truncated}\n\n`;
+    }
+
+    const copilotInstructions = safeRead(path.join(project.localPath, '.github', 'copilot-instructions.md'));
+    if (copilotInstructions && copilotInstructions.trim()) {
+      const truncated = copilotInstructions.length > 8192 ? copilotInstructions.slice(0, 8192) + '\n\n...(truncated)' : copilotInstructions;
+      context += `## Project Copilot Instructions\n\n${truncated}\n\n`;
+    }
   }
 
-  // KB and skills: NOT injected — agents can Glob/Read when needed
-  // This saves ~27KB per dispatch. Reference note so agents know they exist:
-  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. User-level Minions skills live in \`~/.claude/skills/\`, and project-specific skills live in \`<project>/.claude/skills/\`. Use Glob/Read when relevant.\n\n`;
+  const kbIndex = getKnowledgeBaseIndex();
+  if (kbIndex) context += kbIndex;
+
+  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Runtime-native skills and commands are left to the selected CLI runtime instead of being duplicated into every prompt. Use Glob/Read when relevant.\n\n`;
 
   // Minions awareness: what's in flight, who's doing what
   const dispatch = getDispatch();
