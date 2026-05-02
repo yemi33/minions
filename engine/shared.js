@@ -1089,7 +1089,7 @@ function runtimeConfigWarnings(config, registeredRuntimes) {
 
 const WI_STATUS = {
   PENDING: 'pending', DISPATCHED: 'dispatched', DONE: 'done', FAILED: 'failed',
-  PAUSED: 'paused', QUEUED: 'queued', NEEDS_REVIEW: 'needs-human-review',
+  PAUSED: 'paused', QUEUED: 'queued',
   DECOMPOSED: 'decomposed', CANCELLED: 'cancelled',
 };
 // Read-side: accept legacy aliases for backward compat with old data/clients.

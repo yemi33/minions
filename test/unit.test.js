@@ -4103,7 +4103,7 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
-  await test('PR-producing success without canonical PR is needs-human-review, not done', async () => {
+  await test('PR-producing success without canonical PR is failed, not done', async () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -4132,7 +4132,8 @@ async function testPrAttachmentContract() {
       assert.ok(result.completionContractFailure, 'hook should report a contract failure to dispatch completion');
       assert.strictEqual(result.completionContractFailure.severity, 'hard',
         'no PR URL in output should be a HARD contract failure');
-      assert.strictEqual(updated.status, 'needs-human-review');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.FAILED);
+      assert.ok(updated.failedAt, 'hard failure should set failedAt');
       assert.ok(updated._missingPrAttachment, 'hard failure should set _missingPrAttachment');
       assert.ok(!updated._unverifiedPrAttachment, 'hard failure must not set the soft flag');
       assert.ok(!updated.completedAt, 'missing PR contract must not persist a done completion timestamp');
@@ -4141,8 +4142,8 @@ async function testPrAttachmentContract() {
       assert.ok(inboxFiles.some(f => f.includes('missing-pr-attachment-W-nopr123')),
         'missing PR contract failure should leave a durable inbox note');
       const prd = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
-      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.NEEDS_REVIEW,
-        'hard PR contract escalation should sync the PRD item status');
+      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.FAILED,
+        'hard PR contract failure should sync the PRD item status to failed');
     } finally { restore(); }
   });
 
@@ -4489,7 +4490,7 @@ async function testPrAttachmentContract() {
       // Soft failure: WI is marked done (the agent did the work), only the
       // unverified flag is set so the dashboard can render a verify badge.
       assert.strictEqual(updated.status, testShared.WI_STATUS.DONE,
-        'soft failure must NOT change status to needs-review');
+        'soft failure must NOT change status to failed');
       assert.ok(updated._unverifiedPrAttachment,
         'soft failure should set _unverifiedPrAttachment for the dashboard');
       assert.ok(!updated._missingPrAttachment,
@@ -4599,13 +4600,14 @@ async function testPrAttachmentContract() {
       const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
       assert.ok(result.completionContractFailure?.stateError,
         'corrupt PR state should be reported as a state verification error');
-      assert.strictEqual(updated.status, testShared.WI_STATUS.NEEDS_REVIEW);
+      assert.strictEqual(updated.status, testShared.WI_STATUS.FAILED);
+      assert.ok(updated.failedAt, 'state error should set failedAt');
       assert.ok(updated._prAttachmentStateError, 'state error marker should be set');
       assert.ok(!updated._missingPrAttachment, 'corrupt state must not be mislabeled as a missing PR');
       assert.match(updated.failReason, /could not read PR tracking state/);
       const prd = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
-      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.NEEDS_REVIEW,
-        'state-error escalation should sync the PRD item status');
+      assert.strictEqual(prd.missing_features[0].status, testShared.WI_STATUS.FAILED,
+        'state-error failure should sync the PRD item status to failed');
       const inboxFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'));
       assert.ok(inboxFiles.some(f => f.includes('pr-attachment-state-error-W-corrupt-pr-state')),
         'state errors should leave a durable inbox note');
@@ -4691,15 +4693,26 @@ async function testPrAttachmentContract() {
       'test WIs from build-and-test action target an existing PR — no fresh attachment');
   });
 
-  await test('isPrAttachmentRequired returns true for TEST without meta.pr', () => {
+  await test('isPrAttachmentRequired returns false for standalone TEST by default', () => {
     const lifecycle = require('../engine/lifecycle');
     const required = lifecycle.isPrAttachmentRequired(
       shared.WORK_TYPE.TEST,
       { id: 'W-1' },
       {},
     );
+    assert.strictEqual(required, false,
+      'standalone test WIs are usually pure verification and should not require a PR by default');
+  });
+
+  await test('isPrAttachmentRequired returns true for explicit TEST PR requirement', () => {
+    const lifecycle = require('../engine/lifecycle');
+    const required = lifecycle.isPrAttachmentRequired(
+      shared.WORK_TYPE.TEST,
+      { id: 'W-1', requiresPr: true },
+      {},
+    );
     assert.strictEqual(required, true,
-      'standalone test WIs (no meta.pr) still need a PR per the existing contract');
+      'test WIs that explicitly change files can still require a PR');
   });
 
   await test('isPrAttachmentRequired meta.pr exemption beats explicit requiresPr flag', () => {
@@ -8969,7 +8982,7 @@ async function testEdgeCases() {
 // ─── Legacy Status Migration Tests ──────────────────────────────────────────
 
 async function testLegacyStatusMigration() {
-  console.log('\n── Legacy Status Migration (in-pr/implemented/complete → done) ──');
+  console.log('\n── Legacy Status Migration (done aliases + needs-human-review) ──');
 
   await test('runCleanup migrates legacy work-item statuses on disk', () => {
     const tmp = createTmpDir();
@@ -8981,22 +8994,30 @@ async function testLegacyStatusMigration() {
       { id: 'W-004', title: 'Feature D', status: 'done' },
       { id: 'W-005', title: 'Feature E', status: 'pending' },
       { id: 'W-006', title: 'Feature F', status: 'failed' },
+      { id: 'W-007', title: 'Feature G', status: 'needs-human-review', completedAt: '2024-01-01T00:00:00.000Z' },
     ];
     shared.safeWrite(wiPath, items);
 
     // Simulate the migration logic from runCleanup
     const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+    const LEGACY_NEEDS_REVIEW_STATUS = 'needs-human-review';
     const loaded = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
     let migrated = 0;
     for (const item of loaded) {
       if (LEGACY_DONE_STATUSES.has(item.status)) {
         item.status = 'done';
         migrated++;
+      } else if (item.status === LEGACY_NEEDS_REVIEW_STATUS) {
+        item.status = 'failed';
+        item.failReason = item.failReason || 'Manual intervention required (migrated from needs-human-review)';
+        item.failedAt = item.failedAt || '2024-01-02T00:00:00.000Z';
+        delete item.completedAt;
+        migrated++;
       }
     }
     shared.safeWrite(wiPath, loaded);
 
-    assert.strictEqual(migrated, 3, 'Should migrate exactly 3 legacy statuses');
+    assert.strictEqual(migrated, 4, 'Should migrate exactly 4 legacy statuses');
     const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
     assert.strictEqual(result[0].status, 'done', 'in-pr → done');
     assert.strictEqual(result[1].status, 'done', 'implemented → done');
@@ -9004,6 +9025,10 @@ async function testLegacyStatusMigration() {
     assert.strictEqual(result[3].status, 'done', 'done stays done');
     assert.strictEqual(result[4].status, 'pending', 'pending unchanged');
     assert.strictEqual(result[5].status, 'failed', 'failed unchanged');
+    assert.strictEqual(result[6].status, 'failed', 'needs-human-review → failed');
+    assert.match(result[6].failReason, /Manual intervention required/);
+    assert.ok(result[6].failedAt, 'needs-human-review migration should stamp failedAt');
+    assert.ok(!result[6].completedAt, 'failed migrated item should not keep completedAt');
   });
 
   await test('runCleanup migrates legacy PRD item statuses on disk', () => {
@@ -9016,27 +9041,33 @@ async function testLegacyStatusMigration() {
         { id: 'P-002', status: 'done' },
         { id: 'P-003', status: 'implemented' },
         { id: 'P-004', status: 'pending' },
+        { id: 'P-005', status: 'needs-human-review' },
       ]
     };
     shared.safeWrite(prdPath, prd);
 
     const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+    const LEGACY_NEEDS_REVIEW_STATUS = 'needs-human-review';
     const loaded = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
     let migrated = 0;
     for (const feat of loaded.missing_features) {
       if (LEGACY_DONE_STATUSES.has(feat.status)) {
         feat.status = 'done';
         migrated++;
+      } else if (feat.status === LEGACY_NEEDS_REVIEW_STATUS) {
+        feat.status = 'failed';
+        migrated++;
       }
     }
     shared.safeWrite(prdPath, loaded);
 
-    assert.strictEqual(migrated, 2);
+    assert.strictEqual(migrated, 3);
     const result = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
     assert.strictEqual(result.missing_features[0].status, 'done', 'in-pr → done');
     assert.strictEqual(result.missing_features[1].status, 'done', 'done stays done');
     assert.strictEqual(result.missing_features[2].status, 'done', 'implemented → done');
     assert.strictEqual(result.missing_features[3].status, 'pending', 'pending unchanged');
+    assert.strictEqual(result.missing_features[4].status, 'failed', 'needs-human-review → failed');
   });
 
   await test('migration is idempotent — second pass changes nothing', () => {
@@ -9065,6 +9096,10 @@ async function testLegacyStatusMigration() {
     assert.ok(src.includes("LEGACY_DONE_ALIASES") || src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define legacy status migration set');
     assert.ok(src.includes("item.status = shared.WI_STATUS.DONE") || src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = shared.WI_STATUS.DONE") || src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
+    assert.ok(src.includes("LEGACY_NEEDS_REVIEW_STATUS = 'needs-human-review'"), 'runCleanup should recognize legacy needs-human-review statuses');
+    assert.ok(src.includes('item.status = shared.WI_STATUS.FAILED'), 'Should migrate legacy needs-human-review work items to failed');
+    assert.ok(src.includes('feat.status = shared.WI_STATUS.FAILED'), 'Should migrate legacy needs-human-review PRD items to failed');
+    assert.ok(src.includes('shared.withFileLock(`${prdPath}.lock`'), 'PRD status migration should use a file lock');
     assert.ok(src.includes('delete item._retryCount'),
       'Done-state cleanup paths should clear stale retry metadata');
   });
@@ -24637,7 +24672,7 @@ async function testNoRetryPrCompletion() {
   await test('lifecycle handles implement tasks without PR as contract failure', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('enforcePrAttachmentContract'), 'should enforce PR attachment before marking done');
-    assert.ok(src.includes('WI_STATUS.NEEDS_REVIEW'), 'missing PR should surface as needs-human-review');
+    assert.ok(src.includes('WI_STATUS.FAILED'), 'missing PR should surface as failed');
     assert.ok(src.includes('_missingPrAttachment'), 'should flag missing canonical PR attachments');
   });
 }
@@ -25870,8 +25905,10 @@ async function testCheckpointResume() {
   await test('engine.js caps checkpoint-resumes at 3', () => {
     assert.ok(engineSrc.includes('cpCount > 3'),
       'Should check if checkpoint count exceeds 3');
-    assert.ok(engineSrc.includes("WI_STATUS.NEEDS_REVIEW") || engineSrc.includes("'needs-human-review'"),
-      'Should set status to needs-human-review after 3 checkpoint-resumes');
+    assert.ok(engineSrc.includes('WI_STATUS.FAILED'),
+      'Should set status to failed after 3 checkpoint-resumes');
+    assert.ok(engineSrc.includes('Exceeded 3 checkpoint-resumes; manual intervention required'),
+      'Should set an explicit failReason after 3 checkpoint-resumes');
   });
 
   await test('checkpoint_context defaults to empty string when no checkpoint', () => {
@@ -25897,9 +25934,9 @@ async function testCheckpointResume() {
       'Should log when checkpoint context is injected');
   });
 
-  await test('checkpoint resume logs needs-human-review escalation', () => {
+  await test('checkpoint resume logs failed manual-intervention escalation', () => {
     assert.ok(engineSrc.includes('exceeded 3 checkpoint-resumes'),
-      'Should log when work item is escalated to needs-human-review');
+      'Should log when work item is escalated for manual intervention');
   });
 
   // ── Bug #15: Worktree deletion re-reads PR status before proceeding ──

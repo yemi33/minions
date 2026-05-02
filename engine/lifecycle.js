@@ -637,14 +637,21 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      // Lock-free peek: most PRDs won't contain the ID, so skip the lock cost.
       const plan = safeJson(fpath);
-      if (!plan?.missing_features) continue;
-      const feature = plan.missing_features.find(f => f.id === itemId);
-      if (feature && feature.status !== status) {
-        feature.status = status;
-        shared.safeWrite(fpath, plan);
-        return;
-      }
+      const feature = plan?.missing_features?.find(f => f.id === itemId);
+      if (!feature || feature.status === status) continue;
+      let updated = false;
+      shared.withFileLock(`${fpath}.lock`, () => {
+        const fresh = safeJson(fpath);
+        const f = fresh?.missing_features?.find(x => x.id === itemId);
+        if (f && f.status !== status) {
+          f.status = status;
+          safeWrite(fpath, fresh);
+          updated = true;
+        }
+      });
+      if (updated) return;
     }
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
 }
@@ -947,18 +954,19 @@ function isPrAttachmentRequired(type, item, meta = {}) {
   if (branchStrategy === 'shared-branch' && item.itemType !== 'pr' && !explicit) return false;
 
   // Fix/test work items dispatched against an existing PR don't produce a new
-  // PR — the agent updates meta.pr in place. Only require fresh PR attachment
-  // when there's NO existing PR to operate on (rare: standalone fix dispatched
-  // from CC without a PR target). The meta.pr short-circuit beats the
-  // explicit-flag fallthrough so a legacy requiresPr:true fix doesn't trigger
-  // the contract when there's already a PR attached.
+  // PR — the agent updates meta.pr in place. The meta.pr short-circuit beats
+  // the explicit-flag fallthrough so a legacy requiresPr:true fix doesn't
+  // trigger the contract when there's already a PR attached.
   if ((type === WORK_TYPE.FIX || type === WORK_TYPE.TEST) && meta?.pr) return false;
+
+  // Standalone test work is usually pure build/run/verify. It should only be
+  // PR-required when the caller explicitly marks it as file-changing work.
+  if (type === WORK_TYPE.TEST && !explicit) return false;
 
   return explicit
     || type === WORK_TYPE.IMPLEMENT
     || type === WORK_TYPE.IMPLEMENT_LARGE
-    || type === WORK_TYPE.FIX
-    || type === WORK_TYPE.TEST;
+    || type === WORK_TYPE.FIX;
 }
 
 function readOptionalJsonStrict(filePath, label, validate) {
@@ -1148,18 +1156,19 @@ function _outputContainsPrUrl(output) {
 function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity) {
   const noPrWiPath = resolveWorkItemPath(meta);
   const isHard = severity !== 'soft';
-  let syncNeedsReviewToPrd = false;
+  let syncFailedToPrd = false;
   if (noPrWiPath) {
     mutateJsonFileLocked(noPrWiPath, data => {
       if (!Array.isArray(data)) return data;
       const w = data.find(i => i.id === meta.item.id);
       if (!w) return data;
       if (isHard) {
-        w.status = WI_STATUS.NEEDS_REVIEW;
+        w.status = WI_STATUS.FAILED;
         w._missingPrAttachment = true;
         w.failReason = reason;
+        w.failedAt = ts();
         w._lastReviewReason = reason;
-        syncNeedsReviewToPrd = !!meta.item?.sourcePlan;
+        syncFailedToPrd = !!meta.item?.sourcePlan;
         delete w.completedAt;
         delete w._noPr;
         delete w._noPrReason;
@@ -1173,8 +1182,8 @@ function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity)
       return data;
     }, { skipWriteIfUnchanged: true });
   }
-  if (isHard && syncNeedsReviewToPrd) {
-    syncPrdItemStatus(meta.item.id, WI_STATUS.NEEDS_REVIEW, meta.item.sourcePlan);
+  if (isHard && syncFailedToPrd) {
+    syncPrdItemStatus(meta.item.id, WI_STATUS.FAILED, meta.item.sourcePlan);
   }
   if (isHard) {
     shared.writeToInbox('engine', `missing-pr-attachment-${meta.item.id}`,
@@ -1206,25 +1215,26 @@ function markMissingPrAttachment(meta, agentId, reason, resultSummary, severity)
 
 function markPrAttachmentVerificationError(meta, agentId, reason, resultSummary) {
   const wiPath = resolveWorkItemPath(meta);
-  let syncNeedsReviewToPrd = false;
+  let syncFailedToPrd = false;
   if (wiPath) {
     mutateJsonFileLocked(wiPath, data => {
       if (!Array.isArray(data)) return data;
       const w = data.find(i => i.id === meta.item.id);
       if (!w) return data;
-      w.status = WI_STATUS.NEEDS_REVIEW;
+      w.status = WI_STATUS.FAILED;
       w._prAttachmentStateError = true;
       w.failReason = reason;
+      w.failedAt = ts();
       w._lastReviewReason = reason;
-      syncNeedsReviewToPrd = !!meta.item?.sourcePlan;
+      syncFailedToPrd = !!meta.item?.sourcePlan;
       delete w.completedAt;
       delete w._missingPrAttachment;
       delete w._unverifiedPrAttachment;
       return data;
     }, { skipWriteIfUnchanged: true });
   }
-  if (syncNeedsReviewToPrd) {
-    syncPrdItemStatus(meta.item.id, WI_STATUS.NEEDS_REVIEW, meta.item.sourcePlan);
+  if (syncFailedToPrd) {
+    syncPrdItemStatus(meta.item.id, WI_STATUS.FAILED, meta.item.sourcePlan);
   }
   shared.writeToInbox('engine', `pr-attachment-state-error-${meta.item.id}`,
     `# PR attachment verification blocked for ${meta.item.id}\n\n` +

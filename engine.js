@@ -100,6 +100,8 @@ const mutateWorkItems = shared.mutateWorkItems;
 const mutatePullRequests = shared.mutatePullRequests;
 const withFileLock = shared.withFileLock;
 
+const CHECKPOINT_CAP_FAIL_REASON = 'Exceeded 3 checkpoint-resumes; manual intervention required';
+
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
 const { mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch,
@@ -2789,10 +2791,16 @@ function discoverFromWorkItems(config, project) {
     const promptAgentId = deferredAgentResolution ? reservedAgentId : agentId;
     const promptResult = renderProjectWorkItemPromptForAgent(item, workType, promptAgentId, config, project, root, branchName);
     if (promptResult.needsReview) {
-      log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-      item.status = WI_STATUS.NEEDS_REVIEW;
+      log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as failed for manual intervention`);
+      item.status = WI_STATUS.FAILED;
+      item.failReason = CHECKPOINT_CAP_FAIL_REASON;
+      item.failedAt = ts();
       item._checkpointCount = promptResult.checkpointCount;
       needsWrite = true;
+      if (item.sourcePlan) {
+        try { syncPrdItemStatus(item.id, WI_STATUS.FAILED, item.sourcePlan); }
+        catch (e) { log('warn', `PRD status sync after checkpoint cap (${item.id}): ${e.message}`); }
+      }
       continue;
     }
     if (promptResult.checkpointCount !== null) {
@@ -3305,8 +3313,17 @@ function discoverCentralWorkItems(config) {
         workType,
       });
       if (cpResult.needsReview) {
-        log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-        mutations.set(item.id, { status: WI_STATUS.NEEDS_REVIEW, _checkpointCount: cpResult.checkpointCount });
+        log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as failed for manual intervention`);
+        mutations.set(item.id, {
+          status: WI_STATUS.FAILED,
+          failReason: CHECKPOINT_CAP_FAIL_REASON,
+          failedAt: ts(),
+          _checkpointCount: cpResult.checkpointCount,
+        });
+        if (item.sourcePlan) {
+          try { syncPrdItemStatus(item.id, WI_STATUS.FAILED, item.sourcePlan); }
+          catch (e) { log('warn', `PRD status sync after checkpoint cap (${item.id}): ${e.message}`); }
+        }
         continue;
       }
       if (cpResult.checkpointCount !== null) {

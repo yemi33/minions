@@ -30,7 +30,7 @@ function wiRetryBtn(item) {
 
 function wiRow(item) {
   const statusBadge = (s) => {
-    const cls = s === 'failed' ? 'rejected' : s === 'needs-human-review' ? 'needs-review' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : s === 'decomposed' ? 'approved' : 'draft';
+    const cls = s === 'failed' ? 'rejected' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : s === 'decomposed' ? 'approved' : 'draft';
     return '<span class="pr-badge ' + cls + '">' + escapeHtml(s) + '</span>';
   };
   const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escapeHtml(t || 'implement') + '</span>';
@@ -67,10 +67,10 @@ function wiRow(item) {
       (item.acceptanceCriteria && item.acceptanceCriteria.length ? '<span title="' + item.acceptanceCriteria.length + ' acceptance criteria">&#x2611;' + item.acceptanceCriteria.length + '</span>' : '') +
     '</td>' +
     '<td style="white-space:nowrap">' +
-      ((item.status === 'pending' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
-      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
-      ((item.status === 'done' || item.status === 'failed' || item.status === 'needs-human-review') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
-      ((item.status === 'pending' || item.status === 'dispatched' || item.status === 'queued' || item.status === 'failed' || item.status === 'needs-human-review') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--orange);border-color:var(--orange);margin-right:4px" onclick="event.stopPropagation();cancelWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Cancel work item and kill agent">&#x1F6AB;</button>' : '') +
+      ((item.status === 'pending' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
+      ((item.status === 'done' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
+      ((item.status === 'done' || item.status === 'failed') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
+      ((item.status === 'pending' || item.status === 'dispatched' || item.status === 'queued' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--orange);border-color:var(--orange);margin-right:4px" onclick="event.stopPropagation();cancelWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Cancel work item and kill agent">&#x1F6AB;</button>' : '') +
       '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escapeHtml(item.id) + '\',\'' + escapeHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
     '</td>' +
   '</tr>';
@@ -79,7 +79,7 @@ function wiRow(item) {
 function renderWorkItems(items) {
   items = items.filter(function(w) { return !isDeleted('wi:' + w.id); });
   // Sort: active/dispatched first, then by most recent activity
-  const statusOrder = { dispatched: 0, pending: 1, queued: 1, 'needs-human-review': 2, failed: 2, done: 3 };
+  const statusOrder = { dispatched: 0, pending: 1, queued: 1, failed: 2, done: 3 };
   items.sort((a, b) => {
     const sa = statusOrder[a.status] ?? 2, sb = statusOrder[b.status] ?? 2;
     if (sa !== sb) return sa - sb;

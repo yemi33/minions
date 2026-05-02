@@ -187,7 +187,7 @@ The agent must not write the file in pieces. Empty, truncated, or malformed JSON
 | `partial` | Some progress; agent ran out of turns or hit a known stop point | Auto-retry per `RECOVERY_RECIPES` (`engine/recovery.js`) |
 | `failed` | Hard failure; no recovery attempted by agent | Use `failure.class` to pick recipe |
 | `noop` | Idempotent bail (review already posted, plan already shipped, etc.) | Mark WI `done` without retry, no failure metric |
-| `needs-review` | Agent could not classify; flag for human | Set WI `needs-human-review` |
+| `needs-review` | Agent could not classify; flag for human | Set WI `failed` with an explicit `failReason` |
 
 `noop` collapses the current `isReviewBailout` (lifecycle.js:907), the `verify-plan-already-shipped` family of skills, and the "shared-branch redispatch" skill into a single explicit signal. Any agent that detects "the work is already done" returns `status: "noop"` and a one-line `summary` — the engine takes the success path without retry.
 
@@ -370,7 +370,7 @@ The current ` ```completion ` block in `playbooks/fix.md:85-93` and `playbooks/i
 
 ### 7.3 No-PR Tasks
 
-`explore`, `ask`, `test`, `docs`, `plan-to-prd`, and the read-only legs of `meeting-*` simply omit `prs[]`. They still write completion.json with `status` + `summary`. This makes "I had nothing to push" an explicit signal instead of inferred from "no PR URL found in stdout" (which today triggers the auto-retry-then-needs-review chain at `lifecycle.js:1943-1984`).
+`explore`, `ask`, `test`, `docs`, `plan-to-prd`, and the read-only legs of `meeting-*` simply omit `prs[]`. They still write completion.json with `status` + `summary`. This makes "I had nothing to push" an explicit signal instead of inferred from "no PR URL found in stdout" (which today triggers the auto-retry-then-failed chain at `lifecycle.js:1943-1984`).
 
 ## 8. Validation & Testing
 

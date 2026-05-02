@@ -96,7 +96,7 @@ Rules:
 Defined in `engine/shared.js`. Never compare against raw status strings.
 
 ```js
-WI_STATUS = { PENDING, DISPATCHED, DONE, FAILED, PAUSED, QUEUED, NEEDS_REVIEW, DECOMPOSED, CANCELLED }
+WI_STATUS = { PENDING, DISPATCHED, DONE, FAILED, PAUSED, QUEUED, DECOMPOSED, CANCELLED }
 DONE_STATUSES = Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete'])  // legacy aliases on read only
 WORK_TYPE = { IMPLEMENT, IMPLEMENT_LARGE, FIX, REVIEW, VERIFY, PLAN, PLAN_TO_PRD, DECOMPOSE, MEETING, EXPLORE, ASK, TEST, DOCS }
 PLAN_STATUS = { ACTIVE, AWAITING_APPROVAL, APPROVED, PAUSED, REJECTED, COMPLETED, REVISION_REQUESTED }
@@ -115,7 +115,7 @@ Retry limits / timeouts live in `ENGINE_DEFAULTS` — never hardcode (`if (retri
 ## Work Item Lifecycle
 
 ```
-pending → dispatched → done | failed | needs-human-review
+pending → dispatched → done | failed
                     → decomposed (large items)
 pending → cancelled (PRD item removed)
 failed → pending (auto-retry up to ENGINE_DEFAULTS.maxRetries)

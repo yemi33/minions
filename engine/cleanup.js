@@ -507,48 +507,39 @@ function runCleanup(config, verbose = false) {
     } catch (e) { log('warn', 'reconcile failed-with-PR: ' + e.message); }
   }
 
-  // 6b. Migrate legacy work-item statuses to canonical 'done'
-  // in-pr, implemented, complete → done (one-time correction per item)
+  // 6b. Migrate legacy work-item statuses to canonical replacements
+  // in-pr, implemented, complete → done; needs-human-review → failed
   const LEGACY_DONE_ALIASES = new Set(['in-pr', 'implemented', 'complete']);
-  for (const project of projects) {
-    try {
-      const wiPath = projectWorkItemsPath(project);
-      let migrated = 0;
-        mutateWorkItems(wiPath, items => {
-          for (const item of items) {
-            if (LEGACY_DONE_ALIASES.has(item.status)) {
-              item.status = shared.WI_STATUS.DONE;
-              delete item._retryCount;
-              delete item._pendingReason;
-              if (!item.completedAt) item.completedAt = shared.ts();
-              migrated++;
-            }
-          }
-        });
-      if (migrated > 0) {
-        log('info', `Migrated ${migrated} legacy status(es) → done in ${project.name} work items`);
-      }
-    } catch (e) { log('warn', 'migrate legacy statuses: ' + e.message); }
-  }
-  // Central work items
-  try {
-    const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-    let migrated = 0;
-    mutateWorkItems(centralPath, items => {
-      for (const item of items) {
-        if (LEGACY_DONE_ALIASES.has(item.status)) {
-          item.status = shared.WI_STATUS.DONE;
-          delete item._retryCount;
-          delete item._pendingReason;
-          if (!item.completedAt) item.completedAt = shared.ts();
-          migrated++;
-        }
-      }
-    });
-    if (migrated > 0) {
-      log('info', `Migrated ${migrated} legacy status(es) → done in central work items`);
+  const LEGACY_NEEDS_REVIEW_STATUS = 'needs-human-review';
+  const LEGACY_NEEDS_REVIEW_FAIL_REASON = 'Manual intervention required (migrated from needs-human-review)';
+  function _migrateLegacyItem(item) {
+    if (LEGACY_DONE_ALIASES.has(item.status)) {
+      item.status = shared.WI_STATUS.DONE;
+      delete item._retryCount;
+      delete item._pendingReason;
+      if (!item.completedAt) item.completedAt = shared.ts();
+      return true;
     }
-  } catch (e) { log('warn', 'migrate central legacy statuses: ' + e.message); }
+    if (item.status === LEGACY_NEEDS_REVIEW_STATUS) {
+      item.status = shared.WI_STATUS.FAILED;
+      if (!item.failReason) item.failReason = LEGACY_NEEDS_REVIEW_FAIL_REASON;
+      if (!item.failedAt) item.failedAt = shared.ts();
+      delete item.completedAt;
+      return true;
+    }
+    return false;
+  }
+  function _migrateLegacyItemsAt(wiPath, label) {
+    try {
+      let migrated = 0;
+      mutateWorkItems(wiPath, items => {
+        for (const item of items) if (_migrateLegacyItem(item)) migrated++;
+      });
+      if (migrated > 0) log('info', `Migrated ${migrated} legacy status(es) in ${label}`);
+    } catch (e) { log('warn', `migrate legacy statuses (${label}): ${e.message}`); }
+  }
+  for (const project of projects) _migrateLegacyItemsAt(projectWorkItemsPath(project), `${project.name} work items`);
+  _migrateLegacyItemsAt(path.join(MINIONS_DIR, 'work-items.json'), 'central work items');
 
   // 6c. Strip stale retry metadata from completed work items
   cleaned.doneRetryCounts = 0;
@@ -591,18 +582,23 @@ function runCleanup(config, verbose = false) {
     const prdFiles = prdDirEntries.filter(f => f.endsWith('.json'));
     for (const pf of prdFiles) {
       const prdPath = path.join(PRD_DIR, pf);
-      const prd = safeJson(prdPath);
-      if (!prd?.missing_features) continue;
       let migrated = 0;
-      for (const feat of prd.missing_features) {
-        if (LEGACY_DONE_ALIASES.has(feat.status)) {
-          feat.status = shared.WI_STATUS.DONE;
-          migrated++;
+      shared.withFileLock(`${prdPath}.lock`, () => {
+        const prd = safeJson(prdPath);
+        if (!prd?.missing_features) return;
+        for (const feat of prd.missing_features) {
+          if (LEGACY_DONE_ALIASES.has(feat.status)) {
+            feat.status = shared.WI_STATUS.DONE;
+            migrated++;
+          } else if (feat.status === LEGACY_NEEDS_REVIEW_STATUS) {
+            feat.status = shared.WI_STATUS.FAILED;
+            migrated++;
+          }
         }
-      }
+        if (migrated > 0) safeWrite(prdPath, prd);
+      });
       if (migrated > 0) {
-        safeWrite(prdPath, prd);
-        log('info', `Migrated ${migrated} legacy PRD item status(es) → done in ${pf}`);
+        log('info', `Migrated ${migrated} legacy PRD item status(es) in ${pf}`);
       }
     }
   } catch (e) { log('warn', 'migrate PRD legacy statuses: ' + e.message); }
