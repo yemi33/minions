@@ -635,6 +635,32 @@ const capabilities = {
 // (fatal error message). Multi-line so all platforms see actionable guidance.
 const INSTALL_HINT = 'install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
 
+function getUserAssetDirs({ homeDir = os.homedir() } = {}) {
+  return [path.join(homeDir, '.claude')];
+}
+
+function getSkillRoots({ homeDir = os.homedir(), project = null } = {}) {
+  const roots = [
+    { dir: path.join(homeDir, '.claude', 'skills'), scope: 'claude-code' },
+  ];
+  if (project?.localPath) {
+    roots.push({
+      dir: path.join(project.localPath, '.claude', 'skills'),
+      scope: 'project',
+      projectName: project.name || path.basename(project.localPath),
+    });
+  }
+  return roots;
+}
+
+function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
+  const targets = { personal: path.join(homeDir, '.claude', 'skills') };
+  if (project?.localPath) {
+    targets.project = path.join(project.localPath, '.claude', 'skills');
+  }
+  return targets;
+}
+
 module.exports = {
   name: 'claude',
   capabilities,

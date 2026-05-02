@@ -22401,6 +22401,383 @@ async function testMeetingsExtendedBehavioral() {
   });
 }
 
+// ─── Meeting — Internal Helper Unit Tests (W-moof0hom00020319) ───────────────
+
+async function testMeetingInternalHelpers() {
+  console.log('\n── meeting.js — Internal Helper Unit Tests (W-moof0hom00020319) ──');
+
+  const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const {
+    cleanMeetingSummaryText,
+    splitMeetingSummaryFragments,
+    truncateMeetingSummary,
+    formatMeetingSummaryBullets,
+    scoreMeetingTakeaway,
+    collectMeetingTakeaways,
+    collectMeetingNextSteps,
+    buildTimedOutMeetingConclusion,
+    resolveMeetingNoteArtifactPath,
+    isPathInside,
+  } = meetingMod;
+
+  await test('meeting.js exports internal helpers for direct unit coverage', () => {
+    for (const [name, helper] of Object.entries({
+      cleanMeetingSummaryText,
+      splitMeetingSummaryFragments,
+      truncateMeetingSummary,
+      formatMeetingSummaryBullets,
+      scoreMeetingTakeaway,
+      collectMeetingTakeaways,
+      collectMeetingNextSteps,
+      buildTimedOutMeetingConclusion,
+      resolveMeetingNoteArtifactPath,
+      isPathInside,
+    })) {
+      assert.strictEqual(typeof helper, 'function', `${name} should be exported for tests`);
+    }
+  });
+
+  // ── scoreMeetingTakeaway ──
+
+  await test('scoreMeetingTakeaway scores empty fragments as zero', () => {
+    assert.strictEqual(scoreMeetingTakeaway(''), 0);
+  });
+
+  await test('scoreMeetingTakeaway scores imperative, agreement, risk, and length signals', () => {
+    assert.strictEqual(scoreMeetingTakeaway('We should'), 4, 'imperative phrases add +4');
+    assert.strictEqual(scoreMeetingTakeaway('I agree'), 3, 'agreement words add +3');
+    assert.strictEqual(scoreMeetingTakeaway('However, this is a risk'), 3, 'risk/disagreement words add +3 once');
+    assert.strictEqual(scoreMeetingTakeaway('x'.repeat(40)), 2, '40 chars gets length bonus');
+    assert.strictEqual(scoreMeetingTakeaway('x'.repeat(180)), 2, '180 chars gets length bonus');
+    assert.strictEqual(scoreMeetingTakeaway('x'.repeat(181)), 0, '181 chars gets no length bonus');
+    assert.strictEqual(scoreMeetingTakeaway('x'.repeat(221)), -1, 'over 220 chars gets length penalty');
+  });
+
+  await test('scoreMeetingTakeaway lowercases mixed-case input and accumulates signals', () => {
+    assert.strictEqual(scoreMeetingTakeaway('We SHOULD verify the release candidate before merge'), 6,
+      'mixed-case imperative plus 40-180 char length bonus should score cumulatively');
+    const long = 'We should agree on the release gate before merge. ' + 'x'.repeat(230);
+    assert.strictEqual(scoreMeetingTakeaway(long), 6,
+      'long imperative + agreement should score +4 +3 -1');
+  });
+
+  // ── cleanMeetingSummaryText ──
+
+  await test('cleanMeetingSummaryText strips markdown wrappers and collapses whitespace', () => {
+    const dirty = [
+      '# Heading',
+      '> Quote with `inline code` and [link text](https://example.test/path)',
+      '- Bullet item',
+      '```js',
+      'const hidden = true;',
+      '```',
+      'Final    words',
+    ].join('\n');
+    assert.strictEqual(
+      cleanMeetingSummaryText(dirty),
+      'Heading Quote with inline code and link text Bullet item Final words'
+    );
+  });
+
+  await test('cleanMeetingSummaryText returns empty string for empty, null, and undefined input', () => {
+    assert.strictEqual(cleanMeetingSummaryText(''), '');
+    assert.strictEqual(cleanMeetingSummaryText(null), '');
+    assert.strictEqual(cleanMeetingSummaryText(undefined), '');
+  });
+
+  // ── splitMeetingSummaryFragments ──
+
+  await test('splitMeetingSummaryFragments splits delimiters, cleans markdown, and normalizes whitespace', () => {
+    const fragments = splitMeetingSummaryFragments([
+      '# First heading should stay. Second line must ship now',
+      '- Third item needs follow up; Fourth item has concern!',
+      '> Fifth item uses [link text](https://example.test) and `inline code`?',
+      '```',
+      'This fenced code should disappear.',
+      '```',
+      'Sixth line',
+      'seventh line',
+    ].join('\n'));
+    assert.deepStrictEqual(fragments, [
+      'First heading should stay',
+      'Second line must ship now',
+      'Third item needs follow up',
+      'Fourth item has concern',
+      'Fifth item uses link text and inline code',
+      'Sixth line',
+      'seventh line',
+    ]);
+  });
+
+  await test('splitMeetingSummaryFragments returns empty array for empty, null, and undefined input', () => {
+    assert.deepStrictEqual(splitMeetingSummaryFragments(''), []);
+    assert.deepStrictEqual(splitMeetingSummaryFragments(null), []);
+    assert.deepStrictEqual(splitMeetingSummaryFragments(undefined), []);
+  });
+
+  // ── truncateMeetingSummary ──
+
+  await test('truncateMeetingSummary preserves below-max text and empty input', () => {
+    assert.strictEqual(truncateMeetingSummary('short', 10), 'short');
+    assert.strictEqual(truncateMeetingSummary('', 10), '');
+    assert.strictEqual(truncateMeetingSummary(null, 10), '');
+    assert.strictEqual(truncateMeetingSummary(undefined, 10), '');
+  });
+
+  await test('truncateMeetingSummary truncates at and above max length with exact ellipsis math', () => {
+    assert.strictEqual(truncateMeetingSummary('1234567890', 10), '123456789…');
+    assert.strictEqual(truncateMeetingSummary('12345678901', 10), '123456789…');
+    assert.strictEqual(truncateMeetingSummary('1234567890', 10).length, 10);
+    assert.strictEqual(truncateMeetingSummary('12345678901', 10).length, 10);
+  });
+
+  // ── formatMeetingSummaryBullets ──
+
+  await test('formatMeetingSummaryBullets returns one empty bullet for empty entries', () => {
+    assert.deepStrictEqual(formatMeetingSummaryBullets({}, {}, '(none)', 20), ['- (none)']);
+    assert.deepStrictEqual(formatMeetingSummaryBullets(null, {}, '(none)', 20), ['- (none)']);
+  });
+
+  await test('formatMeetingSummaryBullets resolves agent names, falls back to ids, and truncates long content', () => {
+    const bullets = formatMeetingSummaryBullets({
+      alice: { content: 'Alice should patch the auth flow. Extra sentence is ignored.' },
+      bob: { content: 'Bob needs to verify the fallback behavior before merge.' },
+      carol: { content: 'A'.repeat(30) },
+    }, {
+      alice: { name: 'Alice Agent' },
+    }, '(none)', 10);
+    assert.deepStrictEqual(bullets, [
+      '- **Alice Agent**: Alice sho…',
+      '- **bob**: Bob needs…',
+      '- **carol**: AAAAAAAAA…',
+    ]);
+  });
+
+  // ── collectMeetingTakeaways ──
+
+  await test('collectMeetingTakeaways returns empty array for empty entries', () => {
+    assert.deepStrictEqual(collectMeetingTakeaways({}, {}, 3), []);
+    assert.deepStrictEqual(collectMeetingTakeaways(null, {}, 3), []);
+  });
+
+  await test('collectMeetingTakeaways deduplicates, filters short fragments, sorts by score, and caps items', () => {
+    const takeaways = collectMeetingTakeaways({
+      alice: {
+        content: [
+          'We should fix the auth flow before release because this blocks users.',
+          'Short.',
+          'I agree this is aligned with the plan and should be verified before merge.',
+        ].join(' '),
+      },
+      bob: {
+        content: [
+          'We should fix the auth flow before release, because this blocks users.',
+          'However this concern is narrower than checkout.',
+          'This neutral observation has enough length for a tie.',
+        ].join(' '),
+      },
+    }, {
+      alice: { name: 'Alice' },
+      bob: { name: 'Bob' },
+    }, 3);
+
+    assert.deepStrictEqual(takeaways, [
+      '- **Alice**: I agree this is aligned with the plan and should be verified before merge',
+      '- **Alice**: We should fix the auth flow before release because this blocks users',
+      '- **Bob**: However this concern is narrower than checkout',
+    ]);
+  });
+
+  await test('collectMeetingTakeaways breaks equal-score ties by shorter text first', () => {
+    const takeaways = collectMeetingTakeaways({
+      alice: {
+        content: [
+          'We should fix the small regression before release opens today.',
+          'We should fix the larger regression before release opens today and document the mitigation.',
+        ].join(' '),
+      },
+    }, { alice: { name: 'Alice' } }, 2);
+
+    assert.deepStrictEqual(takeaways, [
+      '- **Alice**: We should fix the small regression before release opens today',
+      '- **Alice**: We should fix the larger regression before release opens today and document the mitigation',
+    ]);
+  });
+
+  // ── collectMeetingNextSteps ──
+
+  await test('collectMeetingNextSteps walks debate before findings, deduplicates, and caps at three', () => {
+    const steps = collectMeetingNextSteps({
+      debate: {
+        bob: { content: 'We should patch checkout today. Follow up with QA after the patch ships.' },
+        carol: { content: 'Recommend documenting the rollback plan before release. Must add telemetry for the risky path.' },
+      },
+      findings: {
+        alice: { content: 'We should patch checkout today. Need to add regression coverage after merge.' },
+      },
+    });
+
+    assert.deepStrictEqual(steps, [
+      '- We should patch checkout today',
+      '- Follow up with QA after the patch ships',
+      '- Recommend documenting the rollback plan before release',
+    ]);
+  });
+
+  await test('collectMeetingNextSteps falls back when no action fragments are found', () => {
+    assert.deepStrictEqual(collectMeetingNextSteps({
+      debate: { bob: { content: 'The options are balanced and context dependent.' } },
+      findings: { alice: { content: 'This summarizes the current state without actions.' } },
+    }), ['- Review the findings and debate, then add a human-written conclusion if more nuance is needed.']);
+  });
+
+  // ── buildTimedOutMeetingConclusion ──
+
+  await test('buildTimedOutMeetingConclusion renders counts, sections, takeaways, and next steps', () => {
+    const conclusion = buildTimedOutMeetingConclusion({
+      findings: {
+        alice: { content: 'Module X has a risky save-path bug that affects users.' },
+      },
+      debate: {
+        bob: { content: 'We should fix module X before release and add regression coverage.' },
+      },
+    }, {
+      alice: { name: 'Alice' },
+      bob: { name: 'Bob' },
+    });
+
+    assert.ok(conclusion.includes('1 finding and 1 debate response'), 'should use singular grammar');
+    assert.ok(conclusion.includes('## Findings Highlights'), 'should include findings section');
+    assert.ok(conclusion.includes('## Debate Takeaways'), 'should include debate section');
+    assert.ok(conclusion.includes('## Recommended Next Steps'), 'should include next steps section');
+    assert.ok(conclusion.includes('- **Bob**: We should fix module X before release and add regression coverage'),
+      'should include scored debate takeaway');
+    assert.ok(conclusion.includes('- We should fix module X before release and add regression coverage'),
+      'should include recommended action');
+  });
+
+  await test('buildTimedOutMeetingConclusion falls back for empty or too-short debate takeaways', () => {
+    const conclusion = buildTimedOutMeetingConclusion({
+      findings: {},
+      debate: { bob: { content: 'Tiny.' } },
+    }, { bob: { name: 'Bob' } });
+
+    assert.ok(conclusion.includes('0 findings and 1 debate response'), 'should use plural findings and singular debate response');
+    assert.ok(conclusion.includes('- (none)'), 'empty findings should render a coherent fallback bullet');
+    assert.ok(conclusion.includes('- **Bob**: Tiny'), 'short debate should use fallback bullet formatting');
+    assert.ok(conclusion.includes('Review the findings and debate'), 'no actions should render human fallback next step');
+  });
+
+  await test('buildTimedOutMeetingConclusion handles empty findings and debate without crashing', () => {
+    const conclusion = buildTimedOutMeetingConclusion({ findings: {}, debate: {} }, {});
+    assert.ok(conclusion.includes('0 findings and 0 debate responses'), 'should render zero counts');
+    assert.ok(conclusion.includes('## Findings Highlights'), 'should include findings section');
+    assert.ok(conclusion.includes('## Debate Takeaways'), 'should include debate section');
+    assert.ok(conclusion.includes('## Recommended Next Steps'), 'should include next steps section');
+  });
+
+  // ── isPathInside ──
+
+  await test('isPathInside detects child paths but rejects same path and siblings', () => {
+    const parent = path.resolve(MINIONS_DIR, 'notes', 'inbox');
+    assert.strictEqual(isPathInside(parent, parent), false, 'same path is not inside itself');
+    assert.strictEqual(isPathInside(parent, path.join(parent, 'child', 'note.md')), true,
+      'nested child should be inside parent');
+    assert.strictEqual(isPathInside(parent, path.resolve(MINIONS_DIR, 'notes', 'archive', 'note.md')), false,
+      'sibling should not be inside parent');
+  });
+
+  await test('isPathInside rejects Windows cross-drive paths when running on Windows', () => {
+    if (process.platform === 'win32') {
+      assert.strictEqual(isPathInside('C:\\minions\\notes\\inbox', 'D:\\minions\\notes\\inbox\\note.md'), false);
+    } else {
+      assert.strictEqual(isPathInside('/tmp/minions/notes/inbox', '/var/minions/notes/inbox/note.md'), false);
+    }
+  });
+
+  // ── resolveMeetingNoteArtifactPath ──
+
+  await test('resolveMeetingNoteArtifactPath returns null for empty, null, undefined, and NUL-byte input', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testMeetingMod = require('../engine/meeting');
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath(''), null);
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath(null), null);
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath(undefined), null);
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath('notes/inbox/safe.md\0evil'), null);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveMeetingNoteArtifactPath accepts relative markdown paths inside notes/inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const testMeetingMod = require('../engine/meeting');
+      assert.strictEqual(
+        testMeetingMod.resolveMeetingNoteArtifactPath('notes/inbox/safe.md'),
+        path.resolve(testDir, 'notes', 'inbox', 'safe.md')
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveMeetingNoteArtifactPath accepts absolute markdown paths inside notes/inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const testMeetingMod = require('../engine/meeting');
+      const absolute = path.join(testDir, 'notes', 'inbox', 'nested', 'safe.md');
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath(absolute), path.resolve(absolute));
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveMeetingNoteArtifactPath rejects paths outside notes/inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const testMeetingMod = require('../engine/meeting');
+      assert.strictEqual(
+        testMeetingMod.resolveMeetingNoteArtifactPath(path.join(testDir, 'engine', 'secrets.md')),
+        null
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveMeetingNoteArtifactPath rejects non-markdown extensions inside notes/inbox', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testMeetingMod = require('../engine/meeting');
+      assert.strictEqual(testMeetingMod.resolveMeetingNoteArtifactPath('notes/inbox/safe.txt'), null);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('resolveMeetingNoteArtifactPath rejects directory traversal attempts', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testMeetingMod = require('../engine/meeting');
+      assert.strictEqual(
+        testMeetingMod.resolveMeetingNoteArtifactPath('notes/inbox/../../engine/secrets.json'),
+        null
+      );
+      assert.strictEqual(
+        testMeetingMod.resolveMeetingNoteArtifactPath('notes/inbox/../../engine/secrets.md'),
+        null
+      );
+    } finally {
+      restore();
+    }
+  });
+}
+
 // ─── Meeting — Isolated Gap Tests (W-mo79lrbnkc71) ──────────────────────────
 // Coverage for previously untested behaviors in engine/meeting.js:
 //   - EMPTY_OUTPUT_PATTERNS export shape + match semantics
@@ -23989,6 +24366,7 @@ async function main() {
     await testMeetings();
     await testMeetingsBehavioral();
     await testMeetingsExtendedBehavioral();
+    await testMeetingInternalHelpers();
     await testMeetingsIsolatedGaps();
 
     // P-bf3a91c7: shared.js fixes

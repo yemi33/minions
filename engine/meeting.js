@@ -45,7 +45,7 @@ function getStructuredNoteArtifacts(structuredCompletion) {
 
 function isPathInside(parent, child) {
   const rel = path.relative(parent, child);
-  return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  return Boolean(rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 function resolveMeetingNoteArtifactPath(artifactPath) {
@@ -114,27 +114,34 @@ function formatMeetingContributions(entries, agents, emptyText, label, maxBytes)
   return truncateMeetingContext(combined, maxBytes, label);
 }
 
-function cleanMeetingSummaryText(text) {
+function stripMeetingSummaryMarkdown(text) {
   return String(text || '')
     .replace(/\r/g, '')
-    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/```[\s\S]*?```/g, '\n')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/^[#>*-]+\s*/gm, '')
+    .replace(/^\s*(?:[#>*-]+|\d+[.)])\s*/gm, '');
+}
+
+function cleanMeetingSummaryText(text) {
+  return stripMeetingSummaryMarkdown(text)
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function splitMeetingSummaryFragments(text) {
-  return cleanMeetingSummaryText(text)
-    .split(/\n+|(?:[.!?])\s+|;\s+/)
-    .map(s => s.trim())
+  return stripMeetingSummaryMarkdown(text)
+    .split(/\n+|[.!?]+\s*|;\s*/)
+    .map(s => s.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 }
 
 function truncateMeetingSummary(text, maxLen) {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, Math.max(0, maxLen - 1)).trimEnd() + '…';
+  const value = String(text || '');
+  if (!value) return '';
+  if (!Number.isFinite(maxLen) || maxLen <= 0) return '';
+  if (value.length < maxLen) return value;
+  return value.slice(0, Math.max(0, maxLen - 1)) + '…';
 }
 
 function formatMeetingSummaryBullets(entries, agents, emptyText, maxLen) {
@@ -148,13 +155,14 @@ function formatMeetingSummaryBullets(entries, agents, emptyText, maxLen) {
 }
 
 function scoreMeetingTakeaway(fragment) {
-  const lower = fragment.toLowerCase();
+  const value = String(fragment || '');
+  const lower = value.toLowerCase();
   let score = 0;
   if (/(should|must|need to|needs to|recommend|recommended|action|next step|follow up|fix|mitigat|investigat|verify|test|block)/.test(lower)) score += 4;
   if (/(agree|aligned|consensus|support|prefer)/.test(lower)) score += 3;
   if (/(disagree|however|but|risk|risky|concern|trade-off|question|uncertain|worry)/.test(lower)) score += 3;
-  if (fragment.length >= 40 && fragment.length <= 180) score += 2;
-  if (fragment.length > 220) score -= 1;
+  if (value.length >= 40 && value.length <= 180) score += 2;
+  if (value.length > 220) score -= 1;
   return score;
 }
 
@@ -195,7 +203,9 @@ function collectMeetingNextSteps(meeting) {
       }
     }
   }
-  return ['- Review the findings and debate, then add a human-written conclusion if more nuance is needed.'];
+  return steps.length
+    ? steps
+    : ['- Review the findings and debate, then add a human-written conclusion if more nuance is needed.'];
 }
 
 function buildTimedOutMeetingConclusion(meeting, agents) {
@@ -615,4 +625,17 @@ module.exports = {
   discoverMeetingWork, collectMeetingFindings, checkMeetingTimeouts,
   addMeetingNote, advanceMeetingRound, endMeeting, archiveMeeting, unarchiveMeeting, deleteMeeting,
   EMPTY_OUTPUT_PATTERNS,
+  // exported for testing — engine code MUST go through
+  // getMeetings/discoverMeetingWork/collectMeetingFindings/checkMeetingTimeouts,
+  // never these helpers directly.
+  isPathInside,
+  resolveMeetingNoteArtifactPath,
+  cleanMeetingSummaryText,
+  splitMeetingSummaryFragments,
+  truncateMeetingSummary,
+  formatMeetingSummaryBullets,
+  scoreMeetingTakeaway,
+  collectMeetingTakeaways,
+  collectMeetingNextSteps,
+  buildTimedOutMeetingConclusion,
 };

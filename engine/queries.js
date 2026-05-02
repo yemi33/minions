@@ -777,27 +777,38 @@ function _collectNativeSkillsDir(skillsDir, scope, seenSet, out, extra = {}) {
 
 let _skillsCache = null;
 let _skillsCacheTs = 0;
+let _skillsCacheKey = null;
 let _skillIndexCache = null;
 let _skillIndexCacheTs = 0;
+let _skillIndexCacheKey = null;
 const SKILLS_CACHE_TTL = 30000; // 30s — skill files change rarely (agent extraction, manual authoring)
 
 function invalidateSkillsCache() {
   _skillsCache = null;
   _skillsCacheTs = 0;
+  _skillsCacheKey = null;
   _skillIndexCache = null;
   _skillIndexCacheTs = 0;
+  _skillIndexCacheKey = null;
+}
+
+function _skillsCacheKeyFor(config, homeDir) {
+  const projects = getProjects(config).map(p => [p.name || '', p.localPath || '']);
+  return JSON.stringify({ homeDir, projects });
 }
 
 function collectSkillFiles(config) {
   const now = Date.now();
-  if (_skillsCache && (now - _skillsCacheTs) < SKILLS_CACHE_TTL) return _skillsCache;
   config = config || getConfig();
+  const homeDir = os.homedir();
+  const projects = getProjects(config);
+  const cacheKey = _skillsCacheKeyFor(config, homeDir);
+  if (_skillsCache && _skillsCacheKey === cacheKey && (now - _skillsCacheTs) < SKILLS_CACHE_TTL) return _skillsCache;
   const skillFiles = [];
   const seen = new Set(); // dedup by name
 
   // 1. Runtime-native skills. Runtime adapters own their native locations so
   // Minions stays a thin orchestration layer rather than a parallel skills system.
-  const homeDir = os.homedir();
   const seenByScope = new Map();
   function seenFor(scope, projectName) {
     const key = scope === 'project' ? `project:${projectName || ''}` : scope;
@@ -814,7 +825,7 @@ function collectSkillFiles(config) {
           projectName: root.projectName,
         });
       }
-      for (const project of getProjects(config)) {
+      for (const project of projects) {
         if (!project.localPath) continue;
         for (const root of runtime.getSkillRoots({ homeDir, project })) {
           if (root.scope !== 'project') continue;
@@ -874,6 +885,7 @@ function collectSkillFiles(config) {
 
   _skillsCache = skillFiles;
   _skillsCacheTs = now;
+  _skillsCacheKey = cacheKey;
   return skillFiles;
 }
 
@@ -908,7 +920,9 @@ function getSkills(config) {
 
 function getSkillIndex(config) {
   const now = Date.now();
-  if (_skillIndexCache !== null && (now - _skillIndexCacheTs) < SKILLS_CACHE_TTL) return _skillIndexCache;
+  config = config || getConfig();
+  const cacheKey = _skillsCacheKeyFor(config, os.homedir());
+  if (_skillIndexCache !== null && _skillIndexCacheKey === cacheKey && (now - _skillIndexCacheTs) < SKILLS_CACHE_TTL) return _skillIndexCache;
   try {
     const skillFiles = collectSkillFiles(config).sort((a, b) => {
       const priority = { project: 0, plugin: 1, 'copilot-plugin': 1, copilot: 2, 'agent-skill': 2, 'claude-code': 2 };
@@ -935,6 +949,7 @@ function getSkillIndex(config) {
     }
     _skillIndexCache = index;
     _skillIndexCacheTs = now;
+    _skillIndexCacheKey = cacheKey;
     return index;
   } catch { return ''; }
 }
