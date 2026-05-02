@@ -13963,6 +13963,26 @@ async function testBuildFixRetryCap() {
     assert.ok(adoSrc.includes('delete pr.buildFixAttempts') && githubSrc.includes('delete pr.buildFixAttempts'),
       'Pollers may still clean old build-fix attempt fields when a PR recovers/closes');
   });
+
+  await test('PR comment pollers do not ignore bot authors by default', () => {
+    const ghCommentsBlock = githubSrc.slice(
+      githubSrc.indexOf('async function pollPrHumanComments'),
+      githubSrc.indexOf('// ─── PR Reconciliation', githubSrc.indexOf('async function pollPrHumanComments'))
+    );
+    const adoCommentsBlock = adoSrc.slice(
+      adoSrc.indexOf('async function pollPrHumanComments'),
+      adoSrc.indexOf('if (totalUpdated > 0)', adoSrc.indexOf('async function pollPrHumanComments'))
+    );
+
+    assert.ok(!ghCommentsBlock.includes("user?.type === 'Bot'"),
+      'GitHub comment poll must not ignore GitHub Bot users by default');
+    assert.ok(!/dependabot|renovate|github-actions|azure-pipelines|codecov|sonar/.test(ghCommentsBlock),
+      'GitHub comment poll must not ignore common bot logins by default');
+    assert.ok(!adoCommentsBlock.includes('/\\b(bot|service|build|pipeline|codecov|sonar)\\b/i.test(authorName)'),
+      'ADO comment poll must not ignore bot/service authors by default');
+    assert.ok(ghCommentsBlock.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
+      'explicit ignoredCommentAuthors settings should still be honored');
+  });
 }
 
 // ─── W-moj9t4puurzh: Pre-dispatch live freshness check for build & conflict ─

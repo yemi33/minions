@@ -561,14 +561,12 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
-    // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    // Separate: agent comments (included in context, don't trigger fix) vs actionable comments (trigger fix).
+    // Bot-authored comments are actionable unless explicitly ignored or clearly CI report noise.
     const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
-    function _isBot(c) {
-      if (c.user?.type === 'Bot') return true;
+    function _isIgnoredComment(c) {
       const login = (c.user?.login || '').toLowerCase();
       if (ignoredAuthors.has(login)) return true;
-      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
       const body = c.body || '';
       if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
       if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
@@ -581,16 +579,16 @@ async function pollPrHumanComments(config) {
       if (/\[minions\]/i.test(body)) return true;
       return false;
     }
-    const humanComments = allComments.filter(c => !_isBot(c));
+    const actionableComments = allComments.filter(c => !_isIgnoredComment(c));
 
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
     const cutoffMs = new Date(cutoffStr).getTime() || 0;
 
-    // Collect ALL human comments for full context, track new ones for triggering
+    // Collect ALL actionable comments for full context, track new ones for triggering
     const allCommentEntries = [];
     const newComments = [];
 
-    for (const c of humanComments) {
+    for (const c of actionableComments) {
       const date = c.created_at || c.updated_at || '';
       const isAgent = _isAgentComment(c);
       const entry = {
