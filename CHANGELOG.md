@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1680 (2026-05-02)
+
+### Other
+- Improve agent playbook accuracy
+
 ## 0.1.1679 (2026-05-02)
 
 ### Fixes
