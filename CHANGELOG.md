@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1685 (2026-05-02)
+
+### Features
+- harden agent completion sentinel (#1990)
+
 ## 0.1.1684 (2026-05-02)
 
 ### Other
