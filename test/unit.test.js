@@ -181,6 +181,20 @@ async function testSharedUtilities() {
     assert.deepStrictEqual(shared.safeJson(fp), { deep: true });
   });
 
+  await test('neutralizeJsonBackupSidecar surfaces fallback write failures', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'plan.json');
+    const backupPath = fp + '.backup';
+    fs.mkdirSync(backupPath);
+
+    const result = shared.neutralizeJsonBackupSidecar(fp);
+
+    assert.strictEqual(result.ok, false, 'cleanup should fail when unlink and fallback write both fail');
+    assert.strictEqual(result.backupPath, backupPath);
+    assert.ok(result.unlinkError, 'unlink error should be surfaced');
+    assert.ok(result.writeError, 'fallback write error should be surfaced');
+  });
+
   await test('mutateControl preserves concurrent control.json fields', () => {
     const restore = createTestMinionsDir();
     try {
@@ -5829,8 +5843,32 @@ async function testSyncPrdItemStatus() {
     assert.ok(fn.includes('queries.getWorkItems'),
       'reconcilePrdStatuses must use queries.getWorkItems to scan all work items');
     // Must write back modified PRD files
-    assert.ok(fn.includes('safeWrite'),
-      'reconcilePrdStatuses must write back modified PRD files');
+    assert.ok(fn.includes('mutateJsonFileLocked'),
+      'reconcilePrdStatuses must write back modified PRD files under the PRD file lock');
+    assert.ok(!fn.includes('safeWrite('),
+      'reconcilePrdStatuses must not safeWrite PRD files outside mutateJsonFileLocked');
+  });
+
+  await test('lifecycle PRD sync writes use mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const syncFn = src.slice(src.indexOf('function syncPrdItemStatus'), src.indexOf('// ─── PRD Backward-Scan'));
+    const reconcileFn = src.slice(src.indexOf('function reconcilePrdStatuses'), src.indexOf('// ─── PR Sync from Output'));
+    const postMergeStart = src.indexOf('// Mark PRD feature as implemented');
+    const postMergeEnd = src.indexOf('// Mark work item as done', postMergeStart);
+    const postMergePrdSync = src.slice(postMergeStart, postMergeEnd);
+
+    for (const [name, body] of [
+      ['syncPrdItemStatus', syncFn],
+      ['reconcilePrdStatuses', reconcileFn],
+      ['post-merge PRD sync', postMergePrdSync],
+    ]) {
+      assert.ok(body.includes('mutateJsonFileLocked'),
+        `${name} should use mutateJsonFileLocked for PRD JSON writes`);
+      assert.ok(!body.includes('safeWrite('),
+        `${name} must not safeWrite PRD files outside the PRD file lock`);
+      assert.ok(!body.includes('withFileLock'),
+        `${name} should use the shared JSON lock helper instead of hand-rolled file locking`);
+    }
   });
 
   await test('reconcilePrdStatuses does not crash when no PRD files exist (#929)', () => {
@@ -6730,6 +6768,16 @@ async function testPlanLifecycle() {
       'chainPlanToPrd should not be exported — auto-chaining is removed');
   });
 
+  await test('lifecycle.js removes dead chainPlanToPrd helper and queue artifacts', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'dead chainPlanToPrd helper should be removed, not left as unused code');
+    assert.ok(!src.includes("createdBy: 'engine:chain'"),
+      'dead plan-to-PRD chaining work-item creation should be removed');
+    assert.ok(!src.includes('Chained from plan task'),
+      'dead plan-to-PRD chaining description should be removed');
+  });
+
   await test('runPostCompletionHooks does not chain plan-to-prd on plan success', () => {
     // Verify the chain call was removed from runPostCompletionHooks
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
@@ -6800,7 +6848,7 @@ async function testPrdStaleInvalidation() {
 
   await test('engine.js flags all revised PRDs as stale (user decides when to regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'Should set planStale flag when source plan changes');
     assert.ok(src.includes('user can regenerate from dashboard'),
       'Should log that user can regenerate');
@@ -6808,7 +6856,7 @@ async function testPrdStaleInvalidation() {
 
   await test('All PRD statuses flagged stale on plan revision (no auto-regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'All statuses should be flagged stale');
     assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
       'Should NOT auto-delete/regenerate awaiting-approval PRDs');
@@ -6846,7 +6894,7 @@ async function testPrdStaleInvalidation() {
 
   await test('Stale flag set for all statuses with single code path', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('plan.planStale = true'),
+    assert.ok(src.includes('planStale = true'),
       'Should set planStale flag');
     assert.ok(src.includes('user can regenerate from dashboard'),
       'Should log that user can regenerate');
@@ -7080,8 +7128,42 @@ async function testPrdStaleInvalidation() {
 
   await test('handlePlansApprove clears _completionNotified for re-completion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('delete plan._completionNotified'),
+    assert.ok(src.includes('delete data._completionNotified') || src.includes('delete plan._completionNotified'),
       'Resume should clear _completionNotified so completion can re-fire');
+  });
+
+  await test('dashboard PRD status handlers use mutateJsonFileLocked for PRD file writes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    function handlerBody(name) {
+      const start = src.indexOf(`async function ${name}(`);
+      assert.ok(start > -1, `${name} should exist`);
+      const end = src.indexOf('\n  async function', start + 1);
+      return src.slice(start, end > -1 ? end : start + 5000);
+    }
+
+    for (const name of ['handlePlansApprove', 'handlePlansPause', 'handlePlansReject', 'handlePlansRevise']) {
+      const body = handlerBody(name);
+      assert.ok(body.includes('mutateJsonFileLocked(planPath'),
+        `${name} should mutate the PRD/plan JSON under the planPath lock`);
+      assert.ok(!body.includes('safeWrite(planPath'),
+        `${name} must not write the PRD/plan JSON with unlocked safeWrite(planPath, ...)`);
+    }
+
+    const triggerBody = handlerBody('handlePlansTriggerVerify');
+    assert.ok(triggerBody.includes('mutateJsonFileLocked(activePath'),
+      'handlePlansTriggerVerify should restore/clear PRD status fields under the activePath lock');
+    assert.ok(!triggerBody.includes('safeWrite(activePath'),
+      'handlePlansTriggerVerify must not write active PRD JSON with unlocked safeWrite(activePath, ...)');
+
+    const archiveBody = handlerBody('handlePlansArchive');
+    assert.ok(archiveBody.includes('mutateJsonFileLocked(archivePath'),
+      'handlePlansArchive should mark archived PRD status under the archivePath lock');
+    assert.ok(!archiveBody.includes('safeWrite(archivePath'),
+      'handlePlansArchive must not write archived PRD JSON with unlocked safeWrite(archivePath, ...)');
+    assert.ok(archiveBody.includes('neutralizeJsonBackupSidecar(planPath'),
+      'handlePlansArchive should neutralize stale active PRD backup sidecars through the shared helper');
+    assert.ok(archiveBody.includes('archiveWarnings') && archiveBody.includes('payload.warnings'),
+      'handlePlansArchive should surface backup cleanup failures in the API response');
   });
 
   await test('plan-to-prd playbook has diff-aware update instructions', () => {
@@ -15310,13 +15392,11 @@ async function testLifecycleDataSafety() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
 
-  await test('chainPlanToPrd uses atomic writes on work-items.json', () => {
-    // chainPlanToPrd should use mutateJsonFileLocked, not raw readFileSync+safeWrite
-    const chainFn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
-    if (chainFn) {
-      assert.ok(chainFn[0].includes('mutateJsonFileLocked'),
-        'chainPlanToPrd must use mutateJsonFileLocked for atomic writes');
-    }
+  await test('dead chainPlanToPrd work-items writer is removed', () => {
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'chainPlanToPrd should not remain as dead lifecycle code');
+    assert.ok(!src.includes("createdBy: 'engine:chain'"),
+      'dead chainPlanToPrd work item writer should be removed');
   });
 
   await test('updatePrAfterReview logs defined variable, not minionsVerdict', () => {
@@ -15984,6 +16064,43 @@ async function testCheckPlanCompletionIdempotency() {
     const prItems2 = workItems2.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
     assert.strictEqual(prItems2.length, 1,
       'Second call should not create additional PR work items');
+  }, cleanup);
+
+  // ── Test 6: Existing completed/failed verify WI is re-opened, not duplicated ──
+  await test('checkPlanCompletion reopens existing terminal verify item instead of duplicating it', () => {
+    for (const status of ['done', 'failed']) {
+      cleanup();
+      const existingVerifyId = `PL-existing-${status}`;
+      shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+      shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+        ...makeWorkItems(),
+        {
+          id: existingVerifyId,
+          title: 'Verify plan: Test idempotency plan',
+          type: 'verify',
+          status,
+          sourcePlan: testPlanFile,
+          itemType: 'verify',
+          completedAt: '2026-01-01T03:00:00Z',
+          dispatched_at: '2026-01-01T02:30:00Z',
+          dispatched_to: 'dallas',
+          _retryCount: 2,
+        },
+      ]);
+
+      lifecycle.checkPlanCompletion(meta, config);
+
+      const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+      const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+      assert.strictEqual(verifyItems.length, 1, `Should not duplicate existing ${status} verify item`);
+      assert.strictEqual(verifyItems[0].id, existingVerifyId, `Should keep the existing ${status} verify item`);
+      assert.strictEqual(verifyItems[0].status, 'pending', `Should re-open ${status} verify item`);
+      assert.strictEqual(verifyItems[0]._reopened, true, `Should mark ${status} verify item as reopened`);
+      assert.strictEqual(verifyItems[0]._retryCount, 0, `Should reset retry count for ${status} verify item`);
+      assert.ok(!verifyItems[0].completedAt, `Should clear completedAt for ${status} verify item`);
+      assert.ok(!verifyItems[0].dispatched_at, `Should clear dispatched_at for ${status} verify item`);
+      assert.ok(!verifyItems[0].dispatched_to, `Should clear dispatched_to for ${status} verify item`);
+    }
   }, cleanup);
 
   restore();
@@ -16814,6 +16931,15 @@ async function testVerifyWorkflow() {
       'Archived PRD should still exist');
   }, cleanup);
 
+  await test('verify: archivePlan surfaces backup cleanup failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const archiveFn = src.slice(src.indexOf('function archivePlan'), src.indexOf('/**', src.indexOf('function archivePlan')));
+    assert.ok(archiveFn.includes('neutralizeJsonBackupSidecar(planPath'),
+      'archivePlan should use the shared backup cleanup helper');
+    assert.ok(archiveFn.includes('Archive backup cleanup failed') && archiveFn.includes("log('warn'"),
+      'archivePlan should warn when backup removal and fallback neutralization both fail');
+  });
+
   // ── 7. Plan status persisted to disk before archive ──
   await test('verify: plan status=completed and _completionNotified persisted to disk', () => {
     cleanup();
@@ -16871,6 +16997,19 @@ async function testVerifyWorkflow() {
     const postHooks = src.slice(src.indexOf('function runPostCompletionHooks('), src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1));
     assert.ok(!postHooks.includes('archivePlan('), 'Should NOT call archivePlan in post-completion hooks');
     assert.ok(postHooks.includes('Archive is manual'), 'Should note archive is manual');
+  });
+
+  await test('docs describe manual archive lifecycle, not auto-archive after verify', () => {
+    const lifecycleDoc = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'plan-lifecycle.md'), 'utf8');
+    const claudeDoc = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    for (const [name, doc] of [['docs/plan-lifecycle.md', lifecycleDoc], ['CLAUDE.md', claudeDoc]]) {
+      assert.ok(doc.includes('Manual Archive Lifecycle'),
+        `${name} should document the manual archive lifecycle`);
+      assert.ok(doc.includes('/api/plans/archive'),
+        `${name} should identify the dashboard archive endpoint`);
+      assert.ok(!doc.includes('After verify completes') && !doc.includes('Plan archived'),
+        `${name} should not describe automatic archiving after verify`);
+    }
   });
 
   // ── 11. Source code: syncPrsFromOutput still runs for verify tasks ──
@@ -20504,6 +20643,16 @@ async function testDispatchCycleIntegration() {
       'engine.js must update depends_on references when remapping IDs');
     assert.ok(engineSrc.includes('Remapped'),
       'engine.js must log when sequential IDs are remapped');
+  });
+
+  await test('materializePlansAsWorkItems writes PRD JSON via mutateJsonFileLocked', () => {
+    const fnStart = engineSrc.indexOf('function materializePlansAsWorkItems');
+    const fnEnd = engineSrc.indexOf('\n// buildBaseVars', fnStart);
+    const fnBody = engineSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 12000);
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'materializePlansAsWorkItems should use mutateJsonFileLocked for PRD JSON writes');
+    assert.ok(!fnBody.includes('safeWrite(path.join(PRD_DIR'),
+      'materializePlansAsWorkItems must not safeWrite PRD files outside the PRD file lock');
   });
 
   await test('SEQUENTIAL_ID_RE matches sequential patterns and rejects uuid patterns', () => {
@@ -26586,10 +26735,9 @@ async function testEmptyProjectsGuards() {
       'Should return early when no project available');
   });
 
-  await test('chainPlanToPrd guards empty projects array before accessing projects[0]', () => {
-    const fnBody = src.slice(src.indexOf('function chainPlanToPrd'), src.indexOf('function syncPrsFromOutput'));
-    assert.ok(fnBody.includes('projects.length === 0'),
-      'Should check for empty projects array before accessing projects[0]');
+  await test('removed chainPlanToPrd cannot access projects[0]', () => {
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'Removed chainPlanToPrd has no projects[0] access path to guard');
   });
 
   await test('syncPrsFromOutput guards empty projects with early return 0', () => {
@@ -28756,14 +28904,12 @@ async function testEngineAuditMedium() {
       'must clear markDeleted on API failure to prevent phantom invisible meeting');
   });
 
-  await test('chainPlanToPrd uses mutateJsonFileLocked', () => {
+  await test('chainPlanToPrd dead helper stays removed', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const fn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
-    assert.ok(fn, 'chainPlanToPrd must exist');
-    assert.ok(fn[0].includes('mutateJsonFileLocked'),
-      'chainPlanToPrd must use mutateJsonFileLocked for atomic read-modify-write on work-items.json');
-    assert.ok(!fn[0].includes('safeWrite(wiPath'),
-      'chainPlanToPrd must not use unlocked safeWrite on work-items.json');
+    assert.ok(!src.includes('function chainPlanToPrd'),
+      'chainPlanToPrd should not be reintroduced as dead lifecycle code');
+    assert.ok(!src.includes('Plan chaining: queuing plan-to-prd'),
+      'dead automatic plan-to-PRD queueing should stay removed');
   });
 }
 

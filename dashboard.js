@@ -2309,12 +2309,14 @@ const server = http.createServer(async (req, res) => {
       // If archived, temporarily restore to active so checkPlanCompletion can find it
       const activePath = path.join(prdDir, body.file);
       if (fromArchive) {
-        const plan = safeJson(prdPath);
-        if (!plan) return jsonReply(res, 500, { error: 'Could not parse PRD file' });
-        plan.status = 'approved';
-        delete plan.completedAt;
-        delete plan.planStale;
-        safeWrite(activePath, plan);
+        const archivedPlan = safeJson(prdPath);
+        if (!archivedPlan) return jsonReply(res, 500, { error: 'Could not parse PRD file' });
+        mutateJsonFileLocked(activePath, () => {
+          archivedPlan.status = 'approved';
+          delete archivedPlan.completedAt;
+          delete archivedPlan.planStale;
+          return archivedPlan;
+        }, { defaultValue: archivedPlan });
       }
 
       const config = queries.getConfig();
@@ -2347,11 +2349,10 @@ const server = http.createServer(async (req, res) => {
       }
 
       // No existing verify — clear completion flag and trigger fresh creation
-      const planData = safeJson(activePath);
-      if (planData?._completionNotified) {
-        planData._completionNotified = false;
-        safeWrite(activePath, planData);
-      }
+      mutateJsonFileLocked(activePath, (planData) => {
+        if (planData?._completionNotified) planData._completionNotified = false;
+        return planData;
+      }, { defaultValue: {}, skipWriteIfUnchanged: true });
 
       const lifecycle = require('./engine/lifecycle');
       lifecycle.checkPlanCompletion({ item: { sourcePlan: body.file, id: 'manual' } }, config);
@@ -3572,15 +3573,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = safeJsonObj(planPath);
-      const wasStale = !!plan.planStale;
-      plan.status = 'approved';
-      plan.approvedAt = new Date().toISOString();
-      plan.approvedBy = body.approvedBy || os.userInfo().username;
-      delete plan.pausedAt;
-      delete plan.planStale;
-      delete plan._completionNotified;
-      safeWrite(planPath, plan);
+      let wasStale = false;
+      const plan = mutateJsonFileLocked(planPath, (data) => {
+        if (!data || Array.isArray(data) || typeof data !== 'object') data = {};
+        wasStale = !!data.planStale;
+        data.status = 'approved';
+        data.approvedAt = new Date().toISOString();
+        data.approvedBy = body.approvedBy || os.userInfo().username;
+        delete data.pausedAt;
+        delete data.planStale;
+        delete data._completionNotified;
+        return data;
+      }, { defaultValue: {} });
 
       // Resume paused work items across all projects
       let resumed = 0;
@@ -3662,10 +3666,12 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = safeJsonObj(planPath);
-      plan.status = 'paused';
-      plan.pausedAt = new Date().toISOString();
-      safeWrite(planPath, plan);
+      mutateJsonFileLocked(planPath, (plan) => {
+        if (!plan || Array.isArray(plan) || typeof plan !== 'object') plan = {};
+        plan.status = 'paused';
+        plan.pausedAt = new Date().toISOString();
+        return plan;
+      }, { defaultValue: {} });
 
       // Propagate pause to materialized work items across all projects:
       // kill any active agent process and reset non-completed items to paused.
@@ -3799,12 +3805,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = safeJsonObj(planPath);
-      plan.status = 'rejected';
-      plan.rejectedAt = new Date().toISOString();
-      plan.rejectedBy = body.rejectedBy || os.userInfo().username;
-      if (body.reason) plan.rejectionReason = body.reason;
-      safeWrite(planPath, plan);
+      const plan = mutateJsonFileLocked(planPath, (data) => {
+        if (!data || Array.isArray(data) || typeof data !== 'object') data = {};
+        data.status = 'rejected';
+        data.rejectedAt = new Date().toISOString();
+        data.rejectedBy = body.rejectedBy || os.userInfo().username;
+        if (body.reason) data.rejectionReason = body.reason;
+        return data;
+      }, { defaultValue: {} });
 
       // Teams notification for plan rejection — non-blocking
       try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-rejected').catch(() => {}); } catch {}
@@ -3956,18 +3964,23 @@ const server = http.createServer(async (req, res) => {
 
       let archivedSource = null;
       let plan = {};
+      const archiveWarnings = [];
       if (isPrd) {
         try {
-          plan = safeJsonObj(archivePath) || {};
-          plan.status = 'archived';
-          plan.archivedAt = new Date().toISOString();
-          safeWrite(archivePath, plan);
+          plan = mutateJsonFileLocked(archivePath, (data) => {
+            if (!data || Array.isArray(data) || typeof data !== 'object') data = {};
+            data.status = 'archived';
+            data.archivedAt = new Date().toISOString();
+            return data;
+          }, { defaultValue: {} }) || {};
           // Without removing the .backup sidecar, safeJson would auto-restore the
           // pre-completion snapshot on engine restart, re-triggering plan completion
           // and spawning duplicate verify tasks (regression of #f28162b0).
-          const backupPath = planPath + '.backup';
-          try { fs.unlinkSync(backupPath); } catch {
-            try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { /* best-effort */ }
+          const backupCleanup = shared.neutralizeJsonBackupSidecar(planPath);
+          if (!backupCleanup.ok) {
+            const warning = `Archive backup cleanup failed for ${body.file}: unlink failed (${backupCleanup.unlinkError}); fallback neutralize failed (${backupCleanup.writeError})`;
+            archiveWarnings.push(warning);
+            console.warn(warning);
           }
           if (plan.source_plan) {
             const mdPath = path.join(PLANS_DIR, plan.source_plan);
@@ -4006,7 +4019,9 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { console.error('plan worktree cleanup:', e.message); }
 
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource, cancelledItems });
+      const payload = { ok: true, archived: body.file, archivedSource, cancelledItems };
+      if (archiveWarnings.length > 0) payload.warnings = archiveWarnings;
+      return jsonReply(res, 200, payload);
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -4047,12 +4062,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = safeJsonObj(planPath);
-      plan.status = 'revision-requested';
-      plan.revision_feedback = body.feedback;
-      plan.revisionRequestedAt = new Date().toISOString();
-      plan.revisionRequestedBy = body.requestedBy || os.userInfo().username;
-      safeWrite(planPath, plan);
+      const plan = mutateJsonFileLocked(planPath, (data) => {
+        if (!data || Array.isArray(data) || typeof data !== 'object') data = {};
+        data.status = 'revision-requested';
+        data.revision_feedback = body.feedback;
+        data.revisionRequestedAt = new Date().toISOString();
+        data.revisionRequestedBy = body.requestedBy || os.userInfo().username;
+        return data;
+      }, { defaultValue: {} });
 
       // Create a work item to revise the plan
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');

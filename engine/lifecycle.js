@@ -69,6 +69,12 @@ function checkPlanCompletion(meta, config) {
 
   const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
   const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED || w.status === WI_STATUS.CANCELLED);
+  const isActiveVerify = (wi) => wi && (
+    wi.status === WI_STATUS.PENDING ||
+    wi.status === WI_STATUS.QUEUED ||
+    wi.status === WI_STATUS.DISPATCHED
+  );
+  const isReopenableVerify = (wi) => wi && (DONE_STATUSES.has(wi.status) || wi.status === WI_STATUS.FAILED);
 
   if (failedItems.length > 0) {
     const failDetails = failedItems.map(w =>
@@ -166,6 +172,7 @@ function checkPlanCompletion(meta, config) {
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
       mutateWorkItems(wiPath, workItems => {
+        if (workItems.some(w => w.sourcePlan === planFile && w.itemType === 'pr')) return workItems;
         workItems.push({
           id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
           type: 'implement', priority: 'high',
@@ -181,9 +188,23 @@ function checkPlanCompletion(meta, config) {
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   // Only one verify per PRD — skip if pending/dispatched, re-open if done/failed (PRD was modified)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (existingVerify && (existingVerify.status === WI_STATUS.PENDING || existingVerify.status === WI_STATUS.DISPATCHED)) {
+  if (isActiveVerify(existingVerify)) {
     log('info', `Plan ${planFile}: verify WI ${existingVerify.id} already ${existingVerify.status} — skipping`);
-  } else if (doneItems.length > 0) {
+  } else if (isReopenableVerify(existingVerify) && doneItems.length > 0) {
+    const verifyProject = existingVerify.project || projectName;
+    const vWiPath = shared.projectWorkItemsPath(
+      projects.find(p => p.name?.toLowerCase() === verifyProject?.toLowerCase()) || primaryProject
+    );
+    let reopenedVerify = false;
+    mutateWorkItems(vWiPath, items => {
+      const v = items.find(w => w.id === existingVerify.id);
+      if (isReopenableVerify(v)) {
+        shared.reopenWorkItem(v);
+        reopenedVerify = true;
+      }
+    });
+    if (reopenedVerify) log('info', `Re-opened verification work item ${existingVerify.id} for modified plan ${planFile}`);
+  } else if (!existingVerify && doneItems.length > 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -276,7 +297,17 @@ function checkPlanCompletion(meta, config) {
       prSummary,
     ].join('\n');
 
+    let createdVerify = false;
+    let reopenedVerifyId = null;
     mutateWorkItems(wiPath, workItems => {
+      const v = workItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
+      if (v) {
+        if (isReopenableVerify(v)) {
+          shared.reopenWorkItem(v);
+          reopenedVerifyId = v.id;
+        }
+        return workItems;
+      }
       workItems.push({
         id: verifyId,
         title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
@@ -290,32 +321,19 @@ function checkPlanCompletion(meta, config) {
         itemType: 'verify',
         project: projectName,
       });
+      createdVerify = true;
     });
-    log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+    if (createdVerify) {
+      log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
 
-    // Teams notification for verify creation — non-blocking
-    try {
-      const teams = require('./teams');
-      teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
-    } catch {}
-  } else if (existingVerify && DONE_STATUSES.has(existingVerify.status) && doneItems.length > 0) {
-    // PRD was modified and re-completed — re-open the existing verify instead of creating a duplicate
-    const verifyProject = existingVerify.project || projectName;
-    const vWiPath = shared.projectWorkItemsPath(
-      projects.find(p => p.name?.toLowerCase() === verifyProject?.toLowerCase()) || primaryProject
-    );
-    mutateWorkItems(vWiPath, items => {
-      const v = items.find(w => w.id === existingVerify.id);
-      if (v && DONE_STATUSES.has(v.status)) {
-        v.status = WI_STATUS.PENDING;
-        v._reopened = true;
-        delete v.completedAt;
-        delete v.dispatched_to;
-        delete v.dispatched_at;
-        v._retryCount = 0;
-      }
-    });
-    log('info', `Re-opened verification work item ${existingVerify.id} for modified plan ${planFile}`);
+      // Teams notification for verify creation — non-blocking
+      try {
+        const teams = require('./teams');
+        teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
+      } catch {}
+    } else if (reopenedVerifyId) {
+      log('info', `Re-opened verification work item ${reopenedVerifyId} for modified plan ${planFile}`);
+    }
   }
 
   // Archive deferred until verify completes
@@ -350,9 +368,9 @@ function archivePlan(planFile, plan, projects, config) {
     // plan completion and spawning duplicate verify tasks for already-archived plans.
     // On Windows, the unlink can fail due to file locking; overwrite with archived status
     // as a fallback so a restored backup is inert even if deletion fails.
-    const backupPath = planPath + '.backup';
-    try { fs.unlinkSync(backupPath); } catch {
-      try { fs.writeFileSync(backupPath, JSON.stringify({ status: 'archived' })); } catch { }
+    const backupCleanup = shared.neutralizeJsonBackupSidecar(planPath);
+    if (!backupCleanup.ok) {
+      log('warn', `Archive backup cleanup failed for ${planFile}: unlink failed (${backupCleanup.unlinkError}); fallback neutralize failed (${backupCleanup.writeError})`);
     }
   } catch (err) {
     log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
@@ -438,95 +456,6 @@ function cleanupPlanWorktrees(planFile, plan, projects, config) {
     }
     if (cleanedWt > 0) log('info', `Plan worktree cleanup: removed ${cleanedWt} worktree(s)`);
   } catch (err) { log('warn', `Plan worktree cleanup: ${err.message}`); }
-}
-
-// ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
-function chainPlanToPrd(dispatchItem, meta, config) {
-
-  const planDir = path.join(MINIONS_DIR, 'plans');
-  if (!fs.existsSync(planDir)) fs.mkdirSync(planDir, { recursive: true });
-
-  let planFileName = meta?.planFileName || meta?.item?._planFileName;
-  if (planFileName && fs.existsSync(path.join(planDir, planFileName))) {
-    // Exact match from meta
-  } else {
-    const planFiles = fs.readdirSync(planDir)
-      .filter(f => f.endsWith('.md') || f.endsWith('.json'))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(planDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    planFileName = planFiles[0]?.name;
-    if (!planFileName) {
-      log('warn', `Plan chaining: no plan files found in plans/ after task ${dispatchItem.id}`);
-      return;
-    }
-    log('info', `Plan chaining: using mtime fallback — found ${planFileName}`);
-  }
-
-  if (planFileName.endsWith('.json')) {
-    const mdName = planFileName.replace(/\.json$/, '.md');
-    // Check plans/ first, then prd/ for .json files
-    const jsonPath = fs.existsSync(path.join(planDir, planFileName))
-      ? path.join(planDir, planFileName)
-      : path.join(MINIONS_DIR, 'prd', planFileName);
-    const mdPath = path.join(planDir, mdName);
-    try {
-      const content = fs.readFileSync(jsonPath, 'utf8');
-      const parsed = JSON.parse(content);
-      if (!parsed.missing_features) {
-        fs.renameSync(jsonPath, mdPath);
-        planFileName = mdName;
-        log('info', `Plan chaining: renamed ${planFileName} → ${mdName} (plans must be .md)`);
-      }
-    } catch {
-      try {
-        if (fs.existsSync(jsonPath)) fs.renameSync(jsonPath, path.join(planDir, mdName));
-        planFileName = mdName;
-        log('info', `Plan chaining: renamed to .md (not valid JSON)`);
-      } catch (err) { log('warn', `Plan rename fallback: ${err.message}`); }
-    }
-  }
-
-  const planFile = { name: planFileName };
-  const planPath = path.join(planDir, planFileName);
-  let planContent;
-  try { planContent = fs.readFileSync(planPath, 'utf8'); } catch (err) {
-    log('error', `Plan chaining: failed to read plan file ${planFile.name}: ${err.message}`);
-    return;
-  }
-
-  const projectName = meta?.item?.project || meta?.project?.name;
-  const projects = shared.getProjects(config);
-  if (projects.length === 0) {
-    log('error', 'Plan chaining: no projects configured');
-    return;
-  }
-  const targetProject = projectName
-    ? projects.find(p => p.name === projectName) || projects[0]
-    : projects[0];
-
-  if (!targetProject) {
-    log('error', 'Plan chaining: no target project available');
-    return;
-  }
-
-  log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
-  const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-  shared.mutateJsonFileLocked(wiPath, (items) => {
-    if (!Array.isArray(items)) items = [];
-    items.push({
-      id: 'W-' + shared.uid(),
-      title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
-      type: 'plan-to-prd',
-      priority: meta?.item?.priority || 'high',
-      description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
-      status: WI_STATUS.PENDING,
-      created: ts(),
-      createdBy: 'engine:chain',
-      project: targetProject.name,
-      planFile: planFile.name,
-    });
-    return items;
-  }, { defaultValue: [] });
 }
 
 // ─── Work Item Path Resolution ───────────────────────────────────────────────
@@ -642,15 +571,14 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
       const feature = plan?.missing_features?.find(f => f.id === itemId);
       if (!feature || feature.status === status) continue;
       let updated = false;
-      shared.withFileLock(`${fpath}.lock`, () => {
-        const fresh = safeJson(fpath);
+      mutateJsonFileLocked(fpath, (fresh) => {
         const f = fresh?.missing_features?.find(x => x.id === itemId);
         if (f && f.status !== status) {
           f.status = status;
-          safeWrite(fpath, fresh);
           updated = true;
         }
-      });
+        return fresh;
+      }, { skipWriteIfUnchanged: true });
       if (updated) return;
     }
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
@@ -682,31 +610,28 @@ function reconcilePrdStatuses(config) {
   for (const file of prdFiles) {
     try {
       const fpath = path.join(PRD_DIR, file);
-      const plan = safeJson(fpath);
-      if (!plan?.missing_features) continue;
-      // Skip completed/archived PRDs — no reconciliation needed
-      if (plan.status === PLAN_STATUS.COMPLETED) continue;
+      const logMessages = [];
+      mutateJsonFileLocked(fpath, (plan) => {
+        if (!plan?.missing_features) return plan;
+        // Skip completed/archived PRDs — no reconciliation needed
+        if (plan.status === PLAN_STATUS.COMPLETED) return plan;
 
-      let modified = false;
-      for (const feature of plan.missing_features) {
-        if (feature.status === PRD_ITEM_STATUS.MISSING && doneWiById.has(feature.id)) {
-          feature.status = PRD_ITEM_STATUS.UPDATED;
-          modified = true;
-          log('info', `PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+        for (const feature of plan.missing_features) {
+          if (feature.status === PRD_ITEM_STATUS.MISSING && doneWiById.has(feature.id)) {
+            feature.status = PRD_ITEM_STATUS.UPDATED;
+            logMessages.push(`PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+          }
+          // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
+          // happens when fix work items complete with a different ID than the original PRD feature
+          else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
+            const prev = feature.status;
+            feature.status = WI_STATUS.DONE;
+            logMessages.push(`PRD backward-scan: promoted ${feature.id} from ${prev}→done in ${file} (done work item exists)`);
+          }
         }
-        // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
-        // happens when fix work items complete with a different ID than the original PRD feature
-        else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
-          const prev = feature.status;
-          feature.status = WI_STATUS.DONE;
-          modified = true;
-          log('info', `PRD backward-scan: promoted ${feature.id} from ${prev}→done in ${file} (done work item exists)`);
-        }
-      }
-
-      if (modified) {
-        safeWrite(fpath, plan);
-      }
+        return plan;
+      }, { skipWriteIfUnchanged: true });
+      for (const message of logMessages) log('info', message);
     } catch (err) { log('warn', `PRD backward-scan for ${file}: ${err.message}`); }
   }
 }
@@ -1608,19 +1533,17 @@ async function handlePostMerge(pr, project, config, newStatus) {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
       for (const pf of planFiles) {
-        const plan = safeJson(path.join(prdDir, pf));
-        if (!plan?.missing_features) continue;
-        let changed = false;
-        for (const feature of plan.missing_features) {
-          if (mergedItemSet.has(feature.id) && feature.status !== WI_STATUS.DONE) {
-            feature.status = WI_STATUS.DONE;
-            changed = true;
-            updated++;
+        const planPath = path.join(prdDir, pf);
+        mutateJsonFileLocked(planPath, (plan) => {
+          if (!plan?.missing_features) return plan;
+          for (const feature of plan.missing_features) {
+            if (mergedItemSet.has(feature.id) && feature.status !== WI_STATUS.DONE) {
+              feature.status = WI_STATUS.DONE;
+              updated++;
+            }
           }
-        }
-        if (changed) {
-          shared.safeWrite(path.join(prdDir, pf), plan);
-        }
+          return plan;
+        }, { skipWriteIfUnchanged: true });
       }
       if (updated > 0) log('info', `Post-merge: marked ${mergedItemIds.join(', ')} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }

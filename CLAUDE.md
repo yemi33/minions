@@ -128,13 +128,17 @@ failed → pending (auto-retry up to ENGINE_DEFAULTS.maxRetries)
 3. Materializer creates work items with `depends_on`
 4. Engine spawns agents; merges dependency branches into worktrees first
 5. All items done → verify task auto-created → builds, tests, writes `prd/guides/verify-{slug}.md`, opens E2E PR
-6. **After verify completes** → `archivePlan()` moves PRD/plan to archive
+6. **Manual archive** → when humans are satisfied, dashboard `POST /api/plans/archive` moves PRD/plan to archive
 
 Use `queuePlanToPrd()` for atomic dedup-inside-lock dispatch (all plan-to-prd paths). `buildWiDescription(item, planFile)` for consistent WI descriptions.
 
 **Plan Resume (diff-aware):** edits to a completed plan's `.md` flag PRD as `planStale`. Dashboard offers Regenerate (dispatches diff-aware plan-to-prd with `mode: diff-aware-update` marker), Resume as-is (clears stale flag), or per-item Reopen. Materializer treats `missing`/`updated` PRD items as re-opens of done WIs (sets to pending with `_reopened`); cross-project re-opens deferred outside the lock.
 
 Only one verify WI per PRD at a time — if active, skip; if done/failed and PRD recompletes, re-open the existing one.
+
+### Manual Archive Lifecycle
+
+Archive is a dashboard/user action, not a verify completion side effect. Completed PRDs remain in `prd/` with `status: "completed"` and `_completionNotified` until a human archives them through `POST /api/plans/archive`. The archive handler moves the PRD to `prd/archive/`, marks it `status: "archived"` with `archivedAt`, moves `source_plan` markdown into `plans/archive/` when present, cancels only pending/queued linked work items, and leaves completed work-item history intact.
 
 ## Dependency-Aware Dispatch
 
@@ -451,7 +455,7 @@ Streaming chunks get a partial-delimiter strip (1–12 char prefixes of `===ACTI
 5. **Per-item try-catch** in discovery/dispatch loops.
 6. **Validate inputs** in write functions (`updateWorkItemStatus`, `syncPrdItemStatus`).
 7. **Platform-agnostic playbooks** — never hardcode build commands.
-8. **Deferred archiving** — only after verify completes.
+8. **Manual archiving** — verification does not archive; use dashboard `POST /api/plans/archive` when ready.
 9. **Run `npm test`** — target 0 failures. Tests use source-string matching; update assertions when replacing strings with constants.
 10. **Optimistic UI** — show success toast BEFORE the API call; error toast on failure overwrites it. `showToast(id, msg, true|false)`. Use `alert()` only for pre-API validation.
 11. **Dashboard JS:** `el.insertAdjacentHTML('beforeend', html)` — never `innerHTML +=` (rebuilds DOM, breaks listeners).
