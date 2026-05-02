@@ -22,12 +22,14 @@ npm run test:e2e  # Playwright
 ### Tick Cycle (engine.js, 60s)
 
 ```
-checkTimeouts → consolidateInbox → cleanup (10t) →
-pollPrStatus (12t) → pollPrHumanComments (12t) →
+checkTimeouts + checkSteering + checkIdleThreshold → meetingTimeouts →
+consolidateInbox → cleanup (10t) → checkWatches (3t) →
+pollPrStatus (prPollStatusEvery, default 12t) →
+pollPrHumanComments (prPollCommentsEvery, default 12t) →
 discoverWork → updateSnapshot → dispatch (≤ maxConcurrent)
 ```
 
-Each phase wrapped in try-catch; one failure doesn't abort the tick. Per-item try-catch in discovery loops.
+Each phase wrapped in try-catch; one failure doesn't abort the tick. Per-item try-catch in discovery loops. Tick itself is guarded by `TICK_TIMEOUT_MS`: if a previous tick is still running past that, the lock force-releases.
 
 ### Agent Spawn
 
@@ -248,6 +250,9 @@ CLI runtime is pluggable. Each adapter lives at `engine/runtimes/<name>.js`, reg
 | `parseOutput(raw, {maxTextLength})` | → `{ text, usage, sessionId, model }` |
 | `parseStreamChunk(line)` | Single JSONL line |
 | `parseError(rawOutput)` | → `{ message, code, retriable }`. Codes: `auth-failure`, `context-limit`, `budget-exceeded`, `crash`, null |
+| `getUserAssetDirs({homeDir})` | Optional. Runtime-native global asset roots passed to spawn as `--add-dir` so worktrees still see them (e.g. Claude → `[~/.claude]`; Copilot → `[~/.copilot, ~/.agents]`) |
+| `getSkillRoots({homeDir, project?})` | Optional. → `[{dir, scope, projectName?}]`. Where `collectSkillFiles` looks for native + project skill markdown for this runtime |
+| `getSkillWriteTargets({homeDir, project?})` | Optional. → `{personal, project}`. Where `extractSkillsFromOutput` writes auto-extracted skills (personal scope → user dir; project scope → repo subdir like `.claude/skills` for Claude, `.github/skills` for Copilot) |
 
 ### Capability Flags
 
@@ -372,6 +377,27 @@ Through the dashboard:
 - **Home dir:** `os.homedir()` — never `process.env.HOME || process.env.USERPROFILE`.
 - **Worktree paths:** normalize to forward slashes (`.replace(/\\/g, '/')`) before interpolating into shell commands.
 - **Line endings:** `.gitattributes` enforces LF; PS scripts CRLF.
+
+## Timeouts & Liveness
+
+**Core invariant: a live tracked agent is never killed for being silent.** Long builds, dependency installs, multi-file edits, and reasoning passes routinely produce no stdout for many minutes. That's not a hang signal.
+
+Only two things kill a live tracked process (`engine/timeout.js`):
+
+1. **Hard wall-clock timeout** — `engine.agentTimeout` (default `18000000` = 5h, `engine/shared.js:725`). Measured from `startedAt`, not output silence. Configurable in dashboard Settings (`set-agentTimeout`, floor 60s, no upper bound) or directly in `config.json`. Per-fan-out items can set their own `meta.deadline` which supersedes the default; `engine.fanOutTimeout` is a fan-out-wide override that falls back to `agentTimeout`.
+2. **Steering kill** — explicit human steering message in the agent's inbox triggers `killImmediate()` so the agent can be re-spawned with `--resume <session>` carrying the new message. 30s recovery retry if the kill didn't take.
+
+**Stale-orphan detection** (`engine.heartbeatTimeout`, default 5min) is **not** a heartbeat timer for live processes — it's the grace window after the engine has lost the tracked process handle (engine restart, untracked spawn). Per-type overrides in `ENGINE_DEFAULTS.heartbeatTimeouts` give heavier work types up to 15min: `implement`, `implement:large`, `fix`, `test`, `verify` → 15min; `plan` → 10min.
+
+Before declaring an orphan, four layered liveness checks run:
+1. `isTrackedProcessAlive` — `proc.exitCode` + `process.kill(pid, 0)`.
+2. 64KB tail scan for `[process-exit] code=N` sentinel (written synchronously by `spawn-agent.js`). If found, completion is recovered using the actual OS exit code — never on a `subtype:"success"` substring (footgun #1792).
+3. `isOsPidAliveForDispatch` — reads `engine/tmp/pid-<safeId>.pid` and `process.kill(pid, 0)`. Even with no tracked handle, if the OS PID is alive, **skip orphan declaration**.
+4. Full-log re-scan for the sentinel (in case it scrolled past the 64KB tail).
+
+After an engine restart, all orphan checks are gated on `engineRestartGraceUntil` (`restartGracePeriod`, default 20min, `shared.js:747`) — agents have that long to be re-attached via PID files and live-output.log mtimes before the reaper considers them.
+
+**Don't add output-silence timers for live tracked processes.** Reintroducing one breaks the invariant and surfaces as "agent killed mid-task" reports.
 
 ## Graceful Shutdown
 
