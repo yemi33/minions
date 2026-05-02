@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1672 (2026-05-02)
+
+### Features
+-  fleet model validation + Copilot alias map + simplify pass
+
 ## 0.1.1671 (2026-05-02)
 
 ### Features
