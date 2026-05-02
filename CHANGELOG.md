@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1670 (2026-05-02)
+
+### Features
+- make ADO PR titles authoritative (#1965)
+- gate pendingFix clear (#1964)
+
 ## 0.1.1668 (2026-05-01)
 
 ### Fixes
