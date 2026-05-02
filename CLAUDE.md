@@ -280,6 +280,38 @@ Engine **never** reads `agent.cli` / `engine.defaultCli` / etc. directly. Six he
 
 When `resolveAgentModel` returns undefined, the adapter omits `--model` from `buildArgs` and the CLI uses its own default.
 
+### Runtime Configuration Reference
+
+Model resolution is a three-tier chain: per-agent `agent.model` → `engine.defaultModel` → runtime CLI default. Runtime and model selection follow the same separation as the helpers above:
+
+```json
+{
+  "engine": { "defaultCli": "copilot", "defaultModel": "gpt-5.4", "ccCli": "claude", "ccModel": "sonnet" },
+  "agents": { "dallas": { "cli": "claude", "model": "haiku" } }
+}
+```
+
+| Field | Default / role | Per-agent override |
+|-------|----------------|--------------------|
+| `engine.defaultCli` | fleet runtime fallback | `agent.cli` |
+| `engine.defaultModel` | fleet model fallback | `agent.model` |
+| `engine.ccCli` | Command Center runtime override | none |
+| `engine.ccModel` | Command Center model override | none |
+| `engine.claudeBareMode` | default false; emits `--bare` for Claude | `agent.bareMode` |
+| `engine.claudeFallbackModel` | Claude rate-limit fallback model | none |
+| `engine.copilotDisableBuiltinMcps` | default true; emits `--disable-builtin-mcps` | none |
+| `engine.copilotSuppressAgentsMd` | default true; emits `--no-custom-instructions` | none |
+| `engine.copilotStreamMode` | Copilot stream mode | none |
+| `engine.copilotReasoningSummaries` | Copilot reasoning summary toggle | none |
+| `engine.maxBudgetUsd` | fleet budget cap | `agent.maxBudgetUsd` |
+| `engine.disableModelDiscovery` | fleet-wide model discovery opt-out | none |
+
+Migration notes: `config.claude.* deprecation` moved runtime knobs into `engine.*`; compatibility shims stay tracked in `docs/deprecated.json`. `applyLegacyCcModelMigration` copies legacy `ccModel` to `defaultModel` in-memory when `defaultModel` is unset, but does not rewrite disk config.
+
+Model discovery is per-runtime. Claude has no public model enumeration mechanism (`modelDiscovery: false`). Copilot uses `https://api.githubcopilot.com/models`. `engine.disableModelDiscovery` disables discovery globally.
+
+Effort normalization is runtime-specific: Copilot maps `'max'` to `xhigh`; do not apply that mapping to Claude.
+
 ### Switching Fleet from CLI
 
 ```bash
@@ -292,7 +324,8 @@ minions config set-cli copilot --model gpt-5.4
 
 - **Copilot built-in MCPs (split-brain):** Copilot's `github-mcp-server` MCP can autonomously create PRs/labels/comments via the GitHub API, bypassing `pull-requests.json` tracking. `engine.copilotDisableBuiltinMcps: true` (default) strips it. Same risk class for any MCP that mutates state the engine tracks — default is always strip.
 - **Copilot AGENTS.md auto-load:** without `--no-custom-instructions`, Copilot merges any in-tree `AGENTS.md` into its system prompt, fighting the playbook. `engine.copilotSuppressAgentsMd: true` (default) prevents this.
-- **Claude bare mode:** `engine.claudeBareMode: true` adds `--bare`, suppressing CLAUDE.md auto-discovery — useful for runtime parity with Copilot, but agents lose project conventions unless an explicit system prompt feeds them in. Preflight warns when paired with Claude as CC runtime AND no `ccSystemPrompt`.
+- **Claude bare mode:** `engine.claudeBareMode: true` adds `--bare`, suppressing CLAUDE.md auto-discovery — useful for runtime parity with Copilot, but agents lose context unless explicit context is provided through the system prompt. Preflight warns when paired with Claude as CC runtime AND no `ccSystemPrompt`.
+- **Copilot binary path on Windows:** WinGet installs the standalone CLI shim at `%LOCALAPPDATA%\Microsoft\WinGet\Links\copilot.exe`; `resolveBinary()` should find this through PATH before falling back to `gh copilot`.
 
 ### Adding a New Runtime
 
