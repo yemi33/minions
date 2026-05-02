@@ -5,6 +5,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
@@ -395,7 +396,7 @@ function renderPlaybook(type, vars) {
   content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
   content += `- Set \`scope: minions\` for cross-project or Minions-wide skills; the engine writes them to the selected runtime's native personal skills directory so they are available in normal runtime windows too\n`;
-  content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to <project>/.claude/skills/\n`;
+  content += `- Set \`scope: project\` + \`project: <name>\` only for repo-specific skills; the engine queues a PR to the selected runtime's native project skills directory\n`;
   content += `- Emit at most one skill block per task unless you uncovered two clearly distinct reusable workflows\n`;
   content += `- Do NOT create a skill for one-off bug fixes, isolated command output, obvious repo facts, or anything already covered by existing docs/playbooks/skills\n`;
 
@@ -514,6 +515,26 @@ function buildAgentContext(agentId, config, project) {
   project = project || getProjects(config)[0] || {};
   let context = '';
 
+  function appendContextFile(heading, filePath, maxBytes, extra = '') {
+    if (!filePath) return;
+    const content = safeRead(filePath);
+    if (!content || !content.trim()) return;
+    const truncated = Buffer.byteLength(content, 'utf8') > maxBytes
+      ? truncateTextBytes(content, maxBytes, '\n\n_...truncated; read the full file if needed_')
+      : content;
+    context += `## ${heading}\n\n`;
+    if (extra) context += `${extra}\n\n`;
+    context += `${truncated}\n\n`;
+  }
+
+  function appendIndex(heading, body, maxBytes) {
+    if (!body || !String(body).trim()) return;
+    const truncated = Buffer.byteLength(body, 'utf8') > maxBytes
+      ? truncateTextBytes(body, maxBytes, '\n\n_...index truncated; use Glob/Read for the full list_')
+      : body;
+    context += `## ${heading}\n\n${truncated.replace(/^## .+\n\n/, '')}\n`;
+  }
+
 
   // Agent history — last 5 tasks only (keeps it relevant, avoids 37KB dumps)
   const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));
@@ -528,25 +549,19 @@ function buildAgentContext(agentId, config, project) {
   // Project conventions and instruction files — explicit, inert context for
   // every runtime. Runtime-native skills/commands stay in their native indexes.
   if (project.localPath) {
-    const instructionFiles = [
-      { relativePath: 'CLAUDE.md', heading: 'Project Conventions (from CLAUDE.md)' },
-      { relativePath: 'AGENTS.md', heading: 'Project Agent Instructions (from AGENTS.md)' },
-      { relativePath: path.join('.github', 'copilot-instructions.md'), heading: 'Project Copilot Instructions (from .github/copilot-instructions.md)' },
-    ];
-    for (const { relativePath, heading } of instructionFiles) {
-      const body = safeRead(path.join(project.localPath, relativePath));
-      if (!body || !body.trim()) continue;
-      const truncated = body.length > 8192 ? body.slice(0, 8192) + '\n\n...(truncated)' : body;
-      context += `## ${heading}\n\n${truncated}\n\n`;
-    }
+    appendContextFile('Project Conventions (from CLAUDE.md)', path.join(project.localPath, 'CLAUDE.md'), 8192);
+    appendContextFile('Project Agent Instructions (from AGENTS.md)', path.join(project.localPath, 'AGENTS.md'), 8192,
+      'These instructions are explicitly injected because some runtimes suppress automatic AGENTS.md loading. Follow them unless they conflict with the Minions task contract or playbook.');
+    appendContextFile('Project Copilot Instructions (from .github/copilot-instructions.md)', path.join(project.localPath, '.github', 'copilot-instructions.md'), 8192,
+      'Follow these repository instructions unless they conflict with the Minions task contract or playbook.');
   }
 
-  const kbIndex = getKnowledgeBaseIndex();
-  if (kbIndex) context += kbIndex;
+  appendContextFile('User Claude Instructions (from ~/.claude/CLAUDE.md)', path.join(os.homedir(), '.claude', 'CLAUDE.md'), 8192,
+    'These are the user-level Claude Code instructions available in regular Claude usage. Follow them unless they conflict with the Minions task contract or playbook.');
 
-  // KB details and skills: NOT injected — agents can Glob/Read when needed
-  // This saves ~27KB per dispatch. Reference note so agents know they exist:
-  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Runtime-native skills and commands are left to the selected CLI runtime; use Glob/Read when you need to inspect repository documentation or knowledge files explicitly.\n\n`;
+  appendIndex('Knowledge Base Reference', getKnowledgeBaseIndex(), 8192);
+
+  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`, and project-local playbooks live in \`projects/<project>/playbooks/\`. Runtime-native skills and commands are left to the selected CLI runtime; Minions does not inject their contents into the task prompt.\n\n`;
 
   // Minions awareness: what's in flight, who's doing what
   const dispatch = getDispatch();
