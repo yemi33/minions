@@ -9599,6 +9599,37 @@ async function testPreflightModule() {
     return;
   }
 
+  const runtimesModulePath = require.resolve(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+  const modelDiscoveryModulePath = require.resolve(path.join(MINIONS_DIR, 'engine', 'model-discovery'));
+  async function withPreflightDependencyStubs(stubs, fn) {
+    const originalRuntimes = require.cache[runtimesModulePath];
+    const originalModelDiscovery = require.cache[modelDiscoveryModulePath];
+    try {
+      if (stubs.runtimes) {
+        require.cache[runtimesModulePath] = {
+          id: runtimesModulePath,
+          filename: runtimesModulePath,
+          loaded: true,
+          exports: stubs.runtimes,
+        };
+      }
+      if (stubs.modelDiscovery) {
+        require.cache[modelDiscoveryModulePath] = {
+          id: modelDiscoveryModulePath,
+          filename: modelDiscoveryModulePath,
+          loaded: true,
+          exports: stubs.modelDiscovery,
+        };
+      }
+      return await fn();
+    } finally {
+      if (originalRuntimes) require.cache[runtimesModulePath] = originalRuntimes;
+      else delete require.cache[runtimesModulePath];
+      if (originalModelDiscovery) require.cache[modelDiscoveryModulePath] = originalModelDiscovery;
+      else delete require.cache[modelDiscoveryModulePath];
+    }
+  }
+
   await test('findClaudeBinary returns string or null', () => {
     const result = preflight.findClaudeBinary();
     assert.ok(result === null || typeof result === 'string',
@@ -9717,6 +9748,8 @@ async function testPreflightModule() {
     assert.deepStrictEqual(preflight._distinctRuntimes(null), ['claude']);
     assert.deepStrictEqual(preflight._distinctRuntimes(undefined), ['claude']);
     assert.deepStrictEqual(preflight._distinctRuntimes(), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes('not-object'), ['claude']);
+    assert.deepStrictEqual(preflight._distinctRuntimes(42), ['claude']);
   });
 
   await test('_distinctRuntimes unions defaultCli, ccCli, and per-agent cli; sorted; deduped', () => {
@@ -9731,81 +9764,121 @@ async function testPreflightModule() {
     assert.deepStrictEqual(runtimes, ['claude', 'codex', 'copilot'], 'expected sorted-unique list');
   });
 
-  await test('_distinctRuntimes defaults defaultCli to "claude" when absent', () => {
+  await test('_distinctRuntimes defaults defaultCli to "claude" when absent or empty', () => {
     const runtimes = preflight._distinctRuntimes({
       engine: { ccCli: 'copilot' },
       agents: {},
     });
     assert.deepStrictEqual(runtimes, ['claude', 'copilot']);
+
+    const emptyDefault = preflight._distinctRuntimes({
+      engine: { defaultCli: '', ccCli: '' },
+      agents: { numeric: { cli: 123 }, missing: {}, zero: { cli: 0 } },
+    });
+    assert.deepStrictEqual(emptyDefault, ['123', 'claude'],
+      'empty defaultCli falls back to claude; truthy non-string agent.cli values are coerced and sorted');
   });
 
   await test('_checkRuntimeBinary emits a warn-level entry with adapter.installHint when binary is missing', () => {
-    // Stub a fake adapter into the registry. We don't have to mock fs; we
-    // pass an explicit installHint and a resolveBinary that returns null.
-    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
-    const fake = {
-      name: 'fake-missing',
-      capabilities: {},
-      resolveBinary: () => null,
-      installHint: 'install via the made-up package manager',
-    };
-    registry.registerRuntime('fake-missing', fake);
-    try {
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => ({
+          name: 'fake-missing',
+          capabilities: {},
+          resolveBinary: () => null,
+          installHint: 'install via the made-up package manager',
+        }),
+      },
+    }, () => {
       const r = preflight._checkRuntimeBinary('fake-missing');
       assert.strictEqual(r.name, 'Runtime: fake-missing');
       assert.strictEqual(r.ok, false);
       assert.ok(r.message.includes('not found'), `expected "not found" prefix: ${r.message}`);
       assert.ok(r.message.includes('install via the made-up package manager'),
         `installHint must be embedded in the message: ${r.message}`);
-    } finally {
-      registry._registry.delete('fake-missing');
-    }
+    });
   });
 
-  await test('_checkRuntimeBinary surfaces resolveBinary success with bin + leadingArgs', () => {
-    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
-    const fake = {
-      name: 'fake-ok',
-      capabilities: {},
-      resolveBinary: () => ({ bin: '/usr/bin/gh', native: true, leadingArgs: ['copilot'] }),
-      installHint: 'unused',
-    };
-    registry.registerRuntime('fake-ok', fake);
-    try {
+  await test('_checkRuntimeBinary surfaces native resolveBinary success with bin only', () => {
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => ({
+          name: 'fake-ok',
+          capabilities: {},
+          resolveBinary: () => ({ bin: '/usr/bin/fake', native: true, leadingArgs: [] }),
+          installHint: 'unused',
+        }),
+      },
+    }, () => {
       const r = preflight._checkRuntimeBinary('fake-ok');
       assert.strictEqual(r.ok, true);
-      assert.ok(r.message.includes('/usr/bin/gh'));
-      assert.ok(r.message.includes('leadingArgs: copilot'),
-        'leadingArgs from gh-copilot path must surface in the message');
-    } finally {
-      registry._registry.delete('fake-ok');
-    }
+      assert.strictEqual(r.message, '/usr/bin/fake');
+    });
   });
 
-  await test('_checkRuntimeBinary marks node-shim cli.js (native:false) distinctly', () => {
-    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
-    const fake = {
-      name: 'fake-shim',
-      capabilities: {},
-      resolveBinary: () => ({ bin: '/x/cli.js', native: false, leadingArgs: [] }),
-      installHint: 'unused',
-    };
-    registry.registerRuntime('fake-shim', fake);
-    try {
+  await test('_checkRuntimeBinary marks node-shim cli.js with leading args distinctly', () => {
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => ({
+          name: 'fake-shim',
+          capabilities: {},
+          resolveBinary: () => ({ bin: '/x/cli.js', native: false, leadingArgs: ['--from-shim', 'runtime'] }),
+          installHint: 'unused',
+        }),
+      },
+    }, () => {
       const r = preflight._checkRuntimeBinary('fake-shim');
       assert.strictEqual(r.ok, true);
-      assert.ok(r.message.includes('node shim'),
+      assert.strictEqual(r.message, '/x/cli.js (node shim) (leadingArgs: --from-shim runtime)',
         'native:false must surface as "(node shim)" so operators see they\'re running through node');
-    } finally {
-      registry._registry.delete('fake-shim');
-    }
+    });
   });
 
   await test('_checkRuntimeBinary returns warn-level fail (not throw) for unknown runtime', () => {
-    const r = preflight._checkRuntimeBinary('totally-fake-cli');
-    assert.strictEqual(r.ok, false);
-    assert.ok(r.message.includes('unknown runtime'),
-      `unknown-runtime path should label the failure: ${r.message}`);
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => { throw new Error('registry exploded'); },
+      },
+    }, () => {
+      const r = preflight._checkRuntimeBinary('totally-fake-cli');
+      assert.strictEqual(r.ok, false);
+      assert.ok(r.message.includes('unknown runtime'),
+        `unknown-runtime path should label the failure: ${r.message}`);
+      assert.ok(r.message.includes('registry exploded'));
+    });
+  });
+
+  await test('_checkRuntimeBinary falls back to generic install hint when missing', () => {
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => ({
+          name: 'fake-no-hint',
+          capabilities: {},
+          resolveBinary: () => null,
+        }),
+      },
+    }, () => {
+      const r = preflight._checkRuntimeBinary('fake-no-hint');
+      assert.strictEqual(r.ok, false);
+      assert.strictEqual(r.message, 'not found — fake-no-hint CLI binary not found on PATH');
+    });
+  });
+
+  await test('_checkRuntimeBinary treats resolveBinary throws as not found', () => {
+    return withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: () => ({
+          name: 'fake-throw',
+          capabilities: {},
+          resolveBinary: () => { throw new Error('PATH lookup failed'); },
+          installHint: 'install fake-throw',
+        }),
+      },
+    }, () => {
+      const r = preflight._checkRuntimeBinary('fake-throw');
+      assert.strictEqual(r.ok, false);
+      assert.strictEqual(r.message, 'not found — install fake-throw');
+    });
   });
 
   await test('runPreflight with a Copilot-fleet config emits both Runtime entries', () => {
@@ -9870,110 +9943,194 @@ async function testPreflightModule() {
     assert.ok(flags.message.includes('maxBudgetUsd=5'));
   });
 
-  await test('_fleetSummaryResults returns [] for null/undefined/empty config', () => {
+  await test('_fleetSummaryResults returns [] for null/undefined/non-object config', () => {
     assert.deepStrictEqual(preflight._fleetSummaryResults(null), []);
     assert.deepStrictEqual(preflight._fleetSummaryResults(undefined), []);
-    // Empty object → still no `engine` section, no surface
-    const emptyResults = preflight._fleetSummaryResults({});
-    const fleet = emptyResults.find(x => x.name === 'Fleet');
-    // Spec: an empty engine section still emits the Fleet line (defaultCli=claude).
-    // Defensive: don't assume.
-    assert.ok(fleet === undefined || fleet.message.includes('defaultCli=claude'),
-      'empty config either skips or emits the runtime default');
+    assert.deepStrictEqual(preflight._fleetSummaryResults('not-object'), []);
+  });
+
+  await test('_fleetSummaryResults emits Fleet defaults for empty object config', () => {
+    const r = preflight._fleetSummaryResults({});
+    assert.deepStrictEqual(r, [
+      { name: 'Fleet', ok: true, message: 'defaultCli=claude  defaultModel=(runtime default)' },
+    ]);
   });
 
   await test('_modelDiscoveryResults reports "discovery disabled" when engine.disableModelDiscovery=true', async () => {
-    const r = await preflight._modelDiscoveryResults({
-      engine: { defaultCli: 'claude', disableModelDiscovery: true },
+    await withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: name => ({ name, capabilities: { modelDiscovery: true } }),
+      },
+      modelDiscovery: {
+        getRuntimeModels: async () => {
+          throw new Error('must not enumerate when disabled');
+        },
+      },
+    }, async () => {
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'claude', ccCli: 'copilot', disableModelDiscovery: true },
+      });
+      assert.deepStrictEqual(r, [
+        { name: 'Models: claude', ok: 'warn', message: 'discovery disabled (engine.disableModelDiscovery)' },
+        { name: 'Models: copilot', ok: 'warn', message: 'discovery disabled (engine.disableModelDiscovery)' },
+      ]);
     });
-    const claudeModels = r.find(x => x.name === 'Models: claude');
-    assert.ok(claudeModels);
-    assert.strictEqual(claudeModels.ok, 'warn');
-    assert.ok(claudeModels.message.includes('discovery disabled'));
   });
 
   await test('_modelDiscoveryResults reports "discovery unavailable" for runtime without enumeration mechanism (Claude)', async () => {
-    const r = await preflight._modelDiscoveryResults({
-      engine: { defaultCli: 'claude' },
+    await withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: name => ({ name, capabilities: { modelDiscovery: false } }),
+      },
+      modelDiscovery: {
+        getRuntimeModels: async () => {
+          throw new Error('must not enumerate unsupported runtime');
+        },
+      },
+    }, async () => {
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'claude' },
+      });
+      const claudeModels = r.find(x => x.name === 'Models: claude');
+      assert.ok(claudeModels);
+      assert.strictEqual(claudeModels.ok, 'warn');
+      assert.strictEqual(claudeModels.message, 'discovery unavailable (no enumeration mechanism)');
     });
-    const claudeModels = r.find(x => x.name === 'Models: claude');
-    assert.ok(claudeModels);
-    assert.strictEqual(claudeModels.ok, 'warn');
-    assert.ok(claudeModels.message.includes('discovery unavailable'));
-    assert.ok(claudeModels.message.includes('no enumeration'),
-      'message should explain Claude has no public model enumeration mechanism');
   });
 
   await test('_modelDiscoveryResults uses cached model count when adapter listModels returns array', async () => {
-    // Stub a runtime with modelDiscovery=true and a deterministic listModels.
-    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
-    const tmpDir = createTmpDir();
-    const cachePath = path.join(tmpDir, 'fake-disc-models.json');
-    const fake = {
-      name: 'fake-disc',
-      capabilities: { modelDiscovery: true },
-      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
-      installHint: 'unused',
-      listModels: async () => [
-        { id: 'm-1', name: 'Model 1', provider: 'fake' },
-        { id: 'm-2', name: 'Model 2', provider: 'fake' },
-        { id: 'm-3', name: 'Model 3', provider: 'fake' },
-      ],
-      modelsCache: cachePath,
-    };
-    registry.registerRuntime('fake-disc', fake);
-    try {
-      // Bust model-discovery's cache for the fake runtime
-      try { fs.unlinkSync(cachePath); } catch {}
-      const r = await preflight._modelDiscoveryResults({
-        engine: { defaultCli: 'fake-disc' },
-      });
+    await withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: name => ({ name, capabilities: { modelDiscovery: true } }),
+      },
+      modelDiscovery: {
+        getRuntimeModels: async (runtimeName, opts) => {
+          assert.strictEqual(runtimeName, 'fake-disc');
+          assert.deepStrictEqual(opts, { config: { engine: { defaultCli: 'fake-disc' } } });
+          return {
+            runtime: runtimeName,
+            models: [
+              { id: 'm-1', name: 'Model 1', provider: 'fake' },
+              { id: 'm-2', name: 'Model 2', provider: 'fake' },
+              { id: 'm-3', name: 'Model 3', provider: 'fake' },
+            ],
+            cachedAt: new Date().toISOString(),
+          };
+        },
+      },
+    }, async () => {
+      const config = { engine: { defaultCli: 'fake-disc' } };
+      const r = await preflight._modelDiscoveryResults(config);
       const m = r.find(x => x.name === 'Models: fake-disc');
       assert.ok(m, 'Models: fake-disc entry missing');
       assert.strictEqual(m.ok, true);
       assert.ok(m.message.includes('3 models cached'),
         `expected "3 models cached", got: ${m.message}`);
-    } finally {
-      registry._registry.delete('fake-disc');
-    }
+    });
   });
 
-  await test('_modelDiscoveryResults reports "discovery unavailable (...)" when listModels resolves to null', async () => {
-    const registry = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
-    const tmpDir = createTmpDir();
-    const cachePath = path.join(tmpDir, 'fake-empty-models.json');
-    const fake = {
-      name: 'fake-empty',
-      capabilities: { modelDiscovery: true },
-      resolveBinary: () => ({ bin: '/x', native: true, leadingArgs: [] }),
-      installHint: 'unused',
-      listModels: async () => null,
-      modelsCache: cachePath,
-    };
-    registry.registerRuntime('fake-empty', fake);
-    try {
-      try { fs.unlinkSync(cachePath); } catch {}
+  await test('_modelDiscoveryResults reports API returned no models when discovery result is empty', async () => {
+    await withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: name => ({ name, capabilities: { modelDiscovery: true } }),
+      },
+      modelDiscovery: {
+        getRuntimeModels: async () => ({ runtime: 'fake-empty', models: [], cachedAt: new Date().toISOString() }),
+      },
+    }, async () => {
       const r = await preflight._modelDiscoveryResults({
         engine: { defaultCli: 'fake-empty' },
       });
       const m = r.find(x => x.name === 'Models: fake-empty');
       assert.ok(m);
       assert.strictEqual(m.ok, 'warn');
-      assert.ok(m.message.includes('discovery unavailable'),
-        `null/empty result must surface as "discovery unavailable": ${m.message}`);
-    } finally {
-      registry._registry.delete('fake-empty');
-    }
+      assert.strictEqual(m.message, 'discovery unavailable (API returned no models — check token)');
+    });
   });
 
-  await test('_warmModelCache returns synchronously without throwing (fire-and-forget)', () => {
-    // Make sure the helper never blocks runPreflight or throws on missing config.
+  await test('_modelDiscoveryResults reports discovery errors and skips unknown runtimes', async () => {
+    await withPreflightDependencyStubs({
+      runtimes: {
+        resolveRuntime: name => {
+          if (name === 'missing-runtime') throw new Error('unknown');
+          return { name, capabilities: { modelDiscovery: true } };
+        },
+      },
+      modelDiscovery: {
+        getRuntimeModels: async runtimeName => {
+          throw new Error(`boom from ${runtimeName}`);
+        },
+      },
+    }, async () => {
+      const r = await preflight._modelDiscoveryResults({
+        engine: { defaultCli: 'ok-runtime', ccCli: 'missing-runtime' },
+      });
+      assert.deepStrictEqual(r, [
+        { name: 'Models: ok-runtime', ok: 'warn', message: 'discovery error — boom from ok-runtime' },
+      ]);
+    });
+  });
+
+  await test('_modelDiscoveryResults returns [] for null and non-object config', async () => {
+    assert.deepStrictEqual(await preflight._modelDiscoveryResults(null), []);
+    assert.deepStrictEqual(await preflight._modelDiscoveryResults(undefined), []);
+    assert.deepStrictEqual(await preflight._modelDiscoveryResults('not-object'), []);
+  });
+
+  await test('_warmModelCache returns synchronously and invokes discovery with config', async () => {
+    let calls = 0;
+    let received = null;
+    const config = { engine: { defaultCli: 'copilot' } };
+    await withPreflightDependencyStubs({
+      modelDiscovery: {
+        getRuntimeModels: async (runtimeName, opts) => {
+          calls += 1;
+          received = { runtimeName, opts };
+          throw new Error('discovery failure should be swallowed');
+        },
+      },
+    }, async () => {
+      const unhandled = [];
+      const onUnhandled = reason => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const startedAt = Date.now();
+        preflight._warmModelCache('copilot', config);
+        const elapsed = Date.now() - startedAt;
+        assert.ok(elapsed < 50, `_warmModelCache must return synchronously fast — got ${elapsed}ms`);
+        assert.strictEqual(calls, 0, 'discovery promise must not be called before _warmModelCache returns');
+        await new Promise(resolve => setTimeout(resolve, 25));
+        assert.strictEqual(calls, 1, 'discovery should be invoked asynchronously');
+        assert.deepStrictEqual(received, { runtimeName: 'copilot', opts: { config } });
+        assert.deepStrictEqual(unhandled, [], 'discovery rejection must be swallowed');
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+      }
+    });
+  });
+
+  await test('_warmModelCache is a silent no-op for falsy runtime or missing discovery module', async () => {
     const startedAt = Date.now();
-    preflight._warmModelCache('claude', { engine: {} });
-    preflight._warmModelCache('totally-unknown', null);
     preflight._warmModelCache('', null);
     const elapsed = Date.now() - startedAt;
     assert.ok(elapsed < 50, `_warmModelCache must return synchronously fast — got ${elapsed}ms`);
+
+    const Module = require('module');
+    const originalLoad = Module._load;
+    let attempted = false;
+    Module._load = function(request, parent, isMain) {
+      if (request === './model-discovery' && parent && parent.filename === path.join(MINIONS_DIR, 'engine', 'preflight.js')) {
+        attempted = true;
+        throw new Error('module unavailable');
+      }
+      return originalLoad.apply(this, arguments);
+    };
+    try {
+      preflight._warmModelCache('copilot', { engine: {} });
+      assert.strictEqual(attempted, true, 'test must exercise the missing model-discovery branch');
+    } finally {
+      Module._load = originalLoad;
+    }
   });
 }
 
