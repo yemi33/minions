@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1689 (2026-05-03)
+
+### Features
+- prefer az cli for ado tokens (#1996)
+
 ## 0.1.1688 (2026-05-02)
 
 ### Fixes
