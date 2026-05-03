@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1690 (2026-05-03)
+
+### Features
+- prefer az cli for ado tokens (#1996)
+
+### Other
+- test(consolidation): add unit tests for buildConsolidationPrompt, consolidateWithRegex, consolidateWithLLM, archiveInboxFiles (#1998)
+- test(preflight): add unit tests for runtime-fleet helpers (_distinctRuntimes, _checkRuntimeBinary, _warmModelCache, _fleetSummaryResults, _modelDiscoveryResults) (#1997)
+
 ## 0.1.1688 (2026-05-02)
 
 ### Fixes
