@@ -283,7 +283,7 @@ function consolidateWithRegex(items, files) {
     else if (nameLower.includes('explore')) category = 'exploration';
     else if (contentLower.includes('bug') || contentLower.includes('fix')) category = 'bugs-fixes';
 
-    const numberedPattern = /^\d+\.\s+\*\*(.+?)\*\*\s*[\u2014\u2013:-]\s*(.+)/;
+    const numberedPattern = /^\d+\.\s+\*\*(.+?)\*\*\s*(?:--|[\u2014\u2013:-])\s*(.+)/;
     const bulletPattern = /^[-*]\s+\*\*(.+?)\*\*[:\s]+(.+)/;
     const sectionPattern = /^###+\s+(.+)/;
     const importantKeywords = /\b(must|never|always|convention|pattern|gotcha|warning|important|rule|tip|note that)\b/i;
@@ -470,4 +470,9 @@ module.exports = {
   consolidateInbox,
   classifyToKnowledgeBase,
   checkDuplicateHash,
+  // exported for testing
+  buildConsolidationPrompt,
+  consolidateWithLLM,
+  consolidateWithRegex,
+  archiveInboxFiles,
 };

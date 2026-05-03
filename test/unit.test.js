@@ -6754,6 +6754,474 @@ async function testConsolidateInboxBehavior() {
   });
 }
 
+// ─── consolidation.js — Internal Helper Behavior ────────────────────────────
+
+function requireFreshConsolidationWithLlmStub(stub) {
+  const consolidationPath = require.resolve('../engine/consolidation');
+  const llmPath = require.resolve('../engine/llm');
+  delete require.cache[consolidationPath];
+  if (stub) {
+    delete require.cache[llmPath];
+    require.cache[llmPath] = {
+      id: llmPath,
+      filename: llmPath,
+      loaded: true,
+      exports: {
+        callLLM: stub.callLLM,
+        trackEngineUsage: stub.trackEngineUsage || (() => {}),
+      },
+    };
+  }
+  return require('../engine/consolidation');
+}
+
+function clearFreshConsolidationWithLlmStub() {
+  try { delete require.cache[require.resolve('../engine/consolidation')]; } catch {}
+  try { delete require.cache[require.resolve('../engine/llm')]; } catch {}
+}
+
+function waitForMicrotasks() {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+async function testConsolidationInternalHelpers() {
+  console.log('\n── consolidation.js — internal helper behavior ──');
+
+  await test('buildConsolidationPrompt includes notes, KB refs, truncation rules, format guidance, and date', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const freshShared = require('../engine/shared');
+      const longContent = 'a'.repeat(8050);
+      const longExisting = 'unique-head-marker\n' + 'old-'.repeat(600) + 'tail-marker';
+      const prompt = consolidation.buildConsolidationPrompt([
+        { name: 'ralph-a.md', content: longContent },
+        { name: 'dallas-b.md', content: 'short body' },
+      ], longExisting, [
+        { file: 'ralph-a.md', kbPath: 'knowledge/conventions/ralph-a.md' },
+        { file: 'dallas-b.md', kbPath: 'knowledge/reviews/dallas-b.md' },
+      ]);
+
+      assert.ok(prompt.includes('<note file="ralph-a.md">\n' + 'a'.repeat(8000) + '\n</note>'));
+      assert.ok(!prompt.includes('a'.repeat(8001)), 'note content should be truncated to 8000 chars');
+      assert.ok(prompt.includes('<note file="dallas-b.md">\nshort body\n</note>'));
+      assert.ok(prompt.includes('<existing_notes>\n...\n'), 'long existing notes should be prefixed with ellipsis');
+      assert.ok(prompt.includes('tail-marker'), 'long existing notes should keep the tail');
+      assert.ok(!prompt.includes('unique-head-marker'), 'long existing notes should drop the head');
+      assert.ok(prompt.includes('- `ralph-a.md` \u2192 `knowledge/conventions/ralph-a.md`'));
+      assert.ok(prompt.includes('- `dallas-b.md` \u2192 `knowledge/reviews/dallas-b.md`'));
+      for (const header of [
+        '#### Patterns & Conventions',
+        '#### Build & Test Results',
+        '#### PR Review Findings',
+        '#### Bugs & Gotchas',
+        '#### Architecture Notes',
+        '#### Action Items',
+      ]) {
+        assert.ok(prompt.includes(header), `prompt should include required header ${header}`);
+      }
+      assert.ok(prompt.includes('### YYYY-MM-DD: <descriptive title>'));
+      assert.ok(prompt.endsWith(`Use today's date: ${freshShared.dateStamp()}`));
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('buildConsolidationPrompt passes short existing notes through and handles empty items', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const prompt = consolidation.buildConsolidationPrompt([], 'short existing notes', []);
+      assert.ok(prompt.includes('## Inbox Notes to Process\n\n\n\n## Existing Team Notes'), 'empty notes block should not crash');
+      assert.ok(prompt.includes('<existing_notes>\nshort existing notes\n</existing_notes>'));
+      assert.ok(!prompt.includes('<note file='), 'empty items should produce no note blocks');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('archiveInboxFiles creates archive dir, uses unique paths, and continues after a missing file', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const archiveDir = path.join(testDir, 'notes', 'archive');
+      fs.rmSync(archiveDir, { recursive: true, force: true });
+      fs.writeFileSync(path.join(inboxDir, 'one.md'), 'one');
+      fs.writeFileSync(path.join(inboxDir, 'two.md'), 'two');
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.writeFileSync(path.join(archiveDir, `${freshShared.dateStamp()}-one.md`), 'collision');
+
+      consolidation.archiveInboxFiles(['one.md', 'missing.md', 'two.md']);
+      consolidation.archiveInboxFiles([]);
+
+      assert.ok(fs.existsSync(archiveDir), 'archive directory should be created');
+      assert.ok(!fs.existsSync(path.join(inboxDir, 'one.md')));
+      assert.ok(!fs.existsSync(path.join(inboxDir, 'two.md')));
+      const archived = fs.readdirSync(archiveDir).sort();
+      assert.ok(archived.includes(`${freshShared.dateStamp()}-one.md`), 'pre-existing collision file should remain');
+      assert.ok(archived.some(f => f.startsWith(`${freshShared.dateStamp()}-one-`) && f.endsWith('.md')),
+        'colliding archive target should be disambiguated with uniquePath');
+      assert.ok(archived.includes(`${freshShared.dateStamp()}-two.md`));
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithRegex extracts insights, maps categories, deduplicates, writes KB checkpoint, and archives files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const notesPath = path.join(testDir, 'notes.md');
+      const items = [
+        { name: 'ripley-review-pr-7.md', content: '# Review\n1. **Lock scope** -- Always keep shared JSON read and write inside one file lock for dispatch safety.' },
+        { name: 'dallas-feedback.md', content: '# Feedback\n- **UX clarity**: Always surface dashboard errors with actionable context for operators.' },
+        { name: 'lambert-build.md', content: '# Build\nImportant build tip: always run npm test after changing consolidation behavior to catch regressions.' },
+        { name: 'rebecca-explore.md', content: '# Explore\nThe routing convention must stay table-driven so agents can parse it reliably.' },
+        { name: 'ralph-bugfix.md', content: '# Fix\nWarning: this bug fix pattern must preserve existing worktree state during retries.' },
+        { name: 'dallas-pr-merge.md', content: '# Merge\n1. **Shared duplicate** -- Always merge duplicate consolidation fingerprints across agents.' },
+        { name: 'ralph-pr-merge.md', content: '# Merge\n1. **Shared duplicate** -- Always merge duplicate consolidation fingerprints across agents.' },
+        { name: 'ripley-pr4-review.md', content: '# Existing\n1. **Existing token skip** -- Existing token skip should already be present and therefore omitted.' },
+      ];
+      for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      fs.writeFileSync(notesPath, 'Existing token skip should already be present in notes for deduplication.');
+
+      consolidation.consolidateWithRegex(items, items.map(i => i.name));
+
+      const notes = fs.readFileSync(notesPath, 'utf8');
+      assert.ok(notes.includes('**By:** Engine (regex fallback)'));
+      assert.ok(notes.includes('#### PR Review Findings'));
+      assert.ok(notes.includes('#### Review Feedback'));
+      assert.ok(notes.includes('#### Build & Test Results'));
+      assert.ok(notes.includes('#### Codebase Exploration'));
+      assert.ok(notes.includes('#### Bugs & Gotchas'));
+      assert.ok(notes.includes('**Lock scope**: Always keep shared JSON read and write inside one file lock'));
+      assert.ok(notes.includes('**UX clarity**: Always surface dashboard errors'));
+      assert.ok(notes.includes('Important build tip: always run npm test'));
+      assert.ok(notes.includes('The routing convention must stay table-driven'));
+      assert.ok(notes.includes('Warning: this bug fix pattern must preserve existing worktree state'));
+      assert.ok(notes.includes('**Shared duplicate**: Always merge duplicate consolidation fingerprints across agents. _(dallas, ralph)_'));
+      assert.ok(!notes.includes('**Existing token skip**'), 'existing-notes fingerprint should suppress duplicate insight');
+      assert.ok(notes.includes('_Deduplication: 2 duplicate(s) removed._'));
+      assert.strictEqual(fs.readdirSync(inboxDir).filter(f => f.endsWith('.md')).length, 0, 'inbox files should be archived');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, items.length);
+      const checkpoint = JSON.parse(fs.readFileSync(path.join(testDir, 'engine', 'kb-checkpoint.json'), 'utf8'));
+      assert.ok(checkpoint.count >= items.length, 'KB checkpoint should count classified files');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithRegex truncates long insights and falls back to a full-note pointer when no insight matches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const longBody = 'x'.repeat(340);
+      const items = [
+        { name: 'ralph-long.md', content: `# Long\n1. **Long insight** -- ${longBody}` },
+        { name: 'lambert-plain.md', content: '# Plain note\nshort line\nanother short line' },
+      ];
+      for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      consolidation.consolidateWithRegex(items, items.map(i => i.name));
+      const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.ok(notes.includes('**Long insight**: ' + 'x'.repeat(279) + '...'), 'long insight should be truncated to 300 chars');
+      assert.ok(notes.includes('See full note: Plain note'), 'notes with no extractable insight should still get a pointer');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithRegex records all-duplicate batches without repeating existing insights', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const notesPath = path.join(testDir, 'notes.md');
+      const item = {
+        name: 'dallas-review.md',
+        content: '# Duplicate\n1. **Existing lock pattern** -- Always keep shared locks scoped around every dependent write.',
+      };
+      fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      fs.writeFileSync(notesPath, 'existing lock pattern always keep shared locks scoped around every dependent write');
+      consolidation.consolidateWithRegex([item], [item.name]);
+      const notes = fs.readFileSync(notesPath, 'utf8');
+      assert.ok(notes.includes('(0 insights from 1 notes)'));
+      assert.ok(notes.includes('_Deduplication: 1 duplicate(s) removed._'));
+      assert.strictEqual((notes.match(/\*\*Existing lock pattern\*\*/g) || []).length, 0);
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithRegex truncates oversized notes.md on a section boundary', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const notesPath = path.join(testDir, 'notes.md');
+      let existing = '# Team Notes\n';
+      for (let i = 0; i < 12; i++) {
+        existing += `\n---\n\n### 2026-04-${String(i + 1).padStart(2, '0')}: Old ${i}\n${'x'.repeat(4500)}\n`;
+      }
+      fs.writeFileSync(notesPath, existing);
+      const item = { name: 'ralph-new.md', content: '# New\n- **Boundary test**: Always preserve section boundaries when pruning notes.' };
+      fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+
+      consolidation.consolidateWithRegex([item], [item.name]);
+
+      const notes = fs.readFileSync(notesPath, 'utf8');
+      assert.ok(notes.length <= 50000, 'notes.md should stay within the consolidation budget');
+      assert.ok(!notes.endsWith('x'.repeat(100)), 'pruned notes should not end in the middle of a large section body');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithRegex propagates file-lock contention before archiving inbox files', () => {
+    const restore = createTestMinionsDir();
+    let originalWithFileLock;
+    try {
+      const freshShared = require('../engine/shared');
+      originalWithFileLock = freshShared.withFileLock;
+      freshShared.withFileLock = () => { throw new Error('Lock timeout: notes.md.lock'); };
+      const consolidation = requireFreshConsolidationWithLlmStub();
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const item = { name: 'ralph-lock.md', content: '# Lock\n- **Lock contention**: Always surface lock timeouts instead of silently archiving notes.' };
+      fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      assert.throws(() => consolidation.consolidateWithRegex([item], [item.name]), /Lock timeout/);
+      assert.ok(fs.existsSync(path.join(inboxDir, item.name)), 'file should remain in inbox if notes write lock fails');
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, 0);
+    } finally {
+      try {
+        if (originalWithFileLock) require('../engine/shared').withFileLock = originalWithFileLock;
+      } catch {}
+      restore();
+      clearFreshConsolidationWithLlmStub();
+    }
+  });
+
+  await test('consolidateWithLLM writes successful digest without code fences, classifies, archives, and tracks usage', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      let callCount = 0;
+      let trackedUsage = null;
+      let capturedPrompt = '';
+      const consolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: (prompt, sysPrompt, opts) => {
+          callCount++;
+          capturedPrompt = prompt;
+          assert.strictEqual(sysPrompt.includes('Output only markdown'), true);
+          assert.strictEqual(opts.timeout, 180000);
+          assert.strictEqual(opts.label, 'consolidation');
+          assert.strictEqual(opts.model, 'haiku');
+          assert.strictEqual(opts.maxTurns, 1);
+          assert.strictEqual(opts.direct, true);
+          const p = Promise.resolve({
+            code: 0,
+            text: '```markdown\npreamble to strip\n### 2026-05-03: LLM digest\n**By:** Engine (LLM-consolidated)\n\n#### Patterns & Conventions\n- **LLM success**: Always strip code fences before appending consolidation output. _(ralph)_\n```',
+            usage: { costUsd: 0.01 },
+          });
+          p.abort = () => {};
+          return p;
+        },
+        trackEngineUsage: (label, usage) => { trackedUsage = { label, usage }; },
+      });
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const items = [
+        { name: 'ralph-llm-a.md', content: '# A\nAlways keep prompt data deterministic for tests.' },
+        { name: 'dallas-llm-b.md', content: '# B\nNever let duplicate content trigger the success path accidentally.' },
+      ];
+      for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+
+      consolidation.consolidateWithLLM(items, 'existing notes', items.map(i => i.name), { engine: { defaultCli: 'copilot' } });
+      await waitForMicrotasks();
+
+      assert.strictEqual(callCount, 1);
+      assert.ok(capturedPrompt.includes('<note file="ralph-llm-a.md">'));
+      const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.ok(notes.includes('\n\n---\n\n### 2026-05-03: LLM digest'));
+      assert.ok(!notes.includes('```'), 'code fences should not be written');
+      assert.ok(!notes.includes('preamble to strip'), 'text before the first section header should be discarded');
+      assert.deepStrictEqual(trackedUsage, { label: 'consolidation', usage: { costUsd: 0.01 } });
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0, 'LLM success should archive files');
+      assert.ok(fs.existsSync(path.join(testDir, 'engine', 'kb-checkpoint.json')), 'LLM success should classify to KB');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithLLM duplicate circuit breaker archives directly without calling LLM and clears state', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      let called = false;
+      const consolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: () => { called = true; throw new Error('LLM should not be called'); },
+      });
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const duplicateItems = [];
+      for (let i = 0; i < 5; i++) {
+        const item = { name: `ralph-dup-${i}.md`, content: '# Duplicate\nsame content for every duplicate item' };
+        duplicateItems.push(item);
+        fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      }
+      consolidation.consolidateWithLLM(duplicateItems, '', duplicateItems.map(i => i.name), { engine: {} });
+      assert.strictEqual(called, false, 'duplicate circuit breaker should skip callLLM entirely');
+      assert.strictEqual(fs.readdirSync(inboxDir).length, 0);
+      assert.strictEqual(fs.readdirSync(path.join(testDir, 'notes', 'archive')).length, duplicateItems.length);
+
+      const nextItems = [
+        { name: 'ralph-next-a.md', content: '# Next A\nAlways allow a new consolidation after duplicate short-circuit cleanup.' },
+        { name: 'ralph-next-b.md', content: '# Next B\nNever keep processing flags stuck after duplicate short-circuit cleanup.' },
+      ];
+      for (const item of nextItems) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      let secondCalled = false;
+      clearFreshConsolidationWithLlmStub();
+      const nextConsolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: () => {
+          secondCalled = true;
+          const p = Promise.resolve({ code: 1, text: '', stderr: 'fail' });
+          p.abort = () => {};
+          return p;
+        },
+      });
+      nextConsolidation.consolidateWithLLM(nextItems, '', nextItems.map(i => i.name), { engine: {} });
+      await waitForMicrotasks();
+      assert.strictEqual(secondCalled, true, 'state should be clear enough for a later LLM attempt');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithLLM falls back to regex when output lacks a section header', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const consolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: () => {
+          const p = Promise.resolve({
+            code: 0,
+            text: 'This output is long enough to pass the length check but it has no markdown section header anywhere.',
+          });
+          p.abort = () => {};
+          return p;
+        },
+      });
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const items = [
+        { name: 'ralph-format-a.md', content: '# A\n- **Fallback format**: Always fall back when LLM output misses the section heading.' },
+        { name: 'dallas-format-b.md', content: '# B\n- **Second format**: Never write malformed LLM output to notes.' },
+      ];
+      for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      consolidation.consolidateWithLLM(items, '', items.map(i => i.name), { engine: {} });
+      await waitForMicrotasks();
+      const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.ok(notes.includes('**By:** Engine (regex fallback)'));
+      assert.ok(notes.includes('**Fallback format**: Always fall back'));
+      assert.ok(!notes.includes('This output is long enough'), 'malformed LLM output should not be written');
+    } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+  });
+
+  await test('consolidateWithLLM falls back to regex on nonzero code or short output', async () => {
+    for (const [caseName, result] of [
+      ['nonzero', { code: 7, text: '### 2026-05-03: Failed digest with enough length to otherwise look usable', stderr: 'bad exit' }],
+      ['short', { code: 0, text: 'too short' }],
+    ]) {
+      const restore = createTestMinionsDir();
+      try {
+        const consolidation = requireFreshConsolidationWithLlmStub({
+          callLLM: () => {
+            const p = Promise.resolve(result);
+            p.abort = () => {};
+            return p;
+          },
+        });
+        const testDir = process.env.MINIONS_TEST_DIR;
+        const inboxDir = path.join(testDir, 'notes', 'inbox');
+        const items = [
+          { name: `ralph-${caseName}-a.md`, content: '# A\n- **Failure fallback**: Always use regex when LLM consolidation fails.' },
+          { name: `dallas-${caseName}-b.md`, content: '# B\n- **Different fallback**: Never archive without writing a fallback digest.' },
+        ];
+        for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+        consolidation.consolidateWithLLM(items, '', items.map(i => i.name), { engine: {} });
+        await waitForMicrotasks();
+        const notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+        assert.ok(notes.includes('**By:** Engine (regex fallback)'), `${caseName} should fall back to regex`);
+        assert.ok(notes.includes('**Failure fallback**: Always use regex'));
+      } finally { restore(); clearFreshConsolidationWithLlmStub(); }
+    }
+  });
+
+  await test('consolidateWithLLM timeout aborts the LLM call, force-resets once, and ignores later resolution', async () => {
+    const restore = createTestMinionsDir();
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    try {
+      const timers = [];
+      global.setTimeout = (fn, ms) => {
+        const handle = { fn, ms, cleared: false };
+        timers.push(handle);
+        return handle;
+      };
+      global.clearTimeout = (handle) => {
+        if (handle) handle.cleared = true;
+      };
+
+      let aborted = false;
+      let resolveLlm;
+      const pending = new Promise(resolve => { resolveLlm = resolve; });
+      pending.abort = () => { aborted = true; };
+      const consolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: () => pending,
+      });
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const inboxDir = path.join(testDir, 'notes', 'inbox');
+      const items = [
+        { name: 'ralph-timeout-a.md', content: '# A\n- **Timeout fallback**: Always abort stuck LLM calls and use regex fallback.' },
+        { name: 'dallas-timeout-b.md', content: '# B\n- **Timeout state**: Never leave consolidation state stuck after forced cleanup.' },
+      ];
+      for (const item of items) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+
+      consolidation.consolidateWithLLM(items, '', items.map(i => i.name), { engine: {} });
+      const timeout = timers.find(t => t.ms === 180000);
+      assert.ok(timeout, 'outer timeout should be scheduled for 180000ms');
+      timeout.fn();
+      assert.strictEqual(aborted, true, 'timeout should abort the LLM call');
+      const forceReset = timers.find(t => t.ms === 10000);
+      assert.ok(forceReset, 'force-reset timer should be scheduled after abort');
+      forceReset.fn();
+      forceReset.fn();
+
+      let notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.strictEqual((notes.match(/\*\*By:\*\* Engine \(regex fallback\)/g) || []).length, 1,
+        'idempotent cleanup should only run one regex fallback');
+      resolveLlm({
+        code: 0,
+        text: '### 2026-05-03: Late success\n**By:** Engine (LLM-consolidated)\n\n#### Patterns & Conventions\n- **Late**: This should be ignored after timeout cleanup. _(ralph)_',
+      });
+      await waitForMicrotasks();
+      notes = fs.readFileSync(path.join(testDir, 'notes.md'), 'utf8');
+      assert.ok(!notes.includes('Late success'), 'late LLM resolution should no-op after cleanup');
+
+      const nextItems = [
+        { name: 'ralph-after-timeout-a.md', content: '# C\nAlways allow new runs after timeout cleanup.' },
+        { name: 'dallas-after-timeout-b.md', content: '# D\nNever keep files marked as processing after timeout cleanup.' },
+      ];
+      for (const item of nextItems) fs.writeFileSync(path.join(inboxDir, item.name), item.content);
+      let secondCall = false;
+      clearFreshConsolidationWithLlmStub();
+      const nextConsolidation = requireFreshConsolidationWithLlmStub({
+        callLLM: () => {
+          secondCall = true;
+          const p = Promise.resolve({ code: 1, text: '', stderr: 'stop' });
+          p.abort = () => {};
+          return p;
+        },
+      });
+      nextConsolidation.consolidateWithLLM(nextItems, '', nextItems.map(i => i.name), { engine: {} });
+      await waitForMicrotasks();
+      assert.strictEqual(secondCall, true, 'processing state should be clear for a later run');
+    } finally {
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+      restore();
+      clearFreshConsolidationWithLlmStub();
+    }
+  });
+}
+
 // ─── Consolidation Force-Reset Race Condition Tests ─────────────────────────
 
 async function testConsolidationForceResetRace() {
@@ -24857,6 +25325,7 @@ async function main() {
     await testContentHashCircuitBreaker();
     await testClassifyToKnowledgeBase();
     await testConsolidateInboxBehavior();
+    await testConsolidationInternalHelpers();
     await testConsolidationForceResetRace();
 
     // github.js tests
