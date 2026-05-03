@@ -35,9 +35,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
 const { runFile, cleanChildEnv, killGracefully, killImmediate, ts } = require('./shared');
 const { resolveRuntime } = require('./runtimes');
+const { acquireAdoTokenSync, isLikelyAdoToken } = require('./ado-token');
 
 // ─── Pure helpers (exported for tests) ──────────────────────────────────────
 
@@ -129,20 +129,19 @@ function normalizeRuntimeExit(code, signal) {
   return 1;
 }
 
-function injectAdoTokenEnv(env, { execSync: _execSync = execSync, warn = (msg) => process.stderr.write(msg + '\n') } = {}) {
-  let token;
+function injectAdoTokenEnv(env, { execSync: _execSync, acquireToken, warn = (msg) => process.stderr.write(msg + '\n') } = {}) {
+  let result;
   try {
-    token = String(_execSync('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
-      encoding: 'utf8',
-      timeout: 30000,
-      windowsHide: true,
-    }) || '').trim();
+    result = typeof acquireToken === 'function'
+      ? acquireToken()
+      : acquireAdoTokenSync({ execSync: _execSync });
   } catch (err) {
     warn(`spawn-agent.js: ADO token fetch failed: ${err.message}`);
     return false;
   }
-  if (!token || !token.startsWith('eyJ')) {
-    warn('spawn-agent.js: invalid ADO token from azureauth; continuing without Azure DevOps PAT env');
+  const token = typeof result === 'string' ? result : result?.token;
+  if (!isLikelyAdoToken(token)) {
+    warn('spawn-agent.js: invalid ADO token; continuing without Azure DevOps PAT env');
     return false;
   }
   env.AZURE_DEVOPS_EXT_PAT = token;

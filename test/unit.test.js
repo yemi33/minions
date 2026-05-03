@@ -20,6 +20,7 @@ const results = [];
 const tmpDirs = [];
 const ISOLATED_MODULES = [
   '../engine/shared',
+  '../engine/ado-token',
   '../engine/queries',
   '../engine/lifecycle',
   '../engine/dispatch',
@@ -2630,6 +2631,81 @@ async function testGitHubIssueCreation() {
   });
 }
 
+async function testAdoTokenHelpers() {
+  console.log('\n── engine/ado-token.js — ADO Token Acquisition ──');
+  const adoToken = require(path.join(MINIONS_DIR, 'engine', 'ado-token'));
+
+  await test('ado-token prefers Azure CLI token acquisition before azureauth fallback', () => {
+    const calls = [];
+    const result = adoToken.acquireAdoTokenSync({
+      execSync: (cmd, opts) => {
+        calls.push({ cmd, opts });
+        return 'eyJaz-token\n';
+      },
+    });
+    assert.strictEqual(result.token, 'eyJaz-token');
+    assert.strictEqual(result.source, 'az');
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].cmd, adoToken.AZ_CLI_ADO_TOKEN_COMMAND);
+    assert.ok(calls[0].cmd.includes('az account get-access-token'));
+    assert.ok(calls[0].cmd.includes('--resource 499b84ac-1321-427f-aa17-267ca6975798'));
+    assert.deepStrictEqual(calls[0].opts, {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  });
+
+  await test('ado-token falls back to non-interactive azureauth when Azure CLI fails', () => {
+    const calls = [];
+    const result = adoToken.acquireAdoTokenSync({
+      execSync: (cmd, opts) => {
+        calls.push({ cmd, opts });
+        if (cmd === adoToken.AZ_CLI_ADO_TOKEN_COMMAND) throw new Error('az unavailable');
+        return 'eyJazureauth-token\n';
+      },
+    });
+    assert.strictEqual(result.token, 'eyJazureauth-token');
+    assert.strictEqual(result.source, 'azureauth');
+    assert.deepStrictEqual(calls.map(c => c.cmd), [
+      adoToken.AZ_CLI_ADO_TOKEN_COMMAND,
+      adoToken.AZUREAUTH_ADO_TOKEN_COMMAND,
+    ]);
+    assert.ok(adoToken.AZUREAUTH_ADO_TOKEN_COMMAND.includes('--mode iwa'));
+    assert.ok(adoToken.AZUREAUTH_ADO_TOKEN_COMMAND.includes('--mode broker'));
+    assert.ok(adoToken.AZUREAUTH_ADO_TOKEN_COMMAND.includes('--timeout 1'));
+  });
+
+  await test('ado-token async acquisition uses the same az-first fallback order', async () => {
+    const calls = [];
+    const result = await adoToken.acquireAdoToken({
+      execAsync: async (cmd, opts) => {
+        calls.push({ cmd, opts });
+        if (cmd === adoToken.AZ_CLI_ADO_TOKEN_COMMAND) return 'not-a-jwt';
+        return 'eyJasync-azureauth-token\n';
+      },
+      timeout: 15000,
+    });
+    assert.strictEqual(result.token, 'eyJasync-azureauth-token');
+    assert.strictEqual(result.source, 'azureauth');
+    assert.deepStrictEqual(calls.map(c => c.cmd), [
+      adoToken.AZ_CLI_ADO_TOKEN_COMMAND,
+      adoToken.AZUREAUTH_ADO_TOKEN_COMMAND,
+    ]);
+    assert.strictEqual(calls[0].opts.timeout, 15000);
+    assert.strictEqual(calls[1].opts.timeout, 15000);
+  });
+
+  await test('ado-token throws a combined error when both providers fail', () => {
+    assert.throws(() => adoToken.acquireAdoTokenSync({
+      execSync: (cmd) => {
+        if (cmd === adoToken.AZ_CLI_ADO_TOKEN_COMMAND) throw new Error('az missing');
+        throw new Error('azureauth missing');
+      },
+    }), /az missing.*azureauth missing/);
+  });
+}
+
 async function testSpawnAgentHelpers() {
   console.log('\n── engine/spawn-agent.js — Runtime-Agnostic Wrapper (P-9c4f2d6a) ──');
   const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
@@ -2849,33 +2925,22 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(calls.length, 1);
   });
 
-  await test('injectAdoTokenEnv sets Azure DevOps PAT env vars from broker-only azureauth token', () => {
+  await test('injectAdoTokenEnv sets Azure DevOps PAT env vars from shared ADO token helper', () => {
     const env = {};
-    const calls = [];
     const ok = spawnAgent.injectAdoTokenEnv(env, {
-      execSync: (cmd, opts) => {
-        calls.push({ cmd, opts });
-        return 'eyJagent-token\n';
-      },
+      acquireToken: () => ({ token: 'eyJagent-token', source: 'az' }),
       warn: () => { throw new Error('should not warn on valid token'); },
     });
     assert.strictEqual(ok, true);
     assert.strictEqual(env.AZURE_DEVOPS_EXT_PAT, 'eyJagent-token');
     assert.strictEqual(env.AZURE_DEVOPS_EXT_AZURE_RM_PAT, 'eyJagent-token');
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].cmd, 'azureauth ado token --mode iwa --mode broker --output token --timeout 1');
-    assert.deepStrictEqual(calls[0].opts, {
-      encoding: 'utf8',
-      timeout: 30000,
-      windowsHide: true,
-    });
   });
 
   await test('injectAdoTokenEnv ignores invalid or failed token fetch without mutating env', () => {
     const warnings = [];
     const invalidEnv = { KEEP: 'yes' };
     const invalid = spawnAgent.injectAdoTokenEnv(invalidEnv, {
-      execSync: () => 'not-a-jwt',
+      acquireToken: () => ({ token: 'not-a-jwt', source: 'az' }),
       warn: (msg) => warnings.push(msg),
     });
     assert.strictEqual(invalid, false);
@@ -2883,7 +2948,7 @@ async function testSpawnAgentHelpers() {
 
     const failedEnv = {};
     const failed = spawnAgent.injectAdoTokenEnv(failedEnv, {
-      execSync: () => { throw new Error('azureauth missing'); },
+      acquireToken: () => { throw new Error('az and azureauth missing'); },
       warn: (msg) => warnings.push(msg),
     });
     assert.strictEqual(failed, false);
@@ -24821,6 +24886,7 @@ async function main() {
     await testCopilotAdapter();
     await testModelDiscovery();
     await testGitHubIssueCreation();
+    await testAdoTokenHelpers();
     await testSpawnAgentHelpers();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
@@ -42349,23 +42415,19 @@ async function testLoopToWatchInterception() {
 async function testAzureauthTimeout() {
   console.log('\n── #1049: azureauth --timeout enforcement ──');
 
-  await test('ado.js azureauth exec call includes --timeout', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
-    // Match only actual exec calls, not comments or error messages
-    const execCalls = src.match(/exec(?:Sync|Async)?\(\s*['"]([^'"]*azureauth[^'"]*)['"]/g) || [];
-    assert.ok(execCalls.length > 0, 'ado.js should have at least one azureauth exec call');
-    for (const call of execCalls) {
-      assert.ok(call.includes('--timeout'), `azureauth exec call missing --timeout: "${call}"`);
-    }
+  await test('centralized ADO token helper azureauth fallback includes --timeout', () => {
+    const adoToken = require(path.join(MINIONS_DIR, 'engine', 'ado-token'));
+    assert.ok(adoToken.AZUREAUTH_ADO_TOKEN_COMMAND.includes('--timeout 1'),
+      'centralized azureauth fallback must include --timeout 1');
+    assert.ok(adoToken.AZ_CLI_ADO_TOKEN_COMMAND.includes('az account get-access-token'),
+      'centralized helper should prefer az account get-access-token');
   });
 
-  await test('ado-mcp-wrapper.js azureauth exec call includes --timeout', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado-mcp-wrapper.js'), 'utf8');
-    // Match only actual exec calls, not error message strings
-    const execCalls = src.match(/exec(?:Sync|Async)?\(\s*['"]([^'"]*azureauth[^'"]*)['"]/g) || [];
-    assert.ok(execCalls.length > 0, 'ado-mcp-wrapper.js should have at least one azureauth exec call');
-    for (const call of execCalls) {
-      assert.ok(call.includes('--timeout'), `azureauth exec call missing --timeout: "${call}"`);
+  await test('ADO token consumers use centralized helper instead of hardcoded azureauth exec', () => {
+    for (const rel of ['engine/ado.js', 'engine/ado-mcp-wrapper.js', 'engine/spawn-agent.js']) {
+      const src = fs.readFileSync(path.join(MINIONS_DIR, rel), 'utf8');
+      assert.ok(src.includes("require('./ado-token')"), `${rel} should import centralized ado-token helper`);
+      assert.ok(!src.includes('azureauth ado token --mode'), `${rel} should not hardcode azureauth token command`);
     }
   });
 

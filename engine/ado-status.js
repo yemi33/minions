@@ -3,8 +3,8 @@
  * engine/ado-status.js — CLI shim for querying PR and build status.
  *
  * Agents steered to "check on the builds" or "is CI green for PR #123" should
- * use this instead of raw curl + azureauth calls. All ADO auth and retry logic
- * is handled by ado.js internally.
+ * use this instead of raw curl + ad-hoc auth calls. All ADO auth and retry
+ * logic is handled by ado.js internally.
  *
  * Usage:
  *   node engine/ado-status.js <prNumber>
