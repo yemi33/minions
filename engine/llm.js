@@ -368,15 +368,14 @@ function _createStreamAccumulator({
       if (ev) consumer.consume(ev);
     }
     if (!text && lastTaskCompleteSummary) text = lastTaskCompleteSummary;
-    // Reconciliation: if any field is still missing, ask the runtime adapter
-    // to re-parse the whole stdout. parseOutput() may catch a result event
-    // that was malformed when streamed in chunks.
-    if (!text || !usage || !sessionId) {
-      const parsedTail = runtime.parseOutput(stdout, maxTextLength ? { maxTextLength } : {});
-      if (!text && parsedTail.text) text = parsedTail.text;
-      if (!usage && parsedTail.usage) usage = parsedTail.usage;
-      if (!sessionId && parsedTail.sessionId) sessionId = parsedTail.sessionId;
-    }
+    // Reconciliation: always ask the runtime adapter to re-parse the whole
+    // stdout. Stream consumers may expose progress, final fragments, or
+    // task_complete summaries before the process exits; parseOutput() owns the
+    // runtime-specific full-answer aggregation.
+    const parsedTail = runtime.parseOutput(stdout, maxTextLength ? { maxTextLength } : {});
+    if (parsedTail.text) text = parsedTail.text;
+    if (parsedTail.usage) usage = parsedTail.usage;
+    if (parsedTail.sessionId) sessionId = parsedTail.sessionId;
     return { text, usage, sessionId, raw: stdout, stderr, toolUses };
   }
 
@@ -627,4 +626,5 @@ module.exports = {
   _resolveModelFor,
   _resolveModelForRuntime,
   _resolveRuntimeFeatureOpts,
+  _createStreamAccumulator,
 };
