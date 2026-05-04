@@ -228,7 +228,7 @@ function saveInstalledVersion(version) {
   fs.writeFileSync(path.join(MINIONS_HOME, '.minions-version'), version);
   // Persist source commit so dashboard can detect repo-based installs
   try {
-    const commit = execSync('git rev-parse --short HEAD', { cwd: PKG_ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    const commit = execSync('git rev-parse --short HEAD', { cwd: PKG_ROOT, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     if (commit) fs.writeFileSync(path.join(MINIONS_HOME, '.minions-commit'), commit);
   } catch {}
 }

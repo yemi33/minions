@@ -356,7 +356,7 @@ const commands = {
       } catch {}
     }
     let codeCommit = null;
-    try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+    try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }).trim(); } catch {}
     const controlOwner = createControlOwner();
     mutateControl(() => ({
       state: 'running',
