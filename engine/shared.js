@@ -751,6 +751,7 @@ const ENGINE_DEFAULTS = {
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
+  resumeHeartbeatTimeout: 300000, // 5min — max wait for a resumed runtime to emit its first output
   // Per-type stale-orphan overrides (merged with config.engine.heartbeatTimeouts at runtime — see timeout.js).
   // Heavy work types (multi-file edits, builds, test suites, full verify cycles) routinely go quiet for
   // longer than the 5-min default when the engine has lost their tracked handle (e.g. across an engine
