@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1692 (2026-05-04)
+
+### Features
+- stop Azure auth for GitHub agents (#2005)
+- recover stalled runtime resumes (#2004)
+- preserve doc-chat response fragments (#2003)
+
 ## 0.1.1689 (2026-05-03)
 
 ### Features
