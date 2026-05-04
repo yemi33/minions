@@ -184,6 +184,7 @@ function workItemCreateFingerprint(item, options = {}) {
     type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
     priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
     description: normalizeWorkItemDedupText(item?.description),
+    scope: normalizeWorkItemDedupText(item?.scope).toLowerCase(),
     prIdentity: normalizeWorkItemDedupPrIdentity(item, project),
   };
 }
@@ -211,6 +212,7 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
       existingFingerprint.type === candidateFingerprint.type &&
       existingFingerprint.priority === candidateFingerprint.priority &&
       existingFingerprint.description === candidateFingerprint.description &&
+      existingFingerprint.scope === candidateFingerprint.scope &&
       existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
   }) || null;
 }
