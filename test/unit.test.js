@@ -3373,6 +3373,14 @@ async function testEngineDefaults() {
     assert.strictEqual(shared.DEFAULT_CLAUDE.outputFormat, 'stream-json',
       'outputFormat must be stream-json — json format buffers all output, breaking live streaming');
     assert.ok(shared.DEFAULT_CLAUDE.allowedTools);
+    assert.ok(!Object.prototype.hasOwnProperty.call(shared.DEFAULT_CLAUDE, 'permissionMode'),
+      'permissionMode is a stale config field; runtime adapters own bypass flags');
+  });
+
+  await test('minions init strips stale claude.permissionMode when rewriting config defaults', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
+    assert.ok(src.includes('delete config.claude.permissionMode'),
+      'init/upgrade config rewrite must not preserve legacy config.claude.permissionMode');
   });
 
   await test('DEFAULT_AGENT_METRICS has all required metric fields', () => {
@@ -3675,11 +3683,11 @@ async function testRuntimeFleetHelpers() {
 
   await test('runtimeConfigWarnings: lists multiple deprecated subkeys in one warning', () => {
     const ws = shared.runtimeConfigWarnings({
-      claude: { binary: '/x', outputFormat: 'json', allowedTools: 'all' },
+      claude: { binary: '/x', outputFormat: 'json', allowedTools: 'all', permissionMode: 'auto' },
     }, ['claude']);
     const dep = ws.filter(w => w.id === 'deprecated-config-claude');
     assert.strictEqual(dep.length, 1, 'should aggregate deprecated subkeys into one warning');
-    for (const k of ['binary', 'outputFormat', 'allowedTools']) {
+    for (const k of ['binary', 'outputFormat', 'allowedTools', 'permissionMode']) {
       assert.ok(dep[0].message.includes(k), `message should include ${k}`);
     }
   });
@@ -3743,6 +3751,45 @@ async function testRuntimeFleetHelpers() {
       assert.ok(new RegExp(`e\\.${field}`).test(handler),
         `handleSettingsUpdate must read body.engine.${field} from the request payload`);
     }
+  });
+
+  await test('dashboard settings do not expose or persist legacy claude.permissionMode', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const readHelper = dashSrc.slice(
+      dashSrc.indexOf('function settingsClaudeConfig'),
+      dashSrc.indexOf('async function handleSettingsRead'),
+    );
+    const updateHandler = dashSrc.slice(
+      dashSrc.indexOf('function handleSettingsUpdate'),
+      dashSrc.indexOf('function handleSettingsRouting'),
+    );
+    assert.ok(readHelper.includes('delete claude.permissionMode'),
+      'settings read must strip legacy claude.permissionMode before returning dashboard config');
+    assert.ok(dashSrc.includes('claude: settingsClaudeConfig(config)'),
+      'settings read must use the permissionMode-stripping helper');
+    assert.ok(updateHandler.includes('delete config.claude.permissionMode'),
+      'settings save must remove stale permissionMode from existing configs');
+    assert.ok(!updateHandler.includes('body.claude.permissionMode'),
+      'settings save must ignore permissionMode request payloads');
+
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(!settingsSrc.includes('set-permissionMode'),
+      'settings UI must not render the old Permission Mode selector');
+    assert.ok(settingsSrc.includes('--dangerously-skip-permissions') &&
+      settingsSrc.includes('--autopilot --allow-all --no-ask-user'),
+      'settings UI should explain runtime-owned permission bypass flags instead');
+  });
+
+  await test('agent status/dashboard cards do not surface legacy permissionMode log metadata', () => {
+    const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(!queriesSrc.includes('_permissionMode'),
+      'queries.getAgents must not expose permissionMode-derived status fields');
+    assert.ok(!queriesSrc.includes('"permissionMode"'),
+      'queries.getAgentStatus must not parse stale permissionMode metadata from live-output logs');
+
+    const renderAgentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    assert.ok(!renderAgentsSrc.includes('_permissionMode'),
+      'agent cards must not surface legacy permissionMode state');
   });
 
   await test('dashboard.js handleSettingsUpdate validates defaultCli + ccCli against the runtime registry', () => {
