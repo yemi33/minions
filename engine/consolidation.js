@@ -201,6 +201,10 @@ function consolidateWithLLM(items, existingNotes, files, config) {
     if (_cleared) return;
     clearTimeout(timeoutHandle);
     trackEngineUsage('consolidation', result.usage);
+    if (result.missingRuntime) {
+      _fallback(`LLM consolidation skipped: ${result.text || result.stderr || 'runtime unavailable'} — falling back to regex`);
+      return;
+    }
 
     const extractedText = result.text || '';
     const rawText = result.raw || '';

@@ -488,7 +488,9 @@ async function executePlanStage(stage, stageState, run, config) {
       timeout: 120000, label: 'pipeline-plan', model: 'sonnet', maxTurns: 1,
       engineConfig: config.engine,
     });
-    if (result.text) {
+    if (result.missingRuntime) {
+      log('warn', `Pipeline plan LLM skipped: ${result.text || result.stderr || 'runtime unavailable'} — falling back to raw meeting context`);
+    } else if (result.text) {
       content = result.text;
       log('info', `Pipeline plan: LLM generated ${content.length} chars from meeting context`);
     }

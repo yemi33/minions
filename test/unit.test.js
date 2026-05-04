@@ -33800,6 +33800,96 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(llm._resolveBin(undefined), null);
   });
 
+  await test('callLLM returns actionable missing-runtime result without spawning', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'missing-runtime-test-' + Date.now();
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: {},
+      installHint: 'install the test runtime from https://example.invalid/runtime',
+      resolveBinary: () => null,
+    });
+    try {
+      const pending = llm.callLLM('hello', '', { cli: name, direct: true });
+      assert.strictEqual(typeof pending.abort, 'function', 'missing-runtime promise should keep abort surface');
+      const result = await pending;
+      assert.strictEqual(result.code, 78);
+      assert.strictEqual(result.errorClass, shared.FAILURE_CLASS.CONFIG_ERROR);
+      assert.strictEqual(result.missingRuntime, true);
+      assert.strictEqual(result.runtime, name);
+      assert.ok(result.text.includes(`"${name}" runtime`), result.text);
+      assert.ok(result.text.includes('install the test runtime'), result.text);
+      assert.ok(result.text.includes('restart Minions'), result.text);
+    } finally {
+      runtimes._registry.delete(name);
+    }
+  });
+
+  await test('callLLMStreaming returns actionable missing-runtime result without spawning', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'missing-stream-runtime-test-' + Date.now();
+    let chunks = 0;
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: {},
+      installHint: 'install streaming runtime',
+      resolveBinary: () => null,
+    });
+    try {
+      const result = await llm.callLLMStreaming('hello', '', {
+        cli: name,
+        direct: true,
+        onChunk: () => { chunks++; },
+      });
+      assert.strictEqual(result.code, 78);
+      assert.strictEqual(result.missingRuntime, true);
+      assert.strictEqual(result.runtime, name);
+      assert.strictEqual(chunks, 0, 'no process should stream chunks when runtime is missing');
+      assert.ok(result.text.includes('install streaming runtime'), result.text);
+    } finally {
+      runtimes._registry.delete(name);
+    }
+  });
+
+  await test('callLLM handles unknown configured runtime as a config error', async () => {
+    const result = await llm.callLLM('hello', '', { cli: 'definitely-not-registered-' + Date.now(), direct: true });
+    assert.strictEqual(result.code, 78);
+    assert.strictEqual(result.errorClass, shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(result.missingRuntime, true);
+    assert.ok(result.text.includes('Unknown runtime'), result.text);
+  });
+
+  await test('dashboard LLM callers surface missing-runtime results explicitly', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamingFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamingFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    const scheduleFn = src.slice(src.indexOf('async function handleSchedulesParseNatural'), src.indexOf('// ── Watches API Handlers'));
+    assert.ok(ccCallFn.includes('if (result.missingRuntime) return result;'),
+      'non-streaming CC helper should return missing-runtime guidance without retrying');
+    assert.ok(ccStreamingFn.includes('if (result.missingRuntime) return result;'),
+      'streaming CC helper should return missing-runtime guidance without retrying');
+    assert.ok(docCallFn.includes('result.missingRuntime'),
+      'doc chat should preserve missing-runtime guidance instead of generic failure text');
+    assert.ok(docStreamingFn.includes('result.missingRuntime'),
+      'streaming doc chat should preserve missing-runtime guidance instead of generic failure text');
+    assert.ok(scheduleFn.includes('missingRuntime: true'),
+      'schedule natural-language parsing should return a clear missingRuntime error payload');
+  });
+
+  await test('background LLM callers skip missing-runtime text as generated content', () => {
+    const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
+    const kbSweepSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'kb-sweep.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(consolidationSrc.includes('result.missingRuntime'),
+      'consolidation should fall back to regex when runtime is missing');
+    assert.ok(kbSweepSrc.includes('result.missingRuntime'),
+      'KB sweep should not parse or write missing-runtime guidance as model output');
+    assert.ok(pipelineSrc.includes('result.missingRuntime'),
+      'pipeline plan generation should fall back to raw context when runtime is missing');
+  });
+
   await test('llm.js: zero `runtime.name === ` comparisons (capability gating only)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     // Strip comments before checking — we mention the rule in comments.

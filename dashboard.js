@@ -1791,6 +1791,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1828,6 +1829,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1845,6 +1847,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1878,6 +1881,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1914,6 +1918,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1932,6 +1937,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -2037,6 +2043,10 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     if (session) session._docHash = docHash;
   }
 
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
+  }
+
   if (result.code !== 0 || !result.text) {
     console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
@@ -2089,6 +2099,10 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = docHash;
+  }
+
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
   }
 
   if (result.code !== 0 || !result.text) {
@@ -5347,6 +5361,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse', direct: true,
         engineConfig: CONFIG.engine,
       });
+      if (result.missingRuntime) {
+        return jsonReply(res, 503, { error: result.text || result.stderr || 'Minions runtime is not installed or configured.', missingRuntime: true });
+      }
       const parsed = JSON.parse(result.text.trim());
       if (!parsed.cron) return jsonReply(res, 422, { error: 'Could not parse schedule' });
       return jsonReply(res, 200, { cron: parsed.cron, description: parsed.description || '' });
