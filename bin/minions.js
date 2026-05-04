@@ -25,7 +25,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawn, execSync } = require('child_process');
+const { spawn, spawnSync, execSync } = require('child_process');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 
@@ -205,6 +205,8 @@ let force = rest.includes('--force');
 const skipScan = rest.includes('--skip-scan');
 const skipStart = rest.includes('--skip-start') || rest.includes('--no-start');
 const MINIONS_HOME = resolveMinionsHome(cmd === 'init');
+const POST_UPDATE_INIT_TIMEOUT_MS = 120000;
+const POST_UPDATE_RESTART_TIMEOUT_MS = 60000;
 
 function isSubpath(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
@@ -432,6 +434,70 @@ function showChangelog(fromVersion) {
   console.log(`    cat ${changelogPath}\n`);
 }
 
+function writeCommandOutput(stream, output) {
+  if (!output) return;
+  stream.write(Buffer.isBuffer(output) ? output.toString('utf8') : String(output));
+}
+
+function formatPackageCliCommand(args) {
+  const initScript = path.join(PKG_ROOT, 'bin', 'minions.js');
+  return `node "${initScript}" ${args.join(' ')}`;
+}
+
+function runPackageCli(args, timeout) {
+  const initScript = path.join(PKG_ROOT, 'bin', 'minions.js');
+  const result = spawnSync(process.execPath, [initScript, ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, MINIONS_HOME },
+    encoding: 'utf8',
+    timeout,
+    windowsHide: true,
+  });
+
+  writeCommandOutput(process.stdout, result.stdout);
+  writeCommandOutput(process.stderr, result.stderr);
+  return result;
+}
+
+function runPostUpdateInit() {
+  const args = ['init', '--force', '--skip-start'];
+  const result = runPackageCli(args, POST_UPDATE_INIT_TIMEOUT_MS);
+
+  if (!result.error && result.status === 0) return;
+
+  const timedOut = result.error && result.error.code === 'ETIMEDOUT';
+  if (timedOut) {
+    console.error(`\n  ERROR: Post-update initialization timed out after ${POST_UPDATE_INIT_TIMEOUT_MS / 1000}s.`);
+  } else {
+    const detail = result.error ? result.error.message : `exit code ${result.status}`;
+    console.error(`\n  ERROR: Post-update initialization failed (${detail}).`);
+  }
+  console.error('  The npm package update completed, but runtime files were not fully synchronized.');
+  console.error('  After npm finishes settling, run:');
+  console.error(`    ${formatPackageCliCommand(args)}`);
+  console.error(`    ${formatPackageCliCommand(['restart'])}\n`);
+  process.exit(1);
+}
+
+function runPostUpdateRestart() {
+  const args = ['restart'];
+  const result = runPackageCli(args, POST_UPDATE_RESTART_TIMEOUT_MS);
+
+  if (!result.error && result.status === 0) return;
+
+  const timedOut = result.error && result.error.code === 'ETIMEDOUT';
+  if (timedOut) {
+    console.error(`\n  ERROR: Post-update restart timed out after ${POST_UPDATE_RESTART_TIMEOUT_MS / 1000}s.`);
+  } else {
+    const detail = result.error ? result.error.message : `exit code ${result.status}`;
+    console.error(`\n  ERROR: Post-update restart failed (${detail}).`);
+  }
+  console.error('  Runtime files were synchronized, but the engine/dashboard were not restarted.');
+  console.error('  Run this command to finish the update without using the Windows command shim:');
+  console.error(`    ${formatPackageCliCommand(args)}\n`);
+  process.exit(1);
+}
+
 // ─── Version command ────────────────────────────────────────────────────────
 
 function showVersion() {
@@ -544,11 +610,13 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
       console.error('  npm update failed:', e.message);
       process.exit(1);
     }
-    execSync('minions init --force --skip-start', { stdio: 'inherit', timeout: 120000 });
+    // Equivalent to `minions init --force --skip-start`, but avoids recursing through
+    // the global shim while npm is still settling the updated install.
+    runPostUpdateInit();
   }
   // Restart engine + dashboard so they pick up the new code
   console.log('\n  Restarting engine and dashboard...\n');
-  execSync('minions restart', { stdio: 'inherit', timeout: 60000 });
+  runPostUpdateRestart();
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list' || cmd === 'scan') {
