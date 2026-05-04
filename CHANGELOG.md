@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1705 (2026-05-04)
+
+### Features
+- prevent one-shot PR contamination
+
 ## 0.1.1703 (2026-05-04)
 
 ### Features
