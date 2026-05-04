@@ -1400,9 +1400,9 @@ async function spawnAgent(dispatchItem, config) {
     const hardContractFail = completionContractFailure?.severity === 'hard'
       || completionContractFailure?.nonTerminal === true;
     const effectiveResult = hardContractFail ? DISPATCH_RESULT.ERROR : (((code === 0 && !agentReportedFailure) || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
-    const completionReportPath = structuredCompletion?._path || dispatchItem.meta?.completionReportPath || shared.dispatchCompletionReportPath(id);
+    const finalCompletionReportPath = structuredCompletion?._path || dispatchItem.meta?.completionReportPath || shared.dispatchCompletionReportPath(id);
     const completionOpts = {
-      ...(completionReportPath ? { completionReportPath } : {}),
+      ...(finalCompletionReportPath ? { completionReportPath: finalCompletionReportPath } : {}),
       ...(structuredCompletion ? { structuredCompletion } : {}),
     };
     const completeOpts = hardContractFail
