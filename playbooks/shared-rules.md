@@ -25,7 +25,7 @@ Bias toward senior-engineer restraint:
 
 - Make assumptions explicit when they affect behavior, scope, data, or user-visible output. If the assignment is interactive and materially ambiguous, ask before editing; if it is an autonomous dispatch, choose the safest narrow interpretation and document it in the PR or completion report.
 - Prefer the simplest complete solution. Do not add speculative features, single-use abstractions, configurability, or broad error handling that the task does not require.
-- Keep changes surgical and reviewable. Every changed line should trace to the requested outcome; do not refactor, reformat, or "improve" adjacent code unless your change makes it necessary.
+- Keep changes surgical and reviewable. Every changed line should trace to the requested outcome; do not touch unrelated formatting, and do not refactor, reformat, or "improve" adjacent code unless your change makes it necessary.
 - Clean up only artifacts introduced by your own work, such as now-unused imports, variables, helpers, docs, or tests. Mention unrelated dead code instead of deleting it.
 - Turn the task into verifiable goals before editing. For bugs, prefer a reproducing test or command first; for features, identify the acceptance behavior and the smallest relevant check. Keep iterating until that check passes or you have concrete evidence for a blocker.
 

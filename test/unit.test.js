@@ -13937,8 +13937,22 @@ async function testRenderPlaybook() {
       'shared rules should steer agents away from overcomplicated implementations');
     assert.ok(/surgical and reviewable/i.test(sharedRules),
       'shared rules should require focused, reviewable diffs');
+    assert.ok(/do not touch unrelated formatting/i.test(sharedRules) && /do not .*reformat/i.test(sharedRules),
+      'shared rules should explicitly forbid unrelated formatting churn');
     assert.ok(/verifiable goals/i.test(sharedRules),
       'shared rules should require explicit verification targets before editing');
+  });
+
+  await test('implement playbook inherits engineering discipline from shared rules', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+      project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result.includes('Engineering Discipline'),
+      'implement playbook should inherit shared engineering discipline guidance');
+    assert.ok(result.includes('do not touch unrelated formatting'),
+      'implement playbook should inherit unrelated-formatting guidance from shared rules');
   });
 
   await test('review playbook keeps blocking findings evidence-backed and high-signal', () => {
