@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1693 (2026-05-04)
+
+### Features
+- sync review verdict PR status (#2008)
+
 ## 0.1.1691 (2026-05-04)
 
 ### Features
