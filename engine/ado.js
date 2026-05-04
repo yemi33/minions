@@ -4,6 +4,7 @@
  */
 
 const path = require('path');
+const childProcess = require('child_process');
 const shared = require('./shared');
 const { exec, execAsync, getAdoOrgBase, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
@@ -72,6 +73,207 @@ function sameAdoProject(a, b) {
     && String(a.adoProject || '') === String(b.adoProject || '')
     && String(a.repoName || '') === String(b.repoName || '')
     && String(a.repoHost || 'ado').toLowerCase() === String(b.repoHost || 'ado').toLowerCase();
+}
+
+function decodeUrlSegment(segment) {
+  try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+function stripGitSuffix(value) {
+  return String(value || '').trim().replace(/\.git$/i, '');
+}
+
+function encodeAdoPathSegment(value) {
+  return encodeURIComponent(String(value || '').trim());
+}
+
+function buildAdoPrUrlBase(meta) {
+  const repo = meta.repoName || meta.repositoryId || '';
+  if (!meta.adoOrg || !meta.adoProject || !repo) return '';
+  if (meta.host === 'visualstudio') {
+    const collection = meta.defaultCollection ? 'DefaultCollection/' : '';
+    return `https://${meta.adoOrg}.visualstudio.com/${collection}${encodeAdoPathSegment(meta.adoProject)}/_git/${encodeAdoPathSegment(repo)}/pullrequest/`;
+  }
+  return `https://dev.azure.com/${encodeAdoPathSegment(meta.adoOrg)}/${encodeAdoPathSegment(meta.adoProject)}/_git/${encodeAdoPathSegment(repo)}/pullrequest/`;
+}
+
+function adoRepoCandidateFromParts(parts, source) {
+  const repo = stripGitSuffix(decodeUrlSegment(parts.repo || ''));
+  const repositoryId = isAdoGuid(repo) ? repo : '';
+  const repoName = repositoryId ? '' : repo;
+  const candidate = {
+    adoOrg: decodeUrlSegment(parts.org || '').trim(),
+    adoProject: decodeUrlSegment(parts.project || '').trim(),
+    repoName,
+    repositoryId,
+    host: parts.host || 'dev.azure',
+    defaultCollection: parts.defaultCollection === true,
+    source,
+  };
+  candidate.prUrlBase = buildAdoPrUrlBase(candidate);
+  return candidate;
+}
+
+function parseAdoRepoMetadata(value, source) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const devAzure = raw.match(/https?:\/\/(?:[^/@]+@)?dev\.azure\.com\/([^/?#]+)\/([^/?#]+)\/_git\/([^/?#\s]+)/i);
+  if (devAzure) {
+    return adoRepoCandidateFromParts({
+      host: 'dev.azure',
+      org: devAzure[1],
+      project: devAzure[2],
+      repo: devAzure[3],
+    }, source);
+  }
+
+  const visualStudio = raw.match(/https?:\/\/(?:[^/@]+@)?([^/.@]+)\.visualstudio\.com\/(?:(DefaultCollection)\/)?([^/?#]+)\/_git\/([^/?#\s]+)/i);
+  if (visualStudio) {
+    return adoRepoCandidateFromParts({
+      host: 'visualstudio',
+      defaultCollection: !!visualStudio[2],
+      org: visualStudio[1],
+      project: visualStudio[3],
+      repo: visualStudio[4],
+    }, source);
+  }
+
+  const ssh = raw.match(/^(?:ssh:\/\/)?git@ssh\.dev\.azure\.com(?::|\/)v3\/([^/]+)\/([^/]+)\/([^/\s]+)$/i);
+  if (ssh) {
+    return adoRepoCandidateFromParts({
+      host: 'dev.azure',
+      org: ssh[1],
+      project: ssh[2],
+      repo: ssh[3],
+    }, source);
+  }
+
+  return null;
+}
+
+function parseCanonicalAdoPrId(value, source) {
+  const match = String(value || '').trim().match(/^ado:([^/#]+)\/([^/#]+)\/([^/#]+)#\d+$/i);
+  if (!match) return null;
+  return adoRepoCandidateFromParts({
+    host: 'dev.azure',
+    org: match[1],
+    project: match[2],
+    repo: match[3],
+  }, source);
+}
+
+function normalizeAdoOrgForCompare(value) {
+  return String(value || '').trim().toLowerCase().replace(/\.visualstudio\.com$/i, '');
+}
+
+function normalizeAdoFieldForCompare(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isAdoRepairCandidateCompatible(project, candidate) {
+  if (!project || !candidate) return false;
+  if (project.adoOrg && candidate.adoOrg
+    && normalizeAdoOrgForCompare(project.adoOrg) !== normalizeAdoOrgForCompare(candidate.adoOrg)) return false;
+  if (project.adoProject && candidate.adoProject
+    && normalizeAdoFieldForCompare(project.adoProject) !== normalizeAdoFieldForCompare(candidate.adoProject)) return false;
+  if (project.repoName && candidate.repoName
+    && normalizeAdoFieldForCompare(project.repoName) !== normalizeAdoFieldForCompare(candidate.repoName)) return false;
+  if (project.repositoryId && candidate.repositoryId
+    && normalizeAdoFieldForCompare(project.repositoryId) !== normalizeAdoFieldForCompare(candidate.repositoryId)) return false;
+  return true;
+}
+
+function getMissingAdoProjectConfigFields(project) {
+  return ['adoOrg', 'adoProject', 'repoName', 'prUrlBase', 'repositoryId']
+    .filter(field => !String(project?.[field] || '').trim());
+}
+
+function getOriginRemoteUrl(project) {
+  const localPath = String(project?.localPath || '').trim();
+  if (!localPath) return '';
+  try {
+    const result = childProcess.spawnSync('git', ['-C', localPath, 'config', '--get', 'remote.origin.url'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+    });
+    if (result.status !== 0) return '';
+    return String(result.stdout || '').trim().split(/\r?\n/)[0] || '';
+  } catch {
+    return '';
+  }
+}
+
+function collectAdoRepairCandidates(project, prs = []) {
+  const candidates = [];
+  const add = (candidate) => {
+    if (candidate && isAdoRepairCandidateCompatible(project, candidate)) candidates.push(candidate);
+  };
+
+  if (project?.prUrlBase) add(parseAdoRepoMetadata(project.prUrlBase, 'configured prUrlBase'));
+  add(parseAdoRepoMetadata(getOriginRemoteUrl(project), 'origin remote'));
+
+  for (const pr of Array.isArray(prs) ? prs : []) {
+    add(parseAdoRepoMetadata(pr?.url, 'tracked PR URL'));
+    add(parseCanonicalAdoPrId(pr?.id, 'tracked canonical PR ID'));
+  }
+
+  return candidates;
+}
+
+function persistAdoProjectRepair(project, repairs, source) {
+  Object.assign(project, repairs);
+
+  try {
+    let persisted = false;
+    mutateJsonFileLocked(adoConfigPath(), (config) => {
+      if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+      if (!Array.isArray(config.projects)) return config;
+      const target = config.projects.find(p => sameAdoProject(p, project));
+      if (!target) return config;
+      for (const [field, value] of Object.entries(repairs)) {
+        if (!String(target[field] || '').trim()) target[field] = value;
+      }
+      persisted = true;
+      return config;
+    }, { defaultValue: { projects: [] }, skipWriteIfUnchanged: true });
+    const repairedFields = Object.keys(repairs).join(', ');
+    if (persisted) {
+      log('info', `Auto-repaired ADO project config for ${getAdoProjectLabel(project)} from ${source}: ${repairedFields}`);
+    } else {
+      log('warn', `Auto-repaired ADO project config for ${getAdoProjectLabel(project)} from ${source} in memory but could not find the project in config.json to persist it`);
+    }
+  } catch (e) {
+    log('warn', `Auto-repaired ADO project config for ${getAdoProjectLabel(project)} but failed to persist it: ${e.message}`);
+  }
+}
+
+function repairAdoProjectConfig(project, purpose, prs = null) {
+  if (!project || isGitHubProject(project)) return false;
+  const missingBefore = getMissingAdoProjectConfigFields(project);
+  if (missingBefore.length === 0) return false;
+
+  const trackedPrs = prs || shared.safeJson(shared.projectPrPath(project)) || [];
+  for (const candidate of collectAdoRepairCandidates(project, trackedPrs)) {
+    const repairs = {};
+    if (!project.adoOrg && candidate.adoOrg) repairs.adoOrg = candidate.adoOrg;
+    if (!project.adoProject && candidate.adoProject) repairs.adoProject = candidate.adoProject;
+    if (!project.repoName && candidate.repoName) repairs.repoName = candidate.repoName;
+    if (!project.repositoryId && candidate.repositoryId) repairs.repositoryId = candidate.repositoryId;
+    if (!project.prUrlBase && candidate.prUrlBase) repairs.prUrlBase = candidate.prUrlBase;
+    if (Object.keys(repairs).length > 0) {
+      persistAdoProjectRepair(project, repairs, candidate.source);
+      return true;
+    }
+  }
+
+  const missingAfter = getMissingAdoProjectConfigFields(project)
+    .filter(field => field !== 'repositoryId' || !project.repoName);
+  if (missingAfter.some(field => field === 'adoOrg' || field === 'adoProject' || field === 'repoName')) {
+    log('warn', `${purpose} cannot auto-repair ADO project config for ${getAdoProjectLabel(project)}: missing ${missingAfter.map(f => `project.${f}`).join(', ')} and no trusted origin remote, tracked PR URL, or canonical ADO PR ID supplied enough metadata`);
+  }
+  return false;
 }
 
 function persistAdoRepositoryGuid(project, guid, repoName) {
@@ -387,6 +589,7 @@ async function forEachActivePr(config, token, callback) {
 
   for (const project of projects) {
     if (isGitHubProject(project)) continue;
+    repairAdoProjectConfig(project, 'ADO PR polling');
     if (!project.adoOrg || !project.adoProject) continue;
 
     const prs = getPrs(project);
@@ -870,6 +1073,7 @@ async function reconcilePrs(config) {
 
   for (const project of projects) {
     if (isGitHubProject(project)) continue;
+    repairAdoProjectConfig(project, 'ADO PR reconciliation');
     if (!project.adoOrg || !project.adoProject) continue;
     const adoRepositoryId = getAdoRepositoryId(project);
     if (!adoRepositoryId) {
@@ -1020,6 +1224,8 @@ async function reconcilePrs(config) {
  */
 async function checkLiveReviewStatus(pr, project) {
   try {
+    repairAdoProjectConfig(project, 'ADO live review check', pr ? [pr] : null);
+    if (!project.adoOrg || !project.adoProject) return null;
     const token = await getAdoToken();
     if (!token) return null;
     const orgBase = shared.getAdoOrgBase(project);
@@ -1066,6 +1272,8 @@ async function checkLiveReviewStatus(pr, project) {
  */
 async function checkLiveBuildAndConflict(pr, project) {
   try {
+    repairAdoProjectConfig(project, 'ADO live build/conflict check', pr ? [pr] : null);
+    if (!project.adoOrg || !project.adoProject) return null;
     const token = await getAdoToken();
     if (!token) return null;
     const orgBase = shared.getAdoOrgBase(project);
@@ -1163,6 +1371,9 @@ async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
  *           mergeConflict, url, project } or null on auth failure.
  */
 async function fetchSinglePrBuildStatus(project, prNumber) {
+  repairAdoProjectConfig(project, 'ADO single PR status fetch');
+  if (!project.adoOrg || !project.adoProject) return null;
+
   const token = await getAdoToken();
   if (!token) return null;
 
@@ -1261,6 +1472,7 @@ const getAdoThrottleState = () => _adoThrottle.getState();
  * @returns {{ prNumber: number, url: string }|null}
  */
 async function findOpenPrOnBranch(project, branch) {
+  repairAdoProjectConfig(project, 'ADO branch PR lookup');
   if (!project.adoOrg || !project.adoProject || !branch) return null;
   const adoRepositoryId = getAdoRepositoryId(project);
   if (!adoRepositoryId) {
