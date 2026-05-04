@@ -50,6 +50,11 @@ function _safeWriteJson(p, obj) {
   try { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); } catch { /* best effort */ }
 }
 
+function _inferClaudeNativeFromBin(claudeBin) {
+  const ext = path.extname(claudeBin).toLowerCase();
+  return isWin ? ext === '.exe' : ext !== '.js';
+}
+
 function _probeClaudePackage(pkgDir) {
   const nativeBin = path.join(pkgDir, 'bin', isWin ? 'claude.exe' : 'claude');
   if (fs.existsSync(nativeBin)) return { bin: nativeBin, native: true };
@@ -89,7 +94,14 @@ function resolveBinary({ env = process.env, config = null } = {}) {
   // 1. Cache hit — fastest path
   const cached = _safeJson(CAPS_FILE);
   if (cached?.claudeBin && fs.existsSync(cached.claudeBin)) {
-    return { bin: cached.claudeBin, native: !!cached.claudeIsNative, leadingArgs: [] };
+    const native = cached.claudeIsNative != null
+      ? !!cached.claudeIsNative
+      : _inferClaudeNativeFromBin(cached.claudeBin);
+    if (cached.claudeIsNative == null) {
+      cached.claudeIsNative = native;
+      _safeWriteJson(CAPS_FILE, cached);
+    }
+    return { bin: cached.claudeBin, native, leadingArgs: [] };
   }
 
   // 2. PATH lookup → probe the resolved path's neighbouring node_modules dir
