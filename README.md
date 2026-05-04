@@ -406,7 +406,7 @@ No bash or shell involved — Node spawns Node directly. Dependency branches are
 - **Working directory** — project root (agent creates worktrees as needed)
 - **MCP servers** — inherited from `~/.claude.json` (no extra config needed)
 - **Full tool access** — all built-in tools plus all MCP tools
-- **Permission mode** — `bypassPermissions` (no interactive prompts)
+- **Permission bypass** — runtime-owned; Claude uses `--dangerously-skip-permissions`, while Copilot uses `--autopilot --allow-all --no-ask-user` (no dashboard `permissionMode` control)
 - **Output format** — `stream-json` (real-time streaming for live dashboard + completion recovery)
 
 ### Post-Completion

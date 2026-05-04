@@ -851,7 +851,7 @@ const ENGINE_DEFAULTS = {
   // Backward-compat: keep `engine.claude.*` field family deprecation tracker. Listed here so preflight
   // knows which subkeys to flag as deprecated. Do not consume `claude.*` in new code — use the runtime
   // adapter system (engine/runtimes/) and the resolveAgent*/resolveCc* helpers instead.
-  _deprecatedConfigClaudeFields: ['binary', 'outputFormat', 'allowedTools', 'maxTurns', 'effort', 'budgetCap'],
+  _deprecatedConfigClaudeFields: ['binary', 'outputFormat', 'allowedTools', 'permissionMode', 'maxTurns', 'effort', 'budgetCap'],
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
   teams: {
