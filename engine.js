@@ -2431,11 +2431,13 @@ async function discoverFromPrs(config, project) {
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (fixThrottled || isOnCooldown(key, cooldownMs)) continue;
 
-      // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
+      // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted.
+      // Live 'pending' still means no decisive current-head review exists, so re-review should proceed.
       try {
         const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
         const liveStatus = await checkFn(pr, project);
-        if (liveStatus && liveStatus !== 'waiting') {
+        const liveStatusBlocksReReview = liveStatus && liveStatus !== 'waiting' && liveStatus !== 'pending';
+        if (liveStatusBlocksReReview) {
           log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was waiting) — skipping re-review`);
           if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
           try {

@@ -27728,8 +27728,10 @@ async function testReviewReDispatchLoop() {
       'needsReReview should use a dedicated head-scoped re-review dispatch key');
     assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
       'needsReReview should still respect cooldown');
-    assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
-      'needsReReview should pre-check live status before dispatching');
+    assert.ok(reReviewBlock.includes("cached was waiting") &&
+      reReviewBlock.includes("liveStatus !== 'waiting'") &&
+      reReviewBlock.includes("liveStatus !== 'pending'"),
+      'needsReReview should pre-check live status but allow live pending to dispatch re-review');
   });
 }
 
