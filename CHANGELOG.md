@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1700 (2026-05-04)
+
+### Features
+-  audit prompts and playbooks against Karpathy CLAUDE.md (#2012)
+
 ## 0.1.1699 (2026-05-04)
 
 ### Features
