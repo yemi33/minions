@@ -9461,6 +9461,26 @@ async function testConfigAndPlaybooks() {
       'init should support an internal skip-start mode for update while preserving direct init --force restart behavior');
   });
 
+  await test('bin/minions update handles post-update init timeout without raw shell shim failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const updateBlock = src.slice(src.indexOf("} else if (cmd === 'update')"), src.indexOf("} else if (cmd === 'version'"));
+    const helperStart = src.indexOf('function runPostUpdateInit');
+    const helperEnd = src.indexOf('// ─── Version command', helperStart);
+    const helperBlock = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+    assert.ok(helperBlock.includes('spawnSync(process.execPath'),
+      'post-update init should execute the package bin with node instead of recursing through the minions shell shim');
+    assert.ok(helperBlock.includes("path.join(PKG_ROOT, 'bin', 'minions.js')"),
+      'post-update init should target the updated package entry point directly');
+    assert.ok(helperBlock.includes("MINIONS_HOME"),
+      'post-update init should preserve the resolved runtime root for the child init process');
+    assert.ok(helperBlock.includes('POST_UPDATE_INIT_TIMEOUT_MS') && helperBlock.includes('result.error'),
+      'post-update init should use an explicit timeout path instead of letting spawnSync errors throw raw stacks');
+    assert.ok(helperBlock.includes('Post-update initialization timed out') && helperBlock.includes('minions init --force --skip-start'),
+      'post-update init timeout should print clear recovery guidance');
+    assert.ok(!updateBlock.includes("execSync('minions init --force --skip-start'"),
+      'update should not invoke the minions shell shim for post-update init');
+  });
+
   await test('bin/minions uninstall prints re-install command on success', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     const tail = src.slice(src.indexOf('Minions uninstalled.'));
