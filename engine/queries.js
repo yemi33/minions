@@ -428,7 +428,7 @@ function getAgentStatus(agentId) {
     if (active._blockingToolCall) {
       result._blockingToolCall = active._blockingToolCall;
     }
-    // Detect permission-waiting and in-flight tools: read only head+tail of live-output.log (max 2KB total)
+    // Detect in-flight tools: read only head+tail of live-output.log (max 2KB total)
     try {
       const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
       const { head, tail } = readHeadTail(liveLogPath, 1024);
