@@ -456,7 +456,9 @@ function parseError(rawOutput) {
   if (!text) return { message: '', code: null, retriable: true };
   const lower = text.toLowerCase();
 
-  if (/invalid api key|api key.*invalid|authentication.*fail|unauthorized|401|403 forbidden|please.*log.*in|claude\.ai\/login/i.test(text)) {
+  const hasExplicitAuthFailure = /invalid api key|api key.*invalid|authentication.*fail|\bunauthorized\b|please.*log.*in|claude\.ai\/login/i.test(text);
+  const hasAuthStatusCode = /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s+code)?|statuscode|response(?:\s+status)?|api(?:\s+(?:error|response|status))?)\s*[:=]?\s*(?:401|403)\b|\b(?:401\s+unauthorized|403\s+forbidden)\b/i.test(text);
+  if (hasExplicitAuthFailure || hasAuthStatusCode) {
     return { message: 'Claude authentication failed', code: 'auth-failure', retriable: false };
   }
   if (/prompt is too long|context window|context.*length.*exceeded|token limit|conversation.*too long/i.test(text)) {

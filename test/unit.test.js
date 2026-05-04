@@ -1493,13 +1493,33 @@ async function testRuntimeAdapters() {
       'Invalid API key. Please log in to claude.ai/login',
       'authentication failed',
       'Unauthorized',
+      'HTTP 401 Unauthorized',
+      'status 401',
+      '401 Unauthorized',
       'HTTP 403 forbidden',
+      '403 Forbidden',
     ];
     for (const c of cases) {
       const r = claude.parseError(c);
       assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure, got ${r.code}`);
       assert.strictEqual(r.retriable, false);
       assert.ok(r.message.length > 0);
+    }
+  });
+
+  await test('claude.parseError ignores bare 401/403 substrings in non-auth output', () => {
+    const cases = [
+      '{"type":"result","session_id":"00000401-0000-4000-8000-000000000000","is_error":true}',
+      '{"type":"assistant","uuid":"00000403-0000-4000-8000-000000000000","message":"tool failed"}',
+      'signature=sha256:abc401def payload failed validation',
+      'signature=sha256:abc403def payload failed validation',
+      'tool_result line 401: throw new Error("not an auth failure")',
+      'tool_result line 403: return result;',
+    ];
+    for (const c of cases) {
+      const r = claude.parseError(c);
+      assert.strictEqual(r.code, null, `case "${c}" should not map to auth-failure`);
+      assert.strictEqual(r.retriable, true);
     }
   });
 
