@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1708 (2026-05-04)
+
+### Fixes
+-  surface silent-discovery footgun when projects miss workSources
+
 ## 0.1.1706 (2026-05-04)
 
 ### Features
