@@ -8805,6 +8805,47 @@ async function testPrReviewFixCycle() {
     assert.ok(playbook.includes('{{review_note}}'), 'Fix playbook needs review_note for feedback');
     assert.ok(playbook.includes('{{pr_branch}}'), 'Fix playbook needs pr_branch');
   });
+
+  await test('PR review dispatch prompt includes dispatch id in required learnings path', () => {
+    const playbook = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    const project = {
+      name: 'minions',
+      repoHost: 'github',
+      adoOrg: 'yemi33',
+      repoName: 'minions',
+      localPath: MINIONS_DIR,
+      mainBranch: 'master',
+    };
+    const config = {
+      projects: [project],
+      agents: { ripley: { name: 'Ripley', role: 'Lead / Explorer' } },
+      engine: {},
+    };
+    const pr = {
+      id: 'github:yemi33/minions#2014',
+      prNumber: 2014,
+      title: 'isolate review metadata',
+      url: 'https://github.com/yemi33/minions/pull/2014',
+    };
+    const item = playbook.buildPrDispatch('ripley', config, project, pr, 'review', {
+      pr_id: pr.id,
+      pr_number: pr.prNumber,
+      pr_title: pr.title,
+      pr_branch: 'work/W-review-marker',
+      pr_author: 'dallas',
+      pr_url: pr.url,
+    }, `Review ${pr.id}: ${pr.title}`, {
+      dispatchKey: 'review-minions-PR-2014',
+      source: 'pr',
+      pr,
+      branch: 'work/W-review-marker',
+      project,
+    });
+
+    assert.ok(item.id, 'PR dispatch should allocate its ID before rendering the playbook');
+    assert.ok(item.prompt.includes(`/notes/inbox/ripley-${item.id}-`),
+      'required learnings path should include the current dispatch id for feedback scoping');
+  });
 }
 
 // ─── Worktree Management Tests ──────────────────────────────────────────────
@@ -18095,6 +18136,33 @@ async function testLifecycleUncoveredFns() {
       assert.ok(body.includes('MINIONS_ONLY_FINDING'), 'current dispatch review content should be included');
       assert.ok(!body.includes('MOMENTUM_STALE_FINDING'), 'stale same-day review content from another dispatch must be excluded');
       assert.ok(!body.includes('github:committoquit/momentum#195'), 'feedback must not mix another repository PR into this PR artifact');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: accepts prompt-shaped PR review note with dispatch id in filename', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-old-${today}.md`),
+        `---\nid: NOTE-old\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nSTALE_UNSCOPED_FINDING`);
+      fs.writeFileSync(path.join(inboxDir, `ripley-D-current-${today}-0618.md`),
+        `---\nid: NOTE-current\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nPROMPT_SHAPED_FINDING`);
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2014', url: 'https://github.com/yemi33/minions/pull/2014', agent: 'dallas', title: 'fix: review metadata isolation' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-current', meta: { source: 'pr', project: { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'prompt-shaped review note should produce author feedback');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('PROMPT_SHAPED_FINDING'), 'current prompt-shaped review content should be included');
+      assert.ok(!body.includes('STALE_UNSCOPED_FINDING'), 'unmarked same-day review content must remain excluded');
     } finally { restore(); }
   });
 
