@@ -8254,6 +8254,31 @@ async function testLlmModule() {
     assert.deepStrictEqual(completions, [{ summary: 'STREAM_CHECK_123', success: true }]);
   });
 
+  await test('llm streaming accumulator preserves full Copilot doc-chat document edit output across assistant fragments', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const acc = llm._createStreamAccumulator({
+      runtime: copilot,
+      maxRawBytes: 100000,
+      maxStderrBytes: 100000,
+      maxLineBufferBytes: 100000,
+    });
+    const fullText = [
+      'Here is the full update.\n\n',
+      '---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---\n',
+      '```md\n# Updated Plan\n\nKeep this body.\n```',
+    ].join('');
+    const raw = [
+      JSON.stringify({ type: 'assistant.message', data: { content: 'Here is the full update.\n\n---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---\n', outputTokens: 12 } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: '```md\n# Updated Plan\n\nKeep this body.\n```', outputTokens: 20 } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'Updated the document.' } }], outputTokens: 2 } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-doc-edit', exitCode: 0, usage: { premiumRequests: 1, totalApiDurationMs: 2500 } }),
+    ].join('\n') + '\n';
+    acc.ingestStdout(raw);
+    const parsed = acc.finalize();
+    assert.strictEqual(parsed.text, fullText,
+      'final text must come from full raw-output reconciliation, not the last assistant.message fragment');
+  });
+
   await test('claude stream consumer handles partial stream_event deltas', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
     assert.ok(src.includes("obj.type === 'stream_event'"),
@@ -8315,12 +8340,13 @@ async function testLlmModule() {
 
   await test('llm module exports exactly the documented surface', () => {
     // P-5e1b7a3c: isResumeSessionStillValid removed; new test-only exports
-    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache) added so callers
-    // can verify capability gating + per-runtime caching without touching
-    // private state directly.
+    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache, _createStreamAccumulator)
+    // added so callers can verify capability gating, per-runtime caching, and
+    // final stream reconciliation without touching private state directly.
     const exported = Object.keys(llm).sort();
     assert.deepStrictEqual(exported, [
       '_buildSpawnAgentFlags',
+      '_createStreamAccumulator',
       '_resetBinCache',
       '_resolveBin',
       '_resolveModelFor',
