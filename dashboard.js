@@ -126,6 +126,63 @@ function copyWorkItemPrFields(item, input, pr = null) {
   if (pr?.title || input.prTitle) item.prTitle = pr?.title || input.prTitle;
   if (pr?.url || input.prUrl) item.prUrl = pr?.url || input.prUrl;
 }
+
+function normalizeWorkItemDedupText(value) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
+function workItemCreateFingerprint(item) {
+  return {
+    title: normalizeWorkItemDedupText(item?.title),
+    type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
+    priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
+    description: normalizeWorkItemDedupText(item?.description),
+  };
+}
+
+function isActiveWorkItemCreateStatus(status) {
+  return status === WI_STATUS.PENDING || status === WI_STATUS.DISPATCHED || status === WI_STATUS.QUEUED;
+}
+
+function isWithinWorkItemCreateDedupWindow(item, nowMs, windowMs) {
+  const createdMs = Date.parse(item?.created || item?.createdAt || item?.created_at || '');
+  if (!Number.isFinite(createdMs)) return true;
+  return nowMs - createdMs <= windowMs;
+}
+
+function findDuplicateWorkItemCreate(items, candidate, options = {}) {
+  if (!Array.isArray(items)) return null;
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const windowMs = Number.isFinite(options.windowMs) ? options.windowMs : shared.ENGINE_DEFAULTS.workItemCreateDedupWindowMs;
+  const candidateFingerprint = workItemCreateFingerprint(candidate);
+  return items.find(item => {
+    if (!isActiveWorkItemCreateStatus(item?.status)) return false;
+    if (!isWithinWorkItemCreateDedupWindow(item, nowMs, windowMs)) return false;
+    const existingFingerprint = workItemCreateFingerprint(item);
+    return existingFingerprint.title === candidateFingerprint.title &&
+      existingFingerprint.type === candidateFingerprint.type &&
+      existingFingerprint.priority === candidateFingerprint.priority &&
+      existingFingerprint.description === candidateFingerprint.description;
+  }) || null;
+}
+
+function createWorkItemWithDedup(wiPath, item, options = {}) {
+  let result = null;
+  mutateWorkItems(wiPath, items => {
+    const existing = findDuplicateWorkItemCreate(items, item, options);
+    if (existing) {
+      result = { created: false, item: existing, duplicateOf: existing.id };
+      return items;
+    }
+    items.push(item);
+    result = { created: true, item };
+    return items;
+  });
+  return result || { created: false, item: null };
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -1486,20 +1543,21 @@ async function executeCCActions(actions) {
           // Mark oneShot so any discovered PR is tagged _contextOnly (skips eval loop).
           const ccOneShotTypes = new Set(['review', 'explore', 'test']);
           const isOneShot = action.oneShot === true || (action.oneShot !== false && ccOneShotTypes.has(workType));
-          shared.mutateJsonFileLocked(wiPath, items => {
-            if (!Array.isArray(items)) items = [];
-            const item = {
-              id, title: action.title, type: workType,
-              priority: action.priority || 'medium', description: action.description || '',
-              status: WI_STATUS.PENDING, created: new Date().toISOString(),
-              createdBy: 'command-center', project: targetProject?.name || project,
-              ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
-              ...(isOneShot ? { oneShot: true } : {}),
-            };
-            copyWorkItemPrFields(item, action, linkedPr);
-            items.push(item);
-            return items;
-          }, { defaultValue: [] });
+          const item = {
+            id, title: action.title.trim(), type: workType,
+            priority: action.priority || 'medium', description: action.description || '',
+            status: WI_STATUS.PENDING, created: new Date().toISOString(),
+            createdBy: 'command-center', project: targetProject?.name || project,
+            ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
+            ...(isOneShot ? { oneShot: true } : {}),
+          };
+          copyWorkItemPrFields(item, action, linkedPr);
+          const createResult = createWorkItemWithDedup(wiPath, item);
+          if (!createResult.created) {
+            const duplicateId = createResult.duplicateOf || createResult.item?.id;
+            results.push({ type: action.type, id: duplicateId, ok: true, duplicate: true, duplicateOf: duplicateId });
+            break;
+          }
           results.push({ type: action.type, id, ok: true });
 
           // Pre-flight routing check: warn the user if no agent is currently available so the new
@@ -2794,18 +2852,11 @@ const server = http.createServer(async (req, res) => {
       if (body.skipPr) item.skipPr = true;
       if (body.oneShot) item.oneShot = true;
       copyWorkItemPrFields(item, body);
-      let dupId = null;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        const existing = items.find(i =>
-          i.title === item.title &&
-          (i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED || i.status === WI_STATUS.QUEUED)
-        );
-        if (existing) { dupId = existing.id; return items; }
-        items.push(item);
-        return items;
-      });
-      if (dupId) return jsonReply(res, 200, { ok: true, id: dupId, duplicate: true });
+      const createResult = createWorkItemWithDedup(wiPath, item);
+      if (!createResult.created) {
+        const duplicateId = createResult.duplicateOf || createResult.item?.id;
+        return jsonReply(res, 200, { ok: true, id: duplicateId, duplicate: true, duplicateOf: duplicateId });
+      }
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -6642,6 +6693,8 @@ module.exports = {
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
   _ccValidateAction,
+  _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
+  _createWorkItemWithDedup: createWorkItemWithDedup,
   executeCCActions,
 };
 

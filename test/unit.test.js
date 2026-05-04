@@ -30335,19 +30335,19 @@ async function testDashboardAuditMedium() {
       'work item create must copy skipPr from body to item');
   });
 
-  await test('handleWorkItemsCreate deduplicates by title for pending/dispatched items', () => {
+  await test('handleWorkItemsCreate uses shared fingerprint dedup for pending/dispatched items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
-    assert.ok(createFn.includes('i.title === item.title'),
-      'create must check for existing item with same title');
-    assert.ok(createFn.includes('WI_STATUS.PENDING') && createFn.includes('WI_STATUS.DISPATCHED') && createFn.includes('WI_STATUS.QUEUED'),
-      'dedup must block pending, dispatched, and queued items');
-    assert.ok(createFn.includes('dupId = existing.id'),
-      'must capture existing id on duplicate');
+    assert.ok(createFn.includes('createWorkItemWithDedup(wiPath, item)'),
+      'create must route through shared work-item create dedup helper');
     assert.ok(createFn.includes('duplicate: true'),
       'duplicate response must include duplicate: true flag');
-    assert.ok(createFn.includes('jsonReply(res, 200') && createFn.match(/dupId.*jsonReply|jsonReply.*dupId/s),
-      'duplicate response must return 200 so callers handle it as success');
+    assert.ok(createFn.includes('duplicateOf'),
+      'duplicate response must identify the existing item via duplicateOf');
+    assert.ok(src.includes('WI_STATUS.PENDING') && src.includes('WI_STATUS.DISPATCHED') && src.includes('WI_STATUS.QUEUED'),
+      'dedup must block pending, dispatched, and queued items');
+    assert.ok(src.includes('workItemCreateFingerprint') && src.includes('description: normalizeWorkItemDedupText'),
+      'dedup fingerprint must include normalized description so same-title distinct items can coexist');
   });
 
   await test('handleWorkItemsDelete uses mutateJsonFileLocked', () => {
@@ -48487,6 +48487,127 @@ async function testDashboardPureHelpers() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('function _ccValidateAction'),
       'dashboard.js must define _ccValidateAction');
+  });
+
+  function loadIsolatedDashboardForDedup() {
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+    fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
+    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+      try { delete require.cache[require.resolve(mod)]; } catch {}
+    }
+    const isolatedDashboard = require('../dashboard');
+    const isolatedShared = require('../engine/shared');
+    return {
+      dashboard: isolatedDashboard,
+      shared: isolatedShared,
+      dir: testDir,
+      cleanup() {
+        restore();
+        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+          try { delete require.cache[require.resolve(mod)]; } catch {}
+        }
+      },
+    };
+  }
+
+  await test('work-item create dedup: CC action returns API fallback duplicate instead of creating another item', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const apiItem = {
+        id: 'W-api-fallback',
+        title: 'Harden Command Center stream retry resilience',
+        type: 'fix',
+        priority: 'high',
+        description: 'Retry dropped streams before falling back.\n',
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'dashboard',
+      };
+      const apiResult = isolated.dashboard._createWorkItemWithDedup(wiPath, apiItem);
+      assert.strictEqual(apiResult.created, true, 'fallback API item should be created first');
+
+      const results = await isolated.dashboard.executeCCActions([{
+        type: 'fix',
+        title: '  Harden Command Center stream retry resilience  ',
+        priority: 'high',
+        description: 'Retry dropped streams before falling back.\r\n',
+      }]);
+
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true);
+      assert.strictEqual(results[0].duplicate, true, 'delayed CC action must be reported as a duplicate');
+      assert.strictEqual(results[0].duplicateOf, apiItem.id);
+      assert.strictEqual(results[0].id, apiItem.id);
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.strictEqual(items.length, 1, 'CC action plus API fallback must leave one work item');
+      assert.strictEqual(items[0].id, apiItem.id);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: duplicate CC action replay returns duplicateOf existing item', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const action = {
+        type: 'dispatch',
+        workType: 'fix',
+        title: 'Harden Command Center stream retry resilience',
+        priority: 'high',
+        description: 'Retry dropped streams before falling back.',
+      };
+
+      const first = await isolated.dashboard.executeCCActions([action]);
+      const second = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(first.length, 1);
+      assert.strictEqual(first[0].ok, true);
+      assert.ok(first[0].id, 'first replay should create a work item id');
+      assert.ok(!first[0].duplicate, 'first replay should not be marked duplicate');
+      assert.strictEqual(second.length, 1);
+      assert.strictEqual(second[0].ok, true);
+      assert.strictEqual(second[0].duplicate, true, 'second replay must be duplicate');
+      assert.strictEqual(second[0].duplicateOf, first[0].id);
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.strictEqual(items.length, 1, 'action replay must not append a second item');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same title with different description creates a distinct item', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Harden Command Center stream retry resilience',
+        type: 'fix',
+        priority: 'high',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-first-description',
+        description: 'Retry dropped streams before falling back.',
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-second-description',
+        description: 'Persist retry diagnostics to live-output.log.',
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'different normalized descriptions must not deduplicate');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-first-description', 'W-second-description']);
+    } finally {
+      isolated.cleanup();
+    }
   });
 
   // ── executeCCActions behavioral tests for project & agent resolution ──
