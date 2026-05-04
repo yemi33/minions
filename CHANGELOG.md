@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1698 (2026-05-04)
+
+### Features
+- fix update restart and Copilot steering (#2025)
+
 ## 0.1.1696 (2026-05-04)
 
 ### Features
