@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1704 (2026-05-04)
+
+### Features
+-  Add manual run control for schedules
+- deduplicate work item creation
+- isolate review metadata
+
 ## 0.1.1702 (2026-05-04)
 
 ### Other
