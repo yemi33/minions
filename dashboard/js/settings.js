@@ -258,20 +258,12 @@ async function openSettings() {
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
       settingsField('Output Format', 'set-outputFormat', c.outputFormat || 'stream-json', '', '') +
-      settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Tools agents can use without permission prompts. Add MCP tools here if using non-bypass mode (e.g. mcp__azure-ado__*)') +
+      settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Claude allow-list passed through for compatibility; runtime bypass flags are adapter-owned.') +
     '</div>' +
-    '<div style="margin-bottom:16px">' +
-      '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Permission Mode <span style="opacity:0.6">(how agents handle tool approvals)</span></label>' +
-      '<select id="set-permissionMode" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
-        '<option value="bypassPermissions"' + ((c.permissionMode || 'bypassPermissions') === 'bypassPermissions' ? ' selected' : '') + '>Bypass (recommended) — agents run autonomously without permission prompts</option>' +
-        '<option value="auto"' + ((c.permissionMode) === 'auto' ? ' selected' : '') + '>Auto — auto-approve safe tools, prompt for risky ones (agents may hang on risky tools)</option>' +
-        '<option value="default"' + ((c.permissionMode) === 'default' ? ' selected' : '') + '>Default — prompt for every tool (agents WILL hang — not recommended)</option>' +
-      '</select>' +
-      '<div id="set-permissionMode-warn" style="font-size:9px;margin-top:4px;padding:4px 8px;border-radius:4px;' + ((c.permissionMode && c.permissionMode !== 'bypassPermissions') ? 'display:block;background:rgba(248,81,73,0.1);color:var(--red)' : 'display:none') + '">' +
-        '\u26A0 Tools listed in Allowed Tools above are auto-approved even in non-bypass modes. Agents will only hang if they try to use a tool NOT on that list (e.g. MCP tools). In bypass mode, all tools are approved automatically.' +
-      '</div>' +
+    '<div style="font-size:10px;color:var(--muted);margin-bottom:16px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface-subtle, rgba(130,160,210,0.08))">' +
+      'Permission bypass is runtime-owned: Claude agents use <code>--dangerously-skip-permissions</code>; Copilot agents use <code>--autopilot --allow-all --no-ask-user</code>. There is no dashboard permission-mode setting.' +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
@@ -313,20 +305,6 @@ async function openSettings() {
   document.getElementById('modal-body').style.fontFamily = '';
   document.getElementById('modal-body').style.whiteSpace = '';
   document.getElementById('modal').classList.add('open');
-
-  // Wire permission mode warning toggle
-  var pmSelect = document.getElementById('set-permissionMode');
-  if (pmSelect) pmSelect.addEventListener('change', function() {
-    var warn = document.getElementById('set-permissionMode-warn');
-    if (!warn) return;
-    if (this.value !== 'bypassPermissions') {
-      warn.style.display = 'block';
-      warn.style.background = 'rgba(248,81,73,0.1)';
-      warn.style.color = 'var(--red)';
-    } else {
-      warn.style.display = 'none';
-    }
-  });
 
   // ── Runtime fleet wiring (P-7a5c1f8e) ──────────────────────────────────────
   // 1. Load registered runtimes into the defaultCli + ccCli dropdowns.
@@ -595,7 +573,6 @@ async function saveSettings() {
     const claudePayload = {
       outputFormat: document.getElementById('set-outputFormat').value,
       allowedTools: document.getElementById('set-allowedTools').value,
-      permissionMode: document.getElementById('set-permissionMode').value,
     };
 
     const teamsPayload = {

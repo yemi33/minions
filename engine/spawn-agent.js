@@ -129,6 +129,10 @@ function normalizeRuntimeExit(code, signal) {
   return 1;
 }
 
+function shouldInjectAdoTokenEnv(env = process.env) {
+  return String(env.MINIONS_REPO_HOST || '').trim().toLowerCase() === 'ado';
+}
+
 function injectAdoTokenEnv(env, { execSync: _execSync, acquireToken, warn = (msg) => process.stderr.write(msg + '\n') } = {}) {
   let result;
   try {
@@ -147,6 +151,11 @@ function injectAdoTokenEnv(env, { execSync: _execSync, acquireToken, warn = (msg
   env.AZURE_DEVOPS_EXT_PAT = token;
   env.AZURE_DEVOPS_EXT_AZURE_RM_PAT = token;
   return true;
+}
+
+function injectAdoTokenEnvForRepoHost(env, opts) {
+  if (!shouldInjectAdoTokenEnv(env)) return false;
+  return injectAdoTokenEnv(env, opts);
 }
 
 const PROCESS_EXIT_SENTINEL_FLUSH_TIMEOUT_MS = 2000;
@@ -251,7 +260,7 @@ function main() {
   const { promptFile, sysPromptFile, runtimeName, opts, passthrough } = parsed;
 
   const env = cleanChildEnv();
-  injectAdoTokenEnv(env);
+  injectAdoTokenEnvForRepoHost(env);
 
   let runtime;
   try { runtime = resolveRuntime(runtimeName); }
@@ -399,6 +408,6 @@ function main() {
   });
 }
 
-module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, injectAdoTokenEnv, writeProcessExitSentinel, computeAddDirs };
+module.exports = { parseSpawnArgs, buildSpawnInvocation, normalizeRuntimeExit, shouldInjectAdoTokenEnv, injectAdoTokenEnv, injectAdoTokenEnvForRepoHost, writeProcessExitSentinel, computeAddDirs };
 
 if (require.main === module) main();

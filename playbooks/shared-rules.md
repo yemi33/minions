@@ -78,6 +78,38 @@ Concretely:
 - If you skipped local validation, say so in the completion JSON (e.g. `tests: skipped — relying on PR pipeline`) and still exit.
 - Holding a slot to watch a pipeline is wasted capacity; the engine has its own pipeline-monitoring path.
 
+{{#github_shared_rules}}
+## Checking PR and Build Status
+
+When asked to check build status, CI results, or review state for a PR:
+
+**Preferred — read cached state (refreshed every `prPollStatusEvery` ticks, default ~12 min when engine is running):**
+Find the PR in `projects/<project-name>/pull-requests.json` by `prNumber`. Key fields:
+- `buildStatus` — `passing` | `failing` | `running` | `none`
+- `buildFailReason` — failing check/pipeline name when `buildStatus` is `failing`; inspect live CI logs yourself for details
+- `reviewStatus` — `approved` | `changes-requested` | `waiting` | `pending`
+- `status` — `active` | `merged` | `abandoned`
+- `url` — link to the PR on GitHub
+
+**Live status (when engine isn't running or you need up-to-the-moment results):**
+```bash
+gh pr view <prNumber> --json number,title,state,mergeable,reviewDecision,headRefName,baseRefName,statusCheckRollup --repo OWNER/REPO
+```
+
+## GitHub Tooling and Auth
+
+For GitHub repo operations, use GitHub MCP tools or the `gh` CLI. Prefer commands such as `gh pr create`, `gh pr view`, `gh pr comment`, `gh pr review --comment`, `gh issue view`, and `gh run view`.
+
+If GitHub or Copilot auth fails, check GitHub/Copilot credentials only:
+- `gh auth status`
+- `gh auth login`
+- `gh auth token` (for token visibility checks only; do not paste tokens into logs)
+- Set `GH_TOKEN` or `COPILOT_GITHUB_TOKEN` only when the environment already provides an appropriate GitHub token.
+
+Only GitHub/Copilot authentication guidance applies to GitHub repository work.
+{{/github_shared_rules}}
+
+{{#ado_shared_rules}}
 ## Checking PR and Build Status
 
 When asked to check build status, CI results, or review state for a PR:
@@ -107,3 +139,4 @@ Output is JSON with the same fields. Exit 0 on success, 1 if not found.
 For Azure DevOps repo operations, use the `az` CLI first. Prefer commands such as `az repos pr create`, `az repos pr show`, `az repos pr list`, `az repos pr comment`, `az repos pr reviewer`, `az boards work-item`, and `az pipelines` after setting defaults with `az devops configure`.
 
 Use ADO MCP fallback tools (`mcp__azure-ado__*`) only when `az` is unavailable in the environment or insufficient for a specific operation. Do not choose MCP first just because it exists, and do not use `gh` for Azure DevOps repositories.
+{{/ado_shared_rules}}

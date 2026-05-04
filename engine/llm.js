@@ -368,14 +368,13 @@ function _createStreamAccumulator({
       if (ev) consumer.consume(ev);
     }
     if (!text && lastTaskCompleteSummary) text = lastTaskCompleteSummary;
-    // Reconciliation: always ask the runtime adapter to re-parse the whole
-    // stdout. Stream consumers may expose progress, final fragments, or
-    // task_complete summaries before the process exits; parseOutput() owns the
-    // runtime-specific full-answer aggregation.
+    // Reconciliation: always let the runtime adapter re-parse the complete
+    // stdout. Stream consumers emit live progress, but parseOutput() owns the
+    // runtime-specific final answer shape (including multi-fragment messages).
     const parsedTail = runtime.parseOutput(stdout, maxTextLength ? { maxTextLength } : {});
     if (parsedTail.text) text = parsedTail.text;
-    if (parsedTail.usage) usage = parsedTail.usage;
-    if (parsedTail.sessionId) sessionId = parsedTail.sessionId;
+    if (!usage && parsedTail.usage) usage = parsedTail.usage;
+    if (!sessionId && parsedTail.sessionId) sessionId = parsedTail.sessionId;
     return { text, usage, sessionId, raw: stdout, stderr, toolUses };
   }
 

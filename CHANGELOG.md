@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.1695 (2026-05-04)
+
+### Features
+- harden command center stream retry (#2016)
+
+## 0.1.1693 (2026-05-04)
+
+### Features
+- sync review verdict PR status (#2008)
+
+## 0.1.1691 (2026-05-04)
+
+### Features
+- preserve doc-chat response fragments (#2003)
+
 ## 0.1.1689 (2026-05-03)
 
 ### Features

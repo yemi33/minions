@@ -470,6 +470,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
     if (config.engine[k] === undefined) config.engine[k] = v;
   }
   if (!config.claude) config.claude = {};
+  delete config.claude.permissionMode;
   for (const [k, v] of Object.entries(DEFAULT_CLAUDE)) {
     if (config.claude[k] === undefined) config.claude[k] = v;
   }

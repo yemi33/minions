@@ -428,25 +428,11 @@ function getAgentStatus(agentId) {
     if (active._blockingToolCall) {
       result._blockingToolCall = active._blockingToolCall;
     }
-    // Detect permission-waiting and in-flight tools: read only head+tail of live-output.log (max 2KB total)
+    // Detect in-flight tools: read only head+tail of live-output.log (max 2KB total)
     try {
       const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
       const { head, tail } = readHeadTail(liveLogPath, 1024);
       if (head) {
-        // Check init message (in head) for permission mode
-        const initMatch = head.match(/"permissionMode"\s*:\s*"([^"]+)"/);
-        if (initMatch && initMatch[1] !== 'bypassPermissions') {
-          result._permissionMode = initMatch[1];
-        }
-        // Check if agent has been silent for >60s (use tail for recent activity)
-        const lastLine = tail.trimEnd().split('\n').pop();
-        if (lastLine && lastLine.includes('"type":"assistant"') && lastLine.includes('"tool_use"')) {
-          const liveStat = fs.statSync(liveLogPath);
-          const silentMs = Date.now() - liveStat.mtimeMs;
-          if (silentMs > 60000 && result._permissionMode) {
-            result._warning = 'Possibly waiting for permission approval — agent is not in bypass mode';
-          }
-        }
         // Detect in-flight tool calls (task_started with no task_notification)
         const inFlight = detectInFlightTool(tail);
         if (inFlight && inFlight.description) {
@@ -570,7 +556,6 @@ function getAgents(config) {
       completed_at: s.completed_at || null,
       _blockingToolCall: s._blockingToolCall || null,
       _warning: s._warning || null,
-      _permissionMode: s._permissionMode || null,
       chartered, inboxCount: inboxFiles.length + steeringInboxFiles.length
     };
   });

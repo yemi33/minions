@@ -5405,6 +5405,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
+  function settingsClaudeConfig(config) {
+    const claude = { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) };
+    delete claude.permissionMode;
+    return claude;
+  }
+
   async function handleSettingsRead(req, res) {
     try {
       const config = queries.getConfig();
@@ -5414,7 +5420,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (engine.prPollCommentsEvery === undefined && engine.adoPollCommentsEvery !== undefined) engine.prPollCommentsEvery = engine.adoPollCommentsEvery;
       return jsonReply(res, 200, {
         engine,
-        claude: { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) },
+        claude: settingsClaudeConfig(config),
         agents: config.agents || {},
         teams: { ...shared.ENGINE_DEFAULTS.teams, ...(config.teams || {}) },
         projects: (config.projects || []).map(p => ({
@@ -5437,6 +5443,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!config.engine) config.engine = {};
       if (!config.claude) config.claude = {};
       if (!config.agents) config.agents = {};
+      delete config.claude.permissionMode;
 
       const _clamped = [];
       const _engineModelDiscovery = require('./engine/model-discovery');
@@ -5606,10 +5613,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (body.claude) {
         for (const key of ['allowedTools', 'outputFormat']) {
           if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
-        }
-        if (body.claude.permissionMode !== undefined) {
-          const valid = ['bypassPermissions', 'auto', 'default'];
-          config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
         }
       }
 

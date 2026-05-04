@@ -135,7 +135,7 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
   buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
-  getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
+  getRepoHost, getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
 // sanitizeBranch imported from shared.js
 
@@ -975,13 +975,16 @@ async function spawnAgent(dispatchItem, config) {
   // Spawn the claude process
   const childEnv = shared.cleanChildEnv();
   if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
+  childEnv.MINIONS_REPO_HOST = getRepoHost(project);
 
-  // Inject cached ADO token so agents skip re-authentication (#998)
-  // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth
-  try {
-    const adoToken = await getAdoToken();
-    if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
-  } catch { /* non-fatal — agent can still authenticate on its own */ }
+  if (getRepoHost(project) === 'ado') {
+    // Inject cached ADO token so ADO agents skip re-authentication (#998).
+    // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth.
+    try {
+      const adoToken = await getAdoToken();
+      if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+    } catch { /* non-fatal — agent can still authenticate on its own */ }
+  }
 
   // Spawn via wrapper script — node directly (no bash intermediary)
   // spawn-agent.js handles CLAUDECODE env cleanup and claude binary resolution
@@ -1052,6 +1055,10 @@ async function spawnAgent(dispatchItem, config) {
     startedAt,
     runtimeName,
     sessionId: cachedSessionId,
+    ...(cachedSessionId ? {
+      _runtimeResumeAt: Date.now(),
+      _runtimeResumeAwaitingFirstOutput: true,
+    } : {}),
     _pendingSteeringFiles: pendingSteering.entries,
   };
   activeProcesses.set(id, initialProcInfo);
@@ -1062,6 +1069,12 @@ async function spawnAgent(dispatchItem, config) {
   const sessionCaptureState = { sessionLineBuffer: '' };
   let _trustCheckDone = false;
   const _spawnTime = Date.now();
+
+  function markRuntimeResumeOutputSeen(procInfo) {
+    if (!procInfo?._runtimeResumeAwaitingFirstOutput) return;
+    procInfo._runtimeResumeAwaitingFirstOutput = false;
+    procInfo.lastRealOutputAt = Date.now();
+  }
 
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
@@ -1086,6 +1099,7 @@ async function spawnAgent(dispatchItem, config) {
     // Capture sessionId early for mid-session steering. Claude emits session_id;
     // Copilot emits sessionId, so use the runtime-neutral steering helper.
     const procInfo = activeProcesses.get(id);
+    markRuntimeResumeOutputSeen(procInfo);
     captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, procInfo, chunk, sessionCaptureState);
 
     ackPendingSteeringFiles(agentId, procInfo, chunk);
@@ -1096,6 +1110,7 @@ async function spawnAgent(dispatchItem, config) {
     realActivityMap.set(id, Date.now());
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
+    markRuntimeResumeOutputSeen(activeProcesses.get(id));
   });
 
   async function onAgentClose(code) {
@@ -1188,11 +1203,14 @@ async function spawnAgent(dispatchItem, config) {
       const childEnv = shared.cleanChildEnv();
       if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
       childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath;
-      // Inject cached ADO token for steering session too (#998)
-      try {
-        const adoToken = await getAdoToken();
-        if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
-      } catch { /* non-fatal */ }
+      childEnv.MINIONS_REPO_HOST = getRepoHost(project);
+      if (getRepoHost(project) === 'ado') {
+        // Inject cached ADO token for steering session too (#998)
+        try {
+          const adoToken = await getAdoToken();
+          if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+        } catch { /* non-fatal */ }
+      }
       let resumeProc;
       try {
         resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {
@@ -1220,7 +1238,8 @@ async function spawnAgent(dispatchItem, config) {
         startedAt: procInfo.startedAt,
         runtimeName,
         sessionId: steerSessionId,
-        lastRealOutputAt: Date.now(),
+        _runtimeResumeAt: Date.now(),
+        _runtimeResumeAwaitingFirstOutput: true,
         _pendingSteeringFiles: mergePendingSteeringEntries(
           procInfo._pendingSteeringFiles,
           pendingForResume.entries,
@@ -1239,6 +1258,7 @@ async function spawnAgent(dispatchItem, config) {
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
         const resumeInfo = activeProcesses.get(id);
+        markRuntimeResumeOutputSeen(resumeInfo);
         captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, resumeInfo, chunk, sessionCaptureState);
         ackPendingSteeringFiles(agentId, resumeInfo, chunk);
       });
@@ -1247,6 +1267,7 @@ async function spawnAgent(dispatchItem, config) {
         realActivityMap.set(id, Date.now());
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
         try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
+        markRuntimeResumeOutputSeen(activeProcesses.get(id));
       });
 
       // Re-wire close handler for the resumed process

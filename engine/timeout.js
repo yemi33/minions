@@ -9,7 +9,7 @@ const queries = require('./queries');
 const steering = require('./steering');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS, ENGINE_DIR, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  ENGINE_DEFAULTS, ENGINE_DIR, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS, FAILURE_CLASS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -258,6 +258,7 @@ function checkTimeouts(config) {
 
   const timeout = config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout;
   const defaultStaleOrphanTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+  const runtimeResumeHeartbeatTimeout = config.engine?.resumeHeartbeatTimeout || ENGINE_DEFAULTS.resumeHeartbeatTimeout || defaultStaleOrphanTimeout;
 
   // Optional per-type stale-orphan timeouts: merge ENGINE_DEFAULTS ← config overrides.
   const perTypeStaleOrphanTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
@@ -274,8 +275,10 @@ function checkTimeouts(config) {
   }
 
   // 2. Stale-orphan check — for ALL active dispatch items (catches lost process handles after restart).
-  //    Silence is not a failure for tracked live processes: long CLI commands can legitimately
-  //    produce no stdout/stderr for extended periods.
+  //    Silence is not a failure for tracked live processes once a runtime has emitted output:
+  //    long CLI commands can legitimately produce no stdout/stderr for extended periods.
+  //    The exception is a resumed runtime that has not produced its first stdout/stderr
+  //    heartbeat after spawn; that is the "alive but stuck in --resume" failure mode.
   const dispatchData = getDispatch();
   const deadItems = [];
   const legacyAnnotationClears = new Set();
@@ -332,8 +335,9 @@ function checkTimeouts(config) {
     const liveLogPath = path.join(AGENTS_DIR, item.agent, 'live-output.log');
     let lastActivity = item.started_at ? new Date(item.started_at).getTime() : 0;
 
-    // live-output.log mtime is only used for stale-orphan cleanup and completion recovery.
-    // It is not used as an output-silence timeout for live tracked processes.
+    // live-output.log mtime is used for stale-orphan cleanup, completion recovery,
+    // and the resume first-output watchdog. It is not a general output-silence
+    // timeout for live tracked processes.
     try {
       const stat = fs.statSync(liveLogPath);
       lastActivity = Math.max(lastActivity, stat.mtimeMs);
@@ -394,6 +398,23 @@ function checkTimeouts(config) {
     if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
 
     if (processAlive) {
+      if (procInfo?._runtimeResumeAwaitingFirstOutput) {
+        const resumeStartedAt = Number(procInfo._runtimeResumeAt || 0);
+        const resumeHeartbeatAt = Math.max(lastActivity, resumeStartedAt);
+        const resumeSilentMs = Date.now() - resumeHeartbeatAt;
+        if (resumeSilentMs > runtimeResumeHeartbeatTimeout) {
+          const resumeSilentSec = Math.round(resumeSilentMs / 1000);
+          const reason = `Runtime resume stalled — no output heartbeat for ${resumeSilentSec}s`;
+          log('warn', `Runtime resume stalled: ${item.agent} (${item.id}) — no output heartbeat for ${resumeSilentSec}s; killing and retrying fresh`);
+          dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, reason);
+          try { fs.appendFileSync(liveLogPath, `\n[runtime-resume-timeout] ${reason}. Killing this resume attempt and retrying with a fresh session.\n`); } catch { /* optional */ }
+          // Clear the cached session so retry does not re-enter the same stuck --resume path.
+          try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
+          activeProcesses.delete(item.id);
+          shared.killGracefully(procInfo.proc, 5000);
+          deadItems.push({ item, reason, failureClass: FAILURE_CLASS.TIMEOUT });
+        }
+      }
       continue;
     }
 
@@ -462,8 +483,8 @@ function checkTimeouts(config) {
   }
 
   // Clean up dead items
-  for (const { item, reason } of deadItems) {
-    completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);
+  for (const { item, reason, failureClass } of deadItems) {
+    completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason, '', failureClass ? { failureClass } : {});
   }
 
   // Clear legacy blocking-tool annotations; process liveness no longer depends on tool parsing.
