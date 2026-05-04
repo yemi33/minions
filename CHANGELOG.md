@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1699 (2026-05-04)
+
+### Features
+-  Gracefully handle missing runtime across Command Center and LLM call sites
+
+### Fixes
+- yemi33/minions#2022
+
 ## 0.1.1698 (2026-05-04)
 
 ### Features
