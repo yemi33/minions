@@ -36,6 +36,7 @@ const ISOLATED_MODULES = [
   '../engine/playbook',
   '../engine/routing',
   '../engine/issues',
+  '../engine/project-discovery',
   '../engine.js',
 ];
 
@@ -3790,18 +3791,17 @@ async function testRuntimeFleetHelpers() {
   });
 
   await test('minions.js buildProjectEntry sets workSources defaults — CLI add path mirrors dashboard add path', () => {
-    // The dashboard's POST /api/projects has always set workSources defaults.
-    // The CLI add path used to omit them, so projects added via `minions add`
-    // silently failed work-item discovery. Source-string check ensures the
-    // defaults stay in lockstep with dashboard.js (search "workSources").
+    // The dashboard and CLI now share project-discovery.js for project entries;
+    // exercise the helper directly so both entry points keep the same defaults.
+    const discovery = require('../engine/project-discovery');
+    const entry = discovery.buildProjectEntry({ name: 'demo', localPath: 'D:\\demo', repoHost: 'ado' });
+    assert.deepStrictEqual(entry.workSources, {
+      pullRequests: { enabled: true, cooldownMinutes: 30 },
+      workItems: { enabled: true, cooldownMinutes: 0 },
+    });
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
-    const idx = src.indexOf('function buildProjectEntry');
-    assert.ok(idx >= 0, 'buildProjectEntry should exist in minions.js');
-    const block = src.slice(idx, idx + 1500);
-    assert.ok(block.includes('workSources'),
-      'buildProjectEntry must set workSources defaults — without them, CLI-added projects silently skip discovery');
-    assert.ok(block.includes('pullRequests') && block.includes('workItems'),
-      'workSources should declare both pullRequests and workItems sub-blocks');
+    assert.ok(src.includes('projectDiscovery.buildProjectEntry'),
+      'minions.js should use shared project-discovery buildProjectEntry');
   });
 
   await test('engine.js discoverFromWorkItems calls _warnSilentDiscoveryOnce when bailing', () => {
@@ -4125,7 +4125,12 @@ async function testProjectHelpers() {
   await test('getAdoOrgBase extracts from prUrlBase', () => {
     const project = { prUrlBase: 'https://dev.azure.com/myorg/myproj/_apis/git/repos/123/pullrequests/' };
     const result = shared.getAdoOrgBase(project);
-    assert.strictEqual(result, 'https://dev.azure.com');
+    assert.strictEqual(result, 'https://dev.azure.com/myorg');
+  });
+
+  await test('getAdoOrgBase preserves DefaultCollection from visualstudio.com prUrlBase', () => {
+    const project = { prUrlBase: 'https://myorg.visualstudio.com/DefaultCollection/myproj/_git/repo/pullrequest/' };
+    assert.strictEqual(shared.getAdoOrgBase(project), 'https://myorg.visualstudio.com/DefaultCollection');
   });
 
   await test('getAdoOrgBase constructs from adoOrg (short name)', () => {
@@ -4136,6 +4141,75 @@ async function testProjectHelpers() {
   await test('getAdoOrgBase constructs from adoOrg (FQDN)', () => {
     const project = { adoOrg: 'myorg.visualstudio.com' };
     assert.strictEqual(shared.getAdoOrgBase(project), 'https://myorg.visualstudio.com');
+  });
+
+  await test('parseAdoRemoteUrl handles dev.azure.com, visualstudio.com, and DefaultCollection remotes', () => {
+    const discovery = require('../engine/project-discovery');
+    const cases = [
+      [
+        'https://dev.azure.com/fabrikam/Proj%20Name/_git/Repo.Name',
+        { org: 'fabrikam', project: 'Proj Name', repoName: 'Repo.Name', orgUrl: 'https://dev.azure.com/fabrikam' },
+      ],
+      [
+        'https://fabrikam.visualstudio.com/Proj/_git/Repo',
+        { org: 'fabrikam', project: 'Proj', repoName: 'Repo', orgUrl: 'https://fabrikam.visualstudio.com' },
+      ],
+      [
+        'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/Repo.git',
+        { org: 'fabrikam', project: 'Proj', repoName: 'Repo', orgUrl: 'https://fabrikam.visualstudio.com/DefaultCollection' },
+      ],
+    ];
+    for (const [remoteUrl, expected] of cases) {
+      const parsed = discovery.parseAdoRemoteUrl(remoteUrl);
+      assert.ok(parsed, `Expected ${remoteUrl} to parse as ADO`);
+      assert.strictEqual(parsed.org, expected.org);
+      assert.strictEqual(parsed.project, expected.project);
+      assert.strictEqual(parsed.repoName, expected.repoName);
+      assert.strictEqual(parsed.orgUrl, expected.orgUrl);
+      assert.strictEqual(parsed.repoHost, 'ado');
+    }
+  });
+
+  await test('discoverProjectMetadata uses az repos metadata to populate ADO repository GUID and canonical URL', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    fs.writeFileSync(path.join(repoDir, 'package.json'), JSON.stringify({ name: 'legacy-repo' }));
+    const guid = '11111111-2222-3333-4444-555555555555';
+    const calls = [];
+    const execFileSync = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') return 'refs/remotes/origin/master\n';
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/Repo.git\n';
+      if (cmd === 'az' && args.slice(0, 2).join(' ') === 'repos show') {
+        return JSON.stringify({
+          id: guid,
+          name: 'CanonicalRepo',
+          remoteUrl: 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo',
+          webUrl: 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo',
+          project: { name: 'CanonicalProj' },
+        });
+      }
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.repoHost, 'ado');
+    assert.strictEqual(detected.org, 'fabrikam');
+    assert.strictEqual(detected.project, 'CanonicalProj');
+    assert.strictEqual(detected.repoName, 'CanonicalRepo');
+    assert.strictEqual(detected.repositoryId, guid);
+    assert.strictEqual(detected.prUrlBase, 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo/pullrequest/');
+    assert.ok(calls.some(([cmd, args]) => cmd === 'az' && args.includes('repos') && args.includes('show')),
+      'ADO discovery should prefer az repos show after parsing the remote');
+  });
+
+  await test('dashboard and CLI project add use shared project discovery helpers', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
+    assert.ok(dashboardSrc.includes("require('./engine/project-discovery')"),
+      'dashboard project add/scan should use shared project-discovery');
+    assert.ok(cliSrc.includes("require('./engine/project-discovery')"),
+      'CLI project add/scan should use shared project-discovery');
   });
 }
 
@@ -30583,26 +30657,22 @@ async function testStatusMutationGuards() {
     assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
   });
 
-  await test('dashboard.js: project git metadata uses hidden direct git calls and add invalidates status cache', () => {
+  await test('dashboard.js: project git metadata uses shared discovery and add invalidates status cache', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const helperStart = src.indexOf('function _execGitInRepo');
-    const helperEnd = src.indexOf('async function handleProjectsAdd', helperStart);
-    const helperBody = src.slice(helperStart, helperEnd);
-    assert.ok(helperBody.includes("execFileSync('git'"), 'project git helper should execute git directly');
-    assert.ok(helperBody.includes('windowsHide: true'), 'project git helper should hide Windows git console windows');
+    const discoverySrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'project-discovery.js'), 'utf8');
+    assert.ok(discoverySrc.includes("execFileSync('git'"), 'shared project discovery should execute git directly');
+    assert.ok(discoverySrc.includes('windowsHide: true'), 'shared project discovery should hide Windows git console windows');
 
     const addStart = src.indexOf('async function handleProjectsAdd');
     const addEnd = src.indexOf('async function handleProjectsRemove', addStart);
     const addBody = src.slice(addStart, addEnd);
-    assert.ok(addBody.includes("_execGitInRepo(target, ['symbolic-ref', 'refs/remotes/origin/HEAD']"), 'handleProjectsAdd should resolve origin HEAD with the hidden git helper');
-    assert.ok(addBody.includes("if (!head) throw new Error('empty git ref');"), 'handleProjectsAdd should fall back to main when git returns an empty branch ref');
-    assert.ok(addBody.includes("_execGitInRepo(target, ['remote', 'get-url', 'origin']"), 'handleProjectsAdd should resolve remotes with the hidden git helper');
+    assert.ok(addBody.includes('projectDiscovery.discoverProjectMetadata(target)'), 'handleProjectsAdd should resolve metadata with shared project discovery');
     assert.ok(addBody.includes('invalidateStatusCache();'), 'handleProjectsAdd should invalidate cached status so refresh sees the new project immediately');
 
     const scanStart = src.indexOf('async function handleProjectsScan');
     const scanEnd = src.indexOf('async function handleFileBug', scanStart);
     const scanBody = src.slice(scanStart, scanEnd);
-    assert.ok(scanBody.includes("_execGitInRepo(repoPath, ['remote', 'get-url', 'origin'], 3000)"), 'handleProjectsScan should reuse the hidden git helper for repo metadata');
+    assert.ok(scanBody.includes('projectDiscovery.discoverProjectMetadata(repoPath'), 'handleProjectsScan should reuse shared project discovery for repo metadata');
     assert.ok(!scanBody.includes("execSync('git remote get-url origin'"), 'handleProjectsScan should not shell out through execSync for repo metadata');
   });
 }

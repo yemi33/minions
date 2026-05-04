@@ -29,6 +29,7 @@ const routing = require('./engine/routing');
 const playbook = require('./engine/playbook');
 const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
+const projectDiscovery = require('./engine/project-discovery');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
@@ -4816,17 +4817,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { confirmToken: token, ttlMs: PROJECT_CONFIRM_TOKEN_TTL_MS });
   }
 
-  function _execGitInRepo(repoPath, args, timeoutMs) {
-    const { execFileSync } = require('child_process');
-    return execFileSync('git', args, {
-      cwd: repoPath,
-      encoding: 'utf8',
-      timeout: timeoutMs || 5000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    }).trim();
-  }
-
   async function handleProjectsAdd(req, res) {
     try {
       const body = await readBody(req);
@@ -4859,43 +4849,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 400, { error: 'Project already linked at ' + target });
       }
 
-      // Auto-discover from git repo
-      const detected = { name: path.basename(target), _found: [] };
-      try {
-        let head = '';
-        try { head = _execGitInRepo(target, ['symbolic-ref', 'refs/remotes/origin/HEAD'], 5000); }
-        catch { head = _execGitInRepo(target, ['symbolic-ref', 'HEAD'], 5000); }
-        if (!head) throw new Error('empty git ref');
-        detected.mainBranch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
-      } catch { detected.mainBranch = 'main'; }
-      try {
-        const remoteUrl = _execGitInRepo(target, ['remote', 'get-url', 'origin'], 5000);
-        if (remoteUrl.includes('github.com')) {
-          detected.repoHost = 'github';
-          const m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-          if (m) { detected.org = m[1]; detected.repoName = m[2]; }
-        } else if (remoteUrl.includes('visualstudio.com') || remoteUrl.includes('dev.azure.com')) {
-          detected.repoHost = 'ado';
-          const m = remoteUrl.match(/https:\/\/([^.]+)\.visualstudio\.com[^/]*\/([^/]+)\/_git\/([^/\s]+)/) ||
-                    remoteUrl.match(/https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/);
-          if (m) { detected.org = m[1]; detected.project = m[2]; detected.repoName = m[3]; }
-        }
-      } catch (e) { console.error('git remote detection:', e.message); }
-      try {
-        const pkgPath = path.join(target, 'package.json');
-        if (fs.existsSync(pkgPath)) {
-          const pkg = safeJson(pkgPath);
-          if (pkg.name) detected.name = pkg.name.replace(/^@[^/]+\//, '');
-        }
-      } catch { /* optional */ }
-      let description = '';
-      try {
-        const claudeMd = path.join(target, 'CLAUDE.md');
-        if (fs.existsSync(claudeMd)) {
-          const lines = (safeRead(claudeMd) || '').split('\n').filter(l => l.trim() && !l.startsWith('#'));
-          if (lines[0] && lines[0].length < 200) description = lines[0].trim();
-        }
-      } catch { /* optional */ }
+      // Auto-discover from git repo. Shared with minions.js so CLI and dashboard
+      // handle ADO URL variants and repository GUID enrichment consistently.
+      const detected = projectDiscovery.discoverProjectMetadata(target);
+      if (!detected.name) detected.name = path.basename(target);
+      const description = detected.description || '';
 
       const rawName = body.name || detected.name;
 
@@ -4911,17 +4869,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, e.statusCode || 400, { error: e.message });
       }
 
-      const prUrlBase = detected.repoHost === 'github'
-        ? (detected.org && detected.repoName ? `https://github.com/${detected.org}/${detected.repoName}/pull/` : '')
-        : (detected.org && detected.project && detected.repoName
-          ? `https://${detected.org}.visualstudio.com/DefaultCollection/${detected.project}/_git/${detected.repoName}/pullrequest/` : '');
-
       const project = {
         name, description, localPath: target.replace(/\\/g, '/'),
-        repoHost: detected.repoHost || 'ado', repositoryId: '',
+        repoHost: detected.repoHost || 'ado', repositoryId: detected.repositoryId || '',
         adoOrg: detected.org || '', adoProject: detected.project || '',
         repoName: detected.repoName || name, mainBranch: detected.mainBranch || 'main',
-        prUrlBase,
+        prUrlBase: projectDiscovery.buildPrUrlBase({
+          repoHost: detected.repoHost,
+          org: detected.org,
+          project: detected.project,
+          repoName: detected.repoName,
+          prUrlBase: detected.prUrlBase,
+        }),
         workSources: { pullRequests: { enabled: true, cooldownMinutes: 30 }, workItems: { enabled: true, cooldownMinutes: 0 } }
       };
 
@@ -4990,20 +4949,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Enrich each repo with metadata
       const existingPaths = new Set(PROJECTS.map(p => path.resolve(p.localPath)));
       const results = repos.map(repoPath => {
-        const result = { path: repoPath.replace(/\\/g, '/'), name: path.basename(repoPath), host: 'git', linked: existingPaths.has(path.resolve(repoPath)) };
-        try {
-          const remoteUrl = _execGitInRepo(repoPath, ['remote', 'get-url', 'origin'], 3000);
-          const gh = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-          const ado = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/) || remoteUrl.match(/([^.]+)\.visualstudio\.com.*?\/([^/]+)\/_git\/([^/\s]+)/);
-          if (gh) { result.host = 'GitHub'; result.org = gh[1]; result.name = gh[2]; }
-          else if (ado) { result.host = 'ADO'; result.org = ado[1]; result.name = ado[3] || ado[2]; }
-        } catch { /* no remote */ }
-        try {
-          const pkg = JSON.parse(fs.readFileSync(path.join(repoPath, 'package.json'), 'utf8'));
-          if (pkg.name) result.name = pkg.name.replace(/@[^/]+\//, '');
-          if (pkg.description) result.description = pkg.description.slice(0, 100);
-        } catch { /* no package.json */ }
-        return result;
+        const detected = projectDiscovery.discoverProjectMetadata(repoPath, { adoLookupTimeoutMs: 5000 });
+        return projectDiscovery.buildScanResult(repoPath, detected, existingPaths.has(path.resolve(repoPath)));
       });
 
       return jsonReply(res, 200, { repos: results });

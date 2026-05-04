@@ -1479,6 +1479,8 @@ function nextWorkItemId(items, prefix) {
 
 function getAdoOrgBase(project) {
   if (project.prUrlBase) {
+    const devAzure = project.prUrlBase.match(/^(https?:\/\/dev\.azure\.com\/[^/]+)/i);
+    if (devAzure) return devAzure[1];
     const m = project.prUrlBase.match(/^(https?:\/\/[^/]+(?:\/DefaultCollection)?)/);
     if (m) return m[1];
   }
