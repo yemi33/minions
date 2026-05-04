@@ -23207,8 +23207,8 @@ async function testMeetings() {
   await test('lifecycle collects meeting findings on completion', () => {
     assert.ok(lifecycleSrc.includes('collectMeetingFindings') && (lifecycleSrc.includes("type === WORK_TYPE.MEETING") || lifecycleSrc.includes("type === 'meeting'")),
       'runPostCompletionHooks should call collectMeetingFindings for meeting type');
-    assert.ok(lifecycleSrc.includes('collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion)'),
-      'runPostCompletionHooks should pass structured completion data to meeting ingestion');
+    assert.ok(lifecycleSrc.includes('collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion, meta.round)'),
+      'runPostCompletionHooks should pass structured completion data and expected round to meeting ingestion');
   });
 
   // Playbooks
@@ -23228,6 +23228,26 @@ async function testMeetings() {
   await test('meeting API endpoints in route registry', () => {
     assert.ok(dashSrc.includes('/api/meetings') && dashSrc.includes('/api/meetings/note') && dashSrc.includes('/api/meetings/advance'),
       'Should have meeting CRUD + note + advance + end endpoints');
+  });
+
+  await test('meeting create API validates participant payloads', () => {
+    assert.ok(dashSrc.includes('participants must be an array'),
+      'POST /api/meetings should reject non-array participants');
+    assert.ok(dashSrc.includes('at least 2 participants required'),
+      'POST /api/meetings should require at least two valid participants');
+    assert.ok(dashSrc.includes('normalizeMeetingParticipants(participants)'),
+      'POST /api/meetings should normalize participant IDs before creating a meeting');
+  });
+
+  await test('command-center create-meeting accepts participants field before agents fallback', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const createMeetingIdx = ccSrc.indexOf("case 'create-meeting'");
+    assert.ok(createMeetingIdx >= 0, 'command-center create-meeting case must exist');
+    const createMeetingSection = ccSrc.slice(createMeetingIdx, createMeetingIdx + 800);
+    assert.ok(createMeetingSection.includes('action.participants') && createMeetingSection.includes('action.agents'),
+      'create-meeting should support both participants[] and agents[] payloads');
+    assert.ok(createMeetingSection.indexOf('action.participants') < createMeetingSection.indexOf('action.agents'),
+      'participants[] should be preferred over the legacy agents[] fallback');
   });
 
   await test('meetings included in status response', () => {
@@ -23616,6 +23636,24 @@ async function testMeetingsBehavioral() {
       const work = meetingMod.discoverMeetingWork(config);
       const forThis = work.filter(w => w.meta?.meetingId === testId);
       assert.strictEqual(forThis.length, 0, 'No work for completed meetings');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork returns empty array for archived meetings', () => {
+    const testId = 'TEST-discover-archived-' + Date.now();
+    const data = {
+      id: testId, title: 'Archived', agenda: 'old topic', status: 'archived', round: 3,
+      participants: ['a', 'b'], findings: {}, debate: {}, humanNotes: [],
+      archivedAt: new Date().toISOString(),
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { a: { name: 'Alice', role: 'Engineer' }, b: { name: 'Bob', role: 'Engineer' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work for archived meetings');
     } finally {
       cleanupMeeting(testId);
     }
@@ -24202,6 +24240,41 @@ async function testMeetingsExtendedBehavioral() {
     }
   });
 
+  await test('collectMeetingFindings ignores stale output from an earlier round', () => {
+    const testId = 'TEST-EXT-stale-round-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Stale Round', status: 'debating', round: 2,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Late findings after timeout'), null, 1);
+      const m = meetingMod.getMeeting(testId);
+      assert.deepStrictEqual(m.findings, {}, 'stale investigate output must not be recorded after advancing to debate');
+      assert.deepStrictEqual(m.transcript, [], 'stale output must not be appended to transcript');
+      assert.strictEqual(m.status, 'debating', 'current round status must be preserved');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings ignores output whose dispatch round no longer matches', () => {
+    const testId = 'TEST-EXT-stale-round-num-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Stale Round Number', status: 'debating', round: 2,
+      participants: ['alice'], findings: { alice: { content: 'finding' } }, debate: {},
+      humanNotes: [], conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'debate', makeOutput('Old debate result'), null, 1);
+      const m = meetingMod.getMeeting(testId);
+      assert.deepStrictEqual(m.debate, {}, 'dispatch from an old round number must not be recorded');
+      assert.strictEqual(m.status, 'debating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
   await test('collectMeetingFindings does not crash for missing meeting', () => {
     // Should return silently without throwing
     meetingMod.collectMeetingFindings('NONEXISTENT-MEETING-9999', 'alice', 'investigate', makeOutput('test'));
@@ -24474,6 +24547,25 @@ async function testMeetingsExtendedBehavioral() {
       meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
       const m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts skips archived meetings', () => {
+    const testId = 'TEST-EXT-tout-archived-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Archived Timeout', status: 'archived', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      archivedAt: new Date().toISOString(),
+      roundStartedAt: new Date(Date.now() - 9999999).toISOString(),
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'archived', 'Archived meeting should remain archived');
+      assert.strictEqual(m.archivedAt !== undefined, true, 'archivedAt should be preserved');
     } finally {
       cleanupMeeting(testId);
     }
@@ -25246,6 +25338,66 @@ async function testMeetingsIsolatedGaps() {
         'killed dispatch should carry a human-readable reason');
       assert.ok(completedMatch.completed_at, 'killed dispatch should have completed_at timestamp');
     } finally {
+      restore();
+    }
+  });
+
+  await test('advanceMeetingRound removes matching pending and active dispatches before advancing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-TEST-ADV-DRAIN-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Drain Dispatches', status: 'investigating', round: 1,
+        participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [{ id: 'pending-this', agent: 'alice', meta: { meetingId } }],
+        active: [{ id: 'active-this', agent: 'bob', meta: { meetingId } }],
+        completed: [],
+      }));
+
+      const advanced = meetingMod.advanceMeetingRound(meetingId);
+      assert.strictEqual(advanced.status, 'debating');
+
+      const dispatchAfter = JSON.parse(fs.readFileSync(dispatchPath, 'utf8'));
+      assert.deepStrictEqual(dispatchAfter.pending, [], 'matching pending dispatches should be removed');
+      assert.deepStrictEqual(dispatchAfter.active, [], 'matching active dispatches should be removed');
+      assert.strictEqual(dispatchAfter.completed.length, 2, 'removed dispatches should be retained in completed history');
+      assert.ok(dispatchAfter.completed.every(d => d.result === 'error' && /Meeting ended/.test(d.reason || '')),
+        'removed dispatches should be marked as human-ended errors');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('dashboard executeCCActions creates meetings from participants[] and rejects underspecified meetings', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      const meetingMod = require('../engine/meeting');
+
+      const invalid = await dashboard.executeCCActions([
+        { type: 'create-meeting', title: 'Bad Meeting', agenda: 'Discuss a topic', participants: ['alice'] },
+      ]);
+      assert.ok(invalid[0].error && invalid[0].error.includes('at least 2 participants'),
+        'create-meeting should reject fewer than two participants');
+
+      const valid = await dashboard.executeCCActions([
+        { type: 'create-meeting', title: 'Good Meeting', agenda: 'Discuss a topic', participants: ['alice', 'bob'] },
+      ]);
+      assert.strictEqual(valid[0].ok, true, 'valid create-meeting action should succeed');
+      assert.ok(valid[0].id, 'successful action should return meeting id');
+      const created = meetingMod.getMeeting(valid[0].id);
+      assert.deepStrictEqual(created.participants, ['alice', 'bob'],
+        'participants[] should be persisted as meeting participants');
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
       restore();
     }
   });

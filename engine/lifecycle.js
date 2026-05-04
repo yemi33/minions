@@ -2662,7 +2662,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   if (type === WORK_TYPE.MEETING && meta?.meetingId) {
     try {
       const { collectMeetingFindings } = require('./meeting');
-      collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion);
+      collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion, meta.round);
     } catch (err) { log('warn', `Meeting collect: ${err.message}`); }
   }
 

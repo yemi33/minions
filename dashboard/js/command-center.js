@@ -969,7 +969,7 @@ async function ccExecuteAction(action, targetTabId) {
       status.style.color = 'var(--green)';
     }
     ccAddMessage('action', status.outerHTML, false, targetTabId);
-    if (['dispatch','fix','implement','explore','review','test'].includes(action.type)) wakeEngine();
+    if (['dispatch','fix','implement','explore','review','test','create-meeting'].includes(action.type)) wakeEngine();
     refresh();
     return;
   }
@@ -1175,9 +1175,10 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'create-meeting': {
+        var meetingParticipants = (Array.isArray(action.participants) && action.participants.length > 0) ? action.participants : (action.agents || []);
         var res6 = await fetch('/api/meetings', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title, agenda: action.agenda, participants: action.agents, rounds: action.rounds, project: action.project })
+          body: JSON.stringify({ title: action.title, agenda: action.agenda, participants: meetingParticipants, rounds: action.rounds, project: action.project })
         });
         if (!res6.ok) { var d6 = await res6.json().catch(function() { return {}; }); throw new Error(d6.error || 'Meeting create failed'); }
         var d6r = await res6.json();

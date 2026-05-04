@@ -1539,6 +1539,27 @@ function _parseWatchInterval(val) {
   return Math.max(60000, Math.round(u === 's' ? n * 1000 : u === 'm' ? n * 60000 : n * 3600000));
 }
 
+function normalizeMeetingParticipants(participants) {
+  if (!Array.isArray(participants)) return [];
+  const seen = new Set();
+  const normalized = [];
+  for (const participant of participants) {
+    const id = String(participant || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function meetingParticipantsFromAction(action) {
+  return normalizeMeetingParticipants(
+    Array.isArray(action?.participants) && action.participants.length > 0
+      ? action.participants
+      : action?.agents
+  );
+}
+
 // Required-field validator for CC actions. Returns null when valid, an error string when not.
 // Centralises field-required checks so the model can't quietly emit a malformed action and have
 // the server silently fall back to placeholder values (e.g. "Untitled"). The handler invokes this
@@ -1567,6 +1588,12 @@ function _ccValidateAction(action) {
     case 'plan':
       if (!action.title) return 'plan action missing required field: title';
       return null;
+    case 'create-meeting': {
+      if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return 'create-meeting action missing required field: title';
+      if (!action.agenda || typeof action.agenda !== 'string' || !action.agenda.trim()) return 'create-meeting action missing required field: agenda';
+      if (meetingParticipantsFromAction(action).length < 2) return 'create-meeting action requires at least 2 participants';
+      return null;
+    }
     default:
       return null; // unknown types fall through to existing handler / generic fallback
   }
@@ -1792,6 +1819,17 @@ async function executeCCActions(actions) {
             onNotMet: action.onNotMet || null,
           });
           results.push({ type: 'create-watch', id: watch.id, ok: true });
+          break;
+        }
+        case 'create-meeting': {
+          const { createMeeting } = require('./engine/meeting');
+          const meeting = createMeeting({
+            title: action.title.trim(),
+            agenda: action.agenda.trim(),
+            participants: meetingParticipantsFromAction(action),
+          });
+          invalidateStatusCache();
+          results.push({ type: 'create-meeting', id: meeting.id, ok: true });
           break;
         }
         case 'delete-watch': {
@@ -6721,9 +6759,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/meetings', desc: 'Create a team meeting', params: 'title, agenda, participants[]', handler: async (req, res) => {
       const body = await readBody(req);
       const { title, agenda, participants } = body;
-      if (!title || !agenda) return jsonReply(res, 400, { error: 'title and agenda required' });
+      if (typeof title !== 'string' || !title.trim() || typeof agenda !== 'string' || !agenda.trim()) {
+        return jsonReply(res, 400, { error: 'title and agenda required' });
+      }
+      if (!Array.isArray(participants)) return jsonReply(res, 400, { error: 'participants must be an array' });
+      const meetingParticipants = normalizeMeetingParticipants(participants);
+      if (meetingParticipants.length < 2) return jsonReply(res, 400, { error: 'at least 2 participants required' });
       const { createMeeting } = require('./engine/meeting');
-      const meeting = createMeeting({ title, agenda, participants: participants || [] });
+      const meeting = createMeeting({ title: title.trim(), agenda: agenda.trim(), participants: meetingParticipants });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, meeting });
     }},
@@ -6923,6 +6966,8 @@ module.exports = {
   _filterCcTabSessions,
   _getVersionCheckInterval,
   _parseWatchInterval,
+  _normalizeMeetingParticipants: normalizeMeetingParticipants,
+  _meetingParticipantsFromAction: meetingParticipantsFromAction,
   parsePinnedEntries,
   _parseDocChatResultText,
   _messageRequestsOrchestration,

@@ -20,6 +20,21 @@ const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 // tests can redirect the meetings directory without patching module internals.
 const MEETINGS_DIR = path.join(shared.MINIONS_DIR, 'meetings');
 const MEETING_NOTE_ARTIFACT_ROOT = path.join(shared.MINIONS_DIR, 'notes', 'inbox');
+const TERMINAL_MEETING_STATUSES = new Set(['completed', 'archived']);
+const ROUND_STATUS_BY_NAME = {
+  investigate: 'investigating',
+  debate: 'debating',
+  conclude: 'concluding',
+};
+const ACTIVE_MEETING_STATUSES = new Set(Object.values(ROUND_STATUS_BY_NAME));
+
+function isTerminalMeetingStatus(status) {
+  return TERMINAL_MEETING_STATUSES.has(String(status || '').toLowerCase());
+}
+
+function expectedMeetingStatusForRound(roundName) {
+  return ROUND_STATUS_BY_NAME[String(roundName || '').toLowerCase()] || null;
+}
 
 function isEmptyMeetingContent(text) {
   const value = String(text || '').trim();
@@ -278,10 +293,11 @@ function discoverMeetingWork(config) {
   );
 
   for (const meeting of meetings) {
-    if (meeting.status === 'completed') continue;
+    if (isTerminalMeetingStatus(meeting.status)) continue;
 
     const round = meeting.round || 1;
     const roundName = meeting.status; // investigating, debating, concluding
+    if (!ACTIVE_MEETING_STATUSES.has(roundName)) continue;
     const agents = config.agents || {};
 
     if (roundName === 'concluding') {
@@ -413,11 +429,25 @@ function discoverMeetingWork(config) {
  * Collect findings from a completed meeting agent.
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
-function collectMeetingFindings(meetingId, agentId, roundName, output, structuredCompletion = null) {
+function collectMeetingFindings(meetingId, agentId, roundName, output, structuredCompletion = null, expectedRound = null) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
-  if (meeting.status === 'completed' || meeting.status === 'archived') {
+  if (isTerminalMeetingStatus(meeting.status)) {
     log('info', `Ignoring late findings from ${agentId} for completed meeting ${meetingId}`);
+    return;
+  }
+
+  const expectedStatus = expectedMeetingStatusForRound(roundName);
+  if (!expectedStatus) {
+    log('warn', `Meeting ${meetingId}: ignoring ${agentId} output for unknown round "${roundName || '(empty)'}"`);
+    return;
+  }
+  if (meeting.status !== expectedStatus) {
+    log('info', `Ignoring stale ${roundName} output from ${agentId} for meeting ${meetingId} currently ${meeting.status}`);
+    return;
+  }
+  if (expectedRound !== null && expectedRound !== undefined && Number(meeting.round || 1) !== Number(expectedRound)) {
+    log('info', `Ignoring stale round ${expectedRound} output from ${agentId} for meeting ${meetingId} currently on round ${meeting.round || 1}`);
     return;
   }
 
@@ -494,21 +524,54 @@ function addMeetingNote(meetingId, note) {
 function _killMeetingDispatches(meetingId) {
   try {
     const DISPATCH_PATH = path.join(shared.MINIONS_DIR, 'engine', 'dispatch.json');
-    const dispatch = safeJson(DISPATCH_PATH) || {};
-    const toKill = (dispatch.active || []).filter(d => d.meta?.meetingId === meetingId);
-    if (toKill.length === 0) return 0;
-    // Remove from active and move to completed
+    const tmpDir = path.join(shared.MINIONS_DIR, 'engine', 'tmp');
+    const entriesToStop = [];
+    const filesToDelete = [];
     shared.mutateJsonFileLocked(DISPATCH_PATH, (dp) => {
-      dp.active = (dp.active || []).filter(d => d.meta?.meetingId !== meetingId);
-      dp.completed = dp.completed || [];
-      for (const d of toKill) {
+      dp.pending = Array.isArray(dp.pending) ? dp.pending : [];
+      dp.active = Array.isArray(dp.active) ? dp.active : [];
+      dp.completed = Array.isArray(dp.completed) ? dp.completed : [];
+
+      for (const queue of ['pending', 'active']) {
+        const kept = [];
+        for (const d of dp[queue]) {
+          if (d.meta?.meetingId !== meetingId) {
+            kept.push(d);
+            continue;
+          }
+          entriesToStop.push(d);
+          filesToDelete.push(path.join(tmpDir, `pid-${d.id}.pid`));
+          filesToDelete.push(path.join(tmpDir, `prompt-${d.id}.md`));
+          filesToDelete.push(path.join(tmpDir, `sysprompt-${d.id}.md`));
+          filesToDelete.push(path.join(tmpDir, `sysprompt-${d.id}.md.tmp`));
+        }
+        dp[queue] = kept;
+      }
+
+      for (const d of entriesToStop) {
         dp.completed.push({ ...d, result: DISPATCH_RESULT.ERROR, reason: 'Meeting ended/advanced by human', completed_at: ts() });
       }
       if (dp.completed.length > 100) dp.completed = dp.completed.slice(-100);
       return dp;
     }, { defaultValue: { pending: [], active: [], completed: [] } });
-    log('info', `Killed ${toKill.length} active meeting dispatch(es) for ${meetingId}`);
-    return toKill.length;
+
+    const pidsToKill = [];
+    for (const d of entriesToStop) {
+      try {
+        const pidFile = path.join(tmpDir, `pid-${d.id}.pid`);
+        const pid = shared.validatePid(fs.readFileSync(pidFile, 'utf8').trim());
+        pidsToKill.push(pid);
+      } catch { /* pending entries and already-finished agents may not have PID files */ }
+    }
+    for (const pid of pidsToKill) {
+      try { shared.killGracefully({ pid }); } catch { /* process may already be dead */ }
+    }
+    for (const fp of filesToDelete) {
+      try { fs.unlinkSync(fp); } catch { /* sidecar may not exist */ }
+    }
+
+    if (entriesToStop.length > 0) log('info', `Killed ${entriesToStop.length} meeting dispatch(es) for ${meetingId}`);
+    return entriesToStop.length;
   } catch (e) { log('warn', 'kill meeting dispatches: ' + e.message); return 0; }
 }
 
@@ -572,10 +635,13 @@ function checkMeetingTimeouts(config) {
     || ENGINE_DEFAULTS.meetingRoundTimeout;
 
   for (const meeting of meetings) {
-    if (meeting.status === 'completed') continue;
+    if (isTerminalMeetingStatus(meeting.status)) continue;
+    if (!ACTIVE_MEETING_STATUSES.has(meeting.status)) continue;
     if (!meeting.roundStartedAt) continue;
 
-    const elapsed = Date.now() - new Date(meeting.roundStartedAt).getTime();
+    const roundStartedMs = new Date(meeting.roundStartedAt).getTime();
+    if (!Number.isFinite(roundStartedMs)) continue;
+    const elapsed = Date.now() - roundStartedMs;
     if (elapsed < timeout) continue;
 
     const respondedCount = meeting.status === 'investigating'
