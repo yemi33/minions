@@ -30460,6 +30460,33 @@ async function testDashboardAuditPass2() {
       'ccExecuteAction should use _ccFetch for simple mutations, found ' + directFetches + ' direct fetch calls');
   });
 
+  await test('CC stream retry classifies Safari Load failed as reconnectable', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('function _ccIsReconnectableStreamError'), 'stream error classifier must exist');
+    assert.ok(src.includes("message === 'load failed'"), 'Safari/WebKit Load failed must be reconnectable');
+    assert.ok(src.includes("message === 'failed to fetch'"), 'Chromium Failed to fetch must remain reconnectable');
+    assert.ok(src.includes("message.includes('networkerror')"), 'Firefox NetworkError must remain reconnectable');
+    assert.ok(src.includes('var isNetworkError = _ccIsReconnectableStreamError(e)'),
+      'catch path should use the shared classifier before dashboard health checks');
+    assert.ok(src.includes('var dashboardHealth = isNetworkError ? await _ccDashboardHealth()'),
+      'reconnectable stream errors should use the dashboard health/reconnect hint path');
+  });
+
+  await test('CC stream retry stores interrupted request context instead of using latest user message', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('function _ccStoreRetryRequest'), 'retry request context should be stored explicitly');
+    assert.ok(src.includes('tab._retryRequests[id] = request'), 'retry requests should be keyed by retry id per tab');
+    assert.ok(src.includes("div.setAttribute('data-cc-retry-id', meta.retryId)"),
+      'rendered retry error card should carry its retry id');
+    assert.ok(src.includes('function ccRetryLast(tabId, retryId)'), 'retry handler should accept explicit tab and retry ids');
+    assert.ok(src.includes('var retryRequest = _ccFindRetryRequest(tab, retryId)'),
+      'retry handler should resolve the stored failed request');
+    assert.ok(src.includes('_ccDoSend(text.trim(), false, tab.id)'),
+      'retry should resend to the original tab context');
+    assert.ok(src.includes('await _ccDoSend(next, false, retryTab.id)'),
+      'queued messages after retry should drain deterministically for that tab');
+  });
+
   await test('_renderPlanModal wraps JSON.parse in try/catch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     const fn = src.match(/function _renderPlanModal[\s\S]*?^}/m);

@@ -8,6 +8,7 @@ var CC_TITLE_MAX_LENGTH = 40;
 var _ccTabs = [];         // [{id, title, sessionId, messages: [{role, html}]}]
 var _ccActiveTabId = null;
 var _ccOpen = false;
+var _ccRetrySeq = 0;
 // Per-tab sending state stored on tab objects: tab._sending, tab._queue, tab._abortController
 // Legacy globals for backward compat (badge, drawer close check)
 var _ccSending = false; // true if active tab is sending (UI indicator only)
@@ -139,6 +140,79 @@ async function _ccDashboardHealth() {
   }
 }
 
+function _ccIsReconnectableStreamError(err) {
+  if (!err) return false;
+  var name = String(err.name || '').toLowerCase();
+  var message = String(err.message || err || '').toLowerCase();
+  if (name === 'aborterror') return true;
+  return message === 'failed to fetch'
+    || message === 'load failed'
+    || message.includes('networkerror')
+    || message.includes('network request failed')
+    || message.includes('the internet connection appears to be offline')
+    || message.includes('network connection was lost')
+    || message.includes('cancelled')
+    || message.includes('canceled')
+    || message.includes('aborted');
+}
+
+function _ccJsArg(value) {
+  return escHtml(JSON.stringify(value == null ? '' : String(value)));
+}
+
+function _ccStoreRetryRequest(tab, tabId, message) {
+  if (!tab) return { id: '', tabId: tabId || '', message: String(message || '') };
+  var id = 'cc-retry-' + Date.now().toString(36) + '-' + (++_ccRetrySeq);
+  var request = { id: id, tabId: tabId || tab.id, message: String(message || ''), createdAt: Date.now() };
+  if (!tab._retryRequests) tab._retryRequests = {};
+  tab._retryRequests[id] = request;
+  tab._lastRetryRequestId = id;
+  tab._retryRequest = request;
+  return request;
+}
+
+function _ccFindRetryRequest(tab, retryId) {
+  if (!tab) return null;
+  if (retryId && tab._retryRequests && tab._retryRequests[retryId]) return tab._retryRequests[retryId];
+  if (tab._retryRequest) return tab._retryRequest;
+  if (tab._lastRetryRequestId && tab._retryRequests) return tab._retryRequests[tab._lastRetryRequestId] || null;
+  return null;
+}
+
+function _ccForgetRetryRequest(tab, retryId) {
+  if (!tab || !retryId) return;
+  if (tab._retryRequests) delete tab._retryRequests[retryId];
+  if (tab._lastRetryRequestId === retryId) delete tab._lastRetryRequestId;
+  if (tab._retryRequest && tab._retryRequest.id === retryId) delete tab._retryRequest;
+}
+
+function _ccRemoveRetryMessage(tab, retryId) {
+  var removed = false;
+  if (tab && retryId) {
+    for (var i = tab.messages.length - 1; i >= 0; i--) {
+      if (tab.messages[i] && tab.messages[i]._retryId === retryId) {
+        tab.messages.splice(i, 1);
+        removed = true;
+        break;
+      }
+    }
+  }
+  if (retryId && tab && tab.id === _ccActiveTabId) {
+    var msgs = document.getElementById('cc-messages');
+    if (msgs) {
+      Array.prototype.slice.call(msgs.children).some(function(child) {
+        if (child.getAttribute && child.getAttribute('data-cc-retry-id') === retryId) {
+          child.remove();
+          removed = true;
+          return true;
+        }
+        return false;
+      });
+    }
+  }
+  return removed;
+}
+
 function _ccFindPinTarget(query) {
   for (var i = 0; i < (inboxData || []).length; i++) {
     if (inboxData[i].name.toLowerCase().includes(query)) {
@@ -159,6 +233,7 @@ function _ccFindPinTarget(query) {
 function ccAbort() {
   var tab = _ccActiveTab();
   if (tab && tab._abortController) {
+    tab._userAborted = true;
     try {
       fetch('/api/command-center/abort', {
         method: 'POST',
@@ -290,6 +365,7 @@ function ccCloseTab(id) {
         body: JSON.stringify({ tabId: id })
       }).catch(function() {});
     } catch {}
+    closingTab._userAborted = true;
     if (closingTab._abortController) { closingTab._abortController.abort(); closingTab._abortController = null; }
     closingTab._sending = false;
     closingTab._queue = [];
@@ -406,7 +482,7 @@ function ccUpdateSessionIndicator() {
   }
 }
 
-function ccAddMessage(role, html, skipSave, targetTabId) {
+function ccAddMessage(role, html, skipSave, targetTabId, meta) {
   var isUser = role === 'user';
   var isSystem = role === 'system';
   var isAction = role === 'action';
@@ -418,6 +494,7 @@ function ccAddMessage(role, html, skipSave, targetTabId) {
     var el = document.getElementById('cc-messages');
     var div = document.createElement('div');
     div.className = isAssistant ? 'cc-msg-assistant' : '';
+    if (meta && meta.retryId) div.setAttribute('data-cc-retry-id', meta.retryId);
     div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
       (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : isSystem ? 'align-self:center;max-width:100%' : isAction ? 'align-self:flex-start;padding:2px 0' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
     div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
@@ -428,7 +505,9 @@ function ccAddMessage(role, html, skipSave, targetTabId) {
   if (!skipSave) {
     var tab = targetTab;
     if (tab) {
-      tab.messages.push({ role: role, html: html });
+      var msg = { role: role, html: html };
+      if (meta && meta.retryId) msg._retryId = meta.retryId;
+      tab.messages.push(msg);
       // Auto-title from first user message
       if (role === 'user' && tab.title === 'New chat') {
         var tmp = document.createElement('div');
@@ -519,13 +598,14 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
   activeTab._sending = true;
   activeTab._sendStartedAt = Date.now();
   activeTab._abortController = new AbortController();
+  activeTab._userAborted = false;
   _ccSending = true;
   ccRenderTabBar();
   var _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
   // Scoped helper — always targets the originating tab, even if user switches tabs
-  function addMsg(role, html, skipSave) { ccAddMessage(role, html, skipSave, activeTabId); }
+  function addMsg(role, html, skipSave, meta) { ccAddMessage(role, html, skipSave, activeTabId, meta); }
 
   if (!skipUserMsg) addMsg('user', escHtml(message));
 
@@ -615,9 +695,11 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       var seconds = Math.round((Date.now() - ccStartTime) / 1000);
       return '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + label.replace('{seconds}', seconds) + '</div>';
     }
-    function _ccRetryControls(extraHtml, showReload) {
+    function _ccRetryControls(retryRequest, extraHtml, showReload) {
+      var retryTabId = retryRequest && retryRequest.tabId ? retryRequest.tabId : activeTabId;
+      var retryId = retryRequest && retryRequest.id ? retryRequest.id : '';
       return (extraHtml || '') +
-        '<button onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
+        '<button onclick="ccRetryLast(' + _ccJsArg(retryTabId) + ',' + _ccJsArg(retryId) + ')" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
         (showReload ? ' <button onclick="location.reload()" style="margin-top:6px;padding:4px 12px;background:var(--orange);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">Reload Page</button>' : '') +
         ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>';
     }
@@ -748,11 +830,12 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       if (!consume.interrupted) break;
       if (!consume.reconnectable || reconnectAttempts >= 2) {
         _cleanupStreamDiv();
-        var streamEndedHint = '<div style="font-size:10px;color:var(--muted);margin-top:4px">The response stream ended before completion. Retry to continue from the last user message.</div>';
+        var streamEndedHint = '<div style="font-size:10px;color:var(--muted);margin-top:4px">The response stream ended before completion. Retry to resend the interrupted message.</div>';
+        var streamEndedRetry = _ccStoreRetryRequest(activeTab, activeTabId, message);
         if (streamedText) {
-          addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') + _ccRetryControls(streamEndedHint, false));
+          addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') + _ccRetryControls(streamEndedRetry, streamEndedHint, false), false, { retryId: streamEndedRetry.id });
         } else {
-          addMsg('assistant', '<span style="color:var(--red)">The response stream ended before completion.</span>' + _ccRetryControls(streamEndedHint, false));
+          addMsg('assistant', '<span style="color:var(--red)">The response stream ended before completion.</span>' + _ccRetryControls(streamEndedRetry, streamEndedHint, false), false, { retryId: streamEndedRetry.id });
         }
         break;
       }
@@ -762,8 +845,9 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         var reconnectHint = reconnectHealth.restarted
           ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard restarted while this response was streaming. Reload the page to reconnect to the new instance.</div>'
           : '<div style="font-size:10px;color:var(--muted);margin-top:4px">The request stream was interrupted, but the dashboard is still reachable. Retry or start a new session.</div>';
+        var reconnectRetry = _ccStoreRetryRequest(activeTab, activeTabId, message);
         addMsg('assistant', (streamedText ? renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') : '') +
-          _ccRetryControls(reconnectHint, reconnectHealth.restarted));
+          _ccRetryControls(reconnectRetry, reconnectHint, reconnectHealth.restarted), false, { retryId: reconnectRetry.id });
         break;
       }
       reconnectAttempts++;
@@ -776,7 +860,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     }
   } catch (e) {
     _cleanupStreamDiv();
-    if (e.name === 'AbortError') {
+    if (activeTab && activeTab._userAborted) {
       _wasAborted = true;
       if (streamedText) {
         addMsg('assistant', renderMd(streamedText) + _ccElapsedFooter('Stopped after {seconds}s'));
@@ -784,7 +868,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         addMsg('assistant', '<span style="color:var(--red);font-size:11px">Stopped</span>');
       }
     } else {
-      var isNetworkError = e.message === 'Failed to fetch' || e.message.includes('NetworkError');
+      var isNetworkError = _ccIsReconnectableStreamError(e);
       var dashboardHealth = isNetworkError ? await _ccDashboardHealth() : { reachable: false, restarted: false };
       var connectionHint = '';
       if (isNetworkError) {
@@ -794,12 +878,13 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
             ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">The request stream was interrupted, but the dashboard is still reachable. Retry or start a new session.</div>'
             : '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard connection lost. Reload the page to reconnect.</div>';
       }
+      var errorRetry = _ccStoreRetryRequest(activeTab, activeTabId, message);
       addMsg('assistant', (streamedText ? renderMd(streamedText) + _ccElapsedFooter('Stream interrupted after {seconds}s') : '') +
         '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
-        _ccRetryControls(connectionHint, isNetworkError && (!dashboardHealth.reachable || dashboardHealth.restarted)));
+        _ccRetryControls(errorRetry, connectionHint, isNetworkError && (!dashboardHealth.reachable || dashboardHealth.restarted)), false, { retryId: errorRetry.id });
     }
   } finally {
-    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; activeTab._429retries = 0; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
+    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; activeTab._429retries = 0; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; delete activeTab._userAborted; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
     // Mark tab unread if response completed on a background tab or while drawer is closed
     if (activeTab && !_wasAborted && (activeTab.id !== _ccActiveTabId || !_ccOpen)) activeTab._unread = true;
@@ -813,28 +898,36 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
   return _wasAborted;
 }
 
-function ccRetryLast() {
-  // Find the last user message and resend it
-  var tab = _ccActiveTab();
+function ccRetryLast(tabId, retryId) {
+  var tab = tabId ? _ccTabs.find(function(t) { return t.id === tabId; }) : _ccActiveTab();
   if (!tab) return;
-  var last = tab.messages.filter(function(m) { return m.role === 'user'; }).pop();
-  if (!last) return;
-  // Extract text from the HTML (strip tags)
-  var tmp = document.createElement('div');
-  tmp.innerHTML = last.html;
-  var text = tmp.textContent || tmp.innerText || '';
+  var retryRequest = _ccFindRetryRequest(tab, retryId);
+  var text = retryRequest ? retryRequest.message : '';
+  if (!text) {
+    var last = tab.messages.filter(function(m) { return m.role === 'user'; }).pop();
+    if (!last) return;
+    // Backward-compatible fallback for retry buttons rendered before retry context existed.
+    var tmp = document.createElement('div');
+    tmp.innerHTML = last.html;
+    text = tmp.textContent || tmp.innerText || '';
+  }
   if (!text.trim()) return;
-  // Remove the error message (last assistant message)
-  var el = document.getElementById('cc-messages');
-  if (el?.lastElementChild) el.lastElementChild.remove();
-  tab.messages = tab.messages.slice(0, -1); // remove error from history
+  var removed = _ccRemoveRetryMessage(tab, retryId);
+  if (!removed && tab.id === _ccActiveTabId) {
+    // Legacy fallback for old controls without retry ids: remove the visible error card.
+    var el = document.getElementById('cc-messages');
+    if (el?.lastElementChild) el.lastElementChild.remove();
+    tab.messages = tab.messages.slice(0, -1);
+  }
+  _ccForgetRetryRequest(tab, retryId);
+  ccSaveState();
   // Resend, then drain queue
-  _ccDoSend(text.trim()).then(async function() {
-    var retryTab = _ccActiveTab();
+  _ccDoSend(text.trim(), false, tab.id).then(async function() {
+    var retryTab = _ccTabs.find(function(t) { return t.id === tab.id; });
     while (retryTab && retryTab._queue && retryTab._queue.length > 0) {
       var next = retryTab._queue.shift();
       _renderQueueIndicator();
-      await _ccDoSend(next);
+      await _ccDoSend(next, false, retryTab.id);
     }
   });
 }
