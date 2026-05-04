@@ -134,6 +134,12 @@ function normalizeWorkItemDedupText(value) {
     .trim();
 }
 
+function normalizeWorkItemDedupTitle(value) {
+  return normalizeWorkItemDedupText(value)
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
 function resolveWorkItemDedupProject(item, wiPath = '') {
   const projectName = normalizeWorkItemDedupText(item?.project || item?._project || item?._source);
   if (projectName) {
@@ -180,13 +186,28 @@ function normalizeWorkItemDedupPrIdentity(item, project = null) {
 function workItemCreateFingerprint(item, options = {}) {
   const project = resolveWorkItemDedupProject(item, options.wiPath);
   return {
-    title: normalizeWorkItemDedupText(item?.title),
+    title: normalizeWorkItemDedupTitle(item?.title),
     type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
-    priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
-    description: normalizeWorkItemDedupText(item?.description),
+    source: normalizeWorkItemDedupText(project?.name || item?.project || item?._project || item?._source).toLowerCase(),
     scope: normalizeWorkItemDedupText(item?.scope).toLowerCase(),
     prIdentity: normalizeWorkItemDedupPrIdentity(item, project),
   };
+}
+
+function isCompatibleWorkItemCreateScope(existingFingerprint, candidateFingerprint) {
+  const existingFanOut = existingFingerprint.scope === 'fan-out';
+  const candidateFanOut = candidateFingerprint.scope === 'fan-out';
+  if (existingFanOut || candidateFanOut) {
+    return existingFingerprint.scope === candidateFingerprint.scope;
+  }
+  return true;
+}
+
+function isCompatibleWorkItemCreatePrIdentity(existingFingerprint, candidateFingerprint) {
+  if (existingFingerprint.prIdentity || candidateFingerprint.prIdentity) {
+    return existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
+  }
+  return true;
 }
 
 function isActiveWorkItemCreateStatus(status) {
@@ -210,10 +231,9 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
     const existingFingerprint = workItemCreateFingerprint(item, options);
     return existingFingerprint.title === candidateFingerprint.title &&
       existingFingerprint.type === candidateFingerprint.type &&
-      existingFingerprint.priority === candidateFingerprint.priority &&
-      existingFingerprint.description === candidateFingerprint.description &&
-      existingFingerprint.scope === candidateFingerprint.scope &&
-      existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
+      existingFingerprint.source === candidateFingerprint.source &&
+      isCompatibleWorkItemCreateScope(existingFingerprint, candidateFingerprint) &&
+      isCompatibleWorkItemCreatePrIdentity(existingFingerprint, candidateFingerprint);
   }) || null;
 }
 
