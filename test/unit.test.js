@@ -1612,6 +1612,49 @@ async function testRuntimeAdapters() {
     }
   });
 
+  await test('claude.resolveBinary infers native from stale cached .exe path and backfills', () => {
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, 'claude.exe');
+    fs.writeFileSync(fakeBin, '');
+    withClaudeCapsCache(claude, { claudeBin: fakeBin }, capsPath => {
+      const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+      assert.deepStrictEqual(result, { bin: fakeBin, native: true, leadingArgs: [] });
+      const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+      assert.deepStrictEqual(persisted, { claudeBin: fakeBin, claudeIsNative: true });
+    });
+  });
+
+  await test('claude.resolveBinary infers non-native from stale cached .js path and backfills', () => {
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, 'cli.js');
+    fs.writeFileSync(fakeBin, '');
+    withClaudeCapsCache(claude, { claudeBin: fakeBin }, capsPath => {
+      const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+      assert.deepStrictEqual(result, { bin: fakeBin, native: false, leadingArgs: [] });
+      const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+      assert.deepStrictEqual(persisted, { claudeBin: fakeBin, claudeIsNative: false });
+    });
+  });
+
+  await test('claude.resolveBinary preserves explicit cached claudeIsNative values', () => {
+    const cases = [
+      { file: 'claude.exe', claudeIsNative: false },
+      { file: 'cli.js', claudeIsNative: true },
+    ];
+    for (const c of cases) {
+      const tmpDir = createTmpDir();
+      const fakeBin = path.join(tmpDir, c.file);
+      fs.writeFileSync(fakeBin, '');
+      const cached = { claudeBin: fakeBin, claudeIsNative: c.claudeIsNative };
+      withClaudeCapsCache(claude, cached, capsPath => {
+        const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+        assert.deepStrictEqual(result, { bin: fakeBin, native: c.claudeIsNative, leadingArgs: [] });
+        const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+        assert.deepStrictEqual(persisted, cached);
+      });
+    }
+  });
+
   // ── capsFile / modelsCache / spawnScript paths ────────────────────────────
 
   await test('claude.capsFile points at engine/claude-caps.json', () => {
@@ -1628,6 +1671,18 @@ async function testRuntimeAdapters() {
 }
 
 function isWinPlatform() { return process.platform === 'win32'; }
+
+function withClaudeCapsCache(claude, cached, fn) {
+  const capsPath = claude.capsFile;
+  const snapshot = _captureFileState(capsPath);
+  try {
+    fs.mkdirSync(path.dirname(capsPath), { recursive: true });
+    fs.writeFileSync(capsPath, JSON.stringify(cached, null, 2));
+    fn(capsPath);
+  } finally {
+    _restoreFileState(snapshot);
+  }
+}
 
 // ─── engine/runtimes/copilot.js — Copilot Adapter (P-1d4a8e7c) ──────────────
 
