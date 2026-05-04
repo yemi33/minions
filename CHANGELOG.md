@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1709 (2026-05-04)
+
+### Fixes
+-  auto-heal projects with missing workSources at engine boot
+
 ## 0.1.1708 (2026-05-04)
 
 ### Fixes
