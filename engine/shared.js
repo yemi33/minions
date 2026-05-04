@@ -1700,6 +1700,28 @@ function sanitizeBranch(name) {
   return String(name).replace(/[^a-zA-Z0-9._\-\/]/g, '-').slice(0, 200);
 }
 
+function _worktreeNameSuffix(dispatchId, projectName, branchName) {
+  const id = String(dispatchId || '').split('-').filter(Boolean).pop();
+  if (id) return safeSlugComponent(id, 32);
+  const hash = crypto.createHash('sha1')
+    .update(`${projectName || 'default'}\n${branchName || 'worktree'}`)
+    .digest('hex')
+    .slice(0, 12);
+  return hash;
+}
+
+function buildWorktreeDirName({
+  dispatchId = '',
+  projectName = 'default',
+  branchName = 'worktree',
+  platform = process.platform,
+} = {}) {
+  const suffix = _worktreeNameSuffix(dispatchId, projectName, branchName);
+  if (platform === 'win32') return `W-${suffix}`;
+  const projectSlug = String(projectName || 'default').replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `${projectSlug}-${sanitizeBranch(branchName || 'worktree')}-${suffix}`;
+}
+
 // ── HTTP Origin Allowlist & Security Headers ─────────────────────────────────
 // Pure helpers used by dashboard.js to gate mutating requests against an
 // explicit allowlist of local origins and to attach uniform security response
@@ -2659,6 +2681,7 @@ module.exports = {
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
+  buildWorktreeDirName, // exported for testing
   isLiveCommandCenterPath,
   describeCcProtectedPaths,
   renderCcSystemPrompt,
