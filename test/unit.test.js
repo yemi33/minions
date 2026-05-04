@@ -45436,6 +45436,16 @@ async function testLoopToWatchInterception() {
     assert.ok(prompt.includes('monitor'),
       'CC prompt should include "monitor" trigger phrase');
   });
+
+  await test('CC system prompt stops after dispatch unless monitoring is explicit', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(prompt.includes('After emitting a dispatch, fix, or implement action'),
+      'CC prompt should define post-dispatch behavior');
+    assert.ok(prompt.includes('return immediately') && prompt.includes('do not poll, monitor, watch, wait, or check until completion'),
+      'CC prompt should forbid implicit monitoring after dispatch');
+    assert.ok(prompt.includes('Only create a watch, monitor, poll, or periodically check when the human explicitly asks'),
+      'CC prompt should allow monitoring only on explicit human request');
+  });
 }
 
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
