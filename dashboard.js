@@ -1654,6 +1654,7 @@ async function executeCCActions(actions) {
             priority: action.priority || 'medium', description: action.description || '',
             status: WI_STATUS.PENDING, created: new Date().toISOString(),
             createdBy: 'command-center', project: targetProject?.name || project,
+            ...(action.scope ? { scope: action.scope } : {}),
             ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
             ...(isOneShot ? { oneShot: true } : {}),
           };

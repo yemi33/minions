@@ -991,6 +991,7 @@ async function ccExecuteAction(action, targetTabId) {
             title: action.title, type: workType,
             priority: action.priority || 'medium', description: action.description || '',
             project: action.project || '',
+            scope: action.scope || '',
             agent: action.agent || '',
             agents: action.agents || [],
         });
