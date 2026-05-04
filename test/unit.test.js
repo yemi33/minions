@@ -7506,6 +7506,15 @@ async function testGithubHelpers() {
     assert.ok(typeof github.pollPrHumanComments === 'function');
     assert.ok(typeof github.reconcilePrs === 'function');
   });
+
+  await test('GitHub treats Minions verdict comments as agent comments', () => {
+    assert.ok(github._isAgentComment({ body: 'VERDICT: APPROVE\n\nLooks good.' }),
+      'Minions approval comments should not trigger human-feedback fixes');
+    assert.ok(github._isAgentComment({ body: '**VERDICT: REQUEST_CHANGES**\n\nPlease fix this issue.' }),
+      'Minions request-changes comments should not trigger human-feedback fixes');
+    assert.strictEqual(github._isAgentComment({ body: 'Please fix the typo on line 42.' }), false,
+      'Ordinary human feedback should still trigger fixes');
+  });
 }
 
 // ─── PR Comment Processing Tests ────────────────────────────────────────────
@@ -30850,7 +30859,7 @@ async function testPrDuplicateRaceFix() {
   await test('updatePrAfterReview matches PRs with shared.findPrRecord', () => {
     const fn = lifecycleSrc.match(/function updatePrAfterReview[\s\S]*?^}/m);
     assert.ok(fn, 'updatePrAfterReview must exist');
-    assert.ok(fn[0].includes('shared.findPrRecord(prs, pr, project)'),
+    assert.ok(fn[0].includes('shared.findPrRecord(prs, reviewPr, reviewProject)'),
       'updatePrAfterReview should use shared.findPrRecord so stale legacy dispatch metadata still matches normalized PR files');
   });
 
@@ -35887,6 +35896,100 @@ async function testStructuredCompletion() {
     assert.strictEqual(result.status, 'failed');
     assert.strictEqual(result.failure_class, 'build-failure');
     assert.strictEqual(result.pending, 'fix compilation errors');
+  });
+
+  await test('runPostCompletionHooks syncs review work-item verdicts from structured PR (#2004)', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const githubInner = require('../engine/github');
+      const originalCheck = githubInner.checkLiveReviewStatus;
+      githubInner.checkLiveReviewStatus = async () => 'pending';
+
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+      };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' }, lambert: { name: 'Lambert' } }, engine: {} };
+      sharedInner.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const prPath = sharedInner.projectPrPath(project);
+      const wiPath = sharedInner.projectWorkItemsPath(project);
+      sharedInner.safeWrite(prPath, [{
+        id: 'github:yemi33/minions#2004',
+        prNumber: 2004,
+        url: 'https://github.com/yemi33/minions/pull/2004',
+        title: 'recover stalled runtime resumes',
+        agent: 'dallas',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        lastReviewedAt: '2026-05-03T00:00:00.000Z',
+        minionsReview: { note: '' },
+        humanFeedback: { feedbackContent: 'VERDICT: APPROVE\n\nLooks good.', pendingFix: false },
+      }]);
+      sharedInner.safeWrite(wiPath, [{
+        id: 'W-moqj82nl0021036b',
+        title: 'Review github:yemi33/minions#2004',
+        type: sharedInner.WORK_TYPE.REVIEW,
+        status: sharedInner.WI_STATUS.DISPATCHED,
+        dispatched_to: 'lambert',
+      }]);
+
+      const dispatchItem = {
+        id: 'work-minions-W-moqj82nl0021036b',
+        type: sharedInner.WORK_TYPE.REVIEW,
+        task: 'Review github:yemi33/minions#2004',
+        agent: 'lambert',
+        meta: {
+          source: 'work-item',
+          project,
+          item: {
+            id: 'W-moqj82nl0021036b',
+            title: 'Review github:yemi33/minions#2004',
+            type: sharedInner.WORK_TYPE.REVIEW,
+          },
+        },
+      };
+      const stdout = JSON.stringify({
+        type: 'session.task_complete',
+        data: {
+          summary: [
+            'status: success',
+            'summary: Reviewed PR #2004 and posted approval.',
+            'pr: https://github.com/yemi33/minions/pull/2004',
+            'verdict: approved',
+            'failure_class: N/A',
+            'retryable: false',
+            'needs_rerun: false',
+          ].join('\n')
+        }
+      });
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'lambert', 0, stdout, config);
+
+      const [updatedPr] = sharedInner.safeJson(prPath);
+      const [updatedWi] = sharedInner.safeJson(wiPath);
+      assert.strictEqual(updatedPr.reviewStatus, 'approved',
+        'review work-item completion should update canonical PR reviewStatus from structured verdict');
+      assert.notStrictEqual(updatedPr.lastReviewedAt, '2026-05-03T00:00:00.000Z',
+        'review work-item completion should refresh lastReviewedAt');
+      assert.strictEqual(updatedPr.minionsReview.reviewer, 'Lambert');
+      assert.strictEqual(updatedPr.minionsReview.note, 'Reviewed PR #2004 and posted approval.');
+      assert.strictEqual(updatedWi.status, sharedInner.WI_STATUS.DONE,
+        'review work item should still be marked done');
+
+      githubInner.checkLiveReviewStatus = originalCheck;
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/github']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   await test('parseStructuredCompletion reads plain task_complete status summaries', () => {

@@ -1309,11 +1309,24 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+function comparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
+    } catch {
+      return resolved;
+    }
+  }
+}
+
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPath = path.resolve(filePath);
+  const resolvedPath = comparablePath(filePath);
   const projects = getProjects(config);
   for (const project of projects) {
-    if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
+    if (comparablePath(projectPrPath(project)) === resolvedPath) return project;
   }
   if (projects.length === 1) return projects[0];
   return null;
