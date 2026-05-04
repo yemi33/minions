@@ -2252,12 +2252,35 @@ function ensurePrBranchForDispatch(project, pr, automationType) {
 }
 
 
+// Tracks per-process which silent-discovery warnings have already been logged
+// so we don't spam the log every tick. Cleared on process exit (no need to
+// persist — the warning is for the operator at engine startup/run time).
+const _warnedSilentDiscovery = new Set();
+
+function _warnSilentDiscoveryOnce(kind, project, dataPath, config) {
+  const key = `${kind}:${project?.name || project?.localPath || 'default'}`;
+  if (_warnedSilentDiscovery.has(key)) return;
+  let count = 0;
+  try { const arr = safeJson(dataPath); if (Array.isArray(arr)) count = arr.length; } catch {}
+  if (count <= 0) return; // empty file is fine — no warning worth surfacing
+  _warnedSilentDiscovery.add(key);
+  const projName = project?.name || '(unnamed)';
+  const hasBlock = !!(project?.workSources?.[kind] || config?.workSources?.[kind]);
+  const hint = hasBlock
+    ? `Toggle in Dashboard → Settings → Project, or set \`workSources.${kind}.enabled: true\` in config.json.`
+    : `Run \`minions doctor\` to inspect, \`minions init\` if you cloned the repo without setup, or re-link the project: \`minions add ${project?.localPath || projName}\`.`;
+  log('warn', `Silent-discovery footgun: project "${projName}" has ${count} record(s) in ${path.basename(dataPath)} but workSources.${kind}.enabled is not true — engine will not pick them up. ${hint}`);
+}
+
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
 async function discoverFromPrs(config, project) {
   const src = project?.workSources?.pullRequests || config.workSources?.pullRequests;
-  if (!src?.enabled) return [];
+  if (!src?.enabled) {
+    _warnSilentDiscoveryOnce('pullRequests', project, projectPrPath(project), config);
+    return [];
+  }
 
   const prs = queries.getPrs(project);
   const cooldownMs = (src.cooldownMinutes || 30) * 60 * 1000;
@@ -2757,7 +2780,10 @@ function refreshDeferredWorkItemPrompt(item, config) {
 
 function discoverFromWorkItems(config, project) {
   const src = project?.workSources?.workItems || config.workSources?.workItems;
-  if (!src?.enabled) return [];
+  if (!src?.enabled) {
+    _warnSilentDiscoveryOnce('workItems', project, projectWorkItemsPath(project), config);
+    return [];
+  }
 
   const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(MINIONS_DIR, '..');
   const items = safeJson(projectWorkItemsPath(project)) || [];

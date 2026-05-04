@@ -226,6 +226,24 @@ function runPreflight(opts = {}) {
         results.push({ name: `Runtime config (${w.id})`, ok: 'warn', message: w.message });
       }
     } catch { /* defensive — preflight must never throw */ }
+
+    // Project workSources warnings — catches the silent-discovery footgun
+    // where a project (often added by a hand-rolled config or by cloning the
+    // repo without `minions init`) has no workSources block, so engine.js
+    // discoverFromWorkItems / discoverFromPrs return [] without logging.
+    try {
+      const projectWarns = shared.projectWorkSourceWarnings(opts.config, (project) => {
+        const wiPath = shared.projectWorkItemsPath(project);
+        const prPath = shared.projectPrPath(project);
+        const safeJson = shared.safeJson;
+        const wi = (() => { try { const a = safeJson(wiPath); return Array.isArray(a) ? a.length : 0; } catch { return 0; } })();
+        const pr = (() => { try { const a = safeJson(prPath); return Array.isArray(a) ? a.length : 0; } catch { return 0; } })();
+        return { workItems: wi, pullRequests: pr };
+      });
+      for (const w of projectWarns) {
+        results.push({ name: `Project config (${w.id})`, ok: 'warn', message: w.message });
+      }
+    } catch { /* defensive */ }
   }
 
   return { passed: allOk, results };

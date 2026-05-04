@@ -173,6 +173,13 @@ function buildProjectEntry({ name, description, localPath, repoHost, repositoryI
     repoName: repoName || name,
     mainBranch: mainBranch || 'main',
     prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName }),
+    // Discovery defaults must mirror dashboard.js POST /api/projects — without
+    // these, discoverFromWorkItems / discoverFromPrs silently no-op (the engine
+    // looks healthy but never dispatches anything).
+    workSources: {
+      pullRequests: { enabled: true, cooldownMinutes: 30 },
+      workItems: { enabled: true, cooldownMinutes: 0 },
+    },
   };
 }
 

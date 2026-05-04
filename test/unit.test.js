@@ -3748,6 +3748,86 @@ async function testRuntimeFleetHelpers() {
     assert.deepStrictEqual(shared.runtimeConfigWarnings({}, ['claude']), []);
   });
 
+  // ── projectWorkSourceWarnings: silent-discovery footgun detection ────────
+
+  await test('projectWorkSourceWarnings: warns when a project has no workSources block AND has data files', () => {
+    const config = { projects: [{ name: 'Office', localPath: 'C:/office/src' }] };
+    const ws = shared.projectWorkSourceWarnings(config, () => ({ workItems: 3, pullRequests: 0 }));
+    const missing = ws.filter(w => w.id === 'project-worksources-missing');
+    assert.strictEqual(missing.length, 1, 'should emit one missing warning');
+    assert.ok(missing[0].message.includes('Office'), 'message should name the project');
+    assert.ok(missing[0].message.includes('minions init') || missing[0].message.includes('minions add'),
+      'message should point users at minions init or minions add');
+  });
+
+  await test('projectWorkSourceWarnings: silent on a project with no workSources AND empty data', () => {
+    const config = { projects: [{ name: 'Empty', localPath: '/x' }] };
+    const ws = shared.projectWorkSourceWarnings(config, () => ({ workItems: 0, pullRequests: 0 }));
+    assert.strictEqual(ws.length, 0, 'no data → no nag');
+  });
+
+  await test('projectWorkSourceWarnings: workItems disabled but data present → disabled warning', () => {
+    const config = { projects: [{ name: 'P1', workSources: { workItems: { enabled: false }, pullRequests: { enabled: true } } }] };
+    const ws = shared.projectWorkSourceWarnings(config, () => ({ workItems: 5, pullRequests: 0 }));
+    const disabled = ws.filter(w => w.id === 'project-worksources-disabled');
+    assert.strictEqual(disabled.length, 1);
+    assert.ok(disabled[0].message.includes('workItems.enabled'));
+  });
+
+  await test('projectWorkSourceWarnings: top-level workSources fallback prevents missing warning', () => {
+    const config = {
+      workSources: { workItems: { enabled: true }, pullRequests: { enabled: true } },
+      projects: [{ name: 'Inherits', localPath: '/x' }],
+    };
+    const ws = shared.projectWorkSourceWarnings(config, () => ({ workItems: 10, pullRequests: 5 }));
+    assert.strictEqual(ws.length, 0, 'top-level fallback satisfies discovery — no warning');
+  });
+
+  await test('projectWorkSourceWarnings: returns [] for empty/malformed config (defensive)', () => {
+    assert.deepStrictEqual(shared.projectWorkSourceWarnings(null), []);
+    assert.deepStrictEqual(shared.projectWorkSourceWarnings({}), []);
+    assert.deepStrictEqual(shared.projectWorkSourceWarnings({ projects: 'bogus' }), []);
+  });
+
+  await test('minions.js buildProjectEntry sets workSources defaults — CLI add path mirrors dashboard add path', () => {
+    // The dashboard's POST /api/projects has always set workSources defaults.
+    // The CLI add path used to omit them, so projects added via `minions add`
+    // silently failed work-item discovery. Source-string check ensures the
+    // defaults stay in lockstep with dashboard.js (search "workSources").
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
+    const idx = src.indexOf('function buildProjectEntry');
+    assert.ok(idx >= 0, 'buildProjectEntry should exist in minions.js');
+    const block = src.slice(idx, idx + 1500);
+    assert.ok(block.includes('workSources'),
+      'buildProjectEntry must set workSources defaults — without them, CLI-added projects silently skip discovery');
+    assert.ok(block.includes('pullRequests') && block.includes('workItems'),
+      'workSources should declare both pullRequests and workItems sub-blocks');
+  });
+
+  await test('engine.js discoverFromWorkItems calls _warnSilentDiscoveryOnce when bailing', () => {
+    // Source-string check: ensures the silent-bail nudge stays wired in. If a
+    // future refactor splits discoverFromWorkItems and forgets the warn, this
+    // catches it before another user spends 24 hours debugging "why is the
+    // engine alive but not dispatching anything?"
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const wiIdx = src.indexOf('function discoverFromWorkItems');
+    assert.ok(wiIdx >= 0);
+    const wiBlock = src.slice(wiIdx, wiIdx + 600);
+    assert.ok(wiBlock.includes('_warnSilentDiscoveryOnce'),
+      'discoverFromWorkItems must warn (once per process) when bailing on disabled workSources');
+    const prIdx = src.indexOf('async function discoverFromPrs');
+    assert.ok(prIdx >= 0);
+    const prBlock = src.slice(prIdx, prIdx + 600);
+    assert.ok(prBlock.includes('_warnSilentDiscoveryOnce'),
+      'discoverFromPrs must warn (once per process) when bailing on disabled workSources');
+  });
+
+  await test('engine/preflight.js wires projectWorkSourceWarnings into runPreflight', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('projectWorkSourceWarnings'),
+      'preflight should call shared.projectWorkSourceWarnings so `minions doctor` surfaces the silent-discovery footgun');
+  });
+
   // ── Wiring sanity: engine/cli.js + engine/preflight.js consume helpers ─────
 
   await test('engine/cli.js calls applyLegacyCcModelMigration during start()', () => {

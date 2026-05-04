@@ -1120,6 +1120,71 @@ function runtimeConfigWarnings(config, registeredRuntimes) {
   return warnings;
 }
 
+/**
+ * Detect projects whose discovery would silently no-op because the
+ * `workSources` block is missing or its sub-flags are disabled. Catches the
+ * common "I cloned the repo and ran it without `minions init`" footgun where
+ * `engine.js` `discoverFromWorkItems` / `discoverFromPrs` bail on
+ * `if (!src?.enabled) return [];` with no log output.
+ *
+ * Pure helper — pass `getDataCounts(project) → { workItems: N, pullRequests: N }`
+ * so the caller controls disk reads (preflight reads files; tests inject counts).
+ * If `getDataCounts` is omitted, every project with a missing/disabled source
+ * is reported (caller decides whether to surface).
+ *
+ * Returns: `{ id, message, project }[]` — `id` is one of:
+ *   - `project-worksources-missing`     — no workSources block at all
+ *   - `project-worksources-disabled`    — block exists but a sub-source is disabled
+ */
+function projectWorkSourceWarnings(config, getDataCounts) {
+  const warnings = [];
+  if (!config || typeof config !== 'object') return warnings;
+  const projects = Array.isArray(config.projects) ? config.projects : [];
+  const topSources = config.workSources || null;
+  for (const project of projects) {
+    if (!project || typeof project !== 'object') continue;
+    const projSources = project.workSources || null;
+    const counts = (typeof getDataCounts === 'function')
+      ? (getDataCounts(project) || {})
+      : { workItems: Infinity, pullRequests: Infinity };
+    const wiCount = Number(counts.workItems) || 0;
+    const prCount = Number(counts.pullRequests) || 0;
+
+    // Case 1: project has no workSources AND no top-level fallback. Discovery
+    // will return [] for everything. This is the cloned-repo footgun.
+    if (!projSources && !topSources) {
+      if (wiCount > 0 || prCount > 0) {
+        warnings.push({
+          id: 'project-worksources-missing',
+          project: project.name,
+          message: `Project "${project.name}" has no workSources block — work-item and PR discovery are silently disabled (${wiCount} work item(s), ${prCount} PR(s) waiting). Run \`minions init\` if you cloned the repo directly, or re-link the project: \`minions add ${project.localPath || project.name}\`.`,
+        });
+      }
+      continue;
+    }
+
+    // Case 2: workSources exists but a sub-source is disabled while data sits
+    // unprocessed. Could be intentional, but worth surfacing.
+    const wiSrc = projSources?.workItems || topSources?.workItems;
+    if ((!wiSrc || wiSrc.enabled === false) && wiCount > 0) {
+      warnings.push({
+        id: 'project-worksources-disabled',
+        project: project.name,
+        message: `Project "${project.name}" has ${wiCount} unprocessed work item(s) but workSources.workItems.enabled is not true — engine will not dispatch them. Toggle in Dashboard → Settings → Project, or set \`workSources.workItems.enabled: true\` in config.json.`,
+      });
+    }
+    const prSrc = projSources?.pullRequests || topSources?.pullRequests;
+    if ((!prSrc || prSrc.enabled === false) && prCount > 0) {
+      warnings.push({
+        id: 'project-worksources-disabled',
+        project: project.name,
+        message: `Project "${project.name}" has ${prCount} pull-request record(s) but workSources.pullRequests.enabled is not true — engine will not poll or review them. Toggle in Dashboard → Settings → Project, or set \`workSources.pullRequests.enabled: true\` in config.json.`,
+      });
+    }
+  }
+  return warnings;
+}
+
 // ─── Status & Type Constants ─────────────────────────────────────────────────
 
 const WI_STATUS = {
@@ -2515,6 +2580,7 @@ module.exports = {
   resolveAgentMaxBudget, resolveAgentBareMode,
   applyLegacyCcModelMigration, _resetLegacyCcModelMigrationFlag,
   runtimeConfigWarnings,
+  projectWorkSourceWarnings,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, PR_PENDING_REASON, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
   WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
