@@ -33271,7 +33271,8 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fnBody.includes('ccDocCallStreaming({'), 'Streaming doc-chat route should use the streaming doc helper');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'chunk', text })"), 'Streaming doc-chat route should emit chunk events');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"), 'Streaming doc-chat route should emit tool events');
-    assert.ok(fnBody.includes("writeDocEvent({ type: 'done'"), 'Streaming doc-chat route should emit a final done event');
+    assert.ok(fnBody.includes("type: 'done'") && fnBody.includes('writeDocEvent(donePayload'),
+      'Streaming doc-chat route should emit a final done event');
   });
 
   await test('handleDocChatStream validates editable file paths before opening SSE stream', () => {
@@ -48577,10 +48578,18 @@ async function testDashboardPureHelpers() {
 
   // ── doc-chat action/document parsing ─────────────────────────────────────
 
-  await test('_messageRequestsOrchestration only matches explicit orchestration asks', () => {
+  await test('_messageRequestsOrchestration matches explicit orchestration and engineering asks', () => {
     assert.strictEqual(_messageRequestsOrchestration('Summarize the selected paragraph'), false);
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
+    assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), true);
     assert.strictEqual(_messageRequestsOrchestration('Create a watch for PR 123 until build passes'), true);
   });
 
@@ -48594,12 +48603,93 @@ async function testDashboardPureHelpers() {
       'ignored doc-chat action blocks should be stripped from display text');
   });
 
+  await test('_parseDocChatResultText keeps plan edits with engineering terms on the edit path', () => {
+    const message = 'Update this plan to add tests for the API section';
+    const allowActions = _messageRequestsOrchestration(message);
+    assert.strictEqual(allowActions, false,
+      'explicit plan/document edits must not allow action parsing just because they mention tests or APIs');
+    const text = `Updated the plan.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Do not run","workType":"test"}]\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nUpdated plan body with API test coverage notes.`;
+    const parsed = _parseDocChatResultText(text, { allowActions });
+    assert.strictEqual(parsed.answer, 'Updated the plan.');
+    assert.strictEqual(parsed.content, 'Updated plan body with API test coverage notes.');
+    assert.deepStrictEqual(parsed.actions, []);
+  });
+
   await test('_parseDocChatResultText accepts actions only when explicitly allowed', () => {
     const text = 'I will dispatch that.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug","workType":"fix"}]';
     const parsed = _parseDocChatResultText(text, { allowActions: true });
     assert.strictEqual(parsed.answer, 'I will dispatch that.');
     assert.strictEqual(parsed.actions.length, 1);
     assert.strictEqual(parsed.actions[0].type, 'dispatch');
+  });
+
+  await test('_parseDocChatResultText preserves direct document edits instead of dispatching', () => {
+    const text = `Updated the paragraph.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Should not run","workType":"fix"}]\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nRewritten document body.`;
+    const parsed = _parseDocChatResultText(text, { allowActions: false });
+    assert.strictEqual(parsed.answer, 'Updated the paragraph.');
+    assert.strictEqual(parsed.content, 'Rewritten document body.');
+    assert.deepStrictEqual(parsed.actions, []);
+  });
+
+  await test('_parseDocChatResultText surfaces malformed doc-chat action JSON', () => {
+    const text = 'I will dispatch that.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug"';
+    const parsed = _parseDocChatResultText(text, { allowActions: true });
+    assert.strictEqual(parsed.answer, 'I will dispatch that.');
+    assert.deepStrictEqual(parsed.actions, []);
+    assert.ok(parsed.actionParseError,
+      'doc-chat callers must be able to warn when action JSON was emitted but dropped');
+  });
+
+  await test('doc-chat dispatch action creates a Command Center work item', async () => {
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    const dashboardPath = path.join(MINIONS_DIR, 'dashboard');
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+      fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
+      delete require.cache[require.resolve(dashboardPath)];
+      const freshDashboard = require(dashboardPath);
+      const allowActions = freshDashboard._messageRequestsOrchestration('Fix this bug described in the doc');
+      assert.strictEqual(allowActions, true, 'complex engineering doc-chat ask should allow action parsing');
+      const parsed = freshDashboard._parseDocChatResultText(
+        'I will open a work item for that bug.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix documented bug","workType":"fix","priority":"high","description":"Investigate and fix the bug described in the document."}]',
+        { allowActions }
+      );
+      const results = await freshDashboard.executeCCActions(parsed.actions);
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true, results[0].error || 'dispatch action should execute');
+      const items = JSON.parse(fs.readFileSync(path.join(testDir, 'work-items.json'), 'utf8'));
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].title, 'Fix documented bug');
+      assert.strictEqual(items[0].type, 'fix');
+      assert.strictEqual(items[0].createdBy, 'command-center');
+    } finally {
+      delete require.cache[require.resolve(dashboardPath)];
+      restore();
+    }
+  });
+
+  await test('doc-chat system prompt routes engineering work to Command Center action JSON', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
+    assert.ok(prompt.includes('Complex Engineering Requests'),
+      'doc-chat prompt should distinguish engineering delegation from document editing');
+    assert.ok(prompt.includes('"type": "dispatch"') || prompt.includes('"type":"dispatch"'),
+      'doc-chat prompt should show the Command Center dispatch action shape');
+    assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
+      'doc-chat prompt should map engineering task classes to workType values');
+  });
+
+  await test('doc-chat handlers execute parsed actions and surface parse errors', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docChatBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChatStream'));
+    const docStreamStart = src.indexOf('async function handleDocChatStream');
+    const docStreamBlock = src.slice(docStreamStart, src.indexOf('async function handleDocChat', docStreamStart + 1) > docStreamStart
+      ? src.indexOf('async function handleDocChat', docStreamStart + 1)
+      : src.indexOf('const ROUTES = ['));
+    assert.strictEqual((src.match(/await executeDocChatActions\(actions\)/g) || []).length, 2,
+      'both doc-chat handlers should execute parsed actions server-side');
+    assert.ok(docChatBlock.includes('actionParseError') && docStreamBlock.includes('actionParseError'),
+      'both doc-chat handlers should return action parse errors instead of dropping them silently');
   });
 
   await test('_parseDocChatResultText uses a line-bounded high-entropy document delimiter', () => {

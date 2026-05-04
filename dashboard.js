@@ -1168,11 +1168,22 @@ function stripCCActionSyntax(text) {
 function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
-  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task)\b/.test(text)
+
+  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
+    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
+  const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
+    || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
+  if (explicitDocEdit && !explicitOrchestration) return false;
+
+  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
     || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)
     || /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
     || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
+    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text)
+    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(bug|issue|error|crash|exception|regression|failing test|test failure|build failure|ci|feature|code|endpoint|api|ui|workflow|integration|pr|pull request)\b/.test(text)
+    || /\b(run|add|write)\b[\s\S]{0,80}\b(test|tests|coverage)\b/.test(text);
 }
 
 function _escapeRegExp(str) {
@@ -1691,6 +1702,11 @@ async function executeCCActions(actions) {
   return results;
 }
 
+async function executeDocChatActions(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) return undefined;
+  return executeCCActions(actions);
+}
+
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk
@@ -1989,17 +2005,29 @@ function _parseDocChatResultText(text, { allowActions = false } = {}) {
   const docDelimiter = findDocChatDocumentDelimiter(text);
   if (docDelimiter) {
     const answerPart = text.slice(0, docDelimiter.index).trim();
-    const { text: answer, actions } = allowActions
+    const parsedActions = allowActions
       ? parseCCActions(answerPart)
       : { text: stripCCActionSyntax(answerPart), actions: [] };
+    const { text: answer, actions } = parsedActions;
     let content = text.slice(docDelimiter.index + docDelimiter.length).trim();
     content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
-    return { answer, content, actions };
+    return {
+      answer,
+      content,
+      actions,
+      ...(parsedActions._actionParseError ? { actionParseError: parsedActions._actionParseError } : {}),
+    };
   }
-  const { text: stripped, actions } = allowActions
+  const parsedActions = allowActions
     ? parseCCActions(text)
     : { text: stripCCActionSyntax(text), actions: [] };
-  return { answer: stripped, content: null, actions };
+  const { text: stripped, actions } = parsedActions;
+  return {
+    answer: stripped,
+    content: null,
+    actions,
+    ...(parsedActions._actionParseError ? { actionParseError: parsedActions._actionParseError } : {}),
+  };
 }
 
 function _docChatDisplayText(text, opts) {
@@ -4250,19 +4278,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions } = await ccDocCall({
+      const { answer, content, actions, actionParseError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
         freshSession: !!body.freshSession,
         onAbortReady: (abort) => { _docAbort = abort; },
       });
+      const actionResults = await executeDocChatActions(actions);
+      const baseReply = (extra = {}) => ({
+        ok: true,
+        answer,
+        actions,
+        ...(actionResults ? { actionResults } : {}),
+        ...(actionParseError ? { actionParseError } : {}),
+        ...extra,
+      });
 
-      if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
+      if (!content) return jsonReply(res, 200, baseReply({ edited: false }));
 
       if (isJson) {
         try { JSON.parse(content); } catch (e) {
-          return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false, actions });
+          return jsonReply(res, 200, baseReply({ answer: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false }));
         }
       }
       if (canEdit && fullPath) {
@@ -4271,7 +4308,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           try {
             const mtg = safeJson(fullPath);
             if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
-              return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
+              return jsonReply(res, 200, baseReply({ edited: false }));
             }
           } catch { /* proceed with write if can't read */ }
         }
@@ -4279,10 +4316,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         safeWrite(fullPath, content);
 
         _docDone = true;
-        return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
+        return jsonReply(res, 200, baseReply({ edited: true, content }));
       }
       _docDone = true;
-      return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+      return jsonReply(res, 200, baseReply({ answer: answer + '\n\n(Read-only — changes not saved)', edited: false }));
       } finally { _docAbort = null; _docDone = true; docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
@@ -4356,7 +4393,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4365,9 +4402,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onChunk: (text) => { writeDocEvent({ type: 'chunk', text }); },
           onToolUse: (name, input) => { writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) }); },
         });
+        const actionResults = await executeDocChatActions(actions);
+        const donePayload = (extra = {}) => ({
+          type: 'done',
+          text: answer,
+          actions,
+          ...(actionResults ? { actionResults } : {}),
+          ...(actionParseError ? { actionParseError } : {}),
+          ...extra,
+        });
 
         if (!content) {
-          writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+          writeDocEvent(donePayload({ edited: false }));
           _docStreamEnded = true;
           res.end();
           return;
@@ -4375,7 +4421,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         if (isJson) {
           try { JSON.parse(content); } catch (e) {
-            writeDocEvent({ type: 'done', text: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false, actions });
+            writeDocEvent(donePayload({ text: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false }));
             _docStreamEnded = true;
             res.end();
             return;
@@ -4387,7 +4433,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             try {
               const mtg = safeJson(fullPath);
               if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
-                writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+                writeDocEvent(donePayload({ edited: false }));
                 _docStreamEnded = true;
                 res.end();
                 return;
@@ -4396,13 +4442,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
 
           safeWrite(fullPath, content);
-          writeDocEvent({ type: 'done', text: answer, edited: true, content, actions });
+          writeDocEvent(donePayload({ edited: true, content }));
           _docStreamEnded = true;
           res.end();
           return;
         }
 
-        writeDocEvent({ type: 'done', text: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+        writeDocEvent(donePayload({ text: answer + '\n\n(Read-only — changes not saved)', edited: false }));
         _docStreamEnded = true;
         res.end();
       } finally {
