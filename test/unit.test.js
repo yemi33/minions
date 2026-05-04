@@ -2090,6 +2090,10 @@ async function testCopilotAdapter() {
       const r = copilot.parseError(c);
       assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure`);
       assert.strictEqual(r.retriable, false);
+      assert.ok(/gh auth login|GH_TOKEN|COPILOT_GITHUB_TOKEN/.test(r.message),
+        'Copilot auth failure guidance should point to GitHub/Copilot auth');
+      assert.ok(!/az|azureauth/i.test(r.message),
+        'Copilot auth failure guidance must not mention Azure auth tools');
     }
   });
 
@@ -2957,6 +2961,26 @@ async function testSpawnAgentHelpers() {
     assert.ok(warnings.some(msg => msg.includes('ADO token fetch failed')));
   });
 
+  await test('injectAdoTokenEnvForRepoHost only fetches ADO tokens for ADO repo hosts', () => {
+    let calls = 0;
+    const githubEnv = { MINIONS_REPO_HOST: 'github' };
+    const github = spawnAgent.injectAdoTokenEnvForRepoHost(githubEnv, {
+      acquireToken: () => { calls++; throw new Error('should not fetch for GitHub'); },
+    });
+    assert.strictEqual(github, false);
+    assert.strictEqual(calls, 0, 'GitHub repo startup must not invoke az or azureauth token acquisition');
+    assert.deepStrictEqual(githubEnv, { MINIONS_REPO_HOST: 'github' });
+
+    const adoEnv = { MINIONS_REPO_HOST: 'ado' };
+    const ado = spawnAgent.injectAdoTokenEnvForRepoHost(adoEnv, {
+      acquireToken: () => { calls++; return { token: 'eyJado-token', source: 'az' }; },
+      warn: () => { throw new Error('should not warn on valid ADO token'); },
+    });
+    assert.strictEqual(ado, true);
+    assert.strictEqual(calls, 1, 'ADO repo startup should still fetch the shared ADO token');
+    assert.strictEqual(adoEnv.AZURE_DEVOPS_EXT_PAT, 'eyJado-token');
+  });
+
   // ── computeAddDirs (bridges getUserAssetDirs → spawn --add-dir flags) ─────
 
   await test('computeAddDirs always includes minionsDir first', () => {
@@ -3210,6 +3234,8 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
     assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
     assert.strictEqual(typeof spawnAgent.injectAdoTokenEnv, 'function');
+    assert.strictEqual(typeof spawnAgent.injectAdoTokenEnvForRepoHost, 'function');
+    assert.strictEqual(typeof spawnAgent.shouldInjectAdoTokenEnv, 'function');
   });
 
   await test('normalizeRuntimeExit preserves code and maps signal/null exits', () => {
@@ -3348,7 +3374,7 @@ async function testEngineDefaults() {
 
   await test('ENGINE_DEFAULTS has all required keys', () => {
     const required = ['tickInterval', 'maxConcurrent', 'inboxConsolidateThreshold',
-      'agentTimeout', 'heartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
+      'agentTimeout', 'heartbeatTimeout', 'resumeHeartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
       'idleAlertMinutes', 'restartGracePeriod', 'worktreeCreateTimeout', 'worktreeCreateRetries'];
     for (const key of required) {
       assert.ok(shared.ENGINE_DEFAULTS[key] !== undefined, `Missing default: ${key}`);
@@ -8263,6 +8289,31 @@ async function testLlmModule() {
     assert.deepStrictEqual(completions, [{ summary: 'STREAM_CHECK_123', success: true }]);
   });
 
+  await test('llm streaming accumulator preserves full Copilot doc-chat document edit output across assistant fragments', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const acc = llm._createStreamAccumulator({
+      runtime: copilot,
+      maxRawBytes: 100000,
+      maxStderrBytes: 100000,
+      maxLineBufferBytes: 100000,
+    });
+    const fullText = [
+      'Here is the full update.\n\n',
+      '---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---\n',
+      '```md\n# Updated Plan\n\nKeep this body.\n```',
+    ].join('');
+    const raw = [
+      JSON.stringify({ type: 'assistant.message', data: { content: 'Here is the full update.\n\n---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---\n', outputTokens: 12 } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: '```md\n# Updated Plan\n\nKeep this body.\n```', outputTokens: 20 } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'Updated the document.' } }], outputTokens: 2 } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-doc-edit', exitCode: 0, usage: { premiumRequests: 1, totalApiDurationMs: 2500 } }),
+    ].join('\n') + '\n';
+    acc.ingestStdout(raw);
+    const parsed = acc.finalize();
+    assert.strictEqual(parsed.text, fullText,
+      'final text must come from full raw-output reconciliation, not the last assistant.message fragment');
+  });
+
   await test('claude stream consumer handles partial stream_event deltas', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'), 'utf8');
     assert.ok(src.includes("obj.type === 'stream_event'"),
@@ -8324,12 +8375,13 @@ async function testLlmModule() {
 
   await test('llm module exports exactly the documented surface', () => {
     // P-5e1b7a3c: isResumeSessionStillValid removed; new test-only exports
-    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache) added so callers
-    // can verify capability gating + per-runtime caching without touching
-    // private state directly.
+    // (_buildSpawnAgentFlags, _resolveBin, _resetBinCache, _createStreamAccumulator)
+    // added so callers can verify capability gating, per-runtime caching, and
+    // final stream reconciliation without touching private state directly.
     const exported = Object.keys(llm).sort();
     assert.deepStrictEqual(exported, [
       '_buildSpawnAgentFlags',
+      '_createStreamAccumulator',
       '_resetBinCache',
       '_resolveBin',
       '_resolveModelFor',
@@ -9599,7 +9651,7 @@ async function testStateIntegrity() {
 
   await test('Stale-orphan timeout path uses normal auto-retry flow', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes("completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);"),
+    assert.ok(src.includes('completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason'),
       'Stale-orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
       'Stale-orphan cleanup should not bypass work item retry handling');
@@ -13957,6 +14009,40 @@ async function testRenderPlaybook() {
       'docs playbook should substitute branch_name into the template');
   });
 
+  await test('renderPlaybook emits GitHub shared rules without Azure auth guidance for GitHub repos', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      repo_name: 'repo', ado_org: 'octo', ado_project: '',
+      repo_host: 'github',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result && result.includes('GitHub Tooling and Auth'),
+      'GitHub render should include GitHub-specific auth guidance');
+    assert.ok(result.includes('gh auth login') && result.includes('COPILOT_GITHUB_TOKEN'),
+      'GitHub auth guidance should point to gh/Copilot token paths');
+    assert.ok(!/azureauth|az devops|ADO token/i.test(result),
+      'GitHub rendered prompt must not include Azure auth guidance');
+  });
+
+  await test('renderPlaybook preserves Azure auth guidance for ADO repos', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      repo_name: 'repo', ado_org: 'contoso', ado_project: 'platform',
+      repo_host: 'ado',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W002', item_name: 'Test feature',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result && /azureauth ado token --mode iwa --mode broker --output token --timeout 1/.test(result),
+      'ADO rendered prompt should retain Azure auth timeout guidance');
+    assert.ok(result.includes('az repos pr show'),
+      'ADO rendered prompt should retain Azure DevOps status guidance');
+  });
+
   await test('renderPlaybook appends pinned.md and notes.md after template rendering as inert data', () => {
     const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
     const notesPath = path.join(MINIONS_DIR, 'notes.md');
@@ -16239,11 +16325,13 @@ async function testCheckTimeouts() {
       'isSuccess must NOT be derived from a "subtype":"success" substring match in the live log — that produces false positives on resumed --resume turns (#1792)');
   });
 
-  await test('checkTimeouts allows silent tracked live processes', () => {
+  await test('checkTimeouts allows silent tracked live processes after resume emits output', () => {
     assert.ok(src.includes('if (processAlive)'),
       'Should explicitly branch on tracked process liveness');
-    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
-      'Should document that stdout/stderr silence is not a failure while process is alive');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes once a runtime has emitted output'),
+      'Should document that stdout/stderr silence is not a failure after runtime output begins');
+    assert.ok(src.includes('_runtimeResumeAwaitingFirstOutput'),
+      'Should still watchdog runtime resume attempts until they emit first output');
     assert.ok(src.includes('continue;'),
       'Live tracked processes should continue instead of entering orphan cleanup');
   });
@@ -16266,11 +16354,13 @@ async function testCheckTimeouts() {
     assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
-  await test('Stale-orphan detection uses live-output mtime only after process tracking is lost', () => {
-    assert.ok(src.includes('live-output.log mtime is only used for stale-orphan cleanup'),
-      'Should document that file mtime is for orphan cleanup, not live-process silence');
+  await test('Stale-orphan detection keeps general silence separate from resume first-output watchdog', () => {
+    assert.ok(src.includes('resume first-output watchdog'),
+      'Should document that file mtime is only used for orphan cleanup and resume handshakes');
     assert.ok(src.includes('!processAlive && silentMs > staleOrphanTimeout'),
-      'Should require no live tracked process before stale-orphan cleanup');
+      'General stale-orphan cleanup should still require no live tracked process');
+    assert.ok(src.includes('runtimeResumeHeartbeatTimeout'),
+      'Runtime resume stalls should use a configurable heartbeat timeout');
   });
 
   // ── Process-based liveness / stale-orphan policy ──
@@ -18734,13 +18824,14 @@ async function testSpawnAgentScript() {
 
   await test('spawn-agent.js injects ADO PAT env after cleanChildEnv without web auth fallback', () => {
     const cleanIdx = src.indexOf('const env = cleanChildEnv();');
-    const injectIdx = src.indexOf('injectAdoTokenEnv(env);');
+    const injectIdx = src.indexOf('injectAdoTokenEnvForRepoHost(env);');
     const runIdx = src.indexOf('runFile(execBin, execArgs');
     assert.ok(cleanIdx >= 0, 'spawn-agent should build child env via cleanChildEnv');
     assert.ok(injectIdx > cleanIdx, 'ADO token env injection must happen after cleanChildEnv');
     assert.ok(runIdx > injectIdx, 'spawn-agent should pass the injected env to the spawned runtime');
     assert.ok(src.includes('AZURE_DEVOPS_EXT_PAT'), 'spawn-agent should set Azure DevOps extension PAT env');
     assert.ok(src.includes('AZURE_DEVOPS_EXT_AZURE_RM_PAT'), 'spawn-agent should set Azure RM PAT env for az extension auth');
+    assert.ok(src.includes('MINIONS_REPO_HOST'), 'spawn-agent should gate ADO token injection by repo host');
     assert.ok(!src.includes('--mode web'), 'spawn-agent must not fall back to browser/web azureauth mode');
   });
 
@@ -20928,6 +21019,116 @@ async function testTimeoutBehavioral() {
       assert.strictEqual(dp.active.length, 1, 'Silent live item should remain active');
       const completed = dp.completed.find(d => d.id === itemId);
       assert.ok(!completed, 'Silent live item should not be marked completed/error');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: stalled runtime resume with no first output is killed and completed as retryable timeout', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-stalled';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: agentId,
+          started_at: startedAt,
+          workType: 'fix',
+          meta: {},
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'session.json'), JSON.stringify({ sessionId: 'stale-resume' }));
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.writeFileSync(liveLogPath, '[steering] Resuming session with your message...\n');
+      const oldTime = new Date(Date.now() - 600000);
+      fs.utimesSync(liveLogPath, oldTime, oldTime);
+
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 600000,
+        _runtimeResumeAwaitingFirstOutput: true,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Stalled resume should kill the live runtime process');
+      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
+        'Stalled resume should be removed from active process tracking');
+      assert.ok(!fs.existsSync(path.join(agentDir, 'session.json')),
+        'Stalled resume should clear session.json so retry starts fresh');
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Stalled resume should leave active queue');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Stalled resume should be completed as an error');
+      assert.strictEqual(completed.result, 'error');
+      assert.strictEqual(completed.failureClass, 'timeout');
+      assert.ok(/Runtime resume stalled/.test(completed.reason || ''),
+        'Reason should surface the resume heartbeat failure');
+      assert.ok(fs.readFileSync(liveLogPath, 'utf8').includes('[runtime-resume-timeout]'),
+        'Live output should show the timeout reason for dashboard/API users');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: runtime resume within first-output heartbeat remains active', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-recent';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 60000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: agentId, started_at: startedAt, workType: 'fix' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 60000,
+        _runtimeResumeAwaitingFirstOutput: true,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Recent resume should not be killed before the first-output timeout');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Recent resume should remain active');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: resumed live process that already emitted output can stay quiet', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-output-then-quiet';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: agentId, started_at: startedAt, workType: 'fix' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 600000,
+        _runtimeResumeAwaitingFirstOutput: false,
+        lastRealOutputAt: Date.now() - 600000,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'A resumed process that already emitted output should be allowed to run quiet commands');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Post-output resumed process should remain active');
     } finally { env.restore(); }
   });
 
@@ -37343,8 +37544,8 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes('isTrackedProcessAlive'),
       'timeout.js should check process liveness for tracked processes');
-    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
-      'timeout.js should document that live process silence is allowed');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes once a runtime has emitted output'),
+      'timeout.js should document that live process silence is allowed after runtime output begins');
   });
 
   // 4. Output completion detection scans for process-exit sentinel
@@ -38469,20 +38670,24 @@ async function testAdoTokenInjection() {
       'engine.js should reference getAdoToken for token injection');
   });
 
-  await test('engine.js injects MINIONS_ADO_TOKEN into childEnv in spawnAgent', () => {
+  await test('engine.js injects MINIONS_ADO_TOKEN into childEnv in spawnAgent only for ADO projects', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Find the spawnAgent function and verify token injection
     const spawnAgentIdx = src.indexOf('async function spawnAgent(');
     assert.ok(spawnAgentIdx > -1, 'spawnAgent function should exist');
     // spawnAgent is a large function (~35K chars) — scan the full body
     const spawnSection = src.slice(spawnAgentIdx, spawnAgentIdx + 40000);
+    assert.ok(spawnSection.includes('MINIONS_REPO_HOST'),
+      'spawnAgent should tell spawn-agent.js which repo host is being handled');
     assert.ok(spawnSection.includes('MINIONS_ADO_TOKEN'),
       'spawnAgent should inject MINIONS_ADO_TOKEN into child environment');
     assert.ok(spawnSection.includes('getAdoToken'),
       'spawnAgent should call getAdoToken to get the cached token');
+    assert.ok(spawnSection.includes("getRepoHost(project) === 'ado'"),
+      'spawnAgent should only call getAdoToken for ADO projects');
   });
 
-  await test('engine.js injects MINIONS_ADO_TOKEN in steering spawn path', () => {
+  await test('engine.js injects MINIONS_ADO_TOKEN in steering spawn path only for ADO projects', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The steering path has a second cleanChildEnv() call — find it
     const firstCleanEnv = src.indexOf('cleanChildEnv()');
@@ -38490,9 +38695,13 @@ async function testAdoTokenInjection() {
     const secondCleanEnv = src.indexOf('cleanChildEnv()', firstCleanEnv + 1);
     assert.ok(secondCleanEnv > -1, 'Second cleanChildEnv call (steering) should exist');
     // Check that MINIONS_ADO_TOKEN is injected after the second call too
-    const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 500);
+    const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 800);
+    assert.ok(steeringSection.includes('MINIONS_REPO_HOST'),
+      'Steering spawn path should also pass the repo host');
     assert.ok(steeringSection.includes('MINIONS_ADO_TOKEN'),
       'Steering spawn path should also inject MINIONS_ADO_TOKEN');
+    assert.ok(steeringSection.includes("getRepoHost(project) === 'ado'"),
+      'Steering spawn path should only fetch ADO tokens for ADO projects');
   });
 
   await test('engine.js injects MINIONS_LIVE_OUTPUT_PATH into spawn-agent environments (#1971)', () => {

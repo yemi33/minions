@@ -751,6 +751,7 @@ const ENGINE_DEFAULTS = {
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
+  resumeHeartbeatTimeout: 300000, // 5min — max wait for a resumed runtime to emit its first output
   // Per-type stale-orphan overrides (merged with config.engine.heartbeatTimeouts at runtime — see timeout.js).
   // Heavy work types (multi-file edits, builds, test suites, full verify cycles) routinely go quiet for
   // longer than the 5-min default when the engine has lost their tracked handle (e.g. across an engine
@@ -1323,10 +1324,13 @@ function comparablePath(filePath) {
 }
 
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPath = comparablePath(filePath);
+  const resolvedPaths = new Set([comparablePath(filePath)]);
+  if (filePath && !path.isAbsolute(filePath)) {
+    resolvedPaths.add(comparablePath(path.resolve(MINIONS_DIR, filePath)));
+  }
   const projects = getProjects(config);
   for (const project of projects) {
-    if (comparablePath(projectPrPath(project)) === resolvedPath) return project;
+    if (resolvedPaths.has(comparablePath(projectPrPath(project)))) return project;
   }
   if (projects.length === 1) return projects[0];
   return null;
