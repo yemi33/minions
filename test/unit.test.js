@@ -33866,10 +33866,15 @@ async function testAutoRecoveryAndAtomicity() {
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamingFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     const scheduleFn = src.slice(src.indexOf('async function handleSchedulesParseNatural'), src.indexOf('// ── Watches API Handlers'));
+    const ccStreamHandler = src.slice(src.indexOf('async function handleCommandCenterStream'), src.indexOf('async function handleSchedulesList'));
     assert.ok(ccCallFn.includes('if (result.missingRuntime) return result;'),
       'non-streaming CC helper should return missing-runtime guidance without retrying');
     assert.ok(ccStreamingFn.includes('if (result.missingRuntime) return result;'),
       'streaming CC helper should return missing-runtime guidance without retrying');
+    assert.ok(ccStreamHandler.includes('if (result.missingRuntime)') &&
+      ccStreamHandler.includes("missingRuntime: true") &&
+      ccStreamHandler.indexOf('if (result.missingRuntime)') < ccStreamHandler.indexOf('parseCCActions(result.text)'),
+      'SSE Command Center route should finish with missing-runtime guidance instead of parsing it as model output');
     assert.ok(docCallFn.includes('result.missingRuntime'),
       'doc chat should preserve missing-runtime guidance instead of generic failure text');
     assert.ok(docStreamingFn.includes('result.missingRuntime'),

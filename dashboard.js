@@ -5034,6 +5034,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         _ccHeartbeatTimer = null;
       }
     };
+    const finishMissingRuntime = (result, liveState) => {
+      const text = result.text || result.stderr || 'Minions runtime is not installed or configured.';
+      liveState.donePayload = { type: 'done', text, actions: [], sessionId: null, missingRuntime: true };
+      if (liveState.writer) liveState.writer(liveState.donePayload);
+      if (liveState.endResponse) liveState.endResponse();
+      _scheduleCcLiveCleanup(tabId);
+    };
     try {
       const body = await readBody(req);
       if (!body.message && !body.reconnect) { res.statusCode = 400; res.end('message required'); return; }
@@ -5156,6 +5163,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
+        }
+
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
         if (!result.text && wasResume && result.code !== 0 && !req.destroyed) {
           // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
@@ -5177,6 +5189,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             // Fresh session succeeded — use retryResult from here
             Object.assign(result, retryResult);
           }
+        }
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
         }
         if (!result.text) {
           if (req.destroyed) { _ccStreamEnded = true; return; } // client already gone — nothing to send
