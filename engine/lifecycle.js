@@ -1266,14 +1266,25 @@ function isReviewBailout(text) {
   return /bail(ing)?\s+out/i.test(text) || /already\s+posted/i.test(text);
 }
 
-async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null, dispatchItem = null) {
 
   if (!pr?.id) return;
 
   if (!config) config = getConfig();
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (completionStatus && NON_TERMINAL_COMPLETION_STATUSES.has(completionStatus)) {
+    log('warn', `Skipping review update for ${pr.id}: completion status is ${structuredCompletion.status}`);
+    return;
+  }
+  if (project && !shared.isPrCompatibleWithProject(project, pr, pr.url || '')) {
+    log('warn', `Skipping review update for ${pr.id}: PR does not belong to project ${project.name || '(unknown)'}`);
+    return;
+  }
+  if (!completionPrMatchesTarget(structuredCompletion, pr, project)) {
+    log('warn', `Skipping review update for ${pr.id}: completion report PR does not match target PR`);
+    return;
+  }
   const reviewerName = config.agents?.[agentId]?.name || agentId;
-  const dispatch = getDispatch();
-  const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
   // If platform hasn't propagated the vote yet (returns 'pending'), keep current status unchanged.
@@ -1302,6 +1313,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
 
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   let updatedTarget = null;
+  const reviewNote = String(resultSummary || '').trim();
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
     const target = shared.findPrRecord(prs, pr, project);
@@ -1318,7 +1330,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: resultSummary || completedEntry?.task || '',
+      note: reviewNote,
       // Preserve fixedAt across re-reviews so the poller guard knows a fix was pushed.
       // Drop it when reviewer requests changes again — that starts a new fix cycle.
       ...(target.minionsReview?.fixedAt && postReviewStatus !== 'changes-requested' ? { fixedAt: target.minionsReview.fixedAt } : {}),
@@ -1339,7 +1351,13 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 
   log('info', `Updated ${pr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
-  if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config);
+  if (updatedTarget) {
+    createReviewFeedbackForAuthor(agentId, updatedTarget, config, {
+      reviewContent: reviewNote,
+      project,
+      dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null,
+    });
+  }
 }
 
 function updatePrAfterFix(pr, project, source) {
@@ -1748,19 +1766,20 @@ function updateAgentHistory(agentId, dispatchItem, result) {
   log('info', `Updated history for ${agentId}`);
 }
 
-function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
+function createReviewFeedbackForAuthor(reviewerAgentId, pr, config, options = {}) {
 
   if (!pr?.id || !pr?.agent) return;
   const authorAgentId = pr.agent.toLowerCase();
   if (!config.agents[authorAgentId]) return;
   const today = dateStamp();
-  const inboxFiles = getInboxFiles();
-  const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
-  if (reviewFiles.length === 0) return;
-  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).filter(Boolean).join('\n\n');
+  const reviewContent = String(options.reviewContent || '').trim();
+  if (!reviewContent) return;
+  const project = options.project || null;
+  if (!reviewContentMatchesPr(reviewContent, pr, project)) {
+    log('warn', `Skipped review feedback for ${pr.id}: review content references a different PR`);
+    return;
+  }
   const prSlug = shared.safeSlugComponent(pr.id, 60);
-  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${prSlug}-${today}.md`;
-  const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
     `**PR:** ${pr.id} — ${pr.title || ''}\n` +
     `**Reviewer:** ${config.agents[reviewerAgentId]?.name || reviewerAgentId}\n` +
@@ -1769,7 +1788,13 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
     `## Action Required\n\nRead this feedback carefully. When you work on similar tasks in the future, ` +
     `avoid the patterns flagged here. If you are assigned to fix this PR, ` +
     `address every point raised above.\n`;
-  shared.safeWrite(feedbackPath, content);
+  shared.writeToInbox('feedback', `${authorAgentId}-from-${reviewerAgentId}-${prSlug}`, content, null, {
+    sourcePr: pr.id,
+    reviewer: reviewerAgentId,
+    author: authorAgentId,
+    dispatchId: options.dispatchId || null,
+    project: project?.name || null,
+  });
   log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
@@ -2134,6 +2159,47 @@ function normalizeReviewVerdict(verdict) {
 function reviewVerdictFromCompletion(completion) {
   if (!completion || typeof completion !== 'object') return null;
   return normalizeReviewVerdict(completion.verdict || completion.review_verdict || completion.reviewVerdict);
+}
+
+function isEmptyPrValue(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return !raw || raw === 'n/a' || raw === 'na' || raw === 'none' || raw === 'null';
+}
+
+function completionPrMatchesTarget(completion, pr, project) {
+  if (!completion || typeof completion !== 'object') return true;
+  const completionPr = completion.pr ?? completion.pull_request ?? completion.pullRequest;
+  if (isEmptyPrValue(completionPr)) return true;
+  const targetId = shared.getCanonicalPrId(project, pr, pr?.url || '');
+  const completionId = shared.getCanonicalPrId(project, completionPr, typeof completionPr === 'object' ? completionPr.url || '' : '');
+  return !!targetId && completionId === targetId;
+}
+
+function reviewContentMatchesPr(content, pr, project) {
+  const text = String(content || '').trim();
+  if (!text) return false;
+  const targetId = shared.getCanonicalPrId(project, pr, pr?.url || '');
+  const targetNumber = shared.getPrNumber(pr);
+  if (!targetId) return true;
+
+  const explicitRefs = new Set();
+  for (const match of text.matchAll(/\b(?:github|ado):[A-Za-z0-9._~/-]+#\d+\b/g)) {
+    explicitRefs.add(shared.getCanonicalPrId(project, match[0]));
+  }
+  for (const match of text.matchAll(/https?:\/\/[^\s)>"]+(?:\/pull\/|\/pullrequest\/)\d+[^\s)>"]*/gi)) {
+    const url = match[0].replace(/[.,;:]+$/g, '');
+    explicitRefs.add(shared.getCanonicalPrId(project, url, url));
+  }
+  if (explicitRefs.size > 0) return explicitRefs.size === 1 && explicitRefs.has(targetId);
+
+  const mentionedNumbers = new Set();
+  for (const match of text.matchAll(/\bPR\s*(?:#|-)\s*(\d+)\b/gi)) {
+    mentionedNumbers.add(parseInt(match[1], 10));
+  }
+  if (mentionedNumbers.size > 0 && targetNumber != null) {
+    return mentionedNumbers.size === 1 && mentionedNumbers.has(targetNumber);
+  }
+  return true;
 }
 
 function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
@@ -2564,7 +2630,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // (retryCount was being deleted by done-marking before the check could read it)
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion);
+  const hardContractFail = completionContractFailure?.severity === 'hard'
+    || completionContractFailure?.nonTerminal === true;
+  const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+  if (type === WORK_TYPE.REVIEW && finalResult === DISPATCH_RESULT.SUCCESS) {
+    await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion, dispatchItem);
+  }
   if (type === WORK_TYPE.FIX && effectiveSuccess) {
     updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
@@ -2583,9 +2654,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  const hardContractFail = completionContractFailure?.severity === 'hard'
-    || completionContractFailure?.nonTerminal === true;
-  const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
   if (finalResult === DISPATCH_RESULT.SUCCESS) {
     extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
     // Also scan inbox notes for skill blocks — agents often write skills to inbox, not stdout

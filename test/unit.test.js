@@ -17876,7 +17876,7 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
-  await test('createReviewFeedbackForAuthor: no-op when reviewer has no inbox files today', () => {
+  await test('createReviewFeedbackForAuthor: no-op when current review content is empty', () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -17884,14 +17884,13 @@ async function testLifecycleUncoveredFns() {
       const testMinionsDir = sharedIsolated.MINIONS_DIR;
       const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
 
-      // No inbox files at all → reviewFiles empty → early return
       const before = fs.readdirSync(inboxDir).length;
       lifecycle.createReviewFeedbackForAuthor('ripley',
         { id: 'github:o/r#2', agent: 'dallas', title: 'A PR' },
         { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
 
       const after = fs.readdirSync(inboxDir).length;
-      assert.strictEqual(after, before, 'no reviewer inbox files → no feedback file written');
+      assert.strictEqual(after, before, 'no current dispatch review content → no feedback file written');
     } finally { restore(); }
   });
 
@@ -17903,14 +17902,10 @@ async function testLifecycleUncoveredFns() {
       const testMinionsDir = sharedIsolated.MINIONS_DIR;
       const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
 
-      const today = new Date().toISOString().slice(0, 10);
-      // Seed a reviewer inbox note so it'll be picked up by the date+agent filter
-      const reviewerNote = path.join(inboxDir, `ripley-review-notes-${today}.md`);
-      fs.writeFileSync(reviewerNote, '# Ripley review findings\n\nFound a race in dispatch.');
-
       lifecycle.createReviewFeedbackForAuthor('ripley',
         { id: 'github:yemi33/minions#999', agent: 'dallas', title: 'fix: race' },
-        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { reviewContent: '# Ripley review findings\n\nFound a race in dispatch.' });
 
       const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
       assert.ok(feedback, 'should write a feedback-<author>-from-<reviewer>-*.md file to inbox');
@@ -17919,7 +17914,7 @@ async function testLifecycleUncoveredFns() {
       assert.ok(body.includes('github:yemi33/minions#999'), 'should reference the PR id');
       assert.ok(body.includes('fix: race'), 'should include PR title when present');
       assert.ok(body.includes('Reviewer:') && body.includes('Ripley'), 'should name the reviewer');
-      assert.ok(body.includes('Found a race in dispatch'), 'should inline the reviewer inbox content');
+      assert.ok(body.includes('Found a race in dispatch'), 'should inline the current review content');
       assert.ok(body.includes('Action Required'), 'should include the Action Required section');
     } finally { restore(); }
   });
@@ -17933,16 +17928,38 @@ async function testLifecycleUncoveredFns() {
       const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
 
       const today = new Date().toISOString().slice(0, 10);
-      fs.writeFileSync(path.join(inboxDir, `ripley-r-${today}.md`), 'content');
-
       lifecycle.createReviewFeedbackForAuthor('ripley',
         { id: 'gh-12345', agent: 'dallas' },
-        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } });
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { reviewContent: 'VERDICT: APPROVE\n\nCurrent review content.' });
 
       const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
       assert.ok(feedback, 'feedback file must exist');
       assert.ok(feedback.includes('gh-12345'), 'filename must include sluggified PR id');
       assert.ok(feedback.includes(today), 'filename must include today\'s date');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: rejects review content from a different PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+      const project = { name: 'minions', repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' };
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2012', prNumber: 2012, agent: 'dallas', title: 'Minions PR' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        {
+          project,
+          reviewContent: '# PR #195 review\n\n**PR:** github:committoquit/momentum#195 — Momentum PR',
+        });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.strictEqual(feedback, undefined,
+        'feedback generation must not pair one PR header with another PR review body');
     } finally { restore(); }
   });
 
@@ -36010,6 +36027,177 @@ async function testStructuredCompletion() {
     }
   });
 
+  await test('runPostCompletionHooks does not stamp stale review metadata after failed review dispatch', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+      };
+      const config = {
+        projects: [project],
+        agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } },
+        engine: {},
+      };
+      sharedInner.safeWrite(path.join(testDir, 'config.json'), config);
+      const prPath = sharedInner.projectPrPath(project);
+      const wiPath = sharedInner.projectWorkItemsPath(project);
+      sharedInner.safeWrite(prPath, [{
+        id: 'github:yemi33/minions#2012',
+        prNumber: 2012,
+        url: 'https://github.com/yemi33/minions/pull/2012',
+        title: 'Audit prompts',
+        agent: 'dallas',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+      }]);
+      sharedInner.safeWrite(wiPath, [{
+        id: 'W-review-failed',
+        title: 'Review PR #2012',
+        type: sharedInner.WORK_TYPE.REVIEW,
+        status: sharedInner.WI_STATUS.DISPATCHED,
+        dispatched_to: 'ripley',
+      }]);
+      sharedInner.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [],
+        completed: [{
+          id: 'ripley-review-old',
+          agent: 'ripley',
+          type: sharedInner.WORK_TYPE.REVIEW,
+          task: '[momentum] Review github:committoquit/momentum#190',
+        }],
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(testDir, 'notes', 'inbox', `ripley-momentum-review-${today}.md`),
+        '# PR #195 review\n\n**PR:** github:committoquit/momentum#195 — Momentum PR');
+      const dispatchItem = {
+        id: 'ripley-review-failed',
+        type: sharedInner.WORK_TYPE.REVIEW,
+        task: '[minions] Review github:yemi33/minions#2012',
+        agent: 'ripley',
+        meta: {
+          project,
+          pr: { id: 'github:yemi33/minions#2012', prNumber: 2012, url: 'https://github.com/yemi33/minions/pull/2012' },
+          item: { id: 'W-review-failed', title: 'Review PR #2012', type: sharedInner.WORK_TYPE.REVIEW },
+        },
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'ripley', 1,
+        'Authentication failed before review could run.', config);
+
+      const [updatedPr] = sharedInner.safeJson(prPath);
+      const feedbackFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'))
+        .filter(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting',
+        'failed review dispatch must leave reviewStatus unchanged');
+      assert.strictEqual(updatedPr.minionsReview, undefined,
+        'failed review dispatch must not populate minionsReview from stale completed dispatches');
+      assert.deepStrictEqual(feedbackFiles, [],
+        'failed review dispatch must not create feedback from unrelated reviewer inbox notes');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('updatePrAfterReview keeps cross-project review artifacts isolated', async () => {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const originalGithubCache = require.cache[githubPath];
+    try {
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: { checkLiveReviewStatus: async () => 'pending' },
+      };
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const minionsProject = {
+        name: 'minions',
+        localPath: path.join(testDir, 'minions'),
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+      };
+      const momentumProject = {
+        name: 'momentum',
+        localPath: path.join(testDir, 'momentum'),
+        repoHost: 'github',
+        adoOrg: 'committoquit',
+        repoName: 'momentum',
+      };
+      const config = {
+        projects: [minionsProject, momentumProject],
+        agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } },
+        engine: {},
+      };
+      const minionsPrPath = sharedInner.projectPrPath(minionsProject);
+      const momentumPrPath = sharedInner.projectPrPath(momentumProject);
+      sharedInner.safeWrite(minionsPrPath, [{
+        id: 'github:yemi33/minions#2012',
+        prNumber: 2012,
+        url: 'https://github.com/yemi33/minions/pull/2012',
+        title: 'Audit prompts',
+        agent: 'dallas',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+      }]);
+      sharedInner.safeWrite(momentumPrPath, [{
+        id: 'github:committoquit/momentum#195',
+        prNumber: 195,
+        url: 'https://github.com/committoquit/momentum/pull/195',
+        title: 'Validate LinkedIn',
+        agent: 'rebecca',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+      }]);
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(testDir, 'notes', 'inbox', `ripley-momentum-review-${today}.md`),
+        '# PR #195 review\n\n**PR:** github:committoquit/momentum#195 — Momentum PR');
+
+      await lifecycleInner.updatePrAfterReview(
+        'ripley',
+        { id: 'github:yemi33/minions#2012', prNumber: 2012, url: 'https://github.com/yemi33/minions/pull/2012' },
+        minionsProject,
+        config,
+        '# PR #2012 review\n\n**PR:** github:yemi33/minions#2012 — Minions PR\n\nVERDICT: APPROVE',
+        { status: 'success', verdict: 'approved', pr: 'github:yemi33/minions#2012', dispatchId: 'ripley-review-minions' },
+        { id: 'ripley-review-minions' });
+
+      const [minionsPr] = sharedInner.safeJson(minionsPrPath);
+      const [momentumPr] = sharedInner.safeJson(momentumPrPath);
+      const feedbackFile = fs.readdirSync(path.join(testDir, 'notes', 'inbox'))
+        .find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      const feedbackBody = feedbackFile ? fs.readFileSync(path.join(testDir, 'notes', 'inbox', feedbackFile), 'utf8') : '';
+      assert.strictEqual(minionsPr.reviewStatus, 'approved',
+        'matching review completion should update only the target project PR');
+      assert.strictEqual(momentumPr.reviewStatus, 'waiting',
+        'unrelated project PR must remain untouched');
+      assert.ok(feedbackBody.includes('github:yemi33/minions#2012'),
+        'feedback should reference the target Minions PR');
+      assert.ok(!feedbackBody.includes('github:committoquit/momentum#195'),
+        'feedback body must not inline same-day reviewer notes from another project');
+    } finally {
+      restore();
+      if (originalGithubCache) require.cache[githubPath] = originalGithubCache;
+      else delete require.cache[githubPath];
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('fix.md includes ## Completion section', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
     assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
@@ -37719,8 +37907,10 @@ async function testPrReviewFixFlows() {
   await test('updatePrAfterReview receives resultSummary for review note', () => {
     assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary'),
       'updatePrAfterReview should accept resultSummary parameter and optional completion report');
-    assert.ok(lifecycleSrc.includes('resultSummary || completedEntry'),
-      'Should use resultSummary as primary note source');
+    assert.ok(lifecycleSrc.includes('const reviewNote = String(resultSummary ||'),
+      'Should use the current dispatch resultSummary as the review note source');
+    assert.ok(!lifecycleSrc.includes('completedEntry?.task'),
+      'Should not fall back to stale completed review dispatch metadata');
   });
 
   // ── Review verdict parsing (GitHub self-approval workaround) ──
