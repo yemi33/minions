@@ -4476,6 +4476,57 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  await test('context-only PR upsert does not demote existing work-item PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = {
+        name: 'minions',
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/octo/minions/pull/',
+        localPath: testDir,
+      };
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, JSON.stringify([{
+        id: 'github:octo/minions#1905',
+        prNumber: 1905,
+        title: 'Tracked feature',
+        agent: 'Dallas',
+        reviewStatus: 'waiting',
+        status: 'active',
+        buildStatus: 'passing',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1905',
+        prdItems: ['W-feature1905'],
+        minionsReview: { fixedAt: '2026-05-04T06:00:00.000Z' },
+        lastReviewedAt: '2026-05-04T05:00:00.000Z',
+      }]));
+
+      testShared.upsertPullRequestRecord(prPath, {
+        id: 'github:octo/minions#1905',
+        prNumber: 1905,
+        title: 'One-shot review',
+        agent: 'Lambert',
+        reviewStatus: 'pending',
+        status: 'active',
+        created: new Date().toISOString(),
+        url: 'https://github.com/octo/minions/pull/1905',
+        prdItems: ['W-one-shot1905'],
+        _contextOnly: true,
+      }, { project, itemId: 'W-one-shot1905' });
+
+      const prs = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      assert.strictEqual(prs.length, 1, 'same PR should still be one canonical record');
+      assert.notStrictEqual(prs[0]._contextOnly, true,
+        'one-shot context metadata must not exclude an existing work-item PR from eval loop');
+      assert.deepStrictEqual(prs[0].prdItems, ['W-feature1905', 'W-one-shot1905']);
+    } finally { restore(); }
+  });
+
   await test('PR-producing success without canonical PR is failed, not done', async () => {
     const restore = createTestMinionsDir();
     try {
@@ -29629,6 +29680,54 @@ async function testPrWriteRaceConditions() {
       assert.ok(pr, 'one-off PR should still be tracked (so it can be polled for build/comment status)');
       assert.strictEqual(pr._contextOnly, true,
         'one-off PR must be flagged _contextOnly so discoverFromPrs skips it (no auto-review/fix loop)');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput oneShot does not mark existing tracked PR _contextOnly', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, [{
+      id: 'github:org/repo#2017',
+      prNumber: 2017,
+      title: 'Tracked feature',
+      agent: 'Dallas',
+      branch: 'work/W-tracked',
+      reviewStatus: 'waiting',
+      status: 'active',
+      buildStatus: 'passing',
+      created: '2026-05-04T05:00:00.000Z',
+      url: 'https://github.com/org/repo/pull/2017',
+      prdItems: ['W-tracked'],
+      minionsReview: { fixedAt: '2026-05-04T06:00:00.000Z' },
+      lastReviewedAt: '2026-05-04T05:30:00.000Z',
+    }]);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main', repoHost: 'github', adoOrg: 'org', repoName: 'repo' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { lambert: { name: 'Lambert' }, dallas: { name: 'Dallas' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/2017"}]}}';
+      const meta = { item: { id: 'W-one-shot-review', title: 'Review PR 2017', oneShot: true }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'lambert', meta, mockConfig);
+
+      const result = shared.safeJson(prFile) || [];
+      const pr = result.find(p => p.id === 'github:org/repo#2017');
+      assert.ok(pr, 'tracked PR should still exist');
+      assert.notStrictEqual(pr._contextOnly, true,
+        'oneShot review context must not contaminate a canonical tracked PR');
+      assert.deepStrictEqual(pr.prdItems, ['W-tracked', 'W-one-shot-review']);
     } finally {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;

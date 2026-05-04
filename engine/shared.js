@@ -1977,6 +1977,15 @@ function normalizePrLinkItems(value) {
   return [...new Set(items.filter(item => typeof item === 'string' && item))];
 }
 
+function isAutoManagedPrRecord(pr) {
+  if (!pr || typeof pr !== 'object' || pr._contextOnly === true) return false;
+  if (normalizePrLinkItems(pr.prdItems).length > 0) return true;
+  if (pr._autoObserve === true) return true;
+  if (pr.sourcePlan || pr.itemType) return true;
+  const agent = String(pr.agent || '').trim().toLowerCase();
+  return !!agent && agent !== 'human';
+}
+
 function mergePrLinkItems(links, prId, itemIds) {
   if (!prId) return;
   const merged = new Set([...(links[prId] || []), ...normalizePrLinkItems(itemIds)]);
@@ -2146,13 +2155,18 @@ function upsertPullRequestRecord(prPath, entry, { project = null, itemId = null,
     } else {
       target.id = canonicalId;
       if (prNumber != null) target.prNumber = prNumber;
+      const targetWasAutoManaged = isAutoManagedPrRecord(target);
       for (const key of ['url', 'title', 'description', 'agent', 'branch', 'reviewStatus', 'status', 'created', 'sourcePlan', 'itemType']) {
         if (normalizedEntry[key] != null && normalizedEntry[key] !== '' && (target[key] == null || target[key] === '')) {
           target[key] = normalizedEntry[key];
         }
       }
-      for (const key of ['_manual', '_contextOnly', '_autoObserve', '_context']) {
+      for (const key of ['_manual', '_autoObserve', '_context']) {
         if (normalizedEntry[key] != null) target[key] = normalizedEntry[key];
+      }
+      if (normalizedEntry._contextOnly != null) {
+        const wouldDemoteManagedPr = normalizedEntry._contextOnly === true && targetWasAutoManaged;
+        if (!wouldDemoteManagedPr) target._contextOnly = normalizedEntry._contextOnly;
       }
     }
     target.prdItems = normalizePrLinkItems(target.prdItems || []);
