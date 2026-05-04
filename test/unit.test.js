@@ -8986,6 +8986,17 @@ async function testConfigAndPlaybooks() {
       'init flow should still auto-start dashboard');
   });
 
+  await test('bin/minions update syncs code without init auto-start before one controlled restart', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const updateBlock = src.slice(src.indexOf("} else if (cmd === 'update')"), src.indexOf("} else if (cmd === 'version'"));
+    assert.ok(updateBlock.includes('minions init --force --skip-start'),
+      'update should run init in copy/sync-only mode so init does not auto-start engine/dashboard');
+    assert.ok(updateBlock.includes('minions restart'),
+      'update should perform the single controlled restart after code sync');
+    assert.ok(src.includes('skipStart') && src.includes('Restart skipped by caller'),
+      'init should support an internal skip-start mode for update while preserving direct init --force restart behavior');
+  });
+
   await test('bin/minions uninstall prints re-install command on success', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     const tail = src.slice(src.indexOf('Minions uninstalled.'));
@@ -19877,6 +19888,13 @@ async function testAgentSteering() {
     assert.ok(dashSrc.includes('[human-steering]'), 'Should append human-steering marker to live log');
   });
 
+  await test('steer endpoint surfaces pending delivery state for non-resumable active runtimes', () => {
+    assert.ok(dashSrc.includes('_steeringDeliveryState'),
+      'Endpoint should compute delivery status instead of always reporting accepted');
+    assert.ok(dashSrc.includes('pending_checkpoint') && dashSrc.includes('pendingDelivery'),
+      'Endpoint response should surface pending checkpoint delivery for Copilot-style sessions');
+  });
+
   await test('checkSteering function exists in engine', () => {
     assert.ok(engineSrc.includes('function checkSteering'), 'Should have checkSteering function');
   });
@@ -19982,6 +20000,17 @@ async function testAgentSteering() {
   await test('steering resume carries all unACKed inbox messages forward', () => {
     assert.ok(engineSrc.includes('pendingForResume') && engineSrc.includes('mergePendingSteeringEntries'),
       'Resume prompt/tracking should include every unread steering message, not only the newest one');
+  });
+
+  await test('deferred Copilot steering resumes at terminal session checkpoint before completion finalizes', () => {
+    assert.ok(engineSrc.includes('_deferredSteeringFiles') && engineSrc.includes('_steeringDeferredCheckpoint'),
+      'Close handler should promote deferred steering once a terminal sessionId is captured');
+    assert.ok(engineSrc.includes('delivering ${pendingDeferred.length} deferred message(s)'),
+      'Deferred checkpoint delivery should be logged for observability');
+    assert.ok(engineSrc.includes('if (!steeringDeferredCheckpoint)'),
+      'Deferred checkpoint resume should keep original output available for completion parsing');
+    assert.ok(engineSrc.includes('[steering-pending]'),
+      'If no checkpoint sessionId exists, live output should explicitly show pending/not-delivered state');
   });
 
   await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {

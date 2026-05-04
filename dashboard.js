@@ -226,6 +226,40 @@ function _agentSessionIsDraining(agentId) {
   return terminalIdx >= 0 && terminalIdx > lastSteer;
 }
 
+function _dispatchBranch(item) {
+  const branch = item?.meta?.branch || item?.branch || item?.meta?.item?.branch || item?.meta?.item?.featureBranch;
+  return branch ? String(branch).replace(/^refs\/heads\//, '') : null;
+}
+
+function _hasCachedResumeSession(agentId, activeDispatch, maxAgeMs = 2 * 60 * 60 * 1000) {
+  const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
+  if (!sessionFile?.sessionId || !sessionFile.savedAt) return false;
+  const savedAtMs = new Date(sessionFile.savedAt).getTime();
+  if (!Number.isFinite(savedAtMs) || Date.now() - savedAtMs >= maxAgeMs) return false;
+  const dispatchBranch = _dispatchBranch(activeDispatch);
+  const sessionBranch = sessionFile.branch ? String(sessionFile.branch).replace(/^refs\/heads\//, '') : null;
+  return !!dispatchBranch && !!sessionBranch && dispatchBranch === sessionBranch;
+}
+
+function _steeringDeliveryState(agentId) {
+  const activeDispatch = (getDispatchQueue().active || []).find(d => d.agent === agentId);
+  if (!activeDispatch) return { deliveryStatus: 'queued', pendingDelivery: true };
+
+  const runtimeName = shared.resolveAgentCli(CONFIG.agents?.[agentId], CONFIG.engine);
+  try {
+    const runtime = require('./engine/runtimes').resolveRuntime(runtimeName);
+    if (runtime?.capabilities?.midRunSessionId === false && !_hasCachedResumeSession(agentId, activeDispatch)) {
+      return {
+        deliveryStatus: 'pending_checkpoint',
+        pendingDelivery: true,
+        detail: 'Runtime has not emitted a resumable session yet; delivery is pending until the next resumable checkpoint.',
+      };
+    }
+  } catch { /* unknown runtime: checkSteering will surface retry state */ }
+
+  return { deliveryStatus: 'queued', pendingDelivery: false };
+}
+
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
@@ -6216,6 +6250,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       const entry = steering.writeSteeringMessage(agentId, text);
+      const delivery = _steeringDeliveryState(agentId);
 
       // Also append to live-output.log so it shows in the chat view
       const liveLogPath = path.join(agentDir, 'live-output.log');
@@ -6223,7 +6258,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       return jsonReply(res, 200, {
         ok: true,
-        message: 'Steering message queued',
+        message: delivery.pendingDelivery ? 'Steering message pending delivery' : 'Steering message queued',
+        ...delivery,
         file: entry?.file || null,
         inboxCount: steering.listUnreadSteeringMessages(agentId).length,
       });
