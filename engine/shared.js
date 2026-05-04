@@ -1310,27 +1310,52 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
-function comparablePath(filePath) {
+function realPathForComparison(filePath) {
   const resolved = path.resolve(filePath);
+  const realpathSync = fs.realpathSync.native || fs.realpathSync;
   try {
-    return fs.realpathSync.native(resolved);
-  } catch {
+    return realpathSync(resolved);
+  } catch (err) {
+    if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
+  }
+
+  let existing = resolved;
+  const missingParts = [];
+  while (true) {
+    const parent = path.dirname(existing);
+    missingParts.unshift(path.basename(existing));
+    if (parent === existing) return resolved;
+    existing = parent;
     try {
-      return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
-    } catch {
-      return resolved;
+      return path.join(realpathSync(existing), ...missingParts);
+    } catch (err) {
+      if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
     }
   }
 }
 
-function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPaths = new Set([comparablePath(filePath)]);
-  if (filePath && !path.isAbsolute(filePath)) {
-    resolvedPaths.add(comparablePath(path.resolve(MINIONS_DIR, filePath)));
+function prPathComparisonCandidates(filePath) {
+  const candidates = new Set();
+  const addCandidate = (candidate) => {
+    const resolved = path.resolve(candidate);
+    candidates.add(resolved);
+    candidates.add(realPathForComparison(resolved));
+  };
+
+  addCandidate(filePath);
+  if (!path.isAbsolute(filePath)) {
+    addCandidate(path.resolve(MINIONS_DIR, filePath));
   }
+  return candidates;
+}
+
+function resolveProjectForPrPath(filePath, config = null) {
+  const fileCandidates = prPathComparisonCandidates(filePath);
   const projects = getProjects(config);
   for (const project of projects) {
-    if (resolvedPaths.has(comparablePath(projectPrPath(project)))) return project;
+    for (const projectPath of prPathComparisonCandidates(projectPrPath(project))) {
+      if (fileCandidates.has(projectPath)) return project;
+    }
   }
   if (projects.length === 1) return projects[0];
   return null;

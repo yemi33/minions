@@ -69,8 +69,7 @@ function _restoreFileState(snapshot) {
   try { fs.unlinkSync(snapshot.path); } catch {}
 }
 
-function createTestMinionsDir() {
-  const dir = createTmpDir();
+function seedTestMinionsDir(dir) {
   for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'plans/archive', 'projects', 'notes/inbox', 'notes/archive', 'knowledge', 'agents']) {
     fs.mkdirSync(path.join(dir, d), { recursive: true });
   }
@@ -83,7 +82,11 @@ function createTestMinionsDir() {
   if (fs.existsSync(routingPath)) {
     fs.copyFileSync(routingPath, path.join(dir, 'routing.md'));
   }
+}
 
+function createTestMinionsDir() {
+  const dir = createTmpDir();
+  seedTestMinionsDir(dir);
   process.env.MINIONS_TEST_DIR = dir;
   // Bust require cache so modules re-resolve MINIONS_DIR
   for (const mod of ISOLATED_MODULES) {
@@ -26962,19 +26965,58 @@ async function testPrUrlParsingAndScopeHelpers() {
       const alphaPath = isolatedShared.projectPrPath(config.projects[0]);
       const betaPath = isolatedShared.projectPrPath(config.projects[1]);
       assert.strictEqual(isolatedShared.resolveProjectForPrPath(alphaPath, config).name, 'Alpha');
+      const betaRelativePath = path.relative(isolatedShared.MINIONS_DIR, betaPath);
 
       const originalCwd = process.cwd();
       try {
         process.chdir(isolatedShared.MINIONS_DIR);
         assert.strictEqual(
-          isolatedShared.resolveProjectForPrPath(path.relative(isolatedShared.MINIONS_DIR, betaPath), config).name,
+          isolatedShared.resolveProjectForPrPath(betaRelativePath, config).name,
           'Beta'
         );
       } finally {
         process.chdir(originalCwd);
       }
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(betaRelativePath, config).name, 'Beta');
     } finally {
       restore();
+    }
+  });
+
+  await test('resolveProjectForPrPath matches realpath-equivalent project PR paths', () => {
+    const realDir = createTmpDir();
+    const aliasParent = createTmpDir();
+    const aliasDir = path.join(aliasParent, 'minions-alias');
+    try {
+      fs.symlinkSync(realDir, aliasDir, 'dir');
+    } catch (err) {
+      if (err && ['EACCES', 'EPERM', 'ENOTSUP'].includes(err.code)) {
+        skip('resolveProjectForPrPath realpath-equivalent paths', `symlink unavailable: ${err.code}`);
+        return;
+      }
+      throw err;
+    }
+    seedTestMinionsDir(realDir);
+    process.env.MINIONS_TEST_DIR = aliasDir;
+    for (const mod of ISOLATED_MODULES) {
+      try { delete require.cache[require.resolve(mod)]; } catch {}
+    }
+    const isolatedShared = require('../engine/shared');
+    const config = {
+      projects: [
+        { name: 'Alpha', localPath: 'C:\\repos\\alpha' },
+        { name: 'Beta', localPath: 'C:\\repos\\beta' },
+      ],
+    };
+    try {
+      const aliasPrPath = isolatedShared.projectPrPath(config.projects[0]);
+      const realPrPath = path.join(realDir, path.relative(aliasDir, aliasPrPath));
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(realPrPath, config).name, 'Alpha');
+    } finally {
+      delete process.env.MINIONS_TEST_DIR;
+      for (const mod of ISOLATED_MODULES) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
     }
   });
 
