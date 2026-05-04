@@ -1310,10 +1310,13 @@ function projectPrPath(project) {
 }
 
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPath = path.resolve(filePath);
+  const resolvedPaths = new Set([path.resolve(filePath)]);
+  if (filePath && !path.isAbsolute(filePath)) {
+    resolvedPaths.add(path.resolve(MINIONS_DIR, filePath));
+  }
   const projects = getProjects(config);
   for (const project of projects) {
-    if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
+    if (resolvedPaths.has(path.resolve(projectPrPath(project)))) return project;
   }
   if (projects.length === 1) return projects[0];
   return null;

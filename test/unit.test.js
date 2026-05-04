@@ -2090,6 +2090,10 @@ async function testCopilotAdapter() {
       const r = copilot.parseError(c);
       assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure`);
       assert.strictEqual(r.retriable, false);
+      assert.ok(/gh auth login|GH_TOKEN|COPILOT_GITHUB_TOKEN/.test(r.message),
+        'Copilot auth failure guidance should point to GitHub/Copilot auth');
+      assert.ok(!/az|azureauth/i.test(r.message),
+        'Copilot auth failure guidance must not mention Azure auth tools');
     }
   });
 
@@ -2957,6 +2961,26 @@ async function testSpawnAgentHelpers() {
     assert.ok(warnings.some(msg => msg.includes('ADO token fetch failed')));
   });
 
+  await test('injectAdoTokenEnvForRepoHost only fetches ADO tokens for ADO repo hosts', () => {
+    let calls = 0;
+    const githubEnv = { MINIONS_REPO_HOST: 'github' };
+    const github = spawnAgent.injectAdoTokenEnvForRepoHost(githubEnv, {
+      acquireToken: () => { calls++; throw new Error('should not fetch for GitHub'); },
+    });
+    assert.strictEqual(github, false);
+    assert.strictEqual(calls, 0, 'GitHub repo startup must not invoke az or azureauth token acquisition');
+    assert.deepStrictEqual(githubEnv, { MINIONS_REPO_HOST: 'github' });
+
+    const adoEnv = { MINIONS_REPO_HOST: 'ado' };
+    const ado = spawnAgent.injectAdoTokenEnvForRepoHost(adoEnv, {
+      acquireToken: () => { calls++; return { token: 'eyJado-token', source: 'az' }; },
+      warn: () => { throw new Error('should not warn on valid ADO token'); },
+    });
+    assert.strictEqual(ado, true);
+    assert.strictEqual(calls, 1, 'ADO repo startup should still fetch the shared ADO token');
+    assert.strictEqual(adoEnv.AZURE_DEVOPS_EXT_PAT, 'eyJado-token');
+  });
+
   // ── computeAddDirs (bridges getUserAssetDirs → spawn --add-dir flags) ─────
 
   await test('computeAddDirs always includes minionsDir first', () => {
@@ -3210,6 +3234,8 @@ async function testSpawnAgentHelpers() {
     assert.strictEqual(typeof spawnAgent.parseSpawnArgs, 'function');
     assert.strictEqual(typeof spawnAgent.buildSpawnInvocation, 'function');
     assert.strictEqual(typeof spawnAgent.injectAdoTokenEnv, 'function');
+    assert.strictEqual(typeof spawnAgent.injectAdoTokenEnvForRepoHost, 'function');
+    assert.strictEqual(typeof spawnAgent.shouldInjectAdoTokenEnv, 'function');
   });
 
   await test('normalizeRuntimeExit preserves code and maps signal/null exits', () => {
@@ -13948,6 +13974,40 @@ async function testRenderPlaybook() {
       'docs playbook should substitute branch_name into the template');
   });
 
+  await test('renderPlaybook emits GitHub shared rules without Azure auth guidance for GitHub repos', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      repo_name: 'repo', ado_org: 'octo', ado_project: '',
+      repo_host: 'github',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result && result.includes('GitHub Tooling and Auth'),
+      'GitHub render should include GitHub-specific auth guidance');
+    assert.ok(result.includes('gh auth login') && result.includes('COPILOT_GITHUB_TOKEN'),
+      'GitHub auth guidance should point to gh/Copilot token paths');
+    assert.ok(!/azureauth|az devops|ADO token/i.test(result),
+      'GitHub rendered prompt must not include Azure auth guidance');
+  });
+
+  await test('renderPlaybook preserves Azure auth guidance for ADO repos', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      repo_name: 'repo', ado_org: 'contoso', ado_project: 'platform',
+      repo_host: 'ado',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W002', item_name: 'Test feature',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result && /azureauth ado token --mode iwa --mode broker --output token --timeout 1/.test(result),
+      'ADO rendered prompt should retain Azure auth timeout guidance');
+    assert.ok(result.includes('az repos pr show'),
+      'ADO rendered prompt should retain Azure DevOps status guidance');
+  });
+
   await test('renderPlaybook appends pinned.md and notes.md after template rendering as inert data', () => {
     const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
     const notesPath = path.join(MINIONS_DIR, 'notes.md');
@@ -18725,13 +18785,14 @@ async function testSpawnAgentScript() {
 
   await test('spawn-agent.js injects ADO PAT env after cleanChildEnv without web auth fallback', () => {
     const cleanIdx = src.indexOf('const env = cleanChildEnv();');
-    const injectIdx = src.indexOf('injectAdoTokenEnv(env);');
+    const injectIdx = src.indexOf('injectAdoTokenEnvForRepoHost(env);');
     const runIdx = src.indexOf('runFile(execBin, execArgs');
     assert.ok(cleanIdx >= 0, 'spawn-agent should build child env via cleanChildEnv');
     assert.ok(injectIdx > cleanIdx, 'ADO token env injection must happen after cleanChildEnv');
     assert.ok(runIdx > injectIdx, 'spawn-agent should pass the injected env to the spawned runtime');
     assert.ok(src.includes('AZURE_DEVOPS_EXT_PAT'), 'spawn-agent should set Azure DevOps extension PAT env');
     assert.ok(src.includes('AZURE_DEVOPS_EXT_AZURE_RM_PAT'), 'spawn-agent should set Azure RM PAT env for az extension auth');
+    assert.ok(src.includes('MINIONS_REPO_HOST'), 'spawn-agent should gate ADO token injection by repo host');
     assert.ok(!src.includes('--mode web'), 'spawn-agent must not fall back to browser/web azureauth mode');
   });
 
@@ -38366,20 +38427,24 @@ async function testAdoTokenInjection() {
       'engine.js should reference getAdoToken for token injection');
   });
 
-  await test('engine.js injects MINIONS_ADO_TOKEN into childEnv in spawnAgent', () => {
+  await test('engine.js injects MINIONS_ADO_TOKEN into childEnv in spawnAgent only for ADO projects', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Find the spawnAgent function and verify token injection
     const spawnAgentIdx = src.indexOf('async function spawnAgent(');
     assert.ok(spawnAgentIdx > -1, 'spawnAgent function should exist');
     // spawnAgent is a large function (~35K chars) — scan the full body
     const spawnSection = src.slice(spawnAgentIdx, spawnAgentIdx + 40000);
+    assert.ok(spawnSection.includes('MINIONS_REPO_HOST'),
+      'spawnAgent should tell spawn-agent.js which repo host is being handled');
     assert.ok(spawnSection.includes('MINIONS_ADO_TOKEN'),
       'spawnAgent should inject MINIONS_ADO_TOKEN into child environment');
     assert.ok(spawnSection.includes('getAdoToken'),
       'spawnAgent should call getAdoToken to get the cached token');
+    assert.ok(spawnSection.includes("getRepoHost(project) === 'ado'"),
+      'spawnAgent should only call getAdoToken for ADO projects');
   });
 
-  await test('engine.js injects MINIONS_ADO_TOKEN in steering spawn path', () => {
+  await test('engine.js injects MINIONS_ADO_TOKEN in steering spawn path only for ADO projects', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The steering path has a second cleanChildEnv() call — find it
     const firstCleanEnv = src.indexOf('cleanChildEnv()');
@@ -38387,9 +38452,13 @@ async function testAdoTokenInjection() {
     const secondCleanEnv = src.indexOf('cleanChildEnv()', firstCleanEnv + 1);
     assert.ok(secondCleanEnv > -1, 'Second cleanChildEnv call (steering) should exist');
     // Check that MINIONS_ADO_TOKEN is injected after the second call too
-    const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 500);
+    const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 800);
+    assert.ok(steeringSection.includes('MINIONS_REPO_HOST'),
+      'Steering spawn path should also pass the repo host');
     assert.ok(steeringSection.includes('MINIONS_ADO_TOKEN'),
       'Steering spawn path should also inject MINIONS_ADO_TOKEN');
+    assert.ok(steeringSection.includes("getRepoHost(project) === 'ado'"),
+      'Steering spawn path should only fetch ADO tokens for ADO projects');
   });
 
   await test('engine.js injects MINIONS_LIVE_OUTPUT_PATH into spawn-agent environments (#1971)', () => {
