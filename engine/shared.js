@@ -1477,6 +1477,13 @@ function nextWorkItemId(items, prefix) {
 
 // ── ADO URL ──────────────────────────────────────────────────────────────────
 
+/** Return the org/owner for a project regardless of host. Prefers host-specific field, falls back to adoOrg for backward compat. */
+function getProjectOrg(project) {
+  if (!project) return '';
+  if (project.repoHost === 'github') return project.githubOrg || project.adoOrg || '';
+  return project.adoOrg || '';
+}
+
 function getAdoOrgBase(project) {
   if (project.prUrlBase) {
     const devAzure = project.prUrlBase.match(/^(https?:\/\/dev\.azure\.com\/[^/]+)/i);
@@ -1922,7 +1929,7 @@ function getProjectPrScope(project) {
   if (host === 'github') {
     const parsed = parseGitHubPrUrl(project.prUrlBase || '');
     if (parsed?.scope) return parsed.scope;
-    const owner = normalizePrScopeSegment(project.adoOrg);
+    const owner = normalizePrScopeSegment(getProjectOrg(project));
     const repo = normalizePrScopeSegment(project.repoName);
     return owner && repo ? `github:${owner}/${repo}` : '';
   }
@@ -2680,6 +2687,7 @@ module.exports = {
   mergePrLinkItems, // exported for testing
   upsertPullRequestRecord,
   nextWorkItemId,
+  getProjectOrg,
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
