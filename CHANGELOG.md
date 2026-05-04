@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1707 (2026-05-04)
+
+### Features
+- preserve CC fan-out dedup scope (#2037)
+
+### Other
+- test(llm): add unit tests for resolution helper edge cases and bin cache reset (#2039)
+- test(ado): add unit tests for pure helpers (project label, GUID, metadata apply, stale flag) (#2038)
+
 ## 0.1.1705 (2026-05-04)
 
 ### Features
