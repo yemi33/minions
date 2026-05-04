@@ -3879,6 +3879,26 @@ async function testRuntimeFleetHelpers() {
       'auto-heal must persist via mutateJsonFileLocked so the dashboard sees the fix too');
   });
 
+  await test('git rev-parse calls in install/boot paths pipe stderr — npm-installed clients shouldn\'t see "fatal: not a git repository"', () => {
+    // Both saveInstalledVersion (bin/minions.js) and engine/cli.js start()
+    // probe `git rev-parse --short HEAD` inside the package root to record
+    // the source commit. For npm-installed clients, the package root has no
+    // .git directory, so git prints "fatal: not a git repository" to stderr.
+    // The surrounding try/catch handles control flow, but stderr defaults to
+    // inherit — the noise leaks straight to the user's terminal. Ensure both
+    // call sites pipe stderr so the catch is the only thing the user sees.
+    for (const relPath of ['bin/minions.js', 'engine/cli.js']) {
+      const src = fs.readFileSync(path.join(MINIONS_DIR, relPath), 'utf8');
+      const lines = src.split('\n');
+      const hits = lines.filter(l => l.includes('git rev-parse'));
+      assert.ok(hits.length > 0, `${relPath} should still call git rev-parse`);
+      for (const line of hits) {
+        assert.ok(line.includes("stdio: ['pipe', 'pipe', 'pipe']"),
+          `${relPath} git rev-parse must pipe stderr to suppress the "fatal: not a git repository" noise on npm-installed clients. Offending line: ${line.trim()}`);
+      }
+    }
+  });
+
   // ── Wiring sanity: engine/cli.js + engine/preflight.js consume helpers ─────
 
   await test('engine/cli.js calls applyLegacyCcModelMigration during start()', () => {
