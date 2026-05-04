@@ -13929,6 +13929,39 @@ async function testRenderPlaybook() {
       'Should explain that minions-scoped skills use the selected runtime native target');
   });
 
+  await test('shared agent rules include simplicity, surgical change, and verification discipline', () => {
+    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(sharedRules.includes('Engineering Discipline'),
+      'shared rules should include a dedicated engineering discipline section');
+    assert.ok(/simplest complete solution/i.test(sharedRules),
+      'shared rules should steer agents away from overcomplicated implementations');
+    assert.ok(/surgical and reviewable/i.test(sharedRules),
+      'shared rules should require focused, reviewable diffs');
+    assert.ok(/verifiable goals/i.test(sharedRules),
+      'shared rules should require explicit verification targets before editing');
+  });
+
+  await test('review playbook keeps blocking findings evidence-backed and high-signal', () => {
+    const reviewPlaybook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
+    assert.ok(/high-signal/i.test(reviewPlaybook),
+      'review playbook should tell reviewers to keep comments high-signal');
+    assert.ok(/Every blocking issue must cite the file\/line/i.test(reviewPlaybook),
+      'review playbook should require evidence for blocking comments');
+    assert.ok(/Do not turn assumptions, preferences, or speculative alternatives into requested changes/i.test(reviewPlaybook),
+      'review playbook should not let speculation become blocking feedback');
+  });
+
+  await test('system prompts include scope, assumption, and verifiability guardrails', () => {
+    const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    const planAdvisorPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'plan-advisor-system.md'), 'utf8');
+    assert.ok(ccPrompt.includes('Scope and Simplicity') && ccPrompt.includes('smallest action'),
+      'Command Center system prompt should prefer narrow complete actions');
+    assert.ok(ccPrompt.includes('name the assumption') && ccPrompt.includes('verify the exact behavior'),
+      'Command Center prompt should require assumptions and verification for self-performed implementation');
+    assert.ok(planAdvisorPrompt.includes('Plan Quality') && planAdvisorPrompt.includes('Make every work item verifiable'),
+      'Plan Advisor prompt should require verifiable, non-speculative plans');
+  });
+
   await test('renderPlaybook renders docs playbook successfully with typical vars', () => {
     const result = renderPlaybook('docs', {
       agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
