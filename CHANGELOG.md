@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1718 (2026-05-04)
+
+### Features
+- prevent deferred steering crash (#2060)
+
 ## 0.1.1716 (2026-05-04)
 
 ### Features
