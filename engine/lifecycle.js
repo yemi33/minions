@@ -1273,12 +1273,31 @@ function reviewPrRefFromCompletion(completion) {
   return value;
 }
 
+function reviewPrRefMatchesDispatchTarget(reportedPr, dispatchPr, project) {
+  if (!reportedPr || !dispatchPr) return true;
+  const reportedUrl = typeof reportedPr === 'object' ? reportedPr.url || '' : String(reportedPr || '');
+  const dispatchUrl = typeof dispatchPr === 'object' ? dispatchPr.url || '' : String(dispatchPr || '');
+  const reportedId = shared.getCanonicalPrId(project, reportedPr, reportedUrl);
+  const dispatchId = shared.getCanonicalPrId(project, dispatchPr, dispatchUrl);
+  if (!reportedId || !dispatchId || reportedId === dispatchId) return true;
+
+  const reportedNumber = shared.getPrNumber(reportedPr);
+  const dispatchNumber = shared.getPrNumber(dispatchPr);
+  if (reportedNumber == null || dispatchNumber == null || reportedNumber !== dispatchNumber) return false;
+
+  const reportedScoped = !/^PR-\d+$/i.test(reportedId);
+  const dispatchScoped = !/^PR-\d+$/i.test(dispatchId);
+  return !(reportedScoped && dispatchScoped);
+}
+
 function centralPrPath() {
   return path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
 }
 
 function resolveReviewPrContext(pr, project, config, structuredCompletion = null) {
-  const refs = [pr, reviewPrRefFromCompletion(structuredCompletion)].filter(Boolean);
+  const reportedPr = reviewPrRefFromCompletion(structuredCompletion);
+  if (reportedPr && pr && !reviewPrRefMatchesDispatchTarget(reportedPr, pr, project)) return null;
+  const refs = reportedPr ? [reportedPr] : [pr].filter(Boolean);
   if (refs.length === 0) return null;
 
   const projects = shared.getProjects(config);
@@ -1292,6 +1311,8 @@ function resolveReviewPrContext(pr, project, config, structuredCompletion = null
     const prPath = shared.projectPrPath(candidateProject);
     const prs = safeJson(prPath) || [];
     for (const ref of refs) {
+      const refUrl = typeof ref === 'object' ? ref.url || '' : String(ref || '');
+      if (!shared.isPrCompatibleWithProject(candidateProject, ref, refUrl)) continue;
       const target = shared.findPrRecord(prs, ref, candidateProject);
       if (target) return { pr: { ...target }, project: candidateProject, prPath };
     }
@@ -1299,10 +1320,13 @@ function resolveReviewPrContext(pr, project, config, structuredCompletion = null
 
   const centralPath = centralPrPath();
   const centralPrs = safeJson(centralPath) || [];
-  for (const ref of refs) {
+  const centralRefs = reportedPr ? [reportedPr] : refs;
+  for (const ref of centralRefs) {
     const target = shared.findPrRecord(centralPrs, ref, null);
     if (target) return { pr: { ...target }, project: null, prPath: centralPath };
   }
+
+  if (reportedPr) return null;
 
   return pr?.id
     ? { pr, project: project || null, prPath: project ? shared.projectPrPath(project) : centralPath }
@@ -1312,6 +1336,12 @@ function resolveReviewPrContext(pr, project, config, structuredCompletion = null
 async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null, dispatchItem = null) {
 
   if (!config) config = getConfig();
+  const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
+  if (completionStatus && NON_TERMINAL_COMPLETION_STATUSES.has(completionStatus)) {
+    const target = pr?.id || reviewPrRefFromCompletion(structuredCompletion) || 'unknown PR';
+    log('warn', `Skipping review update for ${target}: completion status is ${structuredCompletion.status}`);
+    return;
+  }
   const reviewContext = resolveReviewPrContext(pr, project, config, structuredCompletion);
   if (!reviewContext?.pr?.id) {
     const reportedPr = reviewPrRefFromCompletion(structuredCompletion);
@@ -1349,6 +1379,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 
   let updatedTarget = null;
+  const reviewNote = String(resultSummary || '').trim();
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
     const target = shared.findPrRecord(prs, reviewPr, reviewProject);
@@ -1365,7 +1396,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: resultSummary || '',
+      note: reviewNote,
       dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null,
       sourceItem: dispatchItem?.meta?.item?.id || null,
       // Preserve fixedAt across re-reviews so the poller guard knows a fix was pushed.
@@ -1388,7 +1419,14 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 
   log('info', `Updated ${reviewPr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
-  if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config, { dispatchItem, structuredCompletion });
+  if (updatedTarget) {
+    createReviewFeedbackForAuthor(agentId, updatedTarget, config, {
+      reviewContent: reviewNote,
+      project: reviewProject,
+      dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null,
+      sourceItem: dispatchItem?.meta?.item?.id || null,
+    });
+  }
 }
 
 function updatePrAfterFix(pr, project, source) {
@@ -1838,28 +1876,35 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config, opts = {}) {
   const authorAgentId = pr.agent.toLowerCase();
   if (!config.agents[authorAgentId]) return;
   const today = dateStamp();
-  const inboxFiles = getInboxFiles();
-  const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
-  if (reviewFiles.length === 0) return;
-  const matchedReviewContent = [];
-  for (const f of reviewFiles) {
-    const content = safeRead(path.join(INBOX_DIR, f));
-    if (!content) continue;
-    if (!reviewFeedbackSourceMatches({
-      fileName: f,
-      content,
-      reviewerAgentId,
-      pr,
-      dispatchItem: opts.dispatchItem,
-      structuredCompletion: opts.structuredCompletion,
-    })) continue;
-    matchedReviewContent.push(content);
+  const project = opts.project || opts.dispatchItem?.meta?.project || null;
+  let reviewContent = String(opts.reviewContent || '').trim();
+  if (reviewContent) {
+    if (!reviewContentMatchesPr(reviewContent, pr, project)) {
+      log('warn', `Skipped review feedback for ${pr.id}: review content references a different PR`);
+      return;
+    }
+  } else {
+    const inboxFiles = getInboxFiles();
+    const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
+    if (reviewFiles.length === 0) return;
+    const matchedReviewContent = [];
+    for (const f of reviewFiles) {
+      const content = safeRead(path.join(INBOX_DIR, f));
+      if (!content) continue;
+      if (!reviewFeedbackSourceMatches({
+        fileName: f,
+        content,
+        reviewerAgentId,
+        pr,
+        dispatchItem: opts.dispatchItem,
+        structuredCompletion: opts.structuredCompletion,
+      })) continue;
+      matchedReviewContent.push(content);
+    }
+    if (matchedReviewContent.length === 0) return;
+    reviewContent = matchedReviewContent.join('\n\n');
   }
-  if (matchedReviewContent.length === 0) return;
-  const reviewContent = matchedReviewContent.join('\n\n');
   const prSlug = shared.safeSlugComponent(pr.id, 60);
-  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${prSlug}-${today}.md`;
-  const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
     `**PR:** ${pr.id} — ${pr.title || ''}\n` +
     `**Reviewer:** ${config.agents[reviewerAgentId]?.name || reviewerAgentId}\n` +
@@ -1868,7 +1913,14 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config, opts = {}) {
     `## Action Required\n\nRead this feedback carefully. When you work on similar tasks in the future, ` +
     `avoid the patterns flagged here. If you are assigned to fix this PR, ` +
     `address every point raised above.\n`;
-  shared.safeWrite(feedbackPath, content);
+  shared.writeToInbox('feedback', `${authorAgentId}-from-${reviewerAgentId}-${prSlug}`, content, null, {
+    sourcePr: pr.id,
+    reviewer: reviewerAgentId,
+    author: authorAgentId,
+    dispatchId: opts.dispatchId || opts.dispatchItem?.id || opts.structuredCompletion?.dispatchId || null,
+    sourceItem: opts.sourceItem || opts.dispatchItem?.meta?.item?.id || null,
+    project: project?.name || null,
+  });
   log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
@@ -2233,6 +2285,33 @@ function normalizeReviewVerdict(verdict) {
 function reviewVerdictFromCompletion(completion) {
   if (!completion || typeof completion !== 'object') return null;
   return normalizeReviewVerdict(completion.verdict || completion.review_verdict || completion.reviewVerdict);
+}
+
+function reviewContentMatchesPr(content, pr, project) {
+  const text = String(content || '').trim();
+  if (!text) return false;
+  const targetId = shared.getCanonicalPrId(project, pr, pr?.url || '');
+  const targetNumber = shared.getPrNumber(pr);
+  if (!targetId) return true;
+
+  const explicitRefs = new Set();
+  for (const match of text.matchAll(/\b(?:github|ado):[A-Za-z0-9._~/-]+#\d+\b/g)) {
+    explicitRefs.add(shared.getCanonicalPrId(project, match[0]));
+  }
+  for (const match of text.matchAll(/https?:\/\/[^\s)>"]+(?:\/pull\/|\/pullrequest\/)\d+[^\s)>"]*/gi)) {
+    const url = match[0].replace(/[.,;:]+$/g, '');
+    explicitRefs.add(shared.getCanonicalPrId(project, url, url));
+  }
+  if (explicitRefs.size > 0) return explicitRefs.size === 1 && explicitRefs.has(targetId);
+
+  const mentionedNumbers = new Set();
+  for (const match of text.matchAll(/\bPR\s*(?:#|-)\s*(\d+)\b/gi)) {
+    mentionedNumbers.add(parseInt(match[1], 10));
+  }
+  if (mentionedNumbers.size > 0 && targetNumber != null) {
+    return mentionedNumbers.size === 1 && mentionedNumbers.has(targetNumber);
+  }
+  return true;
 }
 
 function writeNonCleanAgentReport(dispatchItem, agentId, outcome, structuredCompletion, resultSummary, exitCode) {
@@ -2663,7 +2742,10 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // (retryCount was being deleted by done-marking before the check could read it)
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
-  if (type === WORK_TYPE.REVIEW && effectiveSuccess && !skipDoneStatus) {
+  const hardContractFail = completionContractFailure?.severity === 'hard'
+    || completionContractFailure?.nonTerminal === true;
+  const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
+  if (type === WORK_TYPE.REVIEW && finalResult === DISPATCH_RESULT.SUCCESS && !skipDoneStatus) {
     await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion, dispatchItem);
   } else if (type === WORK_TYPE.REVIEW) {
     log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);
@@ -2686,9 +2768,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  const hardContractFail = completionContractFailure?.severity === 'hard'
-    || completionContractFailure?.nonTerminal === true;
-  const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
   if (finalResult === DISPATCH_RESULT.SUCCESS) {
     extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
     // Also scan inbox notes for skill blocks — agents often write skills to inbox, not stdout
