@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1701 (2026-05-04)
+
+### Features
+- scope review cooldowns by PR head (#2026)
+- harden docchat delegation (#2020)
+- isolate review metadata (#2014)
+- fix darwin pr path aliases (#2013)
+-  audit prompts and playbooks against Karpathy CLAUDE.md (#2012)
+
 ## 0.1.1699 (2026-05-04)
 
 ### Features
