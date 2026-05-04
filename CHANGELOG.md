@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1715 (2026-05-04)
+
+### Features
+- auto-repair ADO project metadata (#2052)
+
 ## 0.1.1713 (2026-05-04)
 
 ### Features
