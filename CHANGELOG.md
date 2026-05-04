@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1719 (2026-05-04)
+
+### Features
+- fix stale Claude caps native inference (#2063)
+- prevent deferred steering crash (#2060)
+
+### Fixes
+- filter agent failure classification (#2064)
+
 ## 0.1.1716 (2026-05-04)
 
 ### Features
