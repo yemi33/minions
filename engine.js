@@ -271,17 +271,72 @@ function _runtimeLogger() {
   };
 }
 
+function _collectAgentFailureSignal(rawOutput) {
+  const text = rawOutput == null ? '' : String(rawOutput);
+  if (!text) return '';
+
+  const signals = [];
+  let sawJsonLine = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (!line.startsWith('{')) {
+      signals.push(line);
+      continue;
+    }
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    sawJsonLine = true;
+
+    const type = String(obj.type || '');
+    const subtype = String(obj.subtype || '');
+    const eventType = String(obj.event?.type || '');
+    const isErrorEvent = type === 'error'
+      || eventType === 'error'
+      || subtype.startsWith('error')
+      || obj.is_error === true
+      || obj.error != null;
+    if (!isErrorEvent) continue;
+
+    for (const value of [
+      subtype,
+      obj.error,
+      obj.message,
+      obj.stderr,
+      obj.result,
+      obj.event?.error,
+      obj.event?.message,
+    ]) {
+      if (typeof value === 'string' && value.trim()) signals.push(value.trim());
+    }
+  }
+
+  if (signals.length > 0) return signals.join('\n');
+  return sawJsonLine ? '' : text;
+}
+
+function _stdoutForFallbackClassification(rawStdout, failureSignal) {
+  if (failureSignal) return failureSignal;
+  const text = rawStdout == null ? '' : String(rawStdout);
+  if (!text.trim()) return '';
+  return 'agent produced non-empty stdout without a terminal runtime error signal';
+}
+
 function _classifyAgentFailure(runtime, code, stdout, stderr) {
+  const failureSignal = _collectAgentFailureSignal(stdout);
+  const fallbackStdout = _stdoutForFallbackClassification(stdout, failureSignal);
   if (runtime && typeof runtime.classifyFailure === 'function') {
     const classified = runtime.classifyFailure({
       code,
-      stdout,
+      stdout: failureSignal,
       stderr,
-      fallback: classifyFailureFallback,
+      fallback: (fallbackCode, _stdout, fallbackStderr) =>
+        classifyFailureFallback(fallbackCode, fallbackStdout, fallbackStderr),
     });
     if (classified && classified.failureClass) return classified;
   }
-  return { failureClass: classifyFailureFallback(code, stdout, stderr) };
+  return { failureClass: classifyFailureFallback(code, fallbackStdout, stderr) };
 }
 
 function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Date.now()) {
@@ -4407,7 +4462,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
   isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
-  _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, // exported for testing
+  _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, _classifyAgentFailure, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
