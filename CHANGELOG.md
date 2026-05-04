@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1703 (2026-05-04)
+
+### Features
+- isolate review metadata
+
 ## 0.1.1702 (2026-05-04)
 
 ### Other
