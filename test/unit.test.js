@@ -23184,8 +23184,8 @@ async function testMeetings() {
   });
 
   await test('collectMeetingFindings auto-advances rounds', () => {
-    assert.ok(meetingSrc.includes('allSubmitted') && meetingSrc.includes("'debating'") && meetingSrc.includes("'concluding'"),
-      'Should advance to next round when all participants submit');
+    assert.ok(meetingSrc.includes('advanceMeetingIfRoundComplete') && meetingSrc.includes('allParticipantsFinishedRound'),
+      'Should advance to the next round only when all participants have terminal outcomes');
   });
 
   await test('meeting transcript written to inbox on completion', () => {
@@ -23207,8 +23207,8 @@ async function testMeetings() {
   await test('lifecycle collects meeting findings on completion', () => {
     assert.ok(lifecycleSrc.includes('collectMeetingFindings') && (lifecycleSrc.includes("type === WORK_TYPE.MEETING") || lifecycleSrc.includes("type === 'meeting'")),
       'runPostCompletionHooks should call collectMeetingFindings for meeting type');
-    assert.ok(lifecycleSrc.includes('collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion, meta.round)'),
-      'runPostCompletionHooks should pass structured completion data and expected round to meeting ingestion');
+    assert.ok(lifecycleSrc.includes('collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout, structuredCompletion, meta.round, {'),
+      'runPostCompletionHooks should pass structured completion data, expected round, and success/failure state to meeting ingestion');
   });
 
   // Playbooks
@@ -23292,25 +23292,27 @@ async function testMeetings() {
       'Should track when each round started for timeout calculation');
   });
 
-  await test('timeout auto-advances round with partial responses', () => {
-    assert.ok(meetingSrc.includes('timed out') && meetingSrc.includes('advancing'),
-      'Should log timeout and advance to next round');
+  await test('timeout waits for terminal round outcomes before advancing', () => {
+    assert.ok(meetingSrc.includes('waiting for all participants to finish'),
+      'Should log timeout and wait when a round has unfinished participants');
+    assert.ok(meetingSrc.includes('allParticipantsFinishedRound'),
+      'Should gate timeout advancement on terminal participant outcomes');
     assert.ok(meetingSrc.includes("type: 'timeout'"),
-      'Should record timeout events in meeting transcript');
+      'Should record timeout events only when advancing an already-terminal round');
   });
 
   await test('output validation rejects empty/placeholder responses', () => {
     assert.ok(meetingSrc.includes('EMPTY_OUTPUT_PATTERNS'),
       'Should define patterns for empty/placeholder output');
-    assert.ok(meetingSrc.includes("'(no output)'") && meetingSrc.includes('rejecting'),
-      'Should reject (no output) and log a warning');
+    assert.ok(meetingSrc.includes("'(no output)'") && meetingSrc.includes('Agent produced empty meeting output'),
+      'Should treat empty/placeholder output as a terminal failed round contribution');
   });
 
-  await test('conclusion timeout auto-summarizes from findings and debate', () => {
-    assert.ok(meetingSrc.includes('concluding') && meetingSrc.includes('auto-summarizing'),
-      'Should auto-summarize when conclusion round times out');
+  await test('conclusion failure auto-summarizes from findings and debate', () => {
+    assert.ok(meetingSrc.includes('buildFailedMeetingConclusion') && meetingSrc.includes('Conclusion Failure'),
+      'Should auto-summarize when the conclusion agent fails');
     assert.ok(meetingSrc.includes("meeting.conclusion = {") || meetingSrc.includes('meeting.conclusion ='),
-      'Should write a synthesized conclusion on timeout');
+      'Should write a synthesized conclusion on conclusion-agent failure');
   });
 
   // CC retry button
@@ -24008,14 +24010,15 @@ async function testMeetingsExtendedBehavioral() {
     const testId = 'TEST-EXT-empty-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Empty Output', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
       conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
     });
     try {
       meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput(''));
       const m = meetingMod.getMeeting(testId);
       assert.ok(!m.findings.alice, 'Should NOT record empty findings');
-      assert.strictEqual(m.status, 'investigating', 'Status should remain investigating');
+      assert.ok(m.roundFailures?.['1']?.alice, 'Should record empty output as a terminal round failure');
+      assert.strictEqual(m.status, 'investigating', 'Status should remain investigating until every participant finishes');
     } finally {
       cleanupMeeting(testId);
     }
@@ -24025,13 +24028,15 @@ async function testMeetingsExtendedBehavioral() {
     const testId = 'TEST-EXT-placeholder-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Placeholder Output', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
       conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
     });
     try {
       meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('(no output)'));
       const m = meetingMod.getMeeting(testId);
       assert.ok(!m.findings.alice, 'Should NOT record placeholder findings');
+      assert.ok(m.roundFailures?.['1']?.alice, 'Should record placeholder output as a terminal round failure');
+      assert.strictEqual(m.status, 'investigating', 'Status should remain investigating until every participant finishes');
     } finally {
       cleanupMeeting(testId);
     }
@@ -24131,7 +24136,7 @@ async function testMeetingsExtendedBehavioral() {
     const testId = 'TEST-EXT-empty-structured-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Empty Structured', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
       conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
     });
     try {
@@ -24144,6 +24149,7 @@ async function testMeetingsExtendedBehavioral() {
       );
       const m = meetingMod.getMeeting(testId);
       assert.ok(!m.findings.alice, 'Should reject successful completion that has no note artifact to ingest');
+      assert.ok(m.roundFailures?.['1']?.alice, 'Should record empty structured completion as a terminal failure');
       assert.strictEqual(m.status, 'investigating');
     } finally {
       cleanupMeeting(testId);
@@ -24198,6 +24204,28 @@ async function testMeetingsExtendedBehavioral() {
     }
   });
 
+  await test('collectMeetingFindings advances investigating only after every participant succeeds or fails', () => {
+    const testId = 'TEST-EXT-advinv-fail-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance Investigate With Failure', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'bob', 'investigate', makeOutput(''), null, 1, { success: false, reason: 'process failed' });
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'Should wait for alice after bob fails');
+      assert.ok(m.roundFailures?.['1']?.bob, 'Bob failure should be recorded for round 1');
+
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Alice findings'), null, 1, { success: true });
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should advance after all participants have terminal outcomes');
+      assert.strictEqual(m.round, 2, 'Round should advance to 2');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
   await test('collectMeetingFindings auto-advances debating → concluding when all participants submit', () => {
     const testId = 'TEST-EXT-advdeb-' + Date.now();
     meetingMod.saveMeeting({
@@ -24216,6 +24244,24 @@ async function testMeetingsExtendedBehavioral() {
       m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'concluding', 'Should advance to concluding when all submit');
       assert.strictEqual(m.round, 3, 'Round should advance to 3');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork does not redispatch failed participants for the same round', () => {
+    const testId = 'TEST-EXT-skip-failed-round-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Skip Failed Round', agenda: 'avoid redispatch', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {},
+      roundFailures: { 1: { alice: { reason: 'process failed', submittedAt: new Date().toISOString() } } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const work = meetingMod.discoverMeetingWork({ agents: { alice: { name: 'Alice' }, bob: { name: 'Bob' } } });
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.deepStrictEqual(forThis.map(w => w.agent), ['bob'],
+        'only unfinished participants should be dispatched for the round');
     } finally {
       cleanupMeeting(testId);
     }
@@ -24571,7 +24617,7 @@ async function testMeetingsExtendedBehavioral() {
     }
   });
 
-  await test('checkMeetingTimeouts advances investigating → debating when timed out', () => {
+  await test('checkMeetingTimeouts does not advance investigating with unfinished participants', () => {
     const testId = 'TEST-EXT-tout-inv-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
@@ -24583,18 +24629,16 @@ async function testMeetingsExtendedBehavioral() {
       // Default ENGINE_DEFAULTS.meetingRoundTimeout is 900000 (15 min)
       meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
       const m = meetingMod.getMeeting(testId);
-      assert.strictEqual(m.status, 'debating', 'Should advance to debating after timeout');
-      assert.strictEqual(m.round, 2);
-      // Transcript should record timeout event
+      assert.strictEqual(m.status, 'investigating', 'Should not advance until every participant succeeds or fails');
+      assert.strictEqual(m.round, 1);
       const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
-      assert.ok(timeoutEntry, 'Should record timeout in transcript');
-      assert.ok(timeoutEntry.content.includes('1/2'), 'Should note partial response count');
+      assert.strictEqual(timeoutEntry, undefined, 'Should not record timeout transcript unless advancing an already-terminal round');
     } finally {
       cleanupMeeting(testId);
     }
   });
 
-  await test('checkMeetingTimeouts advances debating → concluding when timed out', () => {
+  await test('checkMeetingTimeouts does not advance debating with unfinished participants', () => {
     const testId = 'TEST-EXT-tout-deb-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
@@ -24607,14 +24651,14 @@ async function testMeetingsExtendedBehavioral() {
     try {
       meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
       const m = meetingMod.getMeeting(testId);
-      assert.strictEqual(m.status, 'concluding', 'Should advance to concluding after timeout');
-      assert.strictEqual(m.round, 3);
+      assert.strictEqual(m.status, 'debating', 'Should not advance until every participant succeeds or fails');
+      assert.strictEqual(m.round, 2);
     } finally {
       cleanupMeeting(testId);
     }
   });
 
-  await test('checkMeetingTimeouts auto-completes concluding round with synthesized conclusion', () => {
+  await test('checkMeetingTimeouts does not auto-complete concluding while conclusion agent is unfinished', () => {
     const testId = 'TEST-EXT-tout-con-' + Date.now();
     meetingMod.saveMeeting({
       id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
@@ -24639,15 +24683,41 @@ async function testMeetingsExtendedBehavioral() {
         },
       });
       const m = meetingMod.getMeeting(testId);
-      assert.strictEqual(m.status, 'completed', 'Should auto-complete on conclude timeout');
-      assert.ok(m.conclusion, 'Should have auto-generated conclusion');
-      assert.strictEqual(m.conclusion.agent, 'system', 'Conclusion agent should be system');
+      assert.strictEqual(m.status, 'concluding', 'Should wait for conclusion agent terminal outcome');
+      assert.strictEqual(m.conclusion, null, 'Should not synthesize conclusion purely from timeout');
+      assert.strictEqual(m.completedAt, undefined, 'Should not complete while conclusion is unfinished');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings auto-completes concluding with fallback when conclusion agent fails', () => {
+    const testId = 'TEST-EXT-con-fail-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Failed Conclude', status: 'concluding', round: 3,
+      participants: ['alice', 'bob'],
+      findings: {
+        alice: { content: 'Module X has an auth bug that breaks the save path.' },
+        bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
+      },
+      debate: {
+        alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
+        bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
+      },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'conclude', makeOutput(''), null, 3, { success: false, reason: 'process failed' });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'completed', 'Conclusion failure should still complete the meeting with fallback');
+      assert.ok(m.conclusion, 'Should have fallback conclusion');
+      assert.strictEqual(m.conclusion.agent, 'system', 'Fallback conclusion agent should be system');
       assert.ok(m.conclusion.content.includes('Auto-generated'), 'Should note auto-generation');
       assert.ok(m.conclusion.content.includes('## Debate Takeaways'), 'Should summarize the debate in a dedicated section');
       assert.ok(m.conclusion.content.includes('## Recommended Next Steps'), 'Should include concrete next steps');
-      assert.ok(m.conclusion.content.includes('We should fix module X before release and add regression coverage'), 'Should surface the strongest debate recommendation');
-      assert.ok(m.conclusion.content.includes('2 findings and 2 debate responses'), 'Should explain what evidence the fallback summary used');
-      assert.ok(!m.conclusion.content.includes('## Debate Summary'), 'Should not fall back to the old raw debate dump section');
+      assert.ok(m.conclusion.content.includes('## Conclusion Failure'), 'Should include failure context');
       assert.ok(m.completedAt, 'Should set completedAt');
     } finally {
       cleanupMeeting(testId);
