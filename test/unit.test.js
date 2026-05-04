@@ -8575,6 +8575,72 @@ async function testLlmModule() {
     }, 'explicit direct-call opts should override engineConfig defaults');
   });
 
+  await test('_resolveRuntimeFeatureOpts returns undefined feature fields for missing input/config', () => {
+    assert.deepStrictEqual(llm._resolveRuntimeFeatureOpts(), {
+      stream: undefined,
+      disableBuiltinMcps: undefined,
+      suppressAgentsMd: undefined,
+      reasoningSummaries: undefined,
+    });
+    assert.deepStrictEqual(llm._resolveRuntimeFeatureOpts({}), {
+      stream: undefined,
+      disableBuiltinMcps: undefined,
+      suppressAgentsMd: undefined,
+      reasoningSummaries: undefined,
+    });
+  });
+
+  await test('_resolveRuntimeFeatureOpts supports partial engineConfig', () => {
+    assert.deepStrictEqual(llm._resolveRuntimeFeatureOpts({
+      engineConfig: { copilotStreamMode: 'off' },
+    }), {
+      stream: 'off',
+      disableBuiltinMcps: undefined,
+      suppressAgentsMd: undefined,
+      reasoningSummaries: undefined,
+    });
+  });
+
+  await test('_resolveRuntimeFeatureOpts uses nullish fallback, preserving false and empty string overrides', () => {
+    const explicit = llm._resolveRuntimeFeatureOpts({
+      stream: '',
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: false,
+      engineConfig: {
+        copilotStreamMode: 'on',
+        copilotDisableBuiltinMcps: true,
+        copilotSuppressAgentsMd: true,
+        copilotReasoningSummaries: true,
+      },
+    });
+    assert.deepStrictEqual(explicit, {
+      stream: '',
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: false,
+    });
+
+    const nullish = llm._resolveRuntimeFeatureOpts({
+      stream: null,
+      disableBuiltinMcps: null,
+      suppressAgentsMd: null,
+      reasoningSummaries: null,
+      engineConfig: {
+        copilotStreamMode: 'off',
+        copilotDisableBuiltinMcps: false,
+        copilotSuppressAgentsMd: true,
+        copilotReasoningSummaries: false,
+      },
+    });
+    assert.deepStrictEqual(nullish, {
+      stream: 'off',
+      disableBuiltinMcps: false,
+      suppressAgentsMd: true,
+      reasoningSummaries: false,
+    });
+  });
+
   // ── trackEngineUsage — persistence, accumulation, guards ─────────────────
   // These tests run against a temp MINIONS_TEST_DIR so they do not pollute
   // real engine/metrics.json. The module is re-required after createTestMinionsDir
@@ -34539,6 +34605,40 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(!flags.includes('--enable-reasoning-summaries'));
   });
 
+  await test('_buildSpawnAgentFlags drops stream flag for empty and non-on/off stream values', () => {
+    const fakeRuntime = { name: 'fake-stream', capabilities: {} };
+    const emptyFlags = llm._buildSpawnAgentFlags(fakeRuntime, { stream: '' });
+    const invalidFlags = llm._buildSpawnAgentFlags(fakeRuntime, { stream: 'auto' });
+    assert.ok(!emptyFlags.includes('--stream'));
+    assert.ok(!invalidFlags.includes('--stream'));
+  });
+
+  await test('_buildSpawnAgentFlags does not emit strict-true flags for explicit false values', () => {
+    const fakeRuntime = { name: 'fake-false-toggles', capabilities: {} };
+    const flags = llm._buildSpawnAgentFlags(fakeRuntime, {
+      disableBuiltinMcps: false,
+      suppressAgentsMd: false,
+      reasoningSummaries: false,
+    });
+    assert.ok(!flags.includes('--disable-builtin-mcps'));
+    assert.ok(!flags.includes('--no-custom-instructions'));
+    assert.ok(!flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildSpawnAgentFlags drops bare=true when runtime lacks bareMode capability', () => {
+    const fakeRuntime = { name: 'fake-no-bare', capabilities: { bareMode: false } };
+    const flags = llm._buildSpawnAgentFlags(fakeRuntime, { bare: true });
+    assert.deepStrictEqual(flags, ['--runtime', 'fake-no-bare']);
+  });
+
+  await test('_buildSpawnAgentFlags preserves literal zero maxTurns', () => {
+    const fakeRuntime = { name: 'fake-zero-turns', capabilities: {} };
+    const flags = llm._buildSpawnAgentFlags(fakeRuntime, { maxTurns: 0 });
+    const i = flags.indexOf('--max-turns');
+    assert.ok(i >= 0 && flags[i + 1] === '0',
+      `maxTurns:0 must survive (== treats 0 as falsy); got: ${flags.join(' ')}`);
+  });
+
   await test('_buildSpawnAgentFlags: maxBudget=0 round-trips correctly through Claude (?? gate)', () => {
     const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
     const flags = llm._buildSpawnAgentFlags(claude, { maxBudget: 0 });
@@ -34599,6 +34699,32 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(m, 'haiku');
   });
 
+  await test('_resolveModelForRuntime returns selected model unchanged for nullish runtime', () => {
+    assert.strictEqual(llm._resolveModelForRuntime(null, { model: 'sonnet' }), 'sonnet');
+    assert.strictEqual(llm._resolveModelForRuntime(undefined, { engineConfig: { ccModel: 'haiku' } }), 'haiku');
+  });
+
+  await test('_resolveModelForRuntime returns selected model unchanged when runtime lacks resolveModel', () => {
+    const fakeRuntime = { name: 'fake-no-resolve-model' };
+    assert.strictEqual(llm._resolveModelForRuntime(fakeRuntime, { model: 'gpt-5.4' }), 'gpt-5.4');
+  });
+
+  await test('_resolveModelForRuntime passes selected model through runtime.resolveModel', () => {
+    let received = null;
+    const fakeRuntime = {
+      name: 'fake-normalizer',
+      resolveModel: (model) => {
+        received = model;
+        return String(model).toUpperCase();
+      },
+    };
+    const normalized = llm._resolveModelForRuntime(fakeRuntime, {
+      engineConfig: { ccModel: 'gpt-5.4-mini', defaultModel: 'sonnet' },
+    });
+    assert.strictEqual(received, 'gpt-5.4-mini');
+    assert.strictEqual(normalized, 'GPT-5.4-MINI');
+  });
+
   await test('internal LLM callers pass engineConfig for configured runtime model resolution', () => {
     const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
     assert.ok(consolidationSrc.includes('engineConfig: config.engine'),
@@ -34647,6 +34773,28 @@ async function testAutoRecoveryAndAtomicity() {
     const r2 = llm._resolveBin(fakeRuntime);
     assert.strictEqual(resolveCalls, 1, 'second _resolveBin call should hit the cache');
     assert.strictEqual(r1.bin, r2.bin);
+  });
+
+  await test('_resetBinCache clears cached runtime binary resolutions', () => {
+    llm._resetBinCache();
+    const fakeBin = path.join(createTmpDir(), isWinPlatform() ? 'fake.exe' : 'fake');
+    fs.writeFileSync(fakeBin, '');
+    let resolveCalls = 0;
+    const fakeRuntime = {
+      name: 'fake-reset-cache-' + Date.now(),
+      resolveBinary: () => {
+        resolveCalls++;
+        return { bin: fakeBin, native: true, leadingArgs: [] };
+      },
+    };
+    const r1 = llm._resolveBin(fakeRuntime);
+    const r2 = llm._resolveBin(fakeRuntime);
+    assert.strictEqual(resolveCalls, 1, 'second _resolveBin call should hit the cache before reset');
+    llm._resetBinCache();
+    const r3 = llm._resolveBin(fakeRuntime);
+    assert.strictEqual(resolveCalls, 2, '_resetBinCache should force the next _resolveBin call to re-probe');
+    assert.strictEqual(r1.bin, r2.bin);
+    assert.strictEqual(r1.bin, r3.bin);
   });
 
   await test('_resolveBin returns null when runtime.resolveBinary returns null', () => {
