@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1696 (2026-05-04)
+
+### Features
+- preserve doc-chat final payload (#2019)
+
 ## 0.1.1695 (2026-05-04)
 
 ### Features
