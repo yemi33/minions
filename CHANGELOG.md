@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1716 (2026-05-04)
+
+### Features
+- add CC post-dispatch stop rule (#2057)
+
 ## 0.1.1715 (2026-05-04)
 
 ### Features
