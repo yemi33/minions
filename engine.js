@@ -135,7 +135,7 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
   buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
-  getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
+  getRepoHost, getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
 // sanitizeBranch imported from shared.js
 
@@ -975,13 +975,16 @@ async function spawnAgent(dispatchItem, config) {
   // Spawn the claude process
   const childEnv = shared.cleanChildEnv();
   if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
+  childEnv.MINIONS_REPO_HOST = getRepoHost(project);
 
-  // Inject cached ADO token so agents skip re-authentication (#998)
-  // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth
-  try {
-    const adoToken = await getAdoToken();
-    if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
-  } catch { /* non-fatal — agent can still authenticate on its own */ }
+  if (getRepoHost(project) === 'ado') {
+    // Inject cached ADO token so ADO agents skip re-authentication (#998).
+    // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth.
+    try {
+      const adoToken = await getAdoToken();
+      if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+    } catch { /* non-fatal — agent can still authenticate on its own */ }
+  }
 
   // Spawn via wrapper script — node directly (no bash intermediary)
   // spawn-agent.js handles CLAUDECODE env cleanup and claude binary resolution
@@ -1200,11 +1203,14 @@ async function spawnAgent(dispatchItem, config) {
       const childEnv = shared.cleanChildEnv();
       if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;
       childEnv.MINIONS_LIVE_OUTPUT_PATH = liveOutputPath;
-      // Inject cached ADO token for steering session too (#998)
-      try {
-        const adoToken = await getAdoToken();
-        if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
-      } catch { /* non-fatal */ }
+      childEnv.MINIONS_REPO_HOST = getRepoHost(project);
+      if (getRepoHost(project) === 'ado') {
+        // Inject cached ADO token for steering session too (#998)
+        try {
+          const adoToken = await getAdoToken();
+          if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+        } catch { /* non-fatal */ }
+      }
       let resumeProc;
       try {
         resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {

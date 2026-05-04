@@ -407,16 +407,27 @@ function renderPlaybook(type, vars) {
   const dispatchProject = (vars.repo_id && projects.find(p => p.repositoryId === vars.repo_id))
     || (vars.repo_name && projects.find(p => p.repoName === vars.repo_name))
     || projects[0] || {};
+  const renderProject = {
+    ...dispatchProject,
+    adoOrg: vars.ado_org || vars.adoOrg || dispatchProject.adoOrg,
+    adoProject: vars.ado_project || vars.adoProject || dispatchProject.adoProject,
+    repoName: vars.repo_name || vars.repoName || dispatchProject.repoName,
+    repoHost: vars.repo_host || vars.repoHost || dispatchProject.repoHost,
+  };
+  const repoHost = getRepoHost(renderProject);
   const projectVars = {
-    project_name: dispatchProject.name || 'Unknown Project',
-    ado_org: dispatchProject.adoOrg || 'Unknown',
-    ado_project: dispatchProject.adoProject || 'Unknown',
-    repo_name: dispatchProject.repoName || 'Unknown',
-    pr_create_instructions: getPrCreateInstructions(dispatchProject),
-    pr_comment_instructions: getPrCommentInstructions(dispatchProject),
-    pr_fetch_instructions: getPrFetchInstructions(dispatchProject),
-    pr_vote_instructions: getPrVoteInstructions(dispatchProject),
-    repo_host_label: getRepoHostLabel(dispatchProject),
+    project_name: renderProject.name || 'Unknown Project',
+    ado_org: renderProject.adoOrg || 'Unknown',
+    ado_project: renderProject.adoProject || 'Unknown',
+    repo_name: renderProject.repoName || 'Unknown',
+    repo_host: repoHost,
+    ado_shared_rules: repoHost === 'ado' ? '1' : '',
+    github_shared_rules: repoHost === 'github' ? '1' : '',
+    pr_create_instructions: getPrCreateInstructions(renderProject),
+    pr_comment_instructions: getPrCommentInstructions(renderProject),
+    pr_fetch_instructions: getPrFetchInstructions(renderProject),
+    pr_vote_instructions: getPrVoteInstructions(renderProject),
+    repo_host_label: getRepoHostLabel(renderProject),
   };
   const allVars = { ...projectVars, ...vars };
 
@@ -640,6 +651,7 @@ function buildBaseVars(agentId, config, project) {
     ado_org: project?.adoOrg || 'Unknown',
     ado_project: project?.adoProject || 'Unknown',
     repo_name: project?.repoName || 'Unknown',
+    repo_host: getRepoHost(project),
     main_branch: project?.mainBranch || 'main',
     date: dateStamp(),
   };
