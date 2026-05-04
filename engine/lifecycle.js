@@ -1309,7 +1309,7 @@ function resolveReviewPrContext(pr, project, config, structuredCompletion = null
     : null;
 }
 
-async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null, dispatchItem = null) {
 
   if (!config) config = getConfig();
   const reviewContext = resolveReviewPrContext(pr, project, config, structuredCompletion);
@@ -1322,8 +1322,6 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   const reviewProject = reviewContext.project;
   const prPath = reviewContext.prPath;
   const reviewerName = config.agents?.[agentId]?.name || agentId;
-  const dispatch = getDispatch();
-  const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
   // If platform hasn't propagated the vote yet (returns 'pending'), keep current status unchanged.
@@ -1367,7 +1365,9 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: resultSummary || completedEntry?.task || '',
+      note: resultSummary || '',
+      dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null,
+      sourceItem: dispatchItem?.meta?.item?.id || null,
       // Preserve fixedAt across re-reviews so the poller guard knows a fix was pushed.
       // Drop it when reviewer requests changes again — that starts a new fix cycle.
       ...(target.minionsReview?.fixedAt && postReviewStatus !== 'changes-requested' ? { fixedAt: target.minionsReview.fixedAt } : {}),
@@ -1388,7 +1388,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 
   log('info', `Updated ${reviewPr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
-  if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config);
+  if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config, { dispatchItem, structuredCompletion });
 }
 
 function updatePrAfterFix(pr, project, source) {
@@ -1797,7 +1797,42 @@ function updateAgentHistory(agentId, dispatchItem, result) {
   log('info', `Updated history for ${agentId}`);
 }
 
-function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
+function reviewFeedbackSourceMatches({ fileName, content, reviewerAgentId, pr, dispatchItem, structuredCompletion }) {
+  if (String(fileName || '').startsWith('feedback-')) return false;
+  const text = String(content || '');
+  const scopedExpected = [
+    dispatchItem?.id,
+    dispatchItem?.meta?.item?.id,
+    structuredCompletion?.dispatchId,
+    pr?.minionsReview?.dispatchId,
+    pr?.minionsReview?.sourceItem,
+  ].filter(Boolean).map(String);
+  if (scopedExpected.length === 0) return true;
+
+  const fileAndContent = `${fileName || ''}\n${text}`;
+  if (!scopedExpected.some(value => fileAndContent.includes(value))) {
+    log('warn', `Skipping review feedback source ${fileName || '(unknown)'} for ${pr?.id || 'unknown PR'}: missing current dispatch/source marker for ${reviewerAgentId}`);
+    return false;
+  }
+
+  const prExpected = [
+    pr?.id,
+    pr?.url,
+  ].filter(Boolean).map(String);
+  if (prExpected.some(value => fileAndContent.includes(value))) return true;
+
+  const prNumber = shared.getPrNumber(pr);
+  if (prNumber != null) {
+    const scope = shared.getPrScopeInfo(pr, pr.url || '')?.scope || shared.getProjectPrScope(dispatchItem?.meta?.project) || '';
+    const numberMention = new RegExp(`(?:#|PR[-\\s])${prNumber}(?!\\d)`, 'i').test(fileAndContent);
+    if (numberMention && (!scope || fileAndContent.toLowerCase().includes(scope.toLowerCase()))) return true;
+  }
+
+  log('warn', `Skipping review feedback source ${fileName || '(unknown)'} for ${pr?.id || 'unknown PR'}: not tied to dispatch/PR scope for ${reviewerAgentId}`);
+  return false;
+}
+
+function createReviewFeedbackForAuthor(reviewerAgentId, pr, config, opts = {}) {
 
   if (!pr?.id || !pr?.agent) return;
   const authorAgentId = pr.agent.toLowerCase();
@@ -1806,7 +1841,22 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   const inboxFiles = getInboxFiles();
   const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
   if (reviewFiles.length === 0) return;
-  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).filter(Boolean).join('\n\n');
+  const matchedReviewContent = [];
+  for (const f of reviewFiles) {
+    const content = safeRead(path.join(INBOX_DIR, f));
+    if (!content) continue;
+    if (!reviewFeedbackSourceMatches({
+      fileName: f,
+      content,
+      reviewerAgentId,
+      pr,
+      dispatchItem: opts.dispatchItem,
+      structuredCompletion: opts.structuredCompletion,
+    })) continue;
+    matchedReviewContent.push(content);
+  }
+  if (matchedReviewContent.length === 0) return;
+  const reviewContent = matchedReviewContent.join('\n\n');
   const prSlug = shared.safeSlugComponent(pr.id, 60);
   const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${prSlug}-${today}.md`;
   const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
@@ -2613,7 +2663,11 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // (retryCount was being deleted by done-marking before the check could read it)
   // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion);
+  if (type === WORK_TYPE.REVIEW && effectiveSuccess && !skipDoneStatus) {
+    await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion, dispatchItem);
+  } else if (type === WORK_TYPE.REVIEW) {
+    log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);
+  }
   if (type === WORK_TYPE.FIX && effectiveSuccess) {
     updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
@@ -2836,6 +2890,7 @@ module.exports = {
   checkForLearnings,
   extractSkillsFromOutput,
   updateAgentHistory,
+  reviewFeedbackSourceMatches,
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,

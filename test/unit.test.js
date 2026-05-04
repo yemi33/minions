@@ -8852,6 +8852,47 @@ async function testPrReviewFixCycle() {
     assert.ok(playbook.includes('{{review_note}}'), 'Fix playbook needs review_note for feedback');
     assert.ok(playbook.includes('{{pr_branch}}'), 'Fix playbook needs pr_branch');
   });
+
+  await test('PR review dispatch prompt includes dispatch id in required learnings path', () => {
+    const playbook = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    const project = {
+      name: 'minions',
+      repoHost: 'github',
+      adoOrg: 'yemi33',
+      repoName: 'minions',
+      localPath: MINIONS_DIR,
+      mainBranch: 'master',
+    };
+    const config = {
+      projects: [project],
+      agents: { ripley: { name: 'Ripley', role: 'Lead / Explorer' } },
+      engine: {},
+    };
+    const pr = {
+      id: 'github:yemi33/minions#2014',
+      prNumber: 2014,
+      title: 'isolate review metadata',
+      url: 'https://github.com/yemi33/minions/pull/2014',
+    };
+    const item = playbook.buildPrDispatch('ripley', config, project, pr, 'review', {
+      pr_id: pr.id,
+      pr_number: pr.prNumber,
+      pr_title: pr.title,
+      pr_branch: 'work/W-review-marker',
+      pr_author: 'dallas',
+      pr_url: pr.url,
+    }, `Review ${pr.id}: ${pr.title}`, {
+      dispatchKey: 'review-minions-PR-2014',
+      source: 'pr',
+      pr,
+      branch: 'work/W-review-marker',
+      project,
+    });
+
+    assert.ok(item.id, 'PR dispatch should allocate its ID before rendering the playbook');
+    assert.ok(item.prompt.includes(`/notes/inbox/ripley-${item.id}-`),
+      'required learnings path should include the current dispatch id for feedback scoping');
+  });
 }
 
 // ─── Worktree Management Tests ──────────────────────────────────────────────
@@ -18172,6 +18213,88 @@ async function testLifecycleUncoveredFns() {
       assert.ok(body.includes('Reviewer:') && body.includes('Ripley'), 'should name the reviewer');
       assert.ok(body.includes('Found a race in dispatch'), 'should inline the reviewer inbox content');
       assert.ok(body.includes('Action Required'), 'should include the Action Required section');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: dispatch-scoped feedback excludes stale same-day reviewer notes', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-D-current-${today}.md`),
+        '---\ndispatchId: D-current\nsourceItem: W-current\n---\n\nReviewed github:yemi33/minions#2012.\nMINIONS_ONLY_FINDING');
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-D-stale-${today}.md`),
+        '---\ndispatchId: D-stale\nsourceItem: W-stale\n---\n\nReviewed github:committoquit/momentum#195.\nMOMENTUM_STALE_FINDING');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2012', url: 'https://github.com/yemi33/minions/pull/2012', agent: 'dallas', title: 'fix: minions review bookkeeping' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-current', meta: { item: { id: 'W-current' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write feedback from the current dispatch note');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('MINIONS_ONLY_FINDING'), 'current dispatch review content should be included');
+      assert.ok(!body.includes('MOMENTUM_STALE_FINDING'), 'stale same-day review content from another dispatch must be excluded');
+      assert.ok(!body.includes('github:committoquit/momentum#195'), 'feedback must not mix another repository PR into this PR artifact');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: accepts prompt-shaped PR review note with dispatch id in filename', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-old-${today}.md`),
+        `---\nid: NOTE-old\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nSTALE_UNSCOPED_FINDING`);
+      fs.writeFileSync(path.join(inboxDir, `ripley-D-current-${today}-0618.md`),
+        `---\nid: NOTE-current\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nPROMPT_SHAPED_FINDING`);
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2014', url: 'https://github.com/yemi33/minions/pull/2014', agent: 'dallas', title: 'fix: review metadata isolation' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-current', meta: { source: 'pr', project: { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'prompt-shaped review note should produce author feedback');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('PROMPT_SHAPED_FINDING'), 'current prompt-shaped review content should be included');
+      assert.ok(!body.includes('STALE_UNSCOPED_FINDING'), 'unmarked same-day review content must remain excluded');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: same PR number in another project is not a matching feedback source', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-minions-review-${today}.md`),
+        '---\ndispatchId: D-minions-2012\nsourceItem: W-minions-2012\n---\n\nReviewed github:yemi33/minions#2012.\nMINIONS_SCOPE_FINDING');
+      fs.writeFileSync(path.join(inboxDir, `ripley-momentum-review-${today}.md`),
+        '---\ndispatchId: D-minions-2012\nsourceItem: W-minions-2012\n---\n\nReviewed github:committoquit/momentum#2012.\nMOMENTUM_SCOPE_FINDING');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2012', url: 'https://github.com/yemi33/minions/pull/2012', agent: 'dallas', title: 'fix: minions review bookkeeping' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-minions-2012', meta: { item: { id: 'W-minions-2012' }, project: { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write feedback from the matching project-scope note');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('MINIONS_SCOPE_FINDING'), 'matching project-scope content should be included');
+      assert.ok(!body.includes('MOMENTUM_SCOPE_FINDING'), 'same-number PR from another project must be excluded');
     } finally { restore(); }
   });
 
@@ -38370,8 +38493,86 @@ async function testPrReviewFixFlows() {
   await test('updatePrAfterReview receives resultSummary for review note', () => {
     assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary'),
       'updatePrAfterReview should accept resultSummary parameter and optional completion report');
-    assert.ok(lifecycleSrc.includes('resultSummary || completedEntry'),
+    assert.ok(lifecycleSrc.includes("note: resultSummary || ''"),
       'Should use resultSummary as primary note source');
+    assert.ok(!lifecycleSrc.includes('completedEntry?.task'),
+      'Review notes must not fall back to an unrelated completed review dispatch task');
+  });
+
+  await test('failed review dispatch does not stamp PR review metadata from stale completed dispatches', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const lifecycle = require('../engine/lifecycle');
+      const testDir = freshShared.MINIONS_DIR;
+      const project = {
+        name: 'minions',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/yemi33/minions/pull/',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [project],
+        agents: { ripley: { name: 'Ripley' }, dallas: { name: 'Dallas' } },
+        engine: {},
+      });
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.safeWrite(prPath, [{
+        id: 'github:yemi33/minions#2012',
+        prNumber: 2012,
+        url: 'https://github.com/yemi33/minions/pull/2012',
+        title: 'Audit prompts and playbooks',
+        agent: 'dallas',
+        reviewStatus: 'waiting',
+        status: 'active',
+      }]);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [],
+        completed: [{
+          id: 'ripley-review-stale',
+          agent: 'ripley',
+          type: 'review',
+          task: '[momentum] Review github:committoquit/momentum#190 stale task',
+        }],
+      });
+
+      const dispatchItem = {
+        id: 'ripley-review-current',
+        type: 'review',
+        task: '[minions] Review github:yemi33/minions#2012',
+        agent: 'ripley',
+        meta: {
+          project,
+          pr: {
+            id: 'github:yemi33/minions#2012',
+            prNumber: 2012,
+            url: 'https://github.com/yemi33/minions/pull/2012',
+            agent: 'dallas',
+          },
+          item: { id: 'W-review-2012', title: 'Review PR #2012', type: 'review' },
+        },
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'ripley', 1,
+        '{"type":"result","result":"Authentication failed before review."}',
+        { projects: [project], agents: { ripley: { name: 'Ripley' }, dallas: { name: 'Dallas' } }, engine: {} });
+
+      const [after] = freshShared.safeJson(prPath);
+      assert.strictEqual(after.reviewStatus, 'waiting', 'failed review must leave the tracked review status unchanged');
+      assert.ok(!after.lastReviewedAt, 'failed review must not stamp lastReviewedAt');
+      assert.ok(!after.minionsReview, 'failed review must not populate minionsReview from stale completed dispatches');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   // ── Review verdict parsing (GitHub self-approval workaround) ──

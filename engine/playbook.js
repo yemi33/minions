@@ -677,11 +677,13 @@ function selectPlaybook(workType, item) {
 }
 
 function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabel, meta) {
-  const vars = { ...buildBaseVars(agentId, config, project), ...extraVars };
+  const dispatchId = `${agentId || 'unassigned'}-${type}-${shared.uid()}`;
+  const vars = { ...buildBaseVars(agentId, config, project), ...extraVars, task_id: dispatchId };
   const playbookName = type === 'test' ? 'build-and-test' : (type === 'review' ? 'review' : 'fix');
   const prompt = renderPlaybook(playbookName, vars);
   if (!prompt) return null;
   return {
+    id: dispatchId,
     type,
     agent: agentId,
     agentName: config.agents[agentId]?.name,
