@@ -12808,6 +12808,90 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
+  await test('PR review cooldown keys include GitHub and ADO head identifiers when present', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'abc123' }),
+        'review-minions-PR-2012-abc123',
+        'GitHub headSha should scope review cooldowns'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('rereview', project, { prNumber: 2012, _adoSourceCommit: 'def456' }),
+        'rereview-minions-PR-2012-def456',
+        'ADO source head commit should scope re-review cooldowns'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, _adoHeadCommit: 'merge789' }),
+        'review-minions-PR-2012-merge789',
+        'ADO merge commit should remain a fallback for older PR records'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012 }),
+        'review-minions-PR-2012',
+        'PRs without head metadata should keep the legacy broad key'
+      );
+    } finally { restore(); }
+  });
+
+  await test('same-head PR review dispatch remains cooldown-limited while a new head bypasses the old key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const sameHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'oldhead' });
+      const newHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'newhead' });
+
+      cooldown.setCooldown(sameHeadKey);
+
+      assert.strictEqual(cooldown.isOnCooldown(sameHeadKey, 30 * 60 * 1000), true,
+        'Repeated review discovery for the same head must remain cooldown-limited');
+      assert.strictEqual(cooldown.isOnCooldown(newHeadKey, 30 * 60 * 1000), false,
+        'A fresh head SHA must not inherit the previous head cooldown');
+    } finally { restore(); }
+  });
+
+  await test('review failure backoff applies per unchanged PR head only', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const unchangedHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'samehead' });
+      const pushedHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'pushedhead' });
+
+      cooldown.setCooldownFailure(unchangedHeadKey);
+      cooldown.setCooldownFailure(unchangedHeadKey);
+
+      assert.strictEqual(cooldown.dispatchCooldowns.get(unchangedHeadKey).failures, 2,
+        'Failures should accumulate on the unchanged head key');
+      assert.strictEqual(cooldown.isOnCooldown(unchangedHeadKey, 30 * 60 * 1000), true,
+        'Failure backoff should still block the unchanged head');
+      assert.strictEqual(cooldown.isOnCooldown(pushedHeadKey, 30 * 60 * 1000), false,
+        'Failure backoff from an old head must not block a freshly pushed head');
+    } finally { restore(); }
+  });
+
+  await test('head-scoped PR review keys clear legacy broad cooldown entries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const pr = { prNumber: 2012, headSha: 'freshhead' };
+      const legacyKey = 'review-minions-PR-2012';
+      const scopedKey = cooldown.getPrReviewCooldownKey('review', project, pr);
+      cooldown.dispatchCooldowns.set(legacyKey, { timestamp: Date.now(), failures: 3 });
+
+      assert.strictEqual(cooldown.clearLegacyPrReviewCooldown('review', project, pr, null, scopedKey), true,
+        'Legacy broad cooldown should be removed when a head-scoped key is available');
+      assert.strictEqual(cooldown.dispatchCooldowns.has(legacyKey), false,
+        'Legacy broad review cooldown should no longer remain in memory');
+      assert.strictEqual(cooldown.isOnCooldown(scopedKey, 30 * 60 * 1000), false,
+        'Cleanup must not synthesize a cooldown for the fresh scoped key');
+    } finally { restore(); }
+  });
+
   // ── setCooldown / setCooldownWithContext ──
 
   await test('setCooldown writes a new entry with current timestamp and 0 failures', () => {
@@ -27083,8 +27167,8 @@ async function testReviewReDispatchLoop() {
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);
     assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
       'needsReReview should not be blocked by completed dispatch history');
-    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${prDisplayId}`"),
-      'needsReReview should use a dedicated re-review dispatch key based on the stable display ID');
+    assert.ok(reReviewBlock.includes("const key = getPrReviewCooldownKey('rereview', project, pr, prDisplayId)"),
+      'needsReReview should use a dedicated head-scoped re-review dispatch key');
     assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
       'needsReReview should still respect cooldown');
     assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
