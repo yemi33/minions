@@ -30349,6 +30349,8 @@ async function testDashboardAuditMedium() {
       'dedup must block pending, dispatched, and queued items');
     assert.ok(src.includes('workItemCreateFingerprint') && src.includes('description: normalizeWorkItemDedupText'),
       'dedup fingerprint must include normalized description so same-title distinct items can coexist');
+    assert.ok(src.includes('prIdentity: normalizeWorkItemDedupPrIdentity'),
+      'dedup fingerprint must include PR identity so distinct PR-scoped items can coexist');
   });
 
   await test('handleWorkItemsDelete uses mutateJsonFileLocked', () => {
@@ -48652,6 +48654,76 @@ async function testDashboardPureHelpers() {
       assert.strictEqual(second.created, true, 'different normalized descriptions must not deduplicate');
       const items = isolated.shared.safeJson(wiPath) || [];
       assert.deepStrictEqual(items.map(i => i.id), ['W-first-description', 'W-second-description']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same metadata with different PR identities creates distinct items', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Review PR',
+        type: 'review',
+        priority: 'medium',
+        description: '',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-pr-2017',
+        targetPr: 'github:yemi33/minions#2017',
+        pr_id: 'github:yemi33/minions#2017',
+        prNumber: 2017,
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-pr-2021',
+        targetPr: 'github:yemi33/minions#2021',
+        pr_id: 'github:yemi33/minions#2021',
+        prNumber: 2021,
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'different PR identities must not deduplicate');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-review-pr-2017', 'W-review-pr-2021']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same PR identity still deduplicates URL and number forms', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Review PR',
+        type: 'review',
+        priority: 'medium',
+        description: '',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-pr-url',
+        targetPr: 'https://github.com/yemi33/minions/pull/2017',
+        prUrl: 'https://github.com/yemi33/minions/pull/2017',
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-pr-number',
+        prNumber: 2017,
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, false, 'same PR identity must still deduplicate');
+      assert.strictEqual(second.duplicateOf, 'W-review-pr-url');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-review-pr-url']);
     } finally {
       isolated.cleanup();
     }

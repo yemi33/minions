@@ -134,12 +134,25 @@ function normalizeWorkItemDedupText(value) {
     .trim();
 }
 
+function normalizeWorkItemDedupPrIdentity(item) {
+  if (!item || typeof item !== 'object') return '';
+  const prRef = getWorkItemPrRef(item) || item.pr_id || item.targetPr || item.prNumber || '';
+  const prNumber = shared.getPrNumber(prRef)
+    ?? shared.getPrNumber(item.prNumber)
+    ?? shared.getPrNumber(item.pr_id)
+    ?? shared.getPrNumber(item.targetPr)
+    ?? shared.getPrNumber(item.prUrl);
+  if (prNumber != null) return `PR-${prNumber}`;
+  return normalizeWorkItemDedupText(prRef || item.prUrl).toLowerCase();
+}
+
 function workItemCreateFingerprint(item) {
   return {
     title: normalizeWorkItemDedupText(item?.title),
     type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
     priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
     description: normalizeWorkItemDedupText(item?.description),
+    prIdentity: normalizeWorkItemDedupPrIdentity(item),
   };
 }
 
@@ -165,7 +178,8 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
     return existingFingerprint.title === candidateFingerprint.title &&
       existingFingerprint.type === candidateFingerprint.type &&
       existingFingerprint.priority === candidateFingerprint.priority &&
-      existingFingerprint.description === candidateFingerprint.description;
+      existingFingerprint.description === candidateFingerprint.description &&
+      existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
   }) || null;
 }
 
