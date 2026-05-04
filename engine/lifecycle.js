@@ -1266,24 +1266,73 @@ function isReviewBailout(text) {
   return /bail(ing)?\s+out/i.test(text) || /already\s+posted/i.test(text);
 }
 
-async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null, dispatchItem = null) {
+function reviewPrRefFromCompletion(completion) {
+  if (!completion || typeof completion !== 'object') return null;
+  const value = String(completion.pr || completion.pull_request || completion.pullRequest || '').trim();
+  if (!value || /^N\/?A$/i.test(value)) return null;
+  return value;
+}
 
-  if (!pr?.id) return;
+function centralPrPath() {
+  return path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+}
+
+function resolveReviewPrContext(pr, project, config, structuredCompletion = null) {
+  const reportedPr = reviewPrRefFromCompletion(structuredCompletion);
+  const refs = reportedPr ? [reportedPr, pr].filter(Boolean) : [pr].filter(Boolean);
+  if (refs.length === 0) return null;
+
+  const projects = shared.getProjects(config);
+  const projectCandidates = [];
+  if (project) projectCandidates.push(project);
+  for (const p of projects) {
+    if (!projectCandidates.some(existing => existing?.name === p.name)) projectCandidates.push(p);
+  }
+
+  for (const candidateProject of projectCandidates) {
+    const prPath = shared.projectPrPath(candidateProject);
+    const prs = safeJson(prPath) || [];
+    for (const ref of refs) {
+      const refUrl = typeof ref === 'object' ? ref.url || '' : String(ref || '');
+      if (!shared.isPrCompatibleWithProject(candidateProject, ref, refUrl)) continue;
+      const target = shared.findPrRecord(prs, ref, candidateProject);
+      if (target) return { pr: { ...target }, project: candidateProject, prPath };
+    }
+  }
+
+  const centralPath = centralPrPath();
+  const centralPrs = safeJson(centralPath) || [];
+  const centralRefs = reportedPr ? [reportedPr] : refs;
+  for (const ref of centralRefs) {
+    const target = shared.findPrRecord(centralPrs, ref, null);
+    if (target) return { pr: { ...target }, project: null, prPath: centralPath };
+  }
+
+  if (reportedPr) return null;
+
+  return pr?.id
+    ? { pr, project: project || null, prPath: project ? shared.projectPrPath(project) : centralPath }
+    : null;
+}
+
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary, structuredCompletion = null, dispatchItem = null) {
 
   if (!config) config = getConfig();
   const completionStatus = normalizeCompletionStatus(structuredCompletion?.status);
   if (completionStatus && NON_TERMINAL_COMPLETION_STATUSES.has(completionStatus)) {
-    log('warn', `Skipping review update for ${pr.id}: completion status is ${structuredCompletion.status}`);
+    const target = pr?.id || reviewPrRefFromCompletion(structuredCompletion) || 'unknown PR';
+    log('warn', `Skipping review update for ${target}: completion status is ${structuredCompletion.status}`);
     return;
   }
-  if (project && !shared.isPrCompatibleWithProject(project, pr, pr.url || '')) {
-    log('warn', `Skipping review update for ${pr.id}: PR does not belong to project ${project.name || '(unknown)'}`);
+  const reviewContext = resolveReviewPrContext(pr, project, config, structuredCompletion);
+  if (!reviewContext?.pr?.id) {
+    const reportedPr = reviewPrRefFromCompletion(structuredCompletion);
+    if (reportedPr) log('warn', `Review completion reported PR ${reportedPr}, but no tracked PR record was found`);
     return;
   }
-  if (!completionPrMatchesTarget(structuredCompletion, pr, project)) {
-    log('warn', `Skipping review update for ${pr.id}: completion report PR does not match target PR`);
-    return;
-  }
+  const reviewPr = reviewContext.pr;
+  const reviewProject = reviewContext.project;
+  const prPath = reviewContext.prPath;
   const reviewerName = config.agents?.[agentId]?.name || agentId;
 
   // Check actual review status from the platform (agent may have approved or requested changes)
@@ -1291,32 +1340,31 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   // The poller will pick up the real status on the next cycle (~3 min).
   let postReviewStatus = null; // null = don't change
   try {
-    const projectObj = project || shared.getProjects(config)[0];
+    const projectObj = reviewProject || shared.getProjects(config)[0];
     if (projectObj) {
       const host = projectObj.repoHost || 'ado';
       const checkFn = host === 'github'
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
-      const liveStatus = await checkFn(pr, projectObj);
+      const liveStatus = await checkFn(reviewPr, projectObj);
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
-  } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
+  } catch (e) { log('warn', `Post-review status check for ${reviewPr.id}: ${e.message}`); }
 
   // Fallback: if live check returned pending (e.g., GitHub self-approval blocked), use the agent's completion report.
   if (!postReviewStatus) {
     const verdict = reviewVerdictFromCompletion(structuredCompletion) || parseReviewVerdict(resultSummary);
     if (verdict) {
       postReviewStatus = verdict;
-      log('info', `Read review verdict from agent completion for ${pr.id}: ${verdict}`);
+      log('info', `Read review verdict from agent completion for ${reviewPr.id}: ${verdict}`);
     }
   }
 
-  const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   let updatedTarget = null;
   const reviewNote = String(resultSummary || '').trim();
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
-    const target = shared.findPrRecord(prs, pr, project);
+    const target = shared.findPrRecord(prs, reviewPr, reviewProject);
     if (!target) return prs;
     // Once approved, stays approved — only changes-requested can override
     if (postReviewStatus) {
@@ -1335,12 +1383,12 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
       // Drop it when reviewer requests changes again — that starts a new fix cycle.
       ...(target.minionsReview?.fixedAt && postReviewStatus !== 'changes-requested' ? { fixedAt: target.minionsReview.fixedAt } : {}),
     };
-    updatedTarget = { ...pr, ...target };
+    updatedTarget = { ...reviewPr, ...target };
     return prs;
   }, { defaultValue: [] });
 
   // Track reviewer for metrics purposes (separate file, separate lock)
-  const authorAgentId = (pr.agent || '').toLowerCase();
+  const authorAgentId = (reviewPr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
     shared.mutateJsonFileLocked(path.join(ENGINE_DIR, 'metrics.json'), (metrics) => {
       if (!metrics[authorAgentId]) metrics[authorAgentId] = { ...DEFAULT_AGENT_METRICS };
@@ -1350,12 +1398,13 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
     }, { defaultValue: {} });
   }
 
-  log('info', `Updated ${pr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
+  log('info', `Updated ${reviewPr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
   if (updatedTarget) {
     createReviewFeedbackForAuthor(agentId, updatedTarget, config, {
       reviewContent: reviewNote,
-      project,
+      project: reviewProject,
       dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null,
+      sourceItem: dispatchItem?.meta?.item?.id || null,
     });
   }
 }
@@ -1793,6 +1842,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config, options = {}
     reviewer: reviewerAgentId,
     author: authorAgentId,
     dispatchId: options.dispatchId || null,
+    sourceItem: options.sourceItem || null,
     project: project?.name || null,
   });
   log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
@@ -2159,20 +2209,6 @@ function normalizeReviewVerdict(verdict) {
 function reviewVerdictFromCompletion(completion) {
   if (!completion || typeof completion !== 'object') return null;
   return normalizeReviewVerdict(completion.verdict || completion.review_verdict || completion.reviewVerdict);
-}
-
-function isEmptyPrValue(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  return !raw || raw === 'n/a' || raw === 'na' || raw === 'none' || raw === 'null';
-}
-
-function completionPrMatchesTarget(completion, pr, project) {
-  if (!completion || typeof completion !== 'object') return true;
-  const completionPr = completion.pr ?? completion.pull_request ?? completion.pullRequest;
-  if (isEmptyPrValue(completionPr)) return true;
-  const targetId = shared.getCanonicalPrId(project, pr, pr?.url || '');
-  const completionId = shared.getCanonicalPrId(project, completionPr, typeof completionPr === 'object' ? completionPr.url || '' : '');
-  return !!targetId && completionId === targetId;
 }
 
 function reviewContentMatchesPr(content, pr, project) {

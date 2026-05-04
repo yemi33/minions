@@ -63,9 +63,9 @@ proc.stdin.end();
 
 Fix: switched to `--output-format stream-json` — streams events as they happen.
 
-### Permission Mode
+### Permission Bypass
 
-Agents would hang waiting for permission prompts (invisible in headless mode). Added `--permission-mode bypassPermissions`.
+Agents would hang waiting for permission prompts (invisible in headless mode). Modern Minions keeps bypass behavior inside runtime adapters: Claude emits `--dangerously-skip-permissions`; Copilot emits `--autopilot --allow-all --no-ask-user`. The legacy `config.claude.permissionMode` key is ignored.
 
 ### CLAUDECODE Environment Variable
 
@@ -85,7 +85,7 @@ When the engine restarts, the in-memory `activeProcesses` Map is lost. Active di
 
 **Dispatch 1773292681199** — Dallas, central work item, auto-route:
 
-1. Engine spawns `node spawn-agent.js prompt.md sysprompt.md --output-format stream-json --verbose --permission-mode bypassPermissions`
+1. Engine spawns `node spawn-agent.js prompt.md sysprompt.md --runtime claude --output-format stream-json --verbose`
 2. spawn-agent.js resolves `cli.js`, spawns `node cli.js -p --system-prompt <content> ...`
 3. Prompt piped via stdin — no shell interpretation
 4. MCP servers connect (azure-ado, azure-kusto, mobile, DevBox)

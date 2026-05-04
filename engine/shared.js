@@ -751,6 +751,7 @@ const ENGINE_DEFAULTS = {
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min — stale-orphan grace after process tracking is lost
+  resumeHeartbeatTimeout: 300000, // 5min — max wait for a resumed runtime to emit its first output
   // Per-type stale-orphan overrides (merged with config.engine.heartbeatTimeouts at runtime — see timeout.js).
   // Heavy work types (multi-file edits, builds, test suites, full verify cycles) routinely go quiet for
   // longer than the 5-min default when the engine has lost their tracked handle (e.g. across an engine
@@ -850,7 +851,7 @@ const ENGINE_DEFAULTS = {
   // Backward-compat: keep `engine.claude.*` field family deprecation tracker. Listed here so preflight
   // knows which subkeys to flag as deprecated. Do not consume `claude.*` in new code — use the runtime
   // adapter system (engine/runtimes/) and the resolveAgent*/resolveCc* helpers instead.
-  _deprecatedConfigClaudeFields: ['binary', 'outputFormat', 'allowedTools', 'maxTurns', 'effort', 'budgetCap'],
+  _deprecatedConfigClaudeFields: ['binary', 'outputFormat', 'allowedTools', 'permissionMode', 'maxTurns', 'effort', 'budgetCap'],
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
   teams: {
@@ -1309,11 +1310,27 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+function comparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
+    } catch {
+      return resolved;
+    }
+  }
+}
+
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPath = path.resolve(filePath);
+  const resolvedPaths = new Set([comparablePath(filePath)]);
+  if (filePath && !path.isAbsolute(filePath)) {
+    resolvedPaths.add(comparablePath(path.resolve(MINIONS_DIR, filePath)));
+  }
   const projects = getProjects(config);
   for (const project of projects) {
-    if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
+    if (resolvedPaths.has(comparablePath(projectPrPath(project)))) return project;
   }
   if (projects.length === 1) return projects[0];
   return null;

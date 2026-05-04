@@ -39,6 +39,19 @@ function getRepoSlug(project) {
   return `${org}/${repo}`;
 }
 
+function _hasMinionsReviewVerdict(body) {
+  return /(?:^|\n)\s*\*{0,2}VERDICT[:\s]+\*{0,2}(?:APPROVE|REQUEST[_\s-]?CHANGES)\*{0,2}\b/i.test(String(body || ''));
+}
+
+function _isAgentComment(c) {
+  const body = c.body || '';
+  if (_hasMinionsReviewVerdict(body)) return true;
+  if (/\bMinions\s*\(/i.test(body)) return true;
+  if (/\bby\s+Minions\b/i.test(body)) return true;
+  if (/\[minions\]/i.test(body)) return true;
+  return false;
+}
+
 // ─── Per-Repo Poll Backoff ──────────────────────────────────────────────────
 // Tracks consecutive poll failures per repo slug to avoid spamming logs when
 // a repo is inaccessible. Backoff doubles each failure: 2min, 4min, 8min, 16min, max 30min.
@@ -572,13 +585,6 @@ async function pollPrHumanComments(config) {
       if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
       return false;
     }
-    function _isAgentComment(c) {
-      const body = c.body || '';
-      if (/\bMinions\s*\(/i.test(body)) return true;
-      if (/\bby\s+Minions\b/i.test(body)) return true;
-      if (/\[minions\]/i.test(body)) return true;
-      return false;
-    }
     const actionableComments = allComments.filter(c => !_isIgnoredComment(c));
 
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
@@ -907,4 +913,6 @@ module.exports = {
   GH_MAX_BUFFER, // exported for testing
   GH_POLL_BACKOFF_BASE_MS, // exported for testing
   GH_POLL_BACKOFF_MAX_MS, // exported for testing
+  _hasMinionsReviewVerdict, // exported for testing
+  _isAgentComment, // exported for testing
 };
