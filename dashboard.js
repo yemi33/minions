@@ -134,25 +134,57 @@ function normalizeWorkItemDedupText(value) {
     .trim();
 }
 
-function normalizeWorkItemDedupPrIdentity(item) {
-  if (!item || typeof item !== 'object') return '';
-  const prRef = getWorkItemPrRef(item) || item.pr_id || item.targetPr || item.prNumber || '';
-  const prNumber = shared.getPrNumber(prRef)
-    ?? shared.getPrNumber(item.prNumber)
-    ?? shared.getPrNumber(item.pr_id)
-    ?? shared.getPrNumber(item.targetPr)
-    ?? shared.getPrNumber(item.prUrl);
-  if (prNumber != null) return `PR-${prNumber}`;
-  return normalizeWorkItemDedupText(prRef || item.prUrl).toLowerCase();
+function resolveWorkItemDedupProject(item, wiPath = '') {
+  const projectName = normalizeWorkItemDedupText(item?.project || item?._project || item?._source);
+  if (projectName) {
+    const namedProject = PROJECTS.find(p => p?.name === projectName);
+    if (namedProject) return namedProject;
+  }
+  if (!wiPath) return null;
+  const resolvedWiPath = path.resolve(wiPath);
+  return PROJECTS.find(p => path.resolve(shared.projectWorkItemsPath(p)) === resolvedWiPath) || null;
 }
 
-function workItemCreateFingerprint(item) {
+function getWorkItemPrRefCandidates(item) {
+  return [
+    item?.targetPr,
+    item?.pr,
+    item?.prId,
+    item?.pullRequest,
+    item?.sourcePr,
+    item?.prUrl,
+    item?.pr_id,
+    item?.prNumber,
+  ].filter(value => value != null && value !== '');
+}
+
+function normalizeWorkItemDedupPrIdentity(item, project = null) {
+  if (!item || typeof item !== 'object') return '';
+  const candidates = getWorkItemPrRefCandidates(item);
+  for (const candidate of candidates) {
+    const scoped = shared.getPrScopeInfo(candidate);
+    if (scoped) return `${scoped.scope}#${scoped.prNumber}`;
+  }
+  const prNumber = candidates.reduce((found, candidate) => (
+    found ?? shared.getPrNumber(candidate)
+  ), null);
+  if (project && prNumber != null) {
+    const canonical = shared.getCanonicalPrId(project, prNumber);
+    if (canonical) return canonical;
+  }
+  if (prNumber != null) return `PR-${prNumber}`;
+  const prRef = getWorkItemPrRef(item) || item.pr_id || item.targetPr || item.prUrl || '';
+  return normalizeWorkItemDedupText(prRef).toLowerCase();
+}
+
+function workItemCreateFingerprint(item, options = {}) {
+  const project = resolveWorkItemDedupProject(item, options.wiPath);
   return {
     title: normalizeWorkItemDedupText(item?.title),
     type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
     priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
     description: normalizeWorkItemDedupText(item?.description),
-    prIdentity: normalizeWorkItemDedupPrIdentity(item),
+    prIdentity: normalizeWorkItemDedupPrIdentity(item, project),
   };
 }
 
@@ -170,11 +202,11 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
   if (!Array.isArray(items)) return null;
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const windowMs = Number.isFinite(options.windowMs) ? options.windowMs : shared.ENGINE_DEFAULTS.workItemCreateDedupWindowMs;
-  const candidateFingerprint = workItemCreateFingerprint(candidate);
+  const candidateFingerprint = workItemCreateFingerprint(candidate, options);
   return items.find(item => {
     if (!isActiveWorkItemCreateStatus(item?.status)) return false;
     if (!isWithinWorkItemCreateDedupWindow(item, nowMs, windowMs)) return false;
-    const existingFingerprint = workItemCreateFingerprint(item);
+    const existingFingerprint = workItemCreateFingerprint(item, options);
     return existingFingerprint.title === candidateFingerprint.title &&
       existingFingerprint.type === candidateFingerprint.type &&
       existingFingerprint.priority === candidateFingerprint.priority &&
@@ -186,7 +218,7 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
 function createWorkItemWithDedup(wiPath, item, options = {}) {
   let result = null;
   mutateWorkItems(wiPath, items => {
-    const existing = findDuplicateWorkItemCreate(items, item, options);
+    const existing = findDuplicateWorkItemCreate(items, item, { ...options, wiPath });
     if (existing) {
       result = { created: false, item: existing, duplicateOf: existing.id };
       return items;

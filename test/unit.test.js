@@ -48695,10 +48695,52 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('work-item create dedup: same PR identity still deduplicates URL and number forms', () => {
+  await test('work-item create dedup: same PR number in different repositories creates distinct items', () => {
     const isolated = loadIsolatedDashboardForDedup();
     try {
       const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Review PR',
+        type: 'review',
+        priority: 'medium',
+        description: '',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-repo-a',
+        targetPr: 'https://github.com/org-a/repo-a/pull/42',
+        prUrl: 'https://github.com/org-a/repo-a/pull/42',
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-repo-b',
+        targetPr: 'github:org-b/repo-b#42',
+        pr_id: 'github:org-b/repo-b#42',
+        prNumber: 42,
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'scoped PR identities must not collide across repositories');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-repo-a', 'W-repo-b']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same PR identity still deduplicates URL and number forms', () => {
+    const project = {
+      name: 'minions',
+      localPath: path.join(os.tmpdir(), 'minions-dedup-pr-scope'),
+      repoHost: 'github',
+      adoOrg: 'yemi33',
+      repoName: 'minions',
+    };
+    const isolated = loadIsolatedDashboardForDedup({ projects: [project], agents: {}, engine: {} });
+    try {
+      const wiPath = isolated.shared.projectWorkItemsPath(project);
       const base = {
         title: 'Review PR',
         type: 'review',
@@ -48716,6 +48758,7 @@ async function testDashboardPureHelpers() {
       const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
         ...base,
         id: 'W-review-pr-number',
+        project: project.name,
         prNumber: 2017,
       });
 
