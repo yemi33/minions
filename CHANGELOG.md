@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1695 (2026-05-04)
+
+### Features
+- harden command center stream retry (#2016)
+
 ## 0.1.1693 (2026-05-04)
 
 ### Features
