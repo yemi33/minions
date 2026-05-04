@@ -1309,11 +1309,52 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+function realPathForComparison(filePath) {
+  const resolved = path.resolve(filePath);
+  const realpathSync = fs.realpathSync.native || fs.realpathSync;
+  try {
+    return realpathSync(resolved);
+  } catch (err) {
+    if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
+  }
+
+  let existing = resolved;
+  const missingParts = [];
+  while (true) {
+    const parent = path.dirname(existing);
+    missingParts.unshift(path.basename(existing));
+    if (parent === existing) return resolved;
+    existing = parent;
+    try {
+      return path.join(realpathSync(existing), ...missingParts);
+    } catch (err) {
+      if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) throw err;
+    }
+  }
+}
+
+function prPathComparisonCandidates(filePath) {
+  const candidates = new Set();
+  const addCandidate = (candidate) => {
+    const resolved = path.resolve(candidate);
+    candidates.add(resolved);
+    candidates.add(realPathForComparison(resolved));
+  };
+
+  addCandidate(filePath);
+  if (!path.isAbsolute(filePath)) {
+    addCandidate(path.resolve(MINIONS_DIR, filePath));
+  }
+  return candidates;
+}
+
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPath = path.resolve(filePath);
+  const fileCandidates = prPathComparisonCandidates(filePath);
   const projects = getProjects(config);
   for (const project of projects) {
-    if (path.resolve(projectPrPath(project)) === resolvedPath) return project;
+    for (const projectPath of prPathComparisonCandidates(projectPrPath(project))) {
+      if (fileCandidates.has(projectPath)) return project;
+    }
   }
   if (projects.length === 1) return projects[0];
   return null;
