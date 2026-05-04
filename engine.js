@@ -1758,7 +1758,8 @@ function updateSnapshot(config) {
 
 const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
   isOnCooldown, setCooldown, setCooldownWithContext, drainCoalescedContexts,
-  setCooldownFailure, clearCooldown, isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
+  setCooldownFailure, clearCooldown, getPrReviewCooldownKey, clearLegacyPrReviewCooldown,
+  isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
 
 
 
@@ -2324,7 +2325,10 @@ async function discoverFromPrs(config, project) {
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
-      const key = `review-${project?.name || 'default'}-${prDisplayId}`;
+      const key = getPrReviewCooldownKey('review', project, pr, prDisplayId);
+      if (clearLegacyPrReviewCooldown('review', project, pr, prDisplayId, key)) {
+        log('info', `Cleared legacy broad review cooldown for ${prDisplayId}; using head-scoped key ${key}`);
+      }
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
@@ -2419,7 +2423,10 @@ async function discoverFromPrs(config, project) {
     const needsReReview = reReviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !fixDispatched;
     if (needsReReview) {
-      const key = `rereview-${project?.name || 'default'}-${prDisplayId}`;
+      const key = getPrReviewCooldownKey('rereview', project, pr, prDisplayId);
+      if (clearLegacyPrReviewCooldown('rereview', project, pr, prDisplayId, key)) {
+        log('info', `Cleared legacy broad re-review cooldown for ${prDisplayId}; using head-scoped key ${key}`);
+      }
       // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
       // completed-dispatch window would block legitimate re-reviews within the hour after a fix
       if (fixThrottled || isOnCooldown(key, cooldownMs)) continue;
