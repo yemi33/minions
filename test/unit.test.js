@@ -8278,6 +8278,50 @@ async function testLlmModule() {
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
   });
 
+  await test('llm stream finalization preserves fragmented doc-chat payload over task_complete summary (#2001)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const delimiter = '---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---';
+    const expected = [
+      'Updated the document.',
+      '',
+      delimiter,
+      '# Title',
+      '',
+      'Full replacement body.',
+      '',
+    ].join('\n');
+    const raw = [
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: `Updated the document.\n\n${delimiter}\n# Title\n`, outputTokens: 10 },
+      }),
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: '\nFull replacement body.\n', outputTokens: 6 },
+      }),
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'Task complete.' } }], outputTokens: 2 },
+      }),
+      JSON.stringify({ type: 'session.task_complete', data: { summary: 'Task complete.', success: true } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-doc-chat', exitCode: 0, usage: { premiumRequests: 1 } }),
+    ].join('\n');
+    const acc = llm._createStreamAccumulator({
+      runtime: copilot,
+      maxRawBytes: shared.ENGINE_DEFAULTS.maxLlmRawBytes,
+      maxStderrBytes: shared.ENGINE_DEFAULTS.maxLlmStderrBytes,
+      maxLineBufferBytes: shared.ENGINE_DEFAULTS.maxLlmLineBufferBytes,
+    });
+
+    acc.ingestStdout(raw);
+    const parsed = acc.finalize();
+
+    assert.strictEqual(parsed.text, expected,
+      'finalization must reparse full stdout so doc-chat sees the complete replacement document');
+    assert.strictEqual(parsed.sessionId, 'sess-doc-chat');
+    assert.strictEqual(parsed.usage.premiumRequests, 1);
+  });
+
   await test('copilot stream consumer does not finalize tool-request narration', () => {
     // Behavior moved out of engine/llm.js into the runtime adapter — assert
     // against engine/runtimes/copilot.js so the rule still has source-coverage.
