@@ -5778,7 +5778,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const engine = getEngineState();
     const agents = getAgents();
     const health = {
-      status: engine.state === 'running' ? 'healthy' : engine.state === 'paused' ? 'degraded' : 'stopped',
+      status: engine.state === 'running' ? 'healthy' : (engine.state === 'paused' || engine.state === 'stopping') ? 'degraded' : 'stopped',
       engine: { state: engine.state, pid: engine.pid },
       agents: agents.map(a => ({ id: a.id, name: a.name, status: a.status })),
       projects: PROJECTS.map(p => ({ name: p.name, reachable: fs.existsSync(p.localPath) })),

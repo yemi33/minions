@@ -19663,6 +19663,21 @@ async function testWakeupEndpoint() {
       'Wakeup handler should write _wakeupAt timestamp');
   });
 
+  await test('dashboard health reports stopping engine state as degraded', () => {
+    const healthBody = dashSrc.slice(dashSrc.indexOf('async function handleHealth'), dashSrc.indexOf('async function handleAgentDetail'));
+    assert.ok(healthBody.includes("engine.state === 'stopping'"),
+      'handleHealth must not collapse a graceful shutdown in progress to stopped');
+    assert.ok(healthBody.includes("'degraded'"),
+      'handleHealth should report stopping/paused states as degraded');
+  });
+
+  await test('dashboard watchdog only restarts running engines with a PID', () => {
+    assert.ok(dashSrc.includes("control.state !== 'running' || !control.pid"),
+      'watchdog must ignore stopped/paused/stopping states and require a PID before restart');
+    assert.ok(dashSrc.includes('restartEngine()'),
+      'watchdog should still restart dead running engines');
+  });
+
   const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
 
   await test('fast poll interval checks for _wakeupAt', () => {
@@ -31723,6 +31738,7 @@ async function testVersionCheck() {
   await test('engine cli.js writes codeVersion and codeCommit to control.json on start', () => {
     assert.ok(cliSrc.includes('codeVersion'), 'cli.js must write codeVersion');
     assert.ok(cliSrc.includes('codeCommit'), 'cli.js must write codeCommit');
+    assert.ok(cliSrc.includes('ownerToken'), 'cli.js must write an ownerToken so shutdown cannot clobber a newer engine');
     assert.ok(cliSrc.includes("require('../package.json').version"), 'codeVersion should come from package.json');
     assert.ok(cliSrc.includes('git rev-parse --short HEAD'), 'codeCommit should come from git');
   });
@@ -45038,6 +45054,74 @@ async function testCliCommandHandlers() {
       // spawn joins promptParts with a space — multi-word args must round-trip verbatim
       assert.strictEqual(h.calls.spawnAgent[0].item.prompt, 'hello world',
         `expected prompt "hello world", got "${h.calls.spawnAgent[0].item.prompt}"`);
+    } finally { h.restore(); }
+  });
+
+  // ── control.json ownership ────────────────────────────────────────────────
+
+  await test('control ownership guard: old shutdown cannot clobber newer running engine state', () => {
+    const newerControl = {
+      state: 'running',
+      pid: 222,
+      ownerToken: 'new-engine-token',
+      started_at: '2026-05-04T05:54:55.000Z',
+    };
+    const h = setupHarness({ control: newerControl });
+    try {
+      const result = h.cli._markControlStoppedForOwner(
+        { pid: 111, ownerToken: 'old-engine-token' },
+        '2026-05-04T05:55:07.101Z'
+      );
+      assert.strictEqual(result.changed, false, 'mismatched owner must skip the stopped write');
+      assert.deepStrictEqual(h.readControl(), newerControl, 'newer running control state must remain intact');
+    } finally { h.restore(); }
+  });
+
+  await test('control ownership guard: same-owner shutdown transitions stopping then stopped', () => {
+    const owner = { pid: 111, ownerToken: 'same-engine-token' };
+    const h = setupHarness({
+      control: {
+        state: 'running',
+        pid: owner.pid,
+        ownerToken: owner.ownerToken,
+        started_at: '2026-05-04T05:54:55.000Z',
+      },
+    });
+    try {
+      const stopping = h.cli._markControlStoppingForOwner(owner, '2026-05-04T05:55:00.000Z');
+      assert.strictEqual(stopping.changed, true, 'matching owner must be able to mark stopping');
+      let ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopping');
+      assert.strictEqual(ctrl.pid, owner.pid);
+      assert.strictEqual(ctrl.ownerToken, owner.ownerToken);
+      assert.strictEqual(ctrl.stopping_at, '2026-05-04T05:55:00.000Z');
+
+      const stopped = h.cli._markControlStoppedForOwner(owner, '2026-05-04T05:55:07.101Z');
+      assert.strictEqual(stopped.changed, true, 'matching owner must be able to mark stopped');
+      ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopped');
+      assert.strictEqual(ctrl.stopped_at, '2026-05-04T05:55:07.101Z');
+    } finally { h.restore(); }
+  });
+
+  await test('control ownership guard: token and PID must both match', () => {
+    const h = setupHarness();
+    try {
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 111, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-a' }),
+        true,
+        'same PID and token should match'
+      );
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 111, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-b' }),
+        false,
+        'same PID with a different token must not match'
+      );
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 222, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-a' }),
+        false,
+        'same token with a different PID must not match'
+      );
     } finally { h.restore(); }
   });
 

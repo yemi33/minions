@@ -52,6 +52,43 @@ function isEngineProcessAlive(control) {
   }
 }
 
+function createControlOwner(pid = process.pid) {
+  return { pid, ownerToken: `${pid}-${shared.uid()}` };
+}
+
+function controlBelongsToOwner(control, owner) {
+  return !!(
+    control &&
+    owner &&
+    owner.ownerToken &&
+    control.ownerToken === owner.ownerToken &&
+    control.pid === owner.pid
+  );
+}
+
+function mutateControlForOwner(owner, mutator) {
+  let changed = false;
+  const control = mutateControl(current => {
+    if (!controlBelongsToOwner(current, owner)) return current;
+    changed = true;
+    return mutator(current);
+  });
+  return { changed, control };
+}
+
+function markControlStoppingForOwner(owner, stoppingAt) {
+  return mutateControlForOwner(owner, current => ({
+    ...current,
+    state: 'stopping',
+    pid: owner.pid,
+    stopping_at: stoppingAt,
+  }));
+}
+
+function markControlStoppedForOwner(owner, stoppedAt) {
+  return mutateControlForOwner(owner, () => ({ state: 'stopped', stopped_at: stoppedAt }));
+}
+
 function handleCommand(cmd, args) {
   if (!cmd) {
     return commands.start();
@@ -320,7 +357,15 @@ const commands = {
     }
     let codeCommit = null;
     try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
-    mutateControl(() => ({ state: 'running', pid: process.pid, started_at: e.ts(), codeVersion, codeCommit }));
+    const controlOwner = createControlOwner();
+    mutateControl(() => ({
+      state: 'running',
+      pid: controlOwner.pid,
+      ownerToken: controlOwner.ownerToken,
+      started_at: e.ts(),
+      codeVersion,
+      codeCommit
+    }));
     // Keep .minions-version in sync so `minions version` stays accurate after git pulls
     if (codeVersion) {
       try { fs.writeFileSync(path.join(shared.MINIONS_DIR, '.minions-version'), codeVersion); } catch {}
@@ -688,11 +733,18 @@ const commands = {
       clearInterval(fastPollTimer);
       if (teamsInboxTimer) clearInterval(teamsInboxTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
-      mutateControl(() => ({ state: 'stopping', pid: process.pid, stopping_at: e.ts() }));
+      const stoppingAt = e.ts();
+      const stoppingWrite = markControlStoppingForOwner(controlOwner, stoppingAt);
+      if (!stoppingWrite.changed) {
+        e.log('warn', 'Graceful shutdown skipped control.json stopping transition; control file is owned by a different engine process');
+      }
       e.log('info', `Graceful shutdown initiated (${signal})`);
 
       if (e.activeProcesses.size === 0) {
-        mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
+        const stoppedWrite = markControlStoppedForOwner(controlOwner, e.ts());
+        if (!stoppedWrite.changed) {
+          e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
+        }
         e.log('info', 'Graceful shutdown complete (no active agents)');
         shared.flushLogs(); // drain buffered log entries before exit
         console.log('No active agents — stopped.');
@@ -706,7 +758,10 @@ const commands = {
       const poll = setInterval(() => {
         if (e.activeProcesses.size === 0) {
           clearInterval(poll);
-          mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
+          const stoppedWrite = markControlStoppedForOwner(controlOwner, e.ts());
+          if (!stoppedWrite.changed) {
+            e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
+          }
           e.log('info', 'Graceful shutdown complete (all agents finished)');
           shared.flushLogs(); // drain buffered log entries before exit
           console.log('All agents finished — stopped.');
@@ -714,7 +769,10 @@ const commands = {
         }
         if (Date.now() >= deadline) {
           clearInterval(poll);
-          mutateControl(() => ({ state: 'stopped', stopped_at: e.ts() }));
+          const stoppedWrite = markControlStoppedForOwner(controlOwner, e.ts());
+          if (!stoppedWrite.changed) {
+            e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
+          }
           e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
           shared.flushLogs(); // drain buffered log entries before exit
           console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
@@ -1374,4 +1432,8 @@ module.exports = {
   _parseRuntimeFlags,
   _modelLooksIncompatible,
   _applyRuntimeFlags,
+  _createControlOwner: createControlOwner,
+  _controlBelongsToOwner: controlBelongsToOwner,
+  _markControlStoppingForOwner: markControlStoppingForOwner,
+  _markControlStoppedForOwner: markControlStoppedForOwner,
 };
