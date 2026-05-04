@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1717 (2026-05-04)
+
+### Features
+- Harden update init timeout (#2059)
+- harden claude auth classifier (#2058)
+- add CC post-dispatch stop rule (#2057)
+
 ## 0.1.1715 (2026-05-04)
 
 ### Features
