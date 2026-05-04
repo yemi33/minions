@@ -545,7 +545,7 @@ function parseError(rawOutput) {
   const lower = text.toLowerCase();
 
   if (/not authenticated|copilot login|please.*log.*in|401|403 forbidden|unauthorized/i.test(text)) {
-    return { message: 'Copilot authentication failed', code: 'auth-failure', retriable: false };
+    return { message: 'Copilot/GitHub authentication failed. Run `gh auth login` or provide GH_TOKEN/COPILOT_GITHUB_TOKEN with Copilot access.', code: 'auth-failure', retriable: false };
   }
   if (/rate limit|too many requests|\b429\b/i.test(text)) {
     return { message: 'Copilot rate limit hit', code: 'rate-limit', retriable: true };

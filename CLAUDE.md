@@ -315,7 +315,7 @@ Model resolution is a three-tier chain: per-agent `agent.model` → `engine.defa
 | `engine.maxBudgetUsd` | fleet budget cap | `agent.maxBudgetUsd` |
 | `engine.disableModelDiscovery` | fleet-wide model discovery opt-out | none |
 
-Migration notes: `config.claude.* deprecation` moved runtime knobs into `engine.*`; compatibility shims stay tracked in `docs/deprecated.json`. `applyLegacyCcModelMigration` copies legacy `ccModel` to `defaultModel` in-memory when `defaultModel` is unset, but does not rewrite disk config.
+Migration notes: `config.claude.* deprecation` moved runtime knobs into `engine.*`; compatibility shims stay tracked in `docs/deprecated.json`. Runtime permission bypass is adapter-owned (`--dangerously-skip-permissions` for Claude; `--autopilot --allow-all --no-ask-user` for Copilot), and legacy `config.claude.permissionMode` is ignored. `applyLegacyCcModelMigration` copies legacy `ccModel` to `defaultModel` in-memory when `defaultModel` is unset, but does not rewrite disk config.
 
 Model discovery is per-runtime. Claude has no public model enumeration mechanism (`modelDiscovery: false`). Copilot uses `https://api.githubcopilot.com/models`. `engine.disableModelDiscovery` disables discovery globally.
 
