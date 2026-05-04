@@ -31480,10 +31480,10 @@ async function testDashboardAuditMedium() {
       'duplicate response must identify the existing item via duplicateOf');
     assert.ok(src.includes('WI_STATUS.PENDING') && src.includes('WI_STATUS.DISPATCHED') && src.includes('WI_STATUS.QUEUED'),
       'dedup must block pending, dispatched, and queued items');
-    assert.ok(src.includes('workItemCreateFingerprint') && src.includes('description: normalizeWorkItemDedupText'),
-      'dedup fingerprint must include normalized description so same-title distinct items can coexist');
-    assert.ok(src.includes('scope: normalizeWorkItemDedupText'),
-      'dedup fingerprint must include scope so explicit fan-out requests can coexist with regular items');
+    assert.ok(src.includes('workItemCreateFingerprint'),
+      'dedup must use the shared work-item create fingerprint helper');
+    assert.ok(src.includes('isCompatibleWorkItemCreateScope'),
+      'dedup must keep explicit fan-out requests distinct from regular items');
     assert.ok(src.includes('prIdentity: normalizeWorkItemDedupPrIdentity'),
       'dedup fingerprint must include PR identity so distinct PR-scoped items can coexist');
   });
@@ -50727,7 +50727,7 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('work-item create dedup: same title with different description creates a distinct item', () => {
+  await test('work-item create dedup: same title with different description and metadata deduplicates', () => {
     const isolated = loadIsolatedDashboardForDedup();
     try {
       const wiPath = path.join(isolated.dir, 'work-items.json');
@@ -50742,17 +50742,214 @@ async function testDashboardPureHelpers() {
         ...base,
         id: 'W-first-description',
         description: 'Retry dropped streams before falling back.',
+        acceptanceCriteria: ['Retry once before surfacing an error'],
+        references: ['https://github.com/yemi33/minions/issues/2044'],
       });
       const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
         ...base,
         id: 'W-second-description',
+        priority: 'medium',
         description: 'Persist retry diagnostics to live-output.log.',
+        acceptanceCriteria: ['Write diagnostics to the live log'],
+        references: ['github:yemi33/minions#2044'],
       });
 
       assert.strictEqual(first.created, true);
-      assert.strictEqual(second.created, true, 'different normalized descriptions must not deduplicate');
+      assert.strictEqual(second.created, false, 'same normalized title/type must deduplicate despite changed metadata');
+      assert.strictEqual(second.duplicateOf, 'W-first-description');
       const items = isolated.shared.safeJson(wiPath) || [];
-      assert.deepStrictEqual(items.map(i => i.id), ['W-first-description', 'W-second-description']);
+      assert.deepStrictEqual(items.map(i => i.id), ['W-first-description']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: title normalization ignores case and whitespace runs', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-normalized-title',
+        title: '  Harden   Command Center\nStream Retry Resilience  ',
+        type: 'fix',
+        priority: 'high',
+        description: 'First wording.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-case-title',
+        title: 'harden command center stream retry resilience',
+        type: 'fix',
+        priority: 'high',
+        description: 'Second wording.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, false, 'case and whitespace variants of the same title must deduplicate');
+      assert.strictEqual(second.duplicateOf, 'W-normalized-title');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-normalized-title']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same title in different project queues remains distinct', () => {
+    const projectA = { name: 'minions', localPath: path.join(os.tmpdir(), 'minions-dedup-project-a') };
+    const projectB = { name: 'other', localPath: path.join(os.tmpdir(), 'minions-dedup-project-b') };
+    const isolated = loadIsolatedDashboardForDedup({ projects: [projectA, projectB], agents: {}, engine: {} });
+    try {
+      const pathA = isolated.shared.projectWorkItemsPath(projectA);
+      const pathB = isolated.shared.projectWorkItemsPath(projectB);
+      const base = {
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'Same title, different project.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+
+      const first = isolated.dashboard._createWorkItemWithDedup(pathA, {
+        ...base,
+        id: 'W-project-a',
+        project: projectA.name,
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(pathB, {
+        ...base,
+        id: 'W-project-b',
+        project: projectB.name,
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'same-title work in a different project queue must remain distinct');
+      assert.deepStrictEqual((isolated.shared.safeJson(pathA) || []).map(i => i.id), ['W-project-a']);
+      assert.deepStrictEqual((isolated.shared.safeJson(pathB) || []).map(i => i.id), ['W-project-b']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same title with different work type remains distinct', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Loosen work item create dedupe',
+        priority: 'high',
+        description: 'Same title, different work type.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-fix-type',
+        type: 'fix',
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-type',
+        type: 'review',
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'same title with an incompatible work type must remain distinct');
+      assert.deepStrictEqual((isolated.shared.safeJson(wiPath) || []).map(i => i.id), ['W-fix-type', 'W-review-type']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: done and failed items do not block new creation', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([
+        {
+          id: 'W-done-duplicate-title',
+          title: 'Loosen work item create dedupe',
+          type: 'fix',
+          priority: 'high',
+          description: 'Completed prior item.',
+          status: 'done',
+          created: new Date().toISOString(),
+        },
+        {
+          id: 'W-failed-duplicate-title',
+          title: 'Loosen work item create dedupe',
+          type: 'fix',
+          priority: 'high',
+          description: 'Failed prior item.',
+          status: 'failed',
+          created: new Date().toISOString(),
+        },
+      ]));
+
+      const created = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-new-duplicate-title',
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'New active item.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+
+      assert.strictEqual(created.created, true, 'inactive work items must not block same-title creation');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), [
+        'W-done-duplicate-title',
+        'W-failed-duplicate-title',
+        'W-new-duplicate-title',
+      ]);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: configured window limits active title matches', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const nowMs = Date.parse('2026-05-04T18:00:00.000Z');
+      const windowMs = 15 * 60 * 1000;
+      const candidate = {
+        id: 'W-candidate',
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'medium',
+        description: 'New metadata should not matter inside the dedupe window.',
+        status: 'pending',
+        created: new Date(nowMs).toISOString(),
+      };
+      const recentDuplicate = {
+        id: 'W-recent-title-match',
+        title: 'loosen   work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'Different old metadata.',
+        status: 'queued',
+        created: new Date(nowMs - windowMs + 1).toISOString(),
+      };
+      const staleDuplicate = {
+        ...recentDuplicate,
+        id: 'W-stale-title-match',
+        created: new Date(nowMs - windowMs - 1).toISOString(),
+      };
+
+      assert.strictEqual(
+        isolated.dashboard._findDuplicateWorkItemCreate([recentDuplicate], candidate, { nowMs, windowMs })?.id,
+        recentDuplicate.id,
+        'recent active title match must deduplicate within the configured window'
+      );
+      assert.strictEqual(
+        isolated.dashboard._findDuplicateWorkItemCreate([staleDuplicate], candidate, { nowMs, windowMs }),
+        null,
+        'active title match outside the configured window must not block new creation'
+      );
     } finally {
       isolated.cleanup();
     }
