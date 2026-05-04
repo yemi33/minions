@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1714 (2026-05-04)
+
+### Features
+- loosen work item create dedupe (#2053)
+- shorten Windows worktree paths (#2051)
+- fix ado project metadata discovery (#2048)
+
 ## 0.1.1712 (2026-05-04)
 
 ### Fixes
