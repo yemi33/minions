@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1720 (2026-05-04)
+
+### Features
+-  separate GitHub and ADO project fields (#2065)
+
 ## 0.1.1718 (2026-05-04)
 
 ### Features
