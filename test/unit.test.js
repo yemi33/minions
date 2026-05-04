@@ -28849,14 +28849,15 @@ async function testAuxModuleBugFixes() {
   });
 
   // P-d8n3x5q1: dashboard.js null guards for PROJECTS[0] and safeJson results
-  await test('dashboard.js: handleWorkItemsCreate guards PROJECTS[0] with null check', () => {
+  await test('dashboard.js: handleWorkItemsCreate resolves project-less creates to the lone project', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // The handleWorkItemsCreate function should guard PROJECTS[0] fallback
+    const resolveFn = src.slice(src.indexOf('function resolveWorkItemsCreateTarget'), src.indexOf('function linkPullRequestForTracking'));
+    const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
     assert.ok(src.includes("No projects configured"), 'Should return error when no projects configured');
-    // Find the targetProject = ... || PROJECTS[0] line and verify guard follows
-    const createIdx = src.indexOf('handleWorkItemsCreate');
-    const guardIdx = src.indexOf("if (!targetProject)", createIdx);
-    assert.ok(guardIdx > createIdx, 'Should have !targetProject guard after PROJECTS[0] fallback in create handler');
+    assert.ok(resolveFn.includes('projects.length === 1'),
+      'project-less create should target the only configured project');
+    assert.ok(createFn.includes('resolveWorkItemsCreateTarget(body.project)'),
+      'create handler should use the shared target resolver');
   });
 
   await test('dashboard.js: trigger-verify handler uses safeJson for plan reading', () => {
@@ -48489,9 +48490,10 @@ async function testDashboardPureHelpers() {
       'dashboard.js must define _ccValidateAction');
   });
 
-  function loadIsolatedDashboardForDedup() {
+  function loadIsolatedDashboardForDedup(config = null) {
     const restore = createTestMinionsDir();
     const testDir = process.env.MINIONS_TEST_DIR;
+    if (config) fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
     fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
     fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
     for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
@@ -48544,6 +48546,51 @@ async function testDashboardPureHelpers() {
       const items = isolated.shared.safeJson(wiPath) || [];
       assert.strictEqual(items.length, 1, 'CC action plus API fallback must leave one work item');
       assert.strictEqual(items[0].id, apiItem.id);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: project-less API fallback matches CC single-project target', async () => {
+    const project = { name: 'minions', localPath: path.join(os.tmpdir(), 'minions-single-project') };
+    const isolated = loadIsolatedDashboardForDedup({ projects: [project], agents: {}, engine: {} });
+    try {
+      const rootPath = path.join(isolated.dir, 'work-items.json');
+      const projectPath = isolated.shared.projectWorkItemsPath(project);
+      const action = {
+        type: 'fix',
+        title: 'Harden Command Center stream retry resilience',
+        priority: 'high',
+        description: 'Retry dropped streams before falling back.',
+      };
+
+      const ccResults = await isolated.dashboard.executeCCActions([action]);
+      assert.strictEqual(ccResults.length, 1);
+      assert.strictEqual(ccResults[0].ok, true);
+      assert.ok(ccResults[0].id, 'server-side CC action should create the project work item');
+
+      const apiTarget = isolated.dashboard._resolveWorkItemsCreateTarget('', [project]);
+      assert.strictEqual(apiTarget.wiPath, projectPath,
+        'project-less /api/work-items fallback must use the single project queue');
+      const apiResult = isolated.dashboard._createWorkItemWithDedup(apiTarget.wiPath, {
+        id: 'W-api-fallback',
+        title: action.title,
+        type: 'fix',
+        priority: 'high',
+        description: action.description,
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'dashboard',
+        project: project.name,
+      });
+
+      assert.strictEqual(apiResult.created, false, 'fallback API create should deduplicate against server CC create');
+      assert.strictEqual(apiResult.duplicateOf, ccResults[0].id);
+      assert.deepStrictEqual(isolated.shared.safeJson(rootPath) || [], [],
+        'single-project fallback must not create a root work-items.json entry');
+      const projectItems = isolated.shared.safeJson(projectPath) || [];
+      assert.strictEqual(projectItems.length, 1, 'CC plus API fallback must leave one project work item');
+      assert.strictEqual(projectItems[0].id, ccResults[0].id);
     } finally {
       isolated.cleanup();
     }

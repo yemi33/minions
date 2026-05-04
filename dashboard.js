@@ -183,6 +183,21 @@ function createWorkItemWithDedup(wiPath, item, options = {}) {
   });
   return result || { created: false, item: null };
 }
+
+function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
+  const project = String(projectName || '').trim();
+  let targetProject = null;
+  if (project) {
+    targetProject = projects.find(p => p.name === project) || (projects.length > 0 ? projects[0] : null);
+    if (!targetProject) return { error: 'No projects configured' };
+  } else if (projects.length === 1) {
+    targetProject = projects[0];
+  }
+  return {
+    project: targetProject,
+    wiPath: targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json'),
+  };
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -2822,22 +2837,17 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
-      let wiPath;
-      if (body.project) {
-        // Write to project-specific queue
-        const targetProject = PROJECTS.find(p => p.name === body.project) || (PROJECTS.length > 0 ? PROJECTS[0] : null);
-        if (!targetProject) return jsonReply(res, 400, { error: 'No projects configured' });
-        wiPath = shared.projectWorkItemsPath(targetProject);
-      } else {
-        // Write to central queue — agent decides which project
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      }
+      const target = resolveWorkItemsCreateTarget(body.project);
+      if (target.error) return jsonReply(res, 400, { error: target.error });
+      const wiPath = target.wiPath;
+      const targetProject = target.project;
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title.trim(), type: routing.normalizeWorkType(body.type, WORK_TYPE.IMPLEMENT),
         priority: body.priority || 'medium', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
+      if (targetProject) item.project = targetProject.name;
       if (body.scope) item.scope = body.scope;
       // Agent assignment normalization: `agent` and `agents` are routing hints.
       // Use agentLock/hardAgent only for the rare case where an item must wait
@@ -6695,6 +6705,7 @@ module.exports = {
   _ccValidateAction,
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
+  _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
   executeCCActions,
 };
 
