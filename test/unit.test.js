@@ -4145,7 +4145,7 @@ async function testProjectHelpers() {
   await test('getAdoOrgBase extracts from prUrlBase', () => {
     const project = { prUrlBase: 'https://dev.azure.com/myorg/myproj/_apis/git/repos/123/pullrequests/' };
     const result = shared.getAdoOrgBase(project);
-    assert.strictEqual(result, 'https://dev.azure.com');
+    assert.strictEqual(result, 'https://dev.azure.com/myorg');
   });
 
   await test('getAdoOrgBase constructs from adoOrg (short name)', () => {
@@ -42806,7 +42806,7 @@ async function testAdoRepositoryIdFallback() {
       repoHost: 'ado',
     };
 
-    await withAdoPollFixture(project, [{ ...basePr }], async ({ ado }) => {
+    await withAdoPollFixture(project, [{ ...basePr, id: 'PR-42', url: '' }], async ({ ado }) => {
       const logs = [];
       const origConsoleLog = console.log;
       let fetchCalls = 0;
@@ -42828,6 +42828,168 @@ async function testAdoRepositoryIdFallback() {
         && line.includes('project.repositoryId')
         && line.includes('project.repoName')
       ), 'empty ADO repository metadata must be surfaced as a clear configuration error');
+    });
+  });
+
+  await test('ADO pollPrStatus repairs missing project metadata from tracked PR URLs before polling', async () => {
+    const repoGuid = '66666666-6666-6666-6666-666666666666';
+    const project = {
+      name: 'ado-repair-from-pr-url',
+      adoOrg: '',
+      adoProject: '',
+      repositoryId: '',
+      repoName: 'repo-name',
+      prUrlBase: '',
+      repoHost: 'ado',
+    };
+    const pr = {
+      ...basePr,
+      id: 'ado:org/proj/repo-name#42',
+      url: 'https://dev.azure.com/org/proj/_git/repo-name/pullrequest/42',
+    };
+
+    await withAdoPollFixture(project, [pr], async ({ ado, testShared }) => {
+      const calls = [];
+      globalThis.fetch = async (url) => {
+        calls.push(url);
+        if (url.includes('https://dev.azure.com/org/proj/_apis/git/repositories/repo-name/pullrequests/42?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              status: 'active',
+              mergeStatus: 'succeeded',
+              lastMergeCommit: { commitId: 'merge-abc' },
+              lastMergeSourceCommit: { commitId: 'source-abc' },
+              reviewers: [],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('https://dev.azure.com/org/proj/_apis/git/repositories/repo-name?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ id: repoGuid, name: 'repo-name' }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?') && url.includes(`repositoryId=${repoGuid}`)) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              value: [
+                { id: 8, sourceVersion: 'merge-abc', status: 'completed', result: 'succeeded' },
+              ],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      assert.ok(calls.some(url => url.includes('https://dev.azure.com/org/proj/_apis/git/repositories/repo-name/pullrequests/42?')),
+        'pollPrStatus must repair adoOrg/adoProject from the tracked PR URL before deciding whether to skip');
+      const stored = testShared.safeJson(testShared.projectPrPath(project))[0];
+      assert.strictEqual(stored.buildStatus, 'passing',
+        'pollPrStatus should continue into normal GUID resolution/build polling after config repair');
+      const config = testShared.safeJson(path.join(process.env.MINIONS_TEST_DIR, 'config.json'));
+      assert.strictEqual(config.projects[0].adoOrg, 'org');
+      assert.strictEqual(config.projects[0].adoProject, 'proj');
+      assert.strictEqual(config.projects[0].repoName, 'repo-name');
+      assert.strictEqual(config.projects[0].prUrlBase, 'https://dev.azure.com/org/proj/_git/repo-name/pullrequest/');
+      assert.strictEqual(config.projects[0].repositoryId, repoGuid,
+        'normal GUID resolution should persist repositoryId after local metadata repair');
+    });
+  });
+
+  await test('ADO pollPrStatus repairs missing project metadata from canonical tracked PR IDs', async () => {
+    const project = {
+      name: 'ado-repair-from-canonical-id',
+      adoOrg: '',
+      adoProject: '',
+      repositoryId: '77777777-7777-7777-7777-777777777777',
+      repoName: '',
+      prUrlBase: '',
+      repoHost: 'ado',
+    };
+    const pr = {
+      ...basePr,
+      id: 'ado:org/proj/repo-name#42',
+      url: '',
+    };
+
+    await withAdoPollFixture(project, [pr], async ({ ado, testShared }) => {
+      const calls = [];
+      globalThis.fetch = successfulPollFetch(calls, '77777777-7777-7777-7777-777777777777');
+
+      await ado.pollPrStatus({ projects: [project], engine: {} });
+
+      assert.ok(calls.some(url => url.includes('/repositories/77777777-7777-7777-7777-777777777777/pullrequests/42?')),
+        'pollPrStatus must repair org/project/repoName from canonical ado:org/project/repo#id before polling');
+      const config = testShared.safeJson(path.join(process.env.MINIONS_TEST_DIR, 'config.json'));
+      assert.strictEqual(config.projects[0].adoOrg, 'org');
+      assert.strictEqual(config.projects[0].adoProject, 'proj');
+      assert.strictEqual(config.projects[0].repoName, 'repo-name');
+      assert.strictEqual(config.projects[0].prUrlBase, 'https://dev.azure.com/org/proj/_git/repo-name/pullrequest/');
+    });
+  });
+
+  await test('ADO reconcilePrs repairs missing project metadata from origin remote before skipping', async () => {
+    const childProcess = require('child_process');
+    const origSpawnSync = childProcess.spawnSync;
+    const project = {
+      name: 'ado-repair-from-origin',
+      localPath: 'D:\\repo\\ado-repair-from-origin',
+      adoOrg: '',
+      adoProject: '',
+      repositoryId: '',
+      repoName: '',
+      prUrlBase: '',
+      repoHost: 'ado',
+    };
+
+    await withAdoPollFixture(project, [], async ({ ado, testShared }) => {
+      const calls = [];
+      childProcess.spawnSync = (cmd, args, opts) => {
+        if (cmd === 'git' && Array.isArray(args) && args.includes('remote.origin.url')) {
+          return {
+            status: 0,
+            stdout: 'https://Org.visualstudio.com/DefaultCollection/Project/_git/Repo\r\n',
+            stderr: '',
+          };
+        }
+        return origSpawnSync(cmd, args, opts);
+      };
+      globalThis.fetch = async (url) => {
+        calls.push(url);
+        if (url.includes('https://Org.visualstudio.com/DefaultCollection/Project/_apis/git/repositories/Repo/pullrequests?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ value: [] }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      try {
+        await ado.reconcilePrs({ projects: [project], engine: {} });
+      } finally {
+        childProcess.spawnSync = origSpawnSync;
+      }
+
+      assert.ok(calls.some(url => url.includes('https://Org.visualstudio.com/DefaultCollection/Project/_apis/git/repositories/Repo/pullrequests?')),
+        'reconcilePrs must repair metadata from origin before the missing adoOrg/adoProject skip');
+      const config = testShared.safeJson(path.join(process.env.MINIONS_TEST_DIR, 'config.json'));
+      assert.strictEqual(config.projects[0].adoOrg, 'Org');
+      assert.strictEqual(config.projects[0].adoProject, 'Project');
+      assert.strictEqual(config.projects[0].repoName, 'Repo');
+      assert.strictEqual(config.projects[0].prUrlBase, 'https://Org.visualstudio.com/DefaultCollection/Project/_git/Repo/pullrequest/');
     });
   });
 
