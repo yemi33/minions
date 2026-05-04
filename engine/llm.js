@@ -23,6 +23,7 @@ const { resolveRuntime } = require('./runtimes');
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
+const MISSING_RUNTIME_EXIT_CODE = 78;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 
@@ -95,6 +96,85 @@ function _resolveBin(runtime) {
 }
 
 function _resetBinCache() { _binCache.clear(); }
+
+function _runtimeInstallHint(runtimeName, runtime) {
+  if (runtime && typeof runtime.installHint === 'string' && runtime.installHint) return runtime.installHint;
+  return `install the ${runtimeName || 'selected'} CLI and make sure it is on PATH`;
+}
+
+function _missingRuntimeMessage(runtimeName, runtime, reason) {
+  const selected = runtime?.name || runtimeName || 'configured';
+  if (!runtime) {
+    return [
+      `Minions can't run the configured runtime "${selected}".`,
+      '',
+      reason || 'The configured runtime is not registered.',
+      '',
+      'Choose a supported runtime in Settings -> Engine -> defaultCli/ccCli, then install its CLI:',
+      '- Claude Code: npm install -g @anthropic-ai/claude-code or download from https://claude.ai/download',
+      '- GitHub Copilot CLI: install via GitHub CLI/gh-copilot or download from https://github.com/github/copilot-cli/releases',
+      '',
+      'After installing, restart Minions so the dashboard and engine inherit the updated PATH.',
+    ].join('\n');
+  }
+  const lines = [
+    `Minions can't run the "${selected}" runtime yet.`,
+    '',
+    reason || `The ${selected} CLI binary was not found on PATH.`,
+    '',
+    `Install steps for "${selected}": ${_runtimeInstallHint(selected, runtime)}.`,
+    '',
+    'After installing, restart Minions so the dashboard and engine inherit the updated PATH.',
+  ];
+  if (selected !== 'claude') {
+    lines.push('Or switch Settings -> Engine -> defaultCli/ccCli back to "claude" after installing Claude Code.');
+  } else {
+    lines.push('Or switch Settings -> Engine -> defaultCli/ccCli to "copilot" after installing GitHub Copilot CLI.');
+  }
+  return lines.join('\n');
+}
+
+function _missingRuntimeResult(runtimeName, runtime, reason) {
+  const message = _missingRuntimeMessage(runtimeName, runtime, reason);
+  return {
+    text: message,
+    usage: null,
+    sessionId: null,
+    code: MISSING_RUNTIME_EXIT_CODE,
+    stderr: message,
+    raw: '',
+    toolUses: [],
+    runtime: runtime?.name || runtimeName || null,
+    errorClass: shared.FAILURE_CLASS.CONFIG_ERROR,
+    missingRuntime: true,
+  };
+}
+
+function _resolvedCallResult(result) {
+  const promise = Promise.resolve(result);
+  promise.abort = () => {};
+  return promise;
+}
+
+function _resolveRuntimeNameFor(callOpts = {}) {
+  let runtimeName = callOpts.cli;
+  if (!runtimeName && callOpts.engineConfig) runtimeName = resolveCcCli(callOpts.engineConfig);
+  return runtimeName || 'claude';
+}
+
+function _runtimeUnavailableResult(callOpts = {}) {
+  const runtimeName = _resolveRuntimeNameFor(callOpts);
+  let runtime = null;
+  try {
+    runtime = resolveRuntime(runtimeName);
+  } catch (err) {
+    return _missingRuntimeResult(runtimeName, null, err.message);
+  }
+  if (!_resolveBin(runtime)) {
+    return _missingRuntimeResult(runtimeName, runtime, `The ${runtime.name} CLI binary was not found on PATH or in the runtime cache.`);
+  }
+  return null;
+}
 
 // ─── Spawn Helpers ───────────────────────────────────────────────────────────
 
@@ -386,10 +466,7 @@ function _createStreamAccumulator({
 function _resolveRuntimeFor(callOpts) {
   // Explicit `cli` opt wins; otherwise fall to `engineConfig` resolution;
   // otherwise default to claude (the historical behavior).
-  let runtimeName = callOpts.cli;
-  if (!runtimeName && callOpts.engineConfig) runtimeName = resolveCcCli(callOpts.engineConfig);
-  if (!runtimeName) runtimeName = 'claude';
-  return resolveRuntime(runtimeName);
+  return resolveRuntime(_resolveRuntimeNameFor(callOpts));
 }
 
 function _resolveModelFor(callOpts) {
@@ -433,6 +510,9 @@ function callLLM(promptText, sysPromptText, opts = {}) {
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
   } = opts;
+
+  const unavailable = _runtimeUnavailableResult({ cli: cliOverride, engineConfig });
+  if (unavailable) return _resolvedCallResult(unavailable);
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
   const model = _resolveModelForRuntime(runtime, { model: modelOverride, engineConfig });
@@ -530,6 +610,9 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
   } = opts;
+
+  const unavailable = _runtimeUnavailableResult({ cli: cliOverride, engineConfig });
+  if (unavailable) return _resolvedCallResult(unavailable);
 
   const runtime = _resolveRuntimeFor({ cli: cliOverride, engineConfig });
   const model = _resolveModelForRuntime(runtime, { model: modelOverride, engineConfig });

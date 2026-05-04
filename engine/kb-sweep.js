@@ -135,6 +135,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         engineConfig: opts.engineConfig,
       });
       trackEngineUsage('kb-sweep', result.usage);
+      if (result.missingRuntime) {
+        log('warn', `[kb-sweep] batch ${b + 1} LLM skipped: ${result.text || result.stderr || 'runtime unavailable'}`);
+        continue;
+      }
     } catch (e) { log('warn', `[kb-sweep] batch ${b + 1} LLM error: ${e.message}`); continue; }
 
     let batchPlan;
@@ -212,6 +216,10 @@ ${body}`;
           engineConfig: opts.engineConfig,
         });
         trackEngineUsage('kb-sweep', result.usage);
+        if (result.missingRuntime) {
+          log('warn', `[kb-sweep] rewrite ${c.entry.category}/${c.entry.file} skipped: ${result.text || result.stderr || 'runtime unavailable'}`);
+          continue;
+        }
         let newBody = (result.text || '').trim();
         // Strip accidental code fence
         const fence = newBody.match(/^```(?:markdown|md)?\s*([\s\S]*?)```$/);

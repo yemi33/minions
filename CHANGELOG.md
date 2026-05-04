@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.1700 (2026-05-04)
+
+### Features
+-  audit prompts and playbooks against Karpathy CLAUDE.md (#2012)
+
+## 0.1.1699 (2026-05-04)
+
+### Features
+-  Gracefully handle missing runtime across Command Center and LLM call sites
+
+### Fixes
+- yemi33/minions#2022
+
+## 0.1.1698 (2026-05-04)
+
+### Features
+- fix update restart and Copilot steering (#2025)
+
+## 0.1.1696 (2026-05-04)
+
+### Features
+- preserve doc-chat final payload (#2019)
+
+## 0.1.1695 (2026-05-04)
+
+### Features
+- harden command center stream retry (#2016)
+
 ## 0.1.1693 (2026-05-04)
 
 ### Features

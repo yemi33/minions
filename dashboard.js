@@ -226,6 +226,40 @@ function _agentSessionIsDraining(agentId) {
   return terminalIdx >= 0 && terminalIdx > lastSteer;
 }
 
+function _dispatchBranch(item) {
+  const branch = item?.meta?.branch || item?.branch || item?.meta?.item?.branch || item?.meta?.item?.featureBranch;
+  return branch ? String(branch).replace(/^refs\/heads\//, '') : null;
+}
+
+function _hasCachedResumeSession(agentId, activeDispatch, maxAgeMs = 2 * 60 * 60 * 1000) {
+  const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
+  if (!sessionFile?.sessionId || !sessionFile.savedAt) return false;
+  const savedAtMs = new Date(sessionFile.savedAt).getTime();
+  if (!Number.isFinite(savedAtMs) || Date.now() - savedAtMs >= maxAgeMs) return false;
+  const dispatchBranch = _dispatchBranch(activeDispatch);
+  const sessionBranch = sessionFile.branch ? String(sessionFile.branch).replace(/^refs\/heads\//, '') : null;
+  return !!dispatchBranch && !!sessionBranch && dispatchBranch === sessionBranch;
+}
+
+function _steeringDeliveryState(agentId) {
+  const activeDispatch = (getDispatchQueue().active || []).find(d => d.agent === agentId);
+  if (!activeDispatch) return { deliveryStatus: 'queued', pendingDelivery: true };
+
+  const runtimeName = shared.resolveAgentCli(CONFIG.agents?.[agentId], CONFIG.engine);
+  try {
+    const runtime = require('./engine/runtimes').resolveRuntime(runtimeName);
+    if (runtime?.capabilities?.midRunSessionId === false && !_hasCachedResumeSession(agentId, activeDispatch)) {
+      return {
+        deliveryStatus: 'pending_checkpoint',
+        pendingDelivery: true,
+        detail: 'Runtime has not emitted a resumable session yet; delivery is pending until the next resumable checkpoint.',
+      };
+    }
+  } catch { /* unknown runtime: checkSteering will surface retry state */ }
+
+  return { deliveryStatus: 'queued', pendingDelivery: false };
+}
+
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
@@ -1134,11 +1168,22 @@ function stripCCActionSyntax(text) {
 function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
-  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task)\b/.test(text)
+
+  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
+    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
+  const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
+    || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
+  if (explicitDocEdit && !explicitOrchestration) return false;
+
+  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
     || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)
     || /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
     || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
+    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text)
+    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(bug|issue|error|crash|exception|regression|failing test|test failure|build failure|ci|feature|code|endpoint|api|ui|workflow|integration|pr|pull request)\b/.test(text)
+    || /\b(run|add|write)\b[\s\S]{0,80}\b(test|tests|coverage)\b/.test(text);
 }
 
 function _escapeRegExp(str) {
@@ -1657,6 +1702,11 @@ async function executeCCActions(actions) {
   return results;
 }
 
+async function executeDocChatActions(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) return undefined;
+  return executeCCActions(actions);
+}
+
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk
@@ -1791,6 +1841,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1828,6 +1879,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1845,6 +1897,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1878,6 +1931,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1914,6 +1968,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1932,6 +1987,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1949,17 +2005,29 @@ function _parseDocChatResultText(text, { allowActions = false } = {}) {
   const docDelimiter = findDocChatDocumentDelimiter(text);
   if (docDelimiter) {
     const answerPart = text.slice(0, docDelimiter.index).trim();
-    const { text: answer, actions } = allowActions
+    const parsedActions = allowActions
       ? parseCCActions(answerPart)
       : { text: stripCCActionSyntax(answerPart), actions: [] };
+    const { text: answer, actions } = parsedActions;
     let content = text.slice(docDelimiter.index + docDelimiter.length).trim();
     content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
-    return { answer, content, actions };
+    return {
+      answer,
+      content,
+      actions,
+      ...(parsedActions._actionParseError ? { actionParseError: parsedActions._actionParseError } : {}),
+    };
   }
-  const { text: stripped, actions } = allowActions
+  const parsedActions = allowActions
     ? parseCCActions(text)
     : { text: stripCCActionSyntax(text), actions: [] };
-  return { answer: stripped, content: null, actions };
+  const { text: stripped, actions } = parsedActions;
+  return {
+    answer: stripped,
+    content: null,
+    actions,
+    ...(parsedActions._actionParseError ? { actionParseError: parsedActions._actionParseError } : {}),
+  };
 }
 
 function _docChatDisplayText(text, opts) {
@@ -2037,6 +2105,10 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     if (session) session._docHash = docHash;
   }
 
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
+  }
+
   if (result.code !== 0 || !result.text) {
     console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
@@ -2089,6 +2161,10 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = docHash;
+  }
+
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
   }
 
   if (result.code !== 0 || !result.text) {
@@ -4202,19 +4278,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions } = await ccDocCall({
+      const { answer, content, actions, actionParseError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
         freshSession: !!body.freshSession,
         onAbortReady: (abort) => { _docAbort = abort; },
       });
+      const actionResults = await executeDocChatActions(actions);
+      const baseReply = (extra = {}) => ({
+        ok: true,
+        answer,
+        actions,
+        ...(actionResults ? { actionResults } : {}),
+        ...(actionParseError ? { actionParseError } : {}),
+        ...extra,
+      });
 
-      if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
+      if (!content) return jsonReply(res, 200, baseReply({ edited: false }));
 
       if (isJson) {
         try { JSON.parse(content); } catch (e) {
-          return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false, actions });
+          return jsonReply(res, 200, baseReply({ answer: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false }));
         }
       }
       if (canEdit && fullPath) {
@@ -4223,7 +4308,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           try {
             const mtg = safeJson(fullPath);
             if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
-              return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
+              return jsonReply(res, 200, baseReply({ edited: false }));
             }
           } catch { /* proceed with write if can't read */ }
         }
@@ -4231,10 +4316,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         safeWrite(fullPath, content);
 
         _docDone = true;
-        return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
+        return jsonReply(res, 200, baseReply({ edited: true, content }));
       }
       _docDone = true;
-      return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+      return jsonReply(res, 200, baseReply({ answer: answer + '\n\n(Read-only — changes not saved)', edited: false }));
       } finally { _docAbort = null; _docDone = true; docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
@@ -4308,7 +4393,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4317,9 +4402,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onChunk: (text) => { writeDocEvent({ type: 'chunk', text }); },
           onToolUse: (name, input) => { writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) }); },
         });
+        const actionResults = await executeDocChatActions(actions);
+        const donePayload = (extra = {}) => ({
+          type: 'done',
+          text: answer,
+          actions,
+          ...(actionResults ? { actionResults } : {}),
+          ...(actionParseError ? { actionParseError } : {}),
+          ...extra,
+        });
 
         if (!content) {
-          writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+          writeDocEvent(donePayload({ edited: false }));
           _docStreamEnded = true;
           res.end();
           return;
@@ -4327,7 +4421,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         if (isJson) {
           try { JSON.parse(content); } catch (e) {
-            writeDocEvent({ type: 'done', text: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false, actions });
+            writeDocEvent(donePayload({ text: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false }));
             _docStreamEnded = true;
             res.end();
             return;
@@ -4339,7 +4433,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             try {
               const mtg = safeJson(fullPath);
               if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
-                writeDocEvent({ type: 'done', text: answer, edited: false, actions });
+                writeDocEvent(donePayload({ edited: false }));
                 _docStreamEnded = true;
                 res.end();
                 return;
@@ -4348,13 +4442,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
 
           safeWrite(fullPath, content);
-          writeDocEvent({ type: 'done', text: answer, edited: true, content, actions });
+          writeDocEvent(donePayload({ edited: true, content }));
           _docStreamEnded = true;
           res.end();
           return;
         }
 
-        writeDocEvent({ type: 'done', text: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+        writeDocEvent(donePayload({ text: answer + '\n\n(Read-only — changes not saved)', edited: false }));
         _docStreamEnded = true;
         res.end();
       } finally {
@@ -5020,6 +5114,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         _ccHeartbeatTimer = null;
       }
     };
+    const finishMissingRuntime = (result, liveState) => {
+      const text = result.text || result.stderr || 'Minions runtime is not installed or configured.';
+      liveState.donePayload = { type: 'done', text, actions: [], sessionId: null, missingRuntime: true };
+      if (liveState.writer) liveState.writer(liveState.donePayload);
+      if (liveState.endResponse) liveState.endResponse();
+      _scheduleCcLiveCleanup(tabId);
+    };
     try {
       const body = await readBody(req);
       if (!body.message && !body.reconnect) { res.statusCode = 400; res.end('message required'); return; }
@@ -5142,6 +5243,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
+        }
+
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
         if (!result.text && wasResume && result.code !== 0 && !req.destroyed) {
           // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
@@ -5163,6 +5269,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             // Fresh session succeeded — use retryResult from here
             Object.assign(result, retryResult);
           }
+        }
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
         }
         if (!result.text) {
           if (req.destroyed) { _ccStreamEnded = true; return; } // client already gone — nothing to send
@@ -5347,6 +5457,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse', direct: true,
         engineConfig: CONFIG.engine,
       });
+      if (result.missingRuntime) {
+        return jsonReply(res, 503, { error: result.text || result.stderr || 'Minions runtime is not installed or configured.', missingRuntime: true });
+      }
       const parsed = JSON.parse(result.text.trim());
       if (!parsed.cron) return jsonReply(res, 422, { error: 'Could not parse schedule' });
       return jsonReply(res, 200, { cron: parsed.cron, description: parsed.description || '' });
@@ -5778,7 +5891,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const engine = getEngineState();
     const agents = getAgents();
     const health = {
-      status: engine.state === 'running' ? 'healthy' : engine.state === 'paused' ? 'degraded' : 'stopped',
+      status: engine.state === 'running' ? 'healthy' : (engine.state === 'paused' || engine.state === 'stopping') ? 'degraded' : 'stopped',
       engine: { state: engine.state, pid: engine.pid },
       agents: agents.map(a => ({ id: a.id, name: a.name, status: a.status })),
       projects: PROJECTS.map(p => ({ name: p.name, reachable: fs.existsSync(p.localPath) })),
@@ -6219,6 +6332,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       const entry = steering.writeSteeringMessage(agentId, text);
+      const delivery = _steeringDeliveryState(agentId);
 
       // Also append to live-output.log so it shows in the chat view
       const liveLogPath = path.join(agentDir, 'live-output.log');
@@ -6226,7 +6340,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       return jsonReply(res, 200, {
         ok: true,
-        message: 'Steering message queued',
+        message: delivery.pendingDelivery ? 'Steering message pending delivery' : 'Steering message queued',
+        ...delivery,
         file: entry?.file || null,
         inboxCount: steering.listUnreadSteeringMessages(agentId).length,
       });

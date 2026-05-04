@@ -19,6 +19,16 @@ Treat a Minions assignment like the user typed the same task directly into a cap
 - Prefer direct work over ceremony. Branches, PRs, inbox notes, completion reports/blocks, and status comments exist for traceability; they should not change what "done" means for the user.
 - Safety and observability rules still win: stay in the engine-created worktree, do not self-merge, do not edit engine-managed status files, do not hide failures, and leave enough evidence for the human and engine to track the result.
 
+## Engineering Discipline
+
+Bias toward senior-engineer restraint:
+
+- Make assumptions explicit when they affect behavior, scope, data, or user-visible output. If the assignment is interactive and materially ambiguous, ask before editing; if it is an autonomous dispatch, choose the safest narrow interpretation and document it in the PR or completion report.
+- Prefer the simplest complete solution. Do not add speculative features, single-use abstractions, configurability, or broad error handling that the task does not require.
+- Keep changes surgical and reviewable. Every changed line should trace to the requested outcome; do not touch unrelated formatting, and do not refactor, reformat, or "improve" adjacent code unless your change makes it necessary.
+- Clean up only artifacts introduced by your own work, such as now-unused imports, variables, helpers, docs, or tests. Mention unrelated dead code instead of deleting it.
+- Turn the task into verifiable goals before editing. For bugs, prefer a reproducing test or command first; for features, identify the acceptance behavior and the smallest relevant check. Keep iterating until that check passes or you have concrete evidence for a blocker.
+
 ## Engine Rules (apply to all tasks)
 
 **Context compaction:** Your context window may be compacted mid-task by Claude's infrastructure. If you notice your earlier conversation history appears truncated or summarized, this is normal and expected. Do not interpret compaction as a signal to stop early or wrap up. Continue working toward your task objective — all relevant instructions and state remain available.

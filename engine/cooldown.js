@@ -101,6 +101,48 @@ function isOnCooldown(key, cooldownMs) {
   return (Date.now() - entry.timestamp) < (cooldownMs * backoff);
 }
 
+function normalizePrHeadForCooldown(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
+function getPrReviewHead(pr) {
+  if (!pr || typeof pr !== 'object') return '';
+  const candidates = [
+    pr.headSha,
+    pr.headSHA,
+    pr.head?.sha,
+    pr._adoSourceCommit,
+    pr._adoHeadCommit,
+    pr.lastMergeSourceCommit?.commitId,
+    pr.lastMergeCommit?.commitId,
+  ];
+  for (const candidate of candidates) {
+    const head = normalizePrHeadForCooldown(candidate);
+    if (head) return head;
+  }
+  return '';
+}
+
+function getPrReviewCooldownBase(prefix, project, pr, prDisplayId = null) {
+  return `${prefix}-${project?.name || 'default'}-${prDisplayId || shared.getPrDisplayId(pr)}`;
+}
+
+function getPrReviewCooldownKey(prefix, project, pr, prDisplayId = null) {
+  const base = getPrReviewCooldownBase(prefix, project, pr, prDisplayId);
+  const head = getPrReviewHead(pr);
+  return head ? `${base}-${head}` : base;
+}
+
+function clearLegacyPrReviewCooldown(prefix, project, pr, prDisplayId = null, scopedKey = '') {
+  const legacyKey = getPrReviewCooldownBase(prefix, project, pr, prDisplayId);
+  if (!scopedKey || scopedKey === legacyKey || !dispatchCooldowns.has(legacyKey)) return false;
+  dispatchCooldowns.delete(legacyKey);
+  saveCooldowns();
+  return true;
+}
+
 function setCooldown(key) {
   const existing = dispatchCooldowns.get(key);
   dispatchCooldowns.set(key, { timestamp: Date.now(), failures: existing?.failures || 0 });
@@ -194,6 +236,9 @@ module.exports = {
   loadCooldowns,
   saveCooldowns,
   isOnCooldown,
+  getPrReviewHead,
+  getPrReviewCooldownKey,
+  clearLegacyPrReviewCooldown,
   setCooldown,
   setCooldownWithContext,
   drainCoalescedContexts,

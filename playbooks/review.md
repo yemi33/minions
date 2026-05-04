@@ -42,12 +42,17 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
    - **Blocking:** failing checks, security/data-loss risk, broken existing behavior, missing requested behavior, invalid API/schema/data migration, or tests that do not cover changed critical logic.
    - **Non-blocking:** style preferences, minor refactors, optional documentation, low-risk performance ideas, or additional tests that are useful but not required for safety.
 
-6. Do NOT blindly approve. If you find real blocking issues:
+6. Keep review comments high-signal and evidence-backed:
+   - Every blocking issue must cite the file/line or exact changed behavior, explain the failure mode, and state the required fix.
+   - Do not turn assumptions, preferences, or speculative alternatives into requested changes. Mark them non-blocking or omit them.
+   - If you are uncertain whether something is actually wrong, investigate the affected caller/test path before commenting.
+
+7. Do NOT blindly approve. If you find real blocking issues:
    - Verdict: **REQUEST_CHANGES**
    - List specific issues with file paths and line numbers
    - Describe what needs to change
 
-7. If the code is genuinely ready:
+8. If the code is genuinely ready:
    - Verdict: **APPROVE**
    - Note any minor non-blocking suggestions
    - Do not request changes for nits, speculative edge cases, or unrelated improvements

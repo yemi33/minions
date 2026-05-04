@@ -541,7 +541,7 @@ async function _processQaMessage(message, selection, opts) {
         const borderColor = evt.edited ? 'var(--green)' : 'var(--blue)';
         const suffix = evt.edited ? '\n\n\u2713 Document saved.' : '';
         const answerHtml = _qaBuildAssistantHtml((evt.text || '') + suffix, { borderColor, elapsed: qaElapsed });
-        const updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+        let updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
           const loadingEl = tmp.querySelector('#' + loadingId);
           if (loadingEl) loadingEl.remove();
           tmp.insertAdjacentHTML('beforeend', answerHtml);
@@ -553,7 +553,13 @@ async function _processQaMessage(message, selection, opts) {
 
         _qaNotifySidebar(capturedFilePath);
         if (evt.actions && evt.actions.length > 0) {
+          if (evt.actionResults && typeof _tagServerExecuted === 'function') _tagServerExecuted(evt.actions, evt.actionResults);
           for (const action of evt.actions) await ccExecuteAction(action);
+        } else if (evt.actionParseError) {
+          const warning = '<div class="modal-qa-a" style="color:var(--red)">Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>';
+          updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+            tmp.insertAdjacentHTML('beforeend', warning);
+          });
         }
 
         if (evt.edited && evt.content) {

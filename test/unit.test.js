@@ -69,8 +69,7 @@ function _restoreFileState(snapshot) {
   try { fs.unlinkSync(snapshot.path); } catch {}
 }
 
-function createTestMinionsDir() {
-  const dir = createTmpDir();
+function seedTestMinionsDir(dir) {
   for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'plans/archive', 'projects', 'notes/inbox', 'notes/archive', 'knowledge', 'agents']) {
     fs.mkdirSync(path.join(dir, d), { recursive: true });
   }
@@ -83,7 +82,11 @@ function createTestMinionsDir() {
   if (fs.existsSync(routingPath)) {
     fs.copyFileSync(routingPath, path.join(dir, 'routing.md'));
   }
+}
 
+function createTestMinionsDir() {
+  const dir = createTmpDir();
+  seedTestMinionsDir(dir);
   process.env.MINIONS_TEST_DIR = dir;
   // Bust require cache so modules re-resolve MINIONS_DIR
   for (const mod of ISOLATED_MODULES) {
@@ -8278,6 +8281,50 @@ async function testLlmModule() {
     assert.ok(src.includes('const toolUses = []'), 'Should retain structured tool-use metadata');
   });
 
+  await test('llm stream finalization preserves fragmented doc-chat payload over task_complete summary (#2001)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const delimiter = '---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---';
+    const expected = [
+      'Updated the document.',
+      '',
+      delimiter,
+      '# Title',
+      '',
+      'Full replacement body.',
+      '',
+    ].join('\n');
+    const raw = [
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: `Updated the document.\n\n${delimiter}\n# Title\n`, outputTokens: 10 },
+      }),
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: '\nFull replacement body.\n', outputTokens: 6 },
+      }),
+      JSON.stringify({
+        type: 'assistant.message',
+        data: { content: '', toolRequests: [{ name: 'task_complete', arguments: { summary: 'Task complete.' } }], outputTokens: 2 },
+      }),
+      JSON.stringify({ type: 'session.task_complete', data: { summary: 'Task complete.', success: true } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-doc-chat', exitCode: 0, usage: { premiumRequests: 1 } }),
+    ].join('\n');
+    const acc = llm._createStreamAccumulator({
+      runtime: copilot,
+      maxRawBytes: shared.ENGINE_DEFAULTS.maxLlmRawBytes,
+      maxStderrBytes: shared.ENGINE_DEFAULTS.maxLlmStderrBytes,
+      maxLineBufferBytes: shared.ENGINE_DEFAULTS.maxLlmLineBufferBytes,
+    });
+
+    acc.ingestStdout(raw);
+    const parsed = acc.finalize();
+
+    assert.strictEqual(parsed.text, expected,
+      'finalization must reparse full stdout so doc-chat sees the complete replacement document');
+    assert.strictEqual(parsed.sessionId, 'sess-doc-chat');
+    assert.strictEqual(parsed.usage.premiumRequests, 1);
+  });
+
   await test('copilot stream consumer does not finalize tool-request narration', () => {
     // Behavior moved out of engine/llm.js into the runtime adapter — assert
     // against engine/runtimes/copilot.js so the rule still has source-coverage.
@@ -8805,6 +8852,47 @@ async function testPrReviewFixCycle() {
     assert.ok(playbook.includes('{{review_note}}'), 'Fix playbook needs review_note for feedback');
     assert.ok(playbook.includes('{{pr_branch}}'), 'Fix playbook needs pr_branch');
   });
+
+  await test('PR review dispatch prompt includes dispatch id in required learnings path', () => {
+    const playbook = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    const project = {
+      name: 'minions',
+      repoHost: 'github',
+      adoOrg: 'yemi33',
+      repoName: 'minions',
+      localPath: MINIONS_DIR,
+      mainBranch: 'master',
+    };
+    const config = {
+      projects: [project],
+      agents: { ripley: { name: 'Ripley', role: 'Lead / Explorer' } },
+      engine: {},
+    };
+    const pr = {
+      id: 'github:yemi33/minions#2014',
+      prNumber: 2014,
+      title: 'isolate review metadata',
+      url: 'https://github.com/yemi33/minions/pull/2014',
+    };
+    const item = playbook.buildPrDispatch('ripley', config, project, pr, 'review', {
+      pr_id: pr.id,
+      pr_number: pr.prNumber,
+      pr_title: pr.title,
+      pr_branch: 'work/W-review-marker',
+      pr_author: 'dallas',
+      pr_url: pr.url,
+    }, `Review ${pr.id}: ${pr.title}`, {
+      dispatchKey: 'review-minions-PR-2014',
+      source: 'pr',
+      pr,
+      branch: 'work/W-review-marker',
+      project,
+    });
+
+    assert.ok(item.id, 'PR dispatch should allocate its ID before rendering the playbook');
+    assert.ok(item.prompt.includes(`/notes/inbox/ripley-${item.id}-`),
+      'required learnings path should include the current dispatch id for feedback scoping');
+  });
 }
 
 // ─── Worktree Management Tests ──────────────────────────────────────────────
@@ -9092,6 +9180,17 @@ async function testConfigAndPlaybooks() {
       'force upgrade should stop engine before restart');
     assert.ok(src.includes('Dashboard started (PID:'),
       'init flow should still auto-start dashboard');
+  });
+
+  await test('bin/minions update syncs code without init auto-start before one controlled restart', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const updateBlock = src.slice(src.indexOf("} else if (cmd === 'update')"), src.indexOf("} else if (cmd === 'version'"));
+    assert.ok(updateBlock.includes('minions init --force --skip-start'),
+      'update should run init in copy/sync-only mode so init does not auto-start engine/dashboard');
+    assert.ok(updateBlock.includes('minions restart'),
+      'update should perform the single controlled restart after code sync');
+    assert.ok(src.includes('skipStart') && src.includes('Restart skipped by caller'),
+      'init should support an internal skip-start mode for update while preserving direct init --force restart behavior');
   });
 
   await test('bin/minions uninstall prints re-install command on success', () => {
@@ -12916,6 +13015,90 @@ async function testCooldownBehavioral() {
     } finally { restore(); }
   });
 
+  await test('PR review cooldown keys include GitHub and ADO head identifiers when present', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'abc123' }),
+        'review-minions-PR-2012-abc123',
+        'GitHub headSha should scope review cooldowns'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('rereview', project, { prNumber: 2012, _adoSourceCommit: 'def456' }),
+        'rereview-minions-PR-2012-def456',
+        'ADO source head commit should scope re-review cooldowns'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, _adoHeadCommit: 'merge789' }),
+        'review-minions-PR-2012-merge789',
+        'ADO merge commit should remain a fallback for older PR records'
+      );
+      assert.strictEqual(
+        cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012 }),
+        'review-minions-PR-2012',
+        'PRs without head metadata should keep the legacy broad key'
+      );
+    } finally { restore(); }
+  });
+
+  await test('same-head PR review dispatch remains cooldown-limited while a new head bypasses the old key', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const sameHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'oldhead' });
+      const newHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'newhead' });
+
+      cooldown.setCooldown(sameHeadKey);
+
+      assert.strictEqual(cooldown.isOnCooldown(sameHeadKey, 30 * 60 * 1000), true,
+        'Repeated review discovery for the same head must remain cooldown-limited');
+      assert.strictEqual(cooldown.isOnCooldown(newHeadKey, 30 * 60 * 1000), false,
+        'A fresh head SHA must not inherit the previous head cooldown');
+    } finally { restore(); }
+  });
+
+  await test('review failure backoff applies per unchanged PR head only', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const unchangedHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'samehead' });
+      const pushedHeadKey = cooldown.getPrReviewCooldownKey('review', project, { prNumber: 2012, headSha: 'pushedhead' });
+
+      cooldown.setCooldownFailure(unchangedHeadKey);
+      cooldown.setCooldownFailure(unchangedHeadKey);
+
+      assert.strictEqual(cooldown.dispatchCooldowns.get(unchangedHeadKey).failures, 2,
+        'Failures should accumulate on the unchanged head key');
+      assert.strictEqual(cooldown.isOnCooldown(unchangedHeadKey, 30 * 60 * 1000), true,
+        'Failure backoff should still block the unchanged head');
+      assert.strictEqual(cooldown.isOnCooldown(pushedHeadKey, 30 * 60 * 1000), false,
+        'Failure backoff from an old head must not block a freshly pushed head');
+    } finally { restore(); }
+  });
+
+  await test('head-scoped PR review keys clear legacy broad cooldown entries', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cooldown = _freshCooldownModule();
+      const project = { name: 'minions' };
+      const pr = { prNumber: 2012, headSha: 'freshhead' };
+      const legacyKey = 'review-minions-PR-2012';
+      const scopedKey = cooldown.getPrReviewCooldownKey('review', project, pr);
+      cooldown.dispatchCooldowns.set(legacyKey, { timestamp: Date.now(), failures: 3 });
+
+      assert.strictEqual(cooldown.clearLegacyPrReviewCooldown('review', project, pr, null, scopedKey), true,
+        'Legacy broad cooldown should be removed when a head-scoped key is available');
+      assert.strictEqual(cooldown.dispatchCooldowns.has(legacyKey), false,
+        'Legacy broad review cooldown should no longer remain in memory');
+      assert.strictEqual(cooldown.isOnCooldown(scopedKey, 30 * 60 * 1000), false,
+        'Cleanup must not synthesize a cooldown for the fresh scoped key');
+    } finally { restore(); }
+  });
+
   // ── setCooldown / setCooldownWithContext ──
 
   await test('setCooldown writes a new entry with current timestamp and 0 failures', () => {
@@ -14035,6 +14218,53 @@ async function testRenderPlaybook() {
   await test('renderPlaybook keeps skill extraction runtime-native', () => {
     assert.ok(src.includes("selected runtime's native personal skills directory") && src.includes('scope: minions'),
       'Should explain that minions-scoped skills use the selected runtime native target');
+  });
+
+  await test('shared agent rules include simplicity, surgical change, and verification discipline', () => {
+    const sharedRules = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(sharedRules.includes('Engineering Discipline'),
+      'shared rules should include a dedicated engineering discipline section');
+    assert.ok(/simplest complete solution/i.test(sharedRules),
+      'shared rules should steer agents away from overcomplicated implementations');
+    assert.ok(/surgical and reviewable/i.test(sharedRules),
+      'shared rules should require focused, reviewable diffs');
+    assert.ok(/do not touch unrelated formatting/i.test(sharedRules) && /do not .*reformat/i.test(sharedRules),
+      'shared rules should explicitly forbid unrelated formatting churn');
+    assert.ok(/verifiable goals/i.test(sharedRules),
+      'shared rules should require explicit verification targets before editing');
+  });
+
+  await test('implement playbook inherits engineering discipline from shared rules', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+      project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result.includes('Engineering Discipline'),
+      'implement playbook should inherit shared engineering discipline guidance');
+    assert.ok(result.includes('do not touch unrelated formatting'),
+      'implement playbook should inherit unrelated-formatting guidance from shared rules');
+  });
+
+  await test('review playbook keeps blocking findings evidence-backed and high-signal', () => {
+    const reviewPlaybook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
+    assert.ok(/high-signal/i.test(reviewPlaybook),
+      'review playbook should tell reviewers to keep comments high-signal');
+    assert.ok(/Every blocking issue must cite the file\/line/i.test(reviewPlaybook),
+      'review playbook should require evidence for blocking comments');
+    assert.ok(/Do not turn assumptions, preferences, or speculative alternatives into requested changes/i.test(reviewPlaybook),
+      'review playbook should not let speculation become blocking feedback');
+  });
+
+  await test('system prompts include scope, assumption, and verifiability guardrails', () => {
+    const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    const planAdvisorPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'plan-advisor-system.md'), 'utf8');
+    assert.ok(ccPrompt.includes('Scope and Simplicity') && ccPrompt.includes('smallest action'),
+      'Command Center system prompt should prefer narrow complete actions');
+    assert.ok(ccPrompt.includes('name the assumption') && ccPrompt.includes('verify the exact behavior'),
+      'Command Center prompt should require assumptions and verification for self-performed implementation');
+    assert.ok(planAdvisorPrompt.includes('Plan Quality') && planAdvisorPrompt.includes('Make every work item verifiable'),
+      'Plan Advisor prompt should require verifiable, non-speculative plans');
   });
 
   await test('renderPlaybook renders docs playbook successfully with typical vars', () => {
@@ -18065,6 +18295,88 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
+  await test('createReviewFeedbackForAuthor: dispatch-scoped feedback excludes stale same-day reviewer notes', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-D-current-${today}.md`),
+        '---\ndispatchId: D-current\nsourceItem: W-current\n---\n\nReviewed github:yemi33/minions#2012.\nMINIONS_ONLY_FINDING');
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-D-stale-${today}.md`),
+        '---\ndispatchId: D-stale\nsourceItem: W-stale\n---\n\nReviewed github:committoquit/momentum#195.\nMOMENTUM_STALE_FINDING');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2012', url: 'https://github.com/yemi33/minions/pull/2012', agent: 'dallas', title: 'fix: minions review bookkeeping' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-current', meta: { item: { id: 'W-current' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write feedback from the current dispatch note');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('MINIONS_ONLY_FINDING'), 'current dispatch review content should be included');
+      assert.ok(!body.includes('MOMENTUM_STALE_FINDING'), 'stale same-day review content from another dispatch must be excluded');
+      assert.ok(!body.includes('github:committoquit/momentum#195'), 'feedback must not mix another repository PR into this PR artifact');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: accepts prompt-shaped PR review note with dispatch id in filename', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-review-old-${today}.md`),
+        `---\nid: NOTE-old\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nSTALE_UNSCOPED_FINDING`);
+      fs.writeFileSync(path.join(inboxDir, `ripley-D-current-${today}-0618.md`),
+        `---\nid: NOTE-current\nagent: ripley\ndate: ${today}\n---\n\nReviewed github:yemi33/minions#2014.\nPROMPT_SHAPED_FINDING`);
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2014', url: 'https://github.com/yemi33/minions/pull/2014', agent: 'dallas', title: 'fix: review metadata isolation' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-current', meta: { source: 'pr', project: { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'prompt-shaped review note should produce author feedback');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('PROMPT_SHAPED_FINDING'), 'current prompt-shaped review content should be included');
+      assert.ok(!body.includes('STALE_UNSCOPED_FINDING'), 'unmarked same-day review content must remain excluded');
+    } finally { restore(); }
+  });
+
+  await test('createReviewFeedbackForAuthor: same PR number in another project is not a matching feedback source', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+      const testMinionsDir = sharedIsolated.MINIONS_DIR;
+      const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+
+      const today = new Date().toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(inboxDir, `ripley-minions-review-${today}.md`),
+        '---\ndispatchId: D-minions-2012\nsourceItem: W-minions-2012\n---\n\nReviewed github:yemi33/minions#2012.\nMINIONS_SCOPE_FINDING');
+      fs.writeFileSync(path.join(inboxDir, `ripley-momentum-review-${today}.md`),
+        '---\ndispatchId: D-minions-2012\nsourceItem: W-minions-2012\n---\n\nReviewed github:committoquit/momentum#2012.\nMOMENTUM_SCOPE_FINDING');
+
+      lifecycle.createReviewFeedbackForAuthor('ripley',
+        { id: 'github:yemi33/minions#2012', url: 'https://github.com/yemi33/minions/pull/2012', agent: 'dallas', title: 'fix: minions review bookkeeping' },
+        { agents: { dallas: { name: 'Dallas' }, ripley: { name: 'Ripley' } } },
+        { dispatchItem: { id: 'D-minions-2012', meta: { item: { id: 'W-minions-2012' }, project: { repoHost: 'github', adoOrg: 'yemi33', repoName: 'minions' } } } });
+
+      const feedback = fs.readdirSync(inboxDir).find(f => f.startsWith('feedback-dallas-from-ripley-'));
+      assert.ok(feedback, 'should write feedback from the matching project-scope note');
+      const body = fs.readFileSync(path.join(inboxDir, feedback), 'utf8');
+      assert.ok(body.includes('MINIONS_SCOPE_FINDING'), 'matching project-scope content should be included');
+      assert.ok(!body.includes('MOMENTUM_SCOPE_FINDING'), 'same-number PR from another project must be excluded');
+    } finally { restore(); }
+  });
+
   await test('createReviewFeedbackForAuthor: filename includes PR slug and date for dedup', () => {
     const restore = createTestMinionsDir();
     try {
@@ -19636,6 +19948,21 @@ async function testWakeupEndpoint() {
       'Wakeup handler should write _wakeupAt timestamp');
   });
 
+  await test('dashboard health reports stopping engine state as degraded', () => {
+    const healthBody = dashSrc.slice(dashSrc.indexOf('async function handleHealth'), dashSrc.indexOf('async function handleAgentDetail'));
+    assert.ok(healthBody.includes("engine.state === 'stopping'"),
+      'handleHealth must not collapse a graceful shutdown in progress to stopped');
+    assert.ok(healthBody.includes("'degraded'"),
+      'handleHealth should report stopping/paused states as degraded');
+  });
+
+  await test('dashboard watchdog only restarts running engines with a PID', () => {
+    assert.ok(dashSrc.includes("control.state !== 'running' || !control.pid"),
+      'watchdog must ignore stopped/paused/stopping states and require a PID before restart');
+    assert.ok(dashSrc.includes('restartEngine()'),
+      'watchdog should still restart dead running engines');
+  });
+
   const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
 
   await test('fast poll interval checks for _wakeupAt', () => {
@@ -20041,6 +20368,13 @@ async function testAgentSteering() {
     assert.ok(dashSrc.includes('[human-steering]'), 'Should append human-steering marker to live log');
   });
 
+  await test('steer endpoint surfaces pending delivery state for non-resumable active runtimes', () => {
+    assert.ok(dashSrc.includes('_steeringDeliveryState'),
+      'Endpoint should compute delivery status instead of always reporting accepted');
+    assert.ok(dashSrc.includes('pending_checkpoint') && dashSrc.includes('pendingDelivery'),
+      'Endpoint response should surface pending checkpoint delivery for Copilot-style sessions');
+  });
+
   await test('checkSteering function exists in engine', () => {
     assert.ok(engineSrc.includes('function checkSteering'), 'Should have checkSteering function');
   });
@@ -20146,6 +20480,17 @@ async function testAgentSteering() {
   await test('steering resume carries all unACKed inbox messages forward', () => {
     assert.ok(engineSrc.includes('pendingForResume') && engineSrc.includes('mergePendingSteeringEntries'),
       'Resume prompt/tracking should include every unread steering message, not only the newest one');
+  });
+
+  await test('deferred Copilot steering resumes at terminal session checkpoint before completion finalizes', () => {
+    assert.ok(engineSrc.includes('_deferredSteeringFiles') && engineSrc.includes('_steeringDeferredCheckpoint'),
+      'Close handler should promote deferred steering once a terminal sessionId is captured');
+    assert.ok(engineSrc.includes('delivering ${pendingDeferred.length} deferred message(s)'),
+      'Deferred checkpoint delivery should be logged for observability');
+    assert.ok(engineSrc.includes('if (!steeringDeferredCheckpoint)'),
+      'Deferred checkpoint resume should keep original output available for completion parsing');
+    assert.ok(engineSrc.includes('[steering-pending]'),
+      'If no checkpoint sessionId exists, live output should explicitly show pending/not-delivered state');
   });
 
   await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
@@ -26844,19 +27189,58 @@ async function testPrUrlParsingAndScopeHelpers() {
       const alphaPath = isolatedShared.projectPrPath(config.projects[0]);
       const betaPath = isolatedShared.projectPrPath(config.projects[1]);
       assert.strictEqual(isolatedShared.resolveProjectForPrPath(alphaPath, config).name, 'Alpha');
+      const betaRelativePath = path.relative(isolatedShared.MINIONS_DIR, betaPath);
 
       const originalCwd = process.cwd();
       try {
         process.chdir(isolatedShared.MINIONS_DIR);
         assert.strictEqual(
-          isolatedShared.resolveProjectForPrPath(path.relative(isolatedShared.MINIONS_DIR, betaPath), config).name,
+          isolatedShared.resolveProjectForPrPath(betaRelativePath, config).name,
           'Beta'
         );
       } finally {
         process.chdir(originalCwd);
       }
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(betaRelativePath, config).name, 'Beta');
     } finally {
       restore();
+    }
+  });
+
+  await test('resolveProjectForPrPath matches realpath-equivalent project PR paths', () => {
+    const realDir = createTmpDir();
+    const aliasParent = createTmpDir();
+    const aliasDir = path.join(aliasParent, 'minions-alias');
+    try {
+      fs.symlinkSync(realDir, aliasDir, 'dir');
+    } catch (err) {
+      if (err && ['EACCES', 'EPERM', 'ENOTSUP'].includes(err.code)) {
+        skip('resolveProjectForPrPath realpath-equivalent paths', `symlink unavailable: ${err.code}`);
+        return;
+      }
+      throw err;
+    }
+    seedTestMinionsDir(realDir);
+    process.env.MINIONS_TEST_DIR = aliasDir;
+    for (const mod of ISOLATED_MODULES) {
+      try { delete require.cache[require.resolve(mod)]; } catch {}
+    }
+    const isolatedShared = require('../engine/shared');
+    const config = {
+      projects: [
+        { name: 'Alpha', localPath: 'C:\\repos\\alpha' },
+        { name: 'Beta', localPath: 'C:\\repos\\beta' },
+      ],
+    };
+    try {
+      const aliasPrPath = isolatedShared.projectPrPath(config.projects[0]);
+      const realPrPath = path.join(realDir, path.relative(aliasDir, aliasPrPath));
+      assert.strictEqual(isolatedShared.resolveProjectForPrPath(realPrPath, config).name, 'Alpha');
+    } finally {
+      delete process.env.MINIONS_TEST_DIR;
+      for (const mod of ISOLATED_MODULES) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
     }
   });
 
@@ -27357,8 +27741,8 @@ async function testReviewReDispatchLoop() {
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);
     assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
       'needsReReview should not be blocked by completed dispatch history');
-    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${prDisplayId}`"),
-      'needsReReview should use a dedicated re-review dispatch key based on the stable display ID');
+    assert.ok(reReviewBlock.includes("const key = getPrReviewCooldownKey('rereview', project, pr, prDisplayId)"),
+      'needsReReview should use a dedicated head-scoped re-review dispatch key');
     assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
       'needsReReview should still respect cooldown');
     assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
@@ -30477,6 +30861,33 @@ async function testDashboardAuditPass2() {
       'ccExecuteAction should use _ccFetch for simple mutations, found ' + directFetches + ' direct fetch calls');
   });
 
+  await test('CC stream retry classifies Safari Load failed as reconnectable', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('function _ccIsReconnectableStreamError'), 'stream error classifier must exist');
+    assert.ok(src.includes("message === 'load failed'"), 'Safari/WebKit Load failed must be reconnectable');
+    assert.ok(src.includes("message === 'failed to fetch'"), 'Chromium Failed to fetch must remain reconnectable');
+    assert.ok(src.includes("message.includes('networkerror')"), 'Firefox NetworkError must remain reconnectable');
+    assert.ok(src.includes('var isNetworkError = _ccIsReconnectableStreamError(e)'),
+      'catch path should use the shared classifier before dashboard health checks');
+    assert.ok(src.includes('var dashboardHealth = isNetworkError ? await _ccDashboardHealth()'),
+      'reconnectable stream errors should use the dashboard health/reconnect hint path');
+  });
+
+  await test('CC stream retry stores interrupted request context instead of using latest user message', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('function _ccStoreRetryRequest'), 'retry request context should be stored explicitly');
+    assert.ok(src.includes('tab._retryRequests[id] = request'), 'retry requests should be keyed by retry id per tab');
+    assert.ok(src.includes("div.setAttribute('data-cc-retry-id', meta.retryId)"),
+      'rendered retry error card should carry its retry id');
+    assert.ok(src.includes('function ccRetryLast(tabId, retryId)'), 'retry handler should accept explicit tab and retry ids');
+    assert.ok(src.includes('var retryRequest = _ccFindRetryRequest(tab, retryId)'),
+      'retry handler should resolve the stored failed request');
+    assert.ok(src.includes('_ccDoSend(text.trim(), false, tab.id)'),
+      'retry should resend to the original tab context');
+    assert.ok(src.includes('await _ccDoSend(next, false, retryTab.id)'),
+      'queued messages after retry should drain deterministically for that tab');
+  });
+
   await test('_renderPlanModal wraps JSON.parse in try/catch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     const fn = src.match(/function _renderPlanModal[\s\S]*?^}/m);
@@ -31669,6 +32080,7 @@ async function testVersionCheck() {
   await test('engine cli.js writes codeVersion and codeCommit to control.json on start', () => {
     assert.ok(cliSrc.includes('codeVersion'), 'cli.js must write codeVersion');
     assert.ok(cliSrc.includes('codeCommit'), 'cli.js must write codeCommit');
+    assert.ok(cliSrc.includes('ownerToken'), 'cli.js must write an ownerToken so shutdown cannot clobber a newer engine');
     assert.ok(cliSrc.includes("require('../package.json').version"), 'codeVersion should come from package.json');
     assert.ok(cliSrc.includes('git rev-parse --short HEAD'), 'codeCommit should come from git');
   });
@@ -32960,7 +33372,8 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fnBody.includes('ccDocCallStreaming({'), 'Streaming doc-chat route should use the streaming doc helper');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'chunk', text })"), 'Streaming doc-chat route should emit chunk events');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"), 'Streaming doc-chat route should emit tool events');
-    assert.ok(fnBody.includes("writeDocEvent({ type: 'done'"), 'Streaming doc-chat route should emit a final done event');
+    assert.ok(fnBody.includes("type: 'done'") && fnBody.includes('writeDocEvent(donePayload'),
+      'Streaming doc-chat route should emit a final done event');
   });
 
   await test('handleDocChatStream validates editable file paths before opening SSE stream', () => {
@@ -34072,6 +34485,101 @@ async function testAutoRecoveryAndAtomicity() {
   await test('_resolveBin returns null for null runtime input', () => {
     assert.strictEqual(llm._resolveBin(null), null);
     assert.strictEqual(llm._resolveBin(undefined), null);
+  });
+
+  await test('callLLM returns actionable missing-runtime result without spawning', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'missing-runtime-test-' + Date.now();
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: {},
+      installHint: 'install the test runtime from https://example.invalid/runtime',
+      resolveBinary: () => null,
+    });
+    try {
+      const pending = llm.callLLM('hello', '', { cli: name, direct: true });
+      assert.strictEqual(typeof pending.abort, 'function', 'missing-runtime promise should keep abort surface');
+      const result = await pending;
+      assert.strictEqual(result.code, 78);
+      assert.strictEqual(result.errorClass, shared.FAILURE_CLASS.CONFIG_ERROR);
+      assert.strictEqual(result.missingRuntime, true);
+      assert.strictEqual(result.runtime, name);
+      assert.ok(result.text.includes(`"${name}" runtime`), result.text);
+      assert.ok(result.text.includes('install the test runtime'), result.text);
+      assert.ok(result.text.includes('restart Minions'), result.text);
+    } finally {
+      runtimes._registry.delete(name);
+    }
+  });
+
+  await test('callLLMStreaming returns actionable missing-runtime result without spawning', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'missing-stream-runtime-test-' + Date.now();
+    let chunks = 0;
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: {},
+      installHint: 'install streaming runtime',
+      resolveBinary: () => null,
+    });
+    try {
+      const result = await llm.callLLMStreaming('hello', '', {
+        cli: name,
+        direct: true,
+        onChunk: () => { chunks++; },
+      });
+      assert.strictEqual(result.code, 78);
+      assert.strictEqual(result.missingRuntime, true);
+      assert.strictEqual(result.runtime, name);
+      assert.strictEqual(chunks, 0, 'no process should stream chunks when runtime is missing');
+      assert.ok(result.text.includes('install streaming runtime'), result.text);
+    } finally {
+      runtimes._registry.delete(name);
+    }
+  });
+
+  await test('callLLM handles unknown configured runtime as a config error', async () => {
+    const result = await llm.callLLM('hello', '', { cli: 'definitely-not-registered-' + Date.now(), direct: true });
+    assert.strictEqual(result.code, 78);
+    assert.strictEqual(result.errorClass, shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(result.missingRuntime, true);
+    assert.ok(result.text.includes('Unknown runtime'), result.text);
+  });
+
+  await test('dashboard LLM callers surface missing-runtime results explicitly', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamingFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamingFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    const scheduleFn = src.slice(src.indexOf('async function handleSchedulesParseNatural'), src.indexOf('// ── Watches API Handlers'));
+    const ccStreamHandler = src.slice(src.indexOf('async function handleCommandCenterStream'), src.indexOf('async function handleSchedulesList'));
+    assert.ok(ccCallFn.includes('if (result.missingRuntime) return result;'),
+      'non-streaming CC helper should return missing-runtime guidance without retrying');
+    assert.ok(ccStreamingFn.includes('if (result.missingRuntime) return result;'),
+      'streaming CC helper should return missing-runtime guidance without retrying');
+    assert.ok(ccStreamHandler.includes('if (result.missingRuntime)') &&
+      ccStreamHandler.includes("missingRuntime: true") &&
+      ccStreamHandler.indexOf('if (result.missingRuntime)') < ccStreamHandler.indexOf('parseCCActions(result.text)'),
+      'SSE Command Center route should finish with missing-runtime guidance instead of parsing it as model output');
+    assert.ok(docCallFn.includes('result.missingRuntime'),
+      'doc chat should preserve missing-runtime guidance instead of generic failure text');
+    assert.ok(docStreamingFn.includes('result.missingRuntime'),
+      'streaming doc chat should preserve missing-runtime guidance instead of generic failure text');
+    assert.ok(scheduleFn.includes('missingRuntime: true'),
+      'schedule natural-language parsing should return a clear missingRuntime error payload');
+  });
+
+  await test('background LLM callers skip missing-runtime text as generated content', () => {
+    const consolidationSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
+    const kbSweepSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'kb-sweep.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(consolidationSrc.includes('result.missingRuntime'),
+      'consolidation should fall back to regex when runtime is missing');
+    assert.ok(kbSweepSrc.includes('result.missingRuntime'),
+      'KB sweep should not parse or write missing-runtime guidance as model output');
+    assert.ok(pipelineSrc.includes('result.missingRuntime'),
+      'pipeline plan generation should fall back to raw context when runtime is missing');
   });
 
   await test('llm.js: zero `runtime.name === ` comparisons (capability gating only)', () => {
@@ -38347,8 +38855,86 @@ async function testPrReviewFixFlows() {
       'updatePrAfterReview should accept resultSummary parameter and optional completion report');
     assert.ok(lifecycleSrc.includes('const reviewNote = String(resultSummary ||'),
       'Should use the current dispatch resultSummary as the review note source');
+    assert.ok(lifecycleSrc.includes('dispatchId: dispatchItem?.id || structuredCompletion?.dispatchId || null'),
+      'Should persist the review dispatch/source metadata with the review note');
     assert.ok(!lifecycleSrc.includes('completedEntry?.task'),
-      'Should not fall back to stale completed review dispatch metadata');
+      'Review notes must not fall back to an unrelated completed review dispatch task');
+  });
+
+  await test('failed review dispatch does not stamp PR review metadata from stale completed dispatches', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const lifecycle = require('../engine/lifecycle');
+      const testDir = freshShared.MINIONS_DIR;
+      const project = {
+        name: 'minions',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+        prUrlBase: 'https://github.com/yemi33/minions/pull/',
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), {
+        projects: [project],
+        agents: { ripley: { name: 'Ripley' }, dallas: { name: 'Dallas' } },
+        engine: {},
+      });
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.safeWrite(prPath, [{
+        id: 'github:yemi33/minions#2012',
+        prNumber: 2012,
+        url: 'https://github.com/yemi33/minions/pull/2012',
+        title: 'Audit prompts and playbooks',
+        agent: 'dallas',
+        reviewStatus: 'waiting',
+        status: 'active',
+      }]);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), {
+        pending: [],
+        active: [],
+        completed: [{
+          id: 'ripley-review-stale',
+          agent: 'ripley',
+          type: 'review',
+          task: '[momentum] Review github:committoquit/momentum#190 stale task',
+        }],
+      });
+
+      const dispatchItem = {
+        id: 'ripley-review-current',
+        type: 'review',
+        task: '[minions] Review github:yemi33/minions#2012',
+        agent: 'ripley',
+        meta: {
+          project,
+          pr: {
+            id: 'github:yemi33/minions#2012',
+            prNumber: 2012,
+            url: 'https://github.com/yemi33/minions/pull/2012',
+            agent: 'dallas',
+          },
+          item: { id: 'W-review-2012', title: 'Review PR #2012', type: 'review' },
+        },
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'ripley', 1,
+        '{"type":"result","result":"Authentication failed before review."}',
+        { projects: [project], agents: { ripley: { name: 'Ripley' }, dallas: { name: 'Dallas' } }, engine: {} });
+
+      const [after] = freshShared.safeJson(prPath);
+      assert.strictEqual(after.reviewStatus, 'waiting', 'failed review must leave the tracked review status unchanged');
+      assert.ok(!after.lastReviewedAt, 'failed review must not stamp lastReviewedAt');
+      assert.ok(!after.minionsReview, 'failed review must not populate minionsReview from stale completed dispatches');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
   });
 
   // ── Review verdict parsing (GitHub self-approval workaround) ──
@@ -45247,6 +45833,74 @@ async function testCliCommandHandlers() {
     } finally { h.restore(); }
   });
 
+  // ── control.json ownership ────────────────────────────────────────────────
+
+  await test('control ownership guard: old shutdown cannot clobber newer running engine state', () => {
+    const newerControl = {
+      state: 'running',
+      pid: 222,
+      ownerToken: 'new-engine-token',
+      started_at: '2026-05-04T05:54:55.000Z',
+    };
+    const h = setupHarness({ control: newerControl });
+    try {
+      const result = h.cli._markControlStoppedForOwner(
+        { pid: 111, ownerToken: 'old-engine-token' },
+        '2026-05-04T05:55:07.101Z'
+      );
+      assert.strictEqual(result.changed, false, 'mismatched owner must skip the stopped write');
+      assert.deepStrictEqual(h.readControl(), newerControl, 'newer running control state must remain intact');
+    } finally { h.restore(); }
+  });
+
+  await test('control ownership guard: same-owner shutdown transitions stopping then stopped', () => {
+    const owner = { pid: 111, ownerToken: 'same-engine-token' };
+    const h = setupHarness({
+      control: {
+        state: 'running',
+        pid: owner.pid,
+        ownerToken: owner.ownerToken,
+        started_at: '2026-05-04T05:54:55.000Z',
+      },
+    });
+    try {
+      const stopping = h.cli._markControlStoppingForOwner(owner, '2026-05-04T05:55:00.000Z');
+      assert.strictEqual(stopping.changed, true, 'matching owner must be able to mark stopping');
+      let ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopping');
+      assert.strictEqual(ctrl.pid, owner.pid);
+      assert.strictEqual(ctrl.ownerToken, owner.ownerToken);
+      assert.strictEqual(ctrl.stopping_at, '2026-05-04T05:55:00.000Z');
+
+      const stopped = h.cli._markControlStoppedForOwner(owner, '2026-05-04T05:55:07.101Z');
+      assert.strictEqual(stopped.changed, true, 'matching owner must be able to mark stopped');
+      ctrl = h.readControl();
+      assert.strictEqual(ctrl.state, 'stopped');
+      assert.strictEqual(ctrl.stopped_at, '2026-05-04T05:55:07.101Z');
+    } finally { h.restore(); }
+  });
+
+  await test('control ownership guard: token and PID must both match', () => {
+    const h = setupHarness();
+    try {
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 111, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-a' }),
+        true,
+        'same PID and token should match'
+      );
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 111, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-b' }),
+        false,
+        'same PID with a different token must not match'
+      );
+      assert.strictEqual(
+        h.cli._controlBelongsToOwner({ state: 'running', pid: 222, ownerToken: 'token-a' }, { pid: 111, ownerToken: 'token-a' }),
+        false,
+        'same token with a different PID must not match'
+      );
+    } finally { h.restore(); }
+  });
+
   // ── commands.start ───────────────────────────────────────────────────────
 
   await test('commands.start: early-returns when engine is already running (alive PID)', () => {
@@ -48285,10 +48939,18 @@ async function testDashboardPureHelpers() {
 
   // ── doc-chat action/document parsing ─────────────────────────────────────
 
-  await test('_messageRequestsOrchestration only matches explicit orchestration asks', () => {
+  await test('_messageRequestsOrchestration matches explicit orchestration and engineering asks', () => {
     assert.strictEqual(_messageRequestsOrchestration('Summarize the selected paragraph'), false);
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
+    assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), true);
     assert.strictEqual(_messageRequestsOrchestration('Create a watch for PR 123 until build passes'), true);
   });
 
@@ -48302,12 +48964,93 @@ async function testDashboardPureHelpers() {
       'ignored doc-chat action blocks should be stripped from display text');
   });
 
+  await test('_parseDocChatResultText keeps plan edits with engineering terms on the edit path', () => {
+    const message = 'Update this plan to add tests for the API section';
+    const allowActions = _messageRequestsOrchestration(message);
+    assert.strictEqual(allowActions, false,
+      'explicit plan/document edits must not allow action parsing just because they mention tests or APIs');
+    const text = `Updated the plan.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Do not run","workType":"test"}]\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nUpdated plan body with API test coverage notes.`;
+    const parsed = _parseDocChatResultText(text, { allowActions });
+    assert.strictEqual(parsed.answer, 'Updated the plan.');
+    assert.strictEqual(parsed.content, 'Updated plan body with API test coverage notes.');
+    assert.deepStrictEqual(parsed.actions, []);
+  });
+
   await test('_parseDocChatResultText accepts actions only when explicitly allowed', () => {
     const text = 'I will dispatch that.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug","workType":"fix"}]';
     const parsed = _parseDocChatResultText(text, { allowActions: true });
     assert.strictEqual(parsed.answer, 'I will dispatch that.');
     assert.strictEqual(parsed.actions.length, 1);
     assert.strictEqual(parsed.actions[0].type, 'dispatch');
+  });
+
+  await test('_parseDocChatResultText preserves direct document edits instead of dispatching', () => {
+    const text = `Updated the paragraph.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Should not run","workType":"fix"}]\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nRewritten document body.`;
+    const parsed = _parseDocChatResultText(text, { allowActions: false });
+    assert.strictEqual(parsed.answer, 'Updated the paragraph.');
+    assert.strictEqual(parsed.content, 'Rewritten document body.');
+    assert.deepStrictEqual(parsed.actions, []);
+  });
+
+  await test('_parseDocChatResultText surfaces malformed doc-chat action JSON', () => {
+    const text = 'I will dispatch that.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug"';
+    const parsed = _parseDocChatResultText(text, { allowActions: true });
+    assert.strictEqual(parsed.answer, 'I will dispatch that.');
+    assert.deepStrictEqual(parsed.actions, []);
+    assert.ok(parsed.actionParseError,
+      'doc-chat callers must be able to warn when action JSON was emitted but dropped');
+  });
+
+  await test('doc-chat dispatch action creates a Command Center work item', async () => {
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    const dashboardPath = path.join(MINIONS_DIR, 'dashboard');
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+      fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
+      delete require.cache[require.resolve(dashboardPath)];
+      const freshDashboard = require(dashboardPath);
+      const allowActions = freshDashboard._messageRequestsOrchestration('Fix this bug described in the doc');
+      assert.strictEqual(allowActions, true, 'complex engineering doc-chat ask should allow action parsing');
+      const parsed = freshDashboard._parseDocChatResultText(
+        'I will open a work item for that bug.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix documented bug","workType":"fix","priority":"high","description":"Investigate and fix the bug described in the document."}]',
+        { allowActions }
+      );
+      const results = await freshDashboard.executeCCActions(parsed.actions);
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true, results[0].error || 'dispatch action should execute');
+      const items = JSON.parse(fs.readFileSync(path.join(testDir, 'work-items.json'), 'utf8'));
+      assert.strictEqual(items.length, 1);
+      assert.strictEqual(items[0].title, 'Fix documented bug');
+      assert.strictEqual(items[0].type, 'fix');
+      assert.strictEqual(items[0].createdBy, 'command-center');
+    } finally {
+      delete require.cache[require.resolve(dashboardPath)];
+      restore();
+    }
+  });
+
+  await test('doc-chat system prompt routes engineering work to Command Center action JSON', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
+    assert.ok(prompt.includes('Complex Engineering Requests'),
+      'doc-chat prompt should distinguish engineering delegation from document editing');
+    assert.ok(prompt.includes('"type": "dispatch"') || prompt.includes('"type":"dispatch"'),
+      'doc-chat prompt should show the Command Center dispatch action shape');
+    assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
+      'doc-chat prompt should map engineering task classes to workType values');
+  });
+
+  await test('doc-chat handlers execute parsed actions and surface parse errors', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docChatBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChatStream'));
+    const docStreamStart = src.indexOf('async function handleDocChatStream');
+    const docStreamBlock = src.slice(docStreamStart, src.indexOf('async function handleDocChat', docStreamStart + 1) > docStreamStart
+      ? src.indexOf('async function handleDocChat', docStreamStart + 1)
+      : src.indexOf('const ROUTES = ['));
+    assert.strictEqual((src.match(/await executeDocChatActions\(actions\)/g) || []).length, 2,
+      'both doc-chat handlers should execute parsed actions server-side');
+    assert.ok(docChatBlock.includes('actionParseError') && docStreamBlock.includes('actionParseError'),
+      'both doc-chat handlers should return action parse errors instead of dropping them silently');
   });
 
   await test('_parseDocChatResultText uses a line-bounded high-entropy document delimiter', () => {
