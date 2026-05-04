@@ -20761,6 +20761,18 @@ async function testAgentSteering() {
       'If no checkpoint sessionId exists, live output should explicitly show pending/not-delivered state');
   });
 
+  await test('deferred steering resume can reuse completion report path without TDZ shadowing', () => {
+    const engineOnlySrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const closeStart = engineOnlySrc.indexOf('async function onAgentClose');
+    const closeEnd = engineOnlySrc.indexOf("proc.on('close', onAgentClose)", closeStart);
+    assert.ok(closeStart >= 0 && closeEnd > closeStart, 'Should locate onAgentClose');
+    const closeBody = engineOnlySrc.slice(closeStart, closeEnd);
+    assert.ok(closeBody.includes('if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;'),
+      'Steering resume should pass the spawn-level completion report path to the resumed process');
+    assert.ok(!/\bconst\s+completionReportPath\b/.test(closeBody),
+      'onAgentClose must not redeclare completionReportPath; doing so puts steering resume in the temporal dead zone');
+  });
+
   await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
     // The steering resume spawn should use: [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs]
     // NOT: [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs]
