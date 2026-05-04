@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1710 (2026-05-04)
+
+### Other
+- Fix meeting lifecycle edge cases
+
 ## 0.1.1709 (2026-05-04)
 
 ### Fixes
