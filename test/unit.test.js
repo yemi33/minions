@@ -465,6 +465,32 @@ async function testBranchSanitization() {
   await test('sanitizeBranch handles empty string', () => {
     assert.strictEqual(shared.sanitizeBranch(''), '');
   });
+
+  await test('buildWorktreeDirName uses compact Windows names', () => {
+    const dir = shared.buildWorktreeDirName({
+      dispatchId: 'ralph-fix-morhx3ac0005422c',
+      projectName: 'SkypeSpaces-Android-With-A-Very-Long-Project-Name',
+      branchName: 'feat/W-morhwytr00036c70-fix-review-dispatch-for-an-extremely-long-windows-branch-name',
+      platform: 'win32',
+    });
+
+    assert.strictEqual(dir, 'W-morhx3ac0005422c');
+    assert.ok(dir.length <= 32, `Windows worktree dir should stay compact: ${dir}`);
+    assert.ok(!dir.includes('SkypeSpaces'), 'Windows worktree dir must not embed project name');
+    assert.ok(!dir.includes('fix-review-dispatch'), 'Windows worktree dir must not embed branch name');
+    assert.ok(!dir.includes('/') && !dir.includes('\\'), 'Windows worktree dir must be a single path segment');
+  });
+
+  await test('buildWorktreeDirName preserves legacy descriptive names off Windows', () => {
+    const dir = shared.buildWorktreeDirName({
+      dispatchId: 'ralph-fix-morhx3ac0005422c',
+      projectName: 'minions',
+      branchName: 'work/W-morhwytr00036c70',
+      platform: 'linux',
+    });
+
+    assert.strictEqual(dir, 'minions-work/W-morhwytr00036c70-morhx3ac0005422c');
+  });
 }
 
 async function testIsAllowedOrigin() {
@@ -9286,8 +9312,8 @@ async function testWorktreeManagement() {
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('worktreeDirMatchesBranch'),
-      'Post-merge cleanup should use the shared slug-boundary helper instead of fuzzy substring matching');
+    assert.ok(src.includes('worktreeMatchesBranch'),
+      'Post-merge cleanup should use the shared branch-aware helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
   });
@@ -29411,6 +29437,20 @@ async function testCheckpointResume() {
       'Should match simple branch names with suffix');
   });
 
+  await test('worktreeMatchesBranch falls back to actual git branch for compact dirs', () => {
+    const cleanup = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+    const { worktreeMatchesBranch } = cleanup;
+    assert.ok(typeof worktreeMatchesBranch === 'function',
+      'worktreeMatchesBranch should be exported');
+
+    assert.ok(worktreeMatchesBranch('w-morhx3ac0005422c', 'work/W-morhwytr00036c70', 'work/W-morhwytr00036c70'),
+      'Compact worktree dirs should match by actual branch metadata');
+    assert.ok(!worktreeMatchesBranch('w-morhx3ac0005422c', 'work/W-other', 'work/W-morhwytr00036c70'),
+      'Actual branch metadata should not match unrelated branches');
+    assert.ok(worktreeMatchesBranch('minions-work/w-morhwytr00036c70-morhx3ac0005422c', 'work/W-morhwytr00036c70', ''),
+      'Legacy dir-name matching should remain available as a fallback');
+  });
+
   // ── Behavioral: readdirSync isolation prevents cascade failures ──
 
   await test('cleanup temp scan continues when one directory is unreadable', () => {
@@ -29456,15 +29496,17 @@ async function testCheckpointResume() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('function worktreeDirMatchesBranch'),
       'Should define worktreeDirMatchesBranch helper');
+    assert.ok(src.includes('function worktreeMatchesBranch'),
+      'Should define branch-aware worktree matching helper');
     // The inline pattern should no longer appear — only the helper call
     const inlinePatternCount = (src.match(/dirLower === branchSlug \|\| dirLower\.includes\(branchSlug/g) || []).length;
     assert.strictEqual(inlinePatternCount, 1,
       'Inline branch matching should appear only once (in the helper definition), not duplicated in call sites');
-    // Helper should be called in the worktree cleanup section
-    assert.ok(src.includes('worktreeDirMatchesBranch(dirLower'),
-      'Should call worktreeDirMatchesBranch with dirLower');
-    assert.ok(src.includes('worktreeDirMatchesBranch(entryDirLower'),
-      'Should call worktreeDirMatchesBranch with entryDirLower');
+    // Cleanup call sites should use the branch-aware wrapper so compact Windows dirs still match.
+    assert.ok(src.includes('worktreeMatchesBranch(dirLower'),
+      'Should call worktreeMatchesBranch with dirLower');
+    assert.ok(src.includes('worktreeMatchesBranch(entryDirLower'),
+      'Should call worktreeMatchesBranch with entryDirLower');
   });
 
   await test('cleanup.js wraps swept KB and PRD migration readdirSync individually', () => {

@@ -39,6 +39,23 @@ function worktreeDirMatchesBranch(dirLower, branch) {
   return dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug);
 }
 
+function worktreeBranchMatches(actualBranch, branch) {
+  if (!actualBranch || !branch) return false;
+  return sanitizeBranch(actualBranch).toLowerCase() === sanitizeBranch(branch).toLowerCase();
+}
+
+function worktreeMatchesBranch(dirLower, branch, actualBranch = '') {
+  return worktreeBranchMatches(actualBranch, branch) || worktreeDirMatchesBranch(dirLower, branch);
+}
+
+function getWorktreeBranch(wtPath) {
+  try {
+    return exec(`git -C "${wtPath}" branch --show-current`, { encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true }).trim();
+  } catch {
+    return '';
+  }
+}
+
 let _orphanPidProcessNamesCache = null;
 function _orphanPidProcessNames() {
   if (_orphanPidProcessNamesCache) return _orphanPidProcessNamesCache;
@@ -235,12 +252,13 @@ function runCleanup(config, verbose = false) {
 
         let shouldClean = false;
         let isProtected = false;
+        const actualBranch = getWorktreeBranch(wtPath);
 
         // Check if this worktree's branch is merged/abandoned
-        // Use sanitized exact match on the branch portion of the dir name (format: {slug}-{branch}-{suffix})
+        // Prefer actual git branch metadata; compact Windows dirs intentionally omit branch names.
         const dirLower = dir.toLowerCase();
         for (const branch of mergedBranches) {
-          if (worktreeDirMatchesBranch(dirLower, branch)) {
+          if (worktreeMatchesBranch(dirLower, branch, actualBranch)) {
             shouldClean = true;
             break;
           }
@@ -249,8 +267,7 @@ function runCleanup(config, verbose = false) {
         // Check if referenced by active/pending dispatch (use sanitized branch comparison)
         const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d => {
           if (!d.meta?.branch) return false;
-          const dispBranch = sanitizeBranch(d.meta.branch).toLowerCase();
-          return dirLower.includes(dispBranch);
+          return worktreeMatchesBranch(dirLower, d.meta.branch, actualBranch);
         });
         if (isReferenced) isProtected = true;
 
@@ -275,8 +292,7 @@ function runCleanup(config, verbose = false) {
               for (const pf of fs.readdirSync(checkDir).filter(f => f.endsWith('.json'))) {
                 const plan = safeJson(path.join(checkDir, pf));
                 if (plan?.branch_strategy === 'shared-branch' && plan?.feature_branch && plan?.status !== 'completed') {
-                  const planBranch = sanitizeBranch(plan.feature_branch).toLowerCase();
-                  if (dirLower.includes(planBranch)) {
+                  if (worktreeMatchesBranch(dirLower, plan.feature_branch, actualBranch)) {
                     isProtected = true;
                     if (shouldClean) {
                       shouldClean = false;
@@ -291,7 +307,7 @@ function runCleanup(config, verbose = false) {
           } catch (e) { log('warn', 'check shared-branch protection: ' + e.message); }
         }
 
-        wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected });
+        wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected, actualBranch });
       }
 
       // Enforce max worktree cap — if over limit, mark oldest unprotected for cleanup
@@ -323,7 +339,7 @@ function runCleanup(config, verbose = false) {
           const entryDirLower = entry.dir.toLowerCase();
           let stillMerged = false;
           for (const branch of freshMergedBranches) {
-            if (worktreeDirMatchesBranch(entryDirLower, branch)) {
+            if (worktreeMatchesBranch(entryDirLower, branch, entry.actualBranch)) {
               stillMerged = true;
               break;
             }
@@ -331,7 +347,7 @@ function runCleanup(config, verbose = false) {
           // If originally marked due to merged branch but PR was reopened, skip deletion
           if (!stillMerged) {
             // Check if it was marked for age/cap cleanup (not branch-based) — those are still valid
-            const wasMarkedByBranch = [...mergedBranches].some(branch => worktreeDirMatchesBranch(entryDirLower, branch));
+            const wasMarkedByBranch = [...mergedBranches].some(branch => worktreeMatchesBranch(entryDirLower, branch, entry.actualBranch));
             if (wasMarkedByBranch) {
               if (verbose) console.log(`  Skipping worktree ${entry.dir}: PR was reopened since initial check`);
               log('info', `Worktree deletion skipped — PR reopened: ${entry.dir}`);
@@ -832,4 +848,6 @@ module.exports = {
   runCleanup,
   scrubStaleMetrics,
   worktreeDirMatchesBranch,  // exported for testing
+  worktreeMatchesBranch,     // exported for testing
+  getWorktreeBranch,         // exported for lifecycle cleanup
 };

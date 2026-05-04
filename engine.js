@@ -513,9 +513,11 @@ async function spawnAgent(dispatchItem, config) {
 
   if (branchName) {
     updateAgentStatus(id, AGENT_STATUS.WORKTREE_SETUP, `Setting up worktree for branch ${branchName}`);
-    const wtSuffix = id ? id.split('-').pop() : shared.uid();
-    const projectSlug = (project.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '-');
-    const wtDirName = `${projectSlug}-${branchName}-${wtSuffix}`;
+    const wtDirName = shared.buildWorktreeDirName({
+      dispatchId: id,
+      projectName: project.name || 'default',
+      branchName,
+    });
     worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', wtDirName);
 
     // If branch is already checked out in an existing worktree, reuse it

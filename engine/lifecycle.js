@@ -14,7 +14,7 @@ const { trackEngineUsage } = require('./llm');
 const { resolveRuntime } = require('./runtimes');
 const queries = require('./queries');
 const { isBranchActive } = require('./cooldown');
-const { worktreeDirMatchesBranch } = require('./cleanup');
+const { worktreeMatchesBranch, getWorktreeBranch } = require('./cleanup');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
@@ -446,10 +446,12 @@ function cleanupPlanWorktrees(planFile, plan, projects, config) {
       if (!fs.existsSync(wtRoot)) continue;
       const dirs = fs.readdirSync(wtRoot);
       for (const dir of dirs) {
+        const wtPath = path.join(wtRoot, dir);
         const dirLower = dir.toLowerCase();
-        const matches = [...branchSlugs].some(slug => dirLower.includes(slug));
+        const actualBranch = getWorktreeBranch(wtPath);
+        const actualBranchSlug = actualBranch ? shared.sanitizeBranch(actualBranch).toLowerCase() : '';
+        const matches = [...branchSlugs].some(slug => dirLower.includes(slug) || actualBranchSlug === slug);
         if (matches) {
-          const wtPath = path.join(wtRoot, dir);
           if (shared.removeWorktree(wtPath, root, wtRoot)) cleanedWt++;
         }
       }
@@ -1587,13 +1589,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (pr.branch && project) {
     const root = path.resolve(project.localPath);
     const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
-    // Find worktrees matching this branch — dir format is {slug}-{branch}-{suffix}
+    // Find worktrees matching this branch; compact Windows dirs require branch metadata.
     try {
       const dirs = require('fs').readdirSync(wtRoot);
       for (const dir of dirs) {
+        const wtPath = path.join(wtRoot, dir);
         const dirLower = dir.toLowerCase();
-        if (worktreeDirMatchesBranch(dirLower, pr.branch) || dir === pr.branch || dir === `bt-${prNum}`) {
-          const wtPath = path.join(wtRoot, dir);
+        if (worktreeMatchesBranch(dirLower, pr.branch, getWorktreeBranch(wtPath)) || dir === pr.branch || dir === `bt-${prNum}`) {
           try {
             if (!require('fs').statSync(wtPath).isDirectory()) continue;
             execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
@@ -2724,7 +2726,9 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         // Find the worktree directory for this dispatch's branch
         const branchSlug = shared.sanitizeBranch ? shared.sanitizeBranch(meta.branch) : meta.branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
         const dirs = fs.readdirSync(worktreeRoot).filter(d => {
-          return worktreeDirMatchesBranch(d.toLowerCase(), meta.branch) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
+          const wtPath = path.join(worktreeRoot, d);
+          return fs.statSync(wtPath).isDirectory()
+            && worktreeMatchesBranch(d.toLowerCase(), meta.branch, getWorktreeBranch(wtPath));
         });
         // Only remove if no other active dispatch uses this branch
         const dispatch = getDispatch();

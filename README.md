@@ -541,7 +541,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `inboxConsolidateThreshold` | 5 | Inbox files needed before consolidation |
 | `worktreeCreateTimeout` | 300000 (5min) | Timeout for each `git worktree add` attempt |
 | `worktreeCreateRetries` | 1 | Retry count for transient `git worktree add` failures (0-3) |
-| `worktreeRoot` | `../worktrees` | Where git worktrees are created |
+| `worktreeRoot` | `../worktrees` | Where git worktrees are created; may be absolute, and Windows users should prefer a short root such as `C:\wt` |
 | `idleAlertMinutes` | 15 | Alert after no dispatch for this many minutes |
 | `restartGracePeriod` | 1200000 (20min) | Grace period for agent re-attachment after engine restart |
 | `shutdownTimeout` | 300000 (5min) | Max wait for active agents during graceful shutdown (SIGTERM/SIGINT) |
