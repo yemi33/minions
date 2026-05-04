@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1713 (2026-05-04)
+
+### Features
+- fix ado project metadata discovery (#2048)
+
 ## 0.1.1712 (2026-05-04)
 
 ### Fixes
