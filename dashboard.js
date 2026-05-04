@@ -126,6 +126,124 @@ function copyWorkItemPrFields(item, input, pr = null) {
   if (pr?.title || input.prTitle) item.prTitle = pr?.title || input.prTitle;
   if (pr?.url || input.prUrl) item.prUrl = pr?.url || input.prUrl;
 }
+
+function normalizeWorkItemDedupText(value) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
+function resolveWorkItemDedupProject(item, wiPath = '') {
+  const projectName = normalizeWorkItemDedupText(item?.project || item?._project || item?._source);
+  if (projectName) {
+    const namedProject = PROJECTS.find(p => p?.name === projectName);
+    if (namedProject) return namedProject;
+  }
+  if (!wiPath) return null;
+  const resolvedWiPath = path.resolve(wiPath);
+  return PROJECTS.find(p => path.resolve(shared.projectWorkItemsPath(p)) === resolvedWiPath) || null;
+}
+
+function getWorkItemPrRefCandidates(item) {
+  return [
+    item?.targetPr,
+    item?.pr,
+    item?.prId,
+    item?.pullRequest,
+    item?.sourcePr,
+    item?.prUrl,
+    item?.pr_id,
+    item?.prNumber,
+  ].filter(value => value != null && value !== '');
+}
+
+function normalizeWorkItemDedupPrIdentity(item, project = null) {
+  if (!item || typeof item !== 'object') return '';
+  const candidates = getWorkItemPrRefCandidates(item);
+  for (const candidate of candidates) {
+    const scoped = shared.getPrScopeInfo(candidate);
+    if (scoped) return `${scoped.scope}#${scoped.prNumber}`;
+  }
+  const prNumber = candidates.reduce((found, candidate) => (
+    found ?? shared.getPrNumber(candidate)
+  ), null);
+  if (project && prNumber != null) {
+    const canonical = shared.getCanonicalPrId(project, prNumber);
+    if (canonical) return canonical;
+  }
+  if (prNumber != null) return `PR-${prNumber}`;
+  const prRef = getWorkItemPrRef(item) || item.pr_id || item.targetPr || item.prUrl || '';
+  return normalizeWorkItemDedupText(prRef).toLowerCase();
+}
+
+function workItemCreateFingerprint(item, options = {}) {
+  const project = resolveWorkItemDedupProject(item, options.wiPath);
+  return {
+    title: normalizeWorkItemDedupText(item?.title),
+    type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
+    priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
+    description: normalizeWorkItemDedupText(item?.description),
+    prIdentity: normalizeWorkItemDedupPrIdentity(item, project),
+  };
+}
+
+function isActiveWorkItemCreateStatus(status) {
+  return status === WI_STATUS.PENDING || status === WI_STATUS.DISPATCHED || status === WI_STATUS.QUEUED;
+}
+
+function isWithinWorkItemCreateDedupWindow(item, nowMs, windowMs) {
+  const createdMs = Date.parse(item?.created || item?.createdAt || item?.created_at || '');
+  if (!Number.isFinite(createdMs)) return true;
+  return nowMs - createdMs <= windowMs;
+}
+
+function findDuplicateWorkItemCreate(items, candidate, options = {}) {
+  if (!Array.isArray(items)) return null;
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const windowMs = Number.isFinite(options.windowMs) ? options.windowMs : shared.ENGINE_DEFAULTS.workItemCreateDedupWindowMs;
+  const candidateFingerprint = workItemCreateFingerprint(candidate, options);
+  return items.find(item => {
+    if (!isActiveWorkItemCreateStatus(item?.status)) return false;
+    if (!isWithinWorkItemCreateDedupWindow(item, nowMs, windowMs)) return false;
+    const existingFingerprint = workItemCreateFingerprint(item, options);
+    return existingFingerprint.title === candidateFingerprint.title &&
+      existingFingerprint.type === candidateFingerprint.type &&
+      existingFingerprint.priority === candidateFingerprint.priority &&
+      existingFingerprint.description === candidateFingerprint.description &&
+      existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
+  }) || null;
+}
+
+function createWorkItemWithDedup(wiPath, item, options = {}) {
+  let result = null;
+  mutateWorkItems(wiPath, items => {
+    const existing = findDuplicateWorkItemCreate(items, item, { ...options, wiPath });
+    if (existing) {
+      result = { created: false, item: existing, duplicateOf: existing.id };
+      return items;
+    }
+    items.push(item);
+    result = { created: true, item };
+    return items;
+  });
+  return result || { created: false, item: null };
+}
+
+function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
+  const project = String(projectName || '').trim();
+  let targetProject = null;
+  if (project) {
+    targetProject = projects.find(p => p.name === project) || (projects.length > 0 ? projects[0] : null);
+    if (!targetProject) return { error: 'No projects configured' };
+  } else if (projects.length === 1) {
+    targetProject = projects[0];
+  }
+  return {
+    project: targetProject,
+    wiPath: targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json'),
+  };
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -1531,20 +1649,21 @@ async function executeCCActions(actions) {
           // Mark oneShot so any discovered PR is tagged _contextOnly (skips eval loop).
           const ccOneShotTypes = new Set(['review', 'explore', 'test']);
           const isOneShot = action.oneShot === true || (action.oneShot !== false && ccOneShotTypes.has(workType));
-          shared.mutateJsonFileLocked(wiPath, items => {
-            if (!Array.isArray(items)) items = [];
-            const item = {
-              id, title: action.title, type: workType,
-              priority: action.priority || 'medium', description: action.description || '',
-              status: WI_STATUS.PENDING, created: new Date().toISOString(),
-              createdBy: 'command-center', project: targetProject?.name || project,
-              ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
-              ...(isOneShot ? { oneShot: true } : {}),
-            };
-            copyWorkItemPrFields(item, action, linkedPr);
-            items.push(item);
-            return items;
-          }, { defaultValue: [] });
+          const item = {
+            id, title: action.title.trim(), type: workType,
+            priority: action.priority || 'medium', description: action.description || '',
+            status: WI_STATUS.PENDING, created: new Date().toISOString(),
+            createdBy: 'command-center', project: targetProject?.name || project,
+            ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
+            ...(isOneShot ? { oneShot: true } : {}),
+          };
+          copyWorkItemPrFields(item, action, linkedPr);
+          const createResult = createWorkItemWithDedup(wiPath, item);
+          if (!createResult.created) {
+            const duplicateId = createResult.duplicateOf || createResult.item?.id;
+            results.push({ type: action.type, id: duplicateId, ok: true, duplicate: true, duplicateOf: duplicateId });
+            break;
+          }
           results.push({ type: action.type, id, ok: true });
 
           // Pre-flight routing check: warn the user if no agent is currently available so the new
@@ -2840,22 +2959,17 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
-      let wiPath;
-      if (body.project) {
-        // Write to project-specific queue
-        const targetProject = PROJECTS.find(p => p.name === body.project) || (PROJECTS.length > 0 ? PROJECTS[0] : null);
-        if (!targetProject) return jsonReply(res, 400, { error: 'No projects configured' });
-        wiPath = shared.projectWorkItemsPath(targetProject);
-      } else {
-        // Write to central queue — agent decides which project
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      }
+      const target = resolveWorkItemsCreateTarget(body.project);
+      if (target.error) return jsonReply(res, 400, { error: target.error });
+      const wiPath = target.wiPath;
+      const targetProject = target.project;
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title.trim(), type: routing.normalizeWorkType(body.type, WORK_TYPE.IMPLEMENT),
         priority: body.priority || 'medium', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
+      if (targetProject) item.project = targetProject.name;
       if (body.scope) item.scope = body.scope;
       // Agent assignment normalization: `agent` and `agents` are routing hints.
       // Use agentLock/hardAgent only for the rare case where an item must wait
@@ -2870,18 +2984,11 @@ const server = http.createServer(async (req, res) => {
       if (body.skipPr) item.skipPr = true;
       if (body.oneShot) item.oneShot = true;
       copyWorkItemPrFields(item, body);
-      let dupId = null;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        const existing = items.find(i =>
-          i.title === item.title &&
-          (i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED || i.status === WI_STATUS.QUEUED)
-        );
-        if (existing) { dupId = existing.id; return items; }
-        items.push(item);
-        return items;
-      });
-      if (dupId) return jsonReply(res, 200, { ok: true, id: dupId, duplicate: true });
+      const createResult = createWorkItemWithDedup(wiPath, item);
+      if (!createResult.created) {
+        const duplicateId = createResult.duplicateOf || createResult.item?.id;
+        return jsonReply(res, 200, { ok: true, id: duplicateId, duplicate: true, duplicateOf: duplicateId });
+      }
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -6757,6 +6864,9 @@ module.exports = {
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
   _ccValidateAction,
+  _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
+  _createWorkItemWithDedup: createWorkItemWithDedup,
+  _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
   executeCCActions,
 };
 
