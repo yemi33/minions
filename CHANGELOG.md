@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1694 (2026-05-04)
+
+### Features
+- remove stale permission mode settings (#2009)
+- sync review verdict PR status (#2008)
+
 ## 0.1.1691 (2026-05-04)
 
 ### Features
