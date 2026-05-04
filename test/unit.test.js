@@ -3348,7 +3348,7 @@ async function testEngineDefaults() {
 
   await test('ENGINE_DEFAULTS has all required keys', () => {
     const required = ['tickInterval', 'maxConcurrent', 'inboxConsolidateThreshold',
-      'agentTimeout', 'heartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
+      'agentTimeout', 'heartbeatTimeout', 'resumeHeartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
       'idleAlertMinutes', 'restartGracePeriod', 'worktreeCreateTimeout', 'worktreeCreateRetries'];
     for (const key of required) {
       assert.ok(shared.ENGINE_DEFAULTS[key] !== undefined, `Missing default: ${key}`);
@@ -9616,7 +9616,7 @@ async function testStateIntegrity() {
 
   await test('Stale-orphan timeout path uses normal auto-retry flow', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes("completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);"),
+    assert.ok(src.includes('completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason'),
       'Stale-orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
       'Stale-orphan cleanup should not bypass work item retry handling');
@@ -16256,11 +16256,13 @@ async function testCheckTimeouts() {
       'isSuccess must NOT be derived from a "subtype":"success" substring match in the live log — that produces false positives on resumed --resume turns (#1792)');
   });
 
-  await test('checkTimeouts allows silent tracked live processes', () => {
+  await test('checkTimeouts allows silent tracked live processes after resume emits output', () => {
     assert.ok(src.includes('if (processAlive)'),
       'Should explicitly branch on tracked process liveness');
-    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
-      'Should document that stdout/stderr silence is not a failure while process is alive');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes once a runtime has emitted output'),
+      'Should document that stdout/stderr silence is not a failure after runtime output begins');
+    assert.ok(src.includes('_runtimeResumeAwaitingFirstOutput'),
+      'Should still watchdog runtime resume attempts until they emit first output');
     assert.ok(src.includes('continue;'),
       'Live tracked processes should continue instead of entering orphan cleanup');
   });
@@ -16283,11 +16285,13 @@ async function testCheckTimeouts() {
     assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
-  await test('Stale-orphan detection uses live-output mtime only after process tracking is lost', () => {
-    assert.ok(src.includes('live-output.log mtime is only used for stale-orphan cleanup'),
-      'Should document that file mtime is for orphan cleanup, not live-process silence');
+  await test('Stale-orphan detection keeps general silence separate from resume first-output watchdog', () => {
+    assert.ok(src.includes('resume first-output watchdog'),
+      'Should document that file mtime is only used for orphan cleanup and resume handshakes');
     assert.ok(src.includes('!processAlive && silentMs > staleOrphanTimeout'),
-      'Should require no live tracked process before stale-orphan cleanup');
+      'General stale-orphan cleanup should still require no live tracked process');
+    assert.ok(src.includes('runtimeResumeHeartbeatTimeout'),
+      'Runtime resume stalls should use a configurable heartbeat timeout');
   });
 
   // ── Process-based liveness / stale-orphan policy ──
@@ -20945,6 +20949,116 @@ async function testTimeoutBehavioral() {
       assert.strictEqual(dp.active.length, 1, 'Silent live item should remain active');
       const completed = dp.completed.find(d => d.id === itemId);
       assert.ok(!completed, 'Silent live item should not be marked completed/error');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: stalled runtime resume with no first output is killed and completed as retryable timeout', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-stalled';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{
+          id: itemId,
+          agent: agentId,
+          started_at: startedAt,
+          workType: 'fix',
+          meta: {},
+        }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+
+      const agentDir = path.join(env.testDir, 'agents', agentId);
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'session.json'), JSON.stringify({ sessionId: 'stale-resume' }));
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      fs.writeFileSync(liveLogPath, '[steering] Resuming session with your message...\n');
+      const oldTime = new Date(Date.now() - 600000);
+      fs.utimesSync(liveLogPath, oldTime, oldTime);
+
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 600000,
+        _runtimeResumeAwaitingFirstOutput: true,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 1,
+        'Stalled resume should kill the live runtime process');
+      assert.ok(!env.fakeEngine.activeProcesses.has(itemId),
+        'Stalled resume should be removed from active process tracking');
+      assert.ok(!fs.existsSync(path.join(agentDir, 'session.json')),
+        'Stalled resume should clear session.json so retry starts fresh');
+
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 0, 'Stalled resume should leave active queue');
+      const completed = dp.completed.find(d => d.id === itemId);
+      assert.ok(completed, 'Stalled resume should be completed as an error');
+      assert.strictEqual(completed.result, 'error');
+      assert.strictEqual(completed.failureClass, 'timeout');
+      assert.ok(/Runtime resume stalled/.test(completed.reason || ''),
+        'Reason should surface the resume heartbeat failure');
+      assert.ok(fs.readFileSync(liveLogPath, 'utf8').includes('[runtime-resume-timeout]'),
+        'Live output should show the timeout reason for dashboard/API users');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: runtime resume within first-output heartbeat remains active', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-recent';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 60000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: agentId, started_at: startedAt, workType: 'fix' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 60000,
+        _runtimeResumeAwaitingFirstOutput: true,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'Recent resume should not be killed before the first-output timeout');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Recent resume should remain active');
+    } finally { env.restore(); }
+  });
+
+  await test('checkTimeouts: resumed live process that already emitted output can stay quiet', () => {
+    const env = setupIsolated();
+    try {
+      const itemId = 'resume-output-then-quiet';
+      const agentId = 'bot';
+      const startedAt = new Date(Date.now() - 600000).toISOString();
+      writeDispatch(env.testDir, {
+        active: [{ id: itemId, agent: agentId, started_at: startedAt, workType: 'fix' }],
+      });
+      env.freshQueries.invalidateDispatchCache();
+      env.fakeEngine.activeProcesses.set(itemId, {
+        agentId,
+        proc: {},
+        startedAt,
+        _runtimeResumeAt: Date.now() - 600000,
+        _runtimeResumeAwaitingFirstOutput: false,
+        lastRealOutputAt: Date.now() - 600000,
+      });
+
+      env.timeout.checkTimeouts({ engine: { heartbeatTimeout: 300000, resumeHeartbeatTimeout: 300000 } });
+
+      assert.strictEqual(env.counters.killGracefully, 0,
+        'A resumed process that already emitted output should be allowed to run quiet commands');
+      const dp = readDispatch(env.testDir);
+      assert.strictEqual(dp.active.length, 1, 'Post-output resumed process should remain active');
     } finally { env.restore(); }
   });
 
@@ -37266,8 +37380,8 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes('isTrackedProcessAlive'),
       'timeout.js should check process liveness for tracked processes');
-    assert.ok(src.includes('Silence is not a failure for tracked live processes'),
-      'timeout.js should document that live process silence is allowed');
+    assert.ok(src.includes('Silence is not a failure for tracked live processes once a runtime has emitted output'),
+      'timeout.js should document that live process silence is allowed after runtime output begins');
   });
 
   // 4. Output completion detection scans for process-exit sentinel

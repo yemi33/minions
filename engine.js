@@ -1052,6 +1052,10 @@ async function spawnAgent(dispatchItem, config) {
     startedAt,
     runtimeName,
     sessionId: cachedSessionId,
+    ...(cachedSessionId ? {
+      _runtimeResumeAt: Date.now(),
+      _runtimeResumeAwaitingFirstOutput: true,
+    } : {}),
     _pendingSteeringFiles: pendingSteering.entries,
   };
   activeProcesses.set(id, initialProcInfo);
@@ -1062,6 +1066,12 @@ async function spawnAgent(dispatchItem, config) {
   const sessionCaptureState = { sessionLineBuffer: '' };
   let _trustCheckDone = false;
   const _spawnTime = Date.now();
+
+  function markRuntimeResumeOutputSeen(procInfo) {
+    if (!procInfo?._runtimeResumeAwaitingFirstOutput) return;
+    procInfo._runtimeResumeAwaitingFirstOutput = false;
+    procInfo.lastRealOutputAt = Date.now();
+  }
 
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
@@ -1086,6 +1096,7 @@ async function spawnAgent(dispatchItem, config) {
     // Capture sessionId early for mid-session steering. Claude emits session_id;
     // Copilot emits sessionId, so use the runtime-neutral steering helper.
     const procInfo = activeProcesses.get(id);
+    markRuntimeResumeOutputSeen(procInfo);
     captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, procInfo, chunk, sessionCaptureState);
 
     ackPendingSteeringFiles(agentId, procInfo, chunk);
@@ -1096,6 +1107,7 @@ async function spawnAgent(dispatchItem, config) {
     realActivityMap.set(id, Date.now());
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
+    markRuntimeResumeOutputSeen(activeProcesses.get(id));
   });
 
   async function onAgentClose(code) {
@@ -1220,7 +1232,8 @@ async function spawnAgent(dispatchItem, config) {
         startedAt: procInfo.startedAt,
         runtimeName,
         sessionId: steerSessionId,
-        lastRealOutputAt: Date.now(),
+        _runtimeResumeAt: Date.now(),
+        _runtimeResumeAwaitingFirstOutput: true,
         _pendingSteeringFiles: mergePendingSteeringEntries(
           procInfo._pendingSteeringFiles,
           pendingForResume.entries,
@@ -1239,6 +1252,7 @@ async function spawnAgent(dispatchItem, config) {
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
         const resumeInfo = activeProcesses.get(id);
+        markRuntimeResumeOutputSeen(resumeInfo);
         captureSessionIdFromStdoutChunk(agentId, id, branchName, runtime, resumeInfo, chunk, sessionCaptureState);
         ackPendingSteeringFiles(agentId, resumeInfo, chunk);
       });
@@ -1247,6 +1261,7 @@ async function spawnAgent(dispatchItem, config) {
         realActivityMap.set(id, Date.now());
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
         try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
+        markRuntimeResumeOutputSeen(activeProcesses.get(id));
       });
 
       // Re-wire close handler for the resumed process
