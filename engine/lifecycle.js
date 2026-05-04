@@ -1273,13 +1273,31 @@ function reviewPrRefFromCompletion(completion) {
   return value;
 }
 
+function reviewPrRefMatchesDispatchTarget(reportedPr, dispatchPr, project) {
+  if (!reportedPr || !dispatchPr) return true;
+  const reportedUrl = typeof reportedPr === 'object' ? reportedPr.url || '' : String(reportedPr || '');
+  const dispatchUrl = typeof dispatchPr === 'object' ? dispatchPr.url || '' : String(dispatchPr || '');
+  const reportedId = shared.getCanonicalPrId(project, reportedPr, reportedUrl);
+  const dispatchId = shared.getCanonicalPrId(project, dispatchPr, dispatchUrl);
+  if (!reportedId || !dispatchId || reportedId === dispatchId) return true;
+
+  const reportedNumber = shared.getPrNumber(reportedPr);
+  const dispatchNumber = shared.getPrNumber(dispatchPr);
+  if (reportedNumber == null || dispatchNumber == null || reportedNumber !== dispatchNumber) return false;
+
+  const reportedScoped = !/^PR-\d+$/i.test(reportedId);
+  const dispatchScoped = !/^PR-\d+$/i.test(dispatchId);
+  return !(reportedScoped && dispatchScoped);
+}
+
 function centralPrPath() {
   return path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
 }
 
 function resolveReviewPrContext(pr, project, config, structuredCompletion = null) {
   const reportedPr = reviewPrRefFromCompletion(structuredCompletion);
-  const refs = reportedPr ? [reportedPr, pr].filter(Boolean) : [pr].filter(Boolean);
+  if (reportedPr && pr && !reviewPrRefMatchesDispatchTarget(reportedPr, pr, project)) return null;
+  const refs = reportedPr ? [reportedPr] : [pr].filter(Boolean);
   if (refs.length === 0) return null;
 
   const projects = shared.getProjects(config);

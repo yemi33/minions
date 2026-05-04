@@ -36549,6 +36549,93 @@ async function testStructuredCompletion() {
     }
   });
 
+  await test('updatePrAfterReview skips metadata when completion PR mismatches dispatch target', async () => {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const originalGithubCache = require.cache[githubPath];
+    try {
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: { checkLiveReviewStatus: async () => 'pending' },
+      };
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const minionsProject = {
+        name: 'minions',
+        localPath: path.join(testDir, 'minions'),
+        repoHost: 'github',
+        adoOrg: 'yemi33',
+        repoName: 'minions',
+      };
+      const momentumProject = {
+        name: 'momentum',
+        localPath: path.join(testDir, 'momentum'),
+        repoHost: 'github',
+        adoOrg: 'committoquit',
+        repoName: 'momentum',
+      };
+      const config = {
+        projects: [minionsProject, momentumProject],
+        agents: { dallas: { name: 'Dallas' }, rebecca: { name: 'Rebecca' }, ripley: { name: 'Ripley' } },
+        engine: {},
+      };
+      const minionsPrPath = sharedInner.projectPrPath(minionsProject);
+      const momentumPrPath = sharedInner.projectPrPath(momentumProject);
+      sharedInner.safeWrite(minionsPrPath, [{
+        id: 'github:yemi33/minions#2012',
+        prNumber: 2012,
+        url: 'https://github.com/yemi33/minions/pull/2012',
+        title: 'Audit prompts',
+        agent: 'dallas',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+      }]);
+      sharedInner.safeWrite(momentumPrPath, [{
+        id: 'github:committoquit/momentum#195',
+        prNumber: 195,
+        url: 'https://github.com/committoquit/momentum/pull/195',
+        title: 'Validate LinkedIn',
+        agent: 'rebecca',
+        status: sharedInner.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+      }]);
+
+      await lifecycleInner.updatePrAfterReview(
+        'ripley',
+        { id: 'github:yemi33/minions#2012', prNumber: 2012, url: 'https://github.com/yemi33/minions/pull/2012' },
+        minionsProject,
+        config,
+        'VERDICT: APPROVE\n\nReview body for the Minions PR.',
+        { status: 'success', verdict: 'approved', pr: 'github:committoquit/momentum#195', dispatchId: 'ripley-review-mismatch' },
+        { id: 'ripley-review-mismatch' });
+
+      const [minionsPr] = sharedInner.safeJson(minionsPrPath);
+      const [momentumPr] = sharedInner.safeJson(momentumPrPath);
+      const feedbackFiles = fs.readdirSync(path.join(testDir, 'notes', 'inbox'))
+        .filter(f => f.startsWith('feedback-'));
+      assert.strictEqual(minionsPr.reviewStatus, 'waiting',
+        'completion report for another PR must not stamp the dispatch target as reviewed');
+      assert.strictEqual(minionsPr.minionsReview, undefined,
+        'mismatched completion report must not write minionsReview on the dispatch target');
+      assert.strictEqual(momentumPr.reviewStatus, 'waiting',
+        'mismatched completion report must not redirect the review update to the reported PR');
+      assert.strictEqual(momentumPr.minionsReview, undefined,
+        'mismatched completion report must not write minionsReview on the reported PR');
+      assert.deepStrictEqual(feedbackFiles, [],
+        'mismatched completion report must not create review feedback artifacts');
+    } finally {
+      restore();
+      if (originalGithubCache) require.cache[githubPath] = originalGithubCache;
+      else delete require.cache[githubPath];
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('fix.md includes ## Completion section', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
     assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
