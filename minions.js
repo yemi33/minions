@@ -17,6 +17,7 @@ const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
 const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = require('./engine/shared');
+const projectDiscovery = require('./engine/project-discovery');
 
 const MINIONS_HOME = __dirname;
 const CONFIG_PATH = path.join(MINIONS_HOME, 'config.json');
@@ -50,77 +51,7 @@ function ask(q, def) {
 }
 
 function autoDiscover(targetDir) {
-  const result = { _found: [] };
-
-  // 1. Detect main branch from git
-  try {
-    let head = '';
-    try {
-      head = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    } catch {
-      head = execSync('git symbolic-ref HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    }
-    const branch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
-    if (branch) { result.mainBranch = branch; result._found.push('main branch'); }
-  } catch {}
-
-  // 2. Detect repo host, org, project, repo name from git remote URL
-  try {
-    const remoteUrl = execSync('git remote get-url origin', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    if (remoteUrl.includes('github.com')) {
-      result.repoHost = 'github';
-      // https://github.com/org/repo.git or git@github.com:org/repo.git
-      const m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-      if (m) { result.org = m[1]; result.repoName = m[2]; }
-      result._found.push('GitHub remote');
-    } else if (remoteUrl.includes('visualstudio.com') || remoteUrl.includes('dev.azure.com')) {
-      result.repoHost = 'ado';
-      // https://org.visualstudio.com/project/_git/repo or https://dev.azure.com/org/project/_git/repo
-      const m1 = remoteUrl.match(/https:\/\/([^.]+)\.visualstudio\.com[^/]*\/([^/]+)\/_git\/([^/\s]+)/);
-      const m2 = remoteUrl.match(/https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/);
-      const m = m1 || m2;
-      if (m) { result.org = m[1]; result.project = m[2]; result.repoName = m[3]; }
-      result._found.push('Azure DevOps remote');
-    }
-  } catch {}
-
-  // 3. Read description from CLAUDE.md first line or README.md first paragraph
-  try {
-    const claudeMdPath = path.join(targetDir, 'CLAUDE.md');
-    if (fs.existsSync(claudeMdPath)) {
-      const content = fs.readFileSync(claudeMdPath, 'utf8');
-      // Look for a description-like first line or paragraph (skip headings)
-      const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#'));
-      if (lines[0] && lines[0].length < 200) {
-        result.description = lines[0].trim();
-        result._found.push('description from CLAUDE.md');
-      }
-    }
-  } catch {}
-  if (!result.description) {
-    try {
-      const readmePath = path.join(targetDir, 'README.md');
-      if (fs.existsSync(readmePath)) {
-        const content = fs.readFileSync(readmePath, 'utf8').slice(0, 2000);
-        const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('!'));
-        if (lines[0] && lines[0].length < 200) {
-          result.description = lines[0].trim();
-          result._found.push('description from README.md');
-        }
-      }
-    } catch {}
-  }
-
-  // 4. Detect project name
-  try {
-    const pkgPath = path.join(targetDir, 'package.json');
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-      if (pkg.name) { result.name = pkg.name.replace(/^@[^/]+\//, ''); result._found.push('name from package.json'); }
-    }
-  } catch {}
-
-  return result;
+  return projectDiscovery.discoverProjectMetadata(targetDir);
 }
 
 // ─── Shared Helpers (used by both addProject and scanAndAdd) ─────────────────
@@ -149,38 +80,11 @@ function _detectAvailableRuntimes() {
   return found;
 }
 
-function buildPrUrlBase({ repoHost, org, project, repoName }) {
-  if (repoHost === 'github') {
-    return org && repoName ? `https://github.com/${org}/${repoName}/pull/` : '';
-  }
-  if (repoHost === 'ado' && org && project && repoName) {
-    return `https://dev.azure.com/${org}/${project}/_git/${repoName}/pullrequest/`;
-  }
-  return '';
-}
-
-function buildProjectEntry({ name, description, localPath, repoHost, repositoryId, org, project, repoName, mainBranch }) {
-  // Sanitize name for use as directory name in projects/<name>/
-  const safeName = (name || 'project').replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'project';
-  return {
-    name: safeName,
-    description: description || '',
-    localPath: (localPath || '').replace(/\\/g, '/'),
-    repoHost: repoHost || 'github',
-    repositoryId: repositoryId || '',
-    adoOrg: org || '',
-    adoProject: project || '',
-    repoName: repoName || name,
-    mainBranch: mainBranch || 'main',
-    prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName }),
-    // Discovery defaults must mirror dashboard.js POST /api/projects — without
-    // these, discoverFromWorkItems / discoverFromPrs silently no-op (the engine
-    // looks healthy but never dispatches anything).
-    workSources: {
-      pullRequests: { enabled: true, cooldownMinutes: 30 },
-      workItems: { enabled: true, cooldownMinutes: 0 },
-    },
-  };
+function buildProjectEntry(opts) {
+  // Discovery defaults must mirror dashboard.js POST /api/projects — without
+  // these, discoverFromWorkItems / discoverFromPrs silently no-op (the engine
+  // looks healthy but never dispatches anything).
+  return projectDiscovery.buildProjectEntry(opts);
 }
 
 
@@ -221,12 +125,15 @@ async function addProject(targetDir) {
   const org = await ask('Organization', detected.org || '');
   const project = await ask('Project', detected.project || '');
   const repoName = await ask('Repo name', detected.repoName || name);
-  const repositoryId = await ask('Repository ID (GUID, optional)', '');
+  const repositoryId = await ask('Repository ID (GUID, optional)', detected.repositoryId || '');
   const mainBranch = await ask('Main branch', detected.mainBranch || 'main');
 
   rl.close();
 
-  config.projects.push(buildProjectEntry({ name, description, localPath: target, repoHost, repositoryId, org, project, repoName, mainBranch }));
+  config.projects.push(buildProjectEntry({
+    name, description, localPath: target, repoHost, repositoryId, org, project, repoName, mainBranch,
+    prUrlBase: detected.prUrlBase,
+  }));
   saveConfig(config);
 
   console.log(`\n  Linked "${name}" (${target})`);
@@ -373,17 +280,7 @@ async function scanAndAdd({ root, depth } = {}) {
   const enriched = repos.map(repoPath => {
     const detected = autoDiscover(repoPath);
     const alreadyLinked = linkedPaths.has(path.resolve(repoPath));
-    return {
-      path: repoPath,
-      name: detected.name || detected.repoName || path.basename(repoPath),
-      host: detected.repoHost || '?',
-      org: detected.org || '',
-      project: detected.project || '',
-      repoName: detected.repoName || path.basename(repoPath),
-      mainBranch: detected.mainBranch || 'main',
-      description: detected.description || '',
-      linked: alreadyLinked,
-    };
+    return projectDiscovery.buildScanResult(repoPath, detected, alreadyLinked);
   });
 
   console.log(`  Found ${enriched.length} git repo(s):\n`);
@@ -449,8 +346,8 @@ async function scanAndAdd({ root, depth } = {}) {
     existingNames.add(name);
     config.projects.push(buildProjectEntry({
       name, description: repo.description, localPath: repo.path,
-      repoHost: repo.host, org: repo.org, project: repo.project,
-      repoName: repo.repoName, mainBranch: repo.mainBranch,
+      repoHost: repo.host, repositoryId: repo.repositoryId, org: repo.org, project: repo.project,
+      repoName: repo.repoName, mainBranch: repo.mainBranch, prUrlBase: repo.prUrlBase,
     }));
     console.log(`  + ${name} (${repo.path})`);
   }
