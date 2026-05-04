@@ -37385,6 +37385,23 @@ async function testFailureClassEnum() {
       'onAgentClose should pass failureClass to completeDispatch opts');
   });
 
+  await test('_classifyAgentFailure ignores benign JSONL stdout when classifying runtime exit', () => {
+    const engine = require('../engine.js');
+    const claude = require('../engine/runtimes/claude');
+    const rawStdout = [
+      '{"type":"system","subtype":"init","slash_commands":["check-self-authored-review-comment","diagnose-build-fail-branch-behind"]}',
+      '{"type":"result","result":"Security audit examples mention HTTP 401 Unauthorized and merge conflict handling, but this is report text rather than a runtime error.","session_id":"sess-audit"}',
+    ].join('\n');
+
+    const result = engine._classifyAgentFailure(claude, 1, rawStdout, '');
+
+    assert.strictEqual(result.failureClass, shared.FAILURE_CLASS.UNKNOWN,
+      'benign assistant/report JSONL text should not become permission-blocked, merge-conflict, or build-failure');
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.MERGE_CONFLICT);
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.BUILD_FAILURE);
+  });
+
   await test('exit code 78 uses classifyFailure result (CONFIG_ERROR)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The code=78 handler should pass failureClass to completeDispatch
