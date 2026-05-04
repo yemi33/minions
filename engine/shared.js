@@ -1310,14 +1310,27 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+function comparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
+    } catch {
+      return resolved;
+    }
+  }
+}
+
 function resolveProjectForPrPath(filePath, config = null) {
-  const resolvedPaths = new Set([path.resolve(filePath)]);
+  const resolvedPaths = new Set([comparablePath(filePath)]);
   if (filePath && !path.isAbsolute(filePath)) {
-    resolvedPaths.add(path.resolve(MINIONS_DIR, filePath));
+    resolvedPaths.add(comparablePath(path.resolve(MINIONS_DIR, filePath)));
   }
   const projects = getProjects(config);
   for (const project of projects) {
-    if (resolvedPaths.has(path.resolve(projectPrPath(project)))) return project;
+    if (resolvedPaths.has(comparablePath(projectPrPath(project)))) return project;
   }
   if (projects.length === 1) return projects[0];
   return null;
