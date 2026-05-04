@@ -1825,6 +1825,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1862,6 +1863,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1879,6 +1881,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1912,6 +1915,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
     if (onAbortReady) onAbortReady(p1.abort);
     result = await p1;
     llm.trackEngineUsage(label, result.usage);
+    if (result.missingRuntime) return result;
 
     if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
@@ -1948,6 +1952,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p2.abort);
   result = await p2;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -1966,6 +1971,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onAbortReady) onAbortReady(p3.abort);
   result = await p3;
   llm.trackEngineUsage(label, result.usage);
+  if (result.missingRuntime) return result;
 
   if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
@@ -2071,6 +2077,10 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     if (session) session._docHash = docHash;
   }
 
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
+  }
+
   if (result.code !== 0 || !result.text) {
     console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
@@ -2123,6 +2133,10 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = docHash;
+  }
+
+  if (result.missingRuntime) {
+    return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
   }
 
   if (result.code !== 0 || !result.text) {
@@ -5054,6 +5068,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         _ccHeartbeatTimer = null;
       }
     };
+    const finishMissingRuntime = (result, liveState) => {
+      const text = result.text || result.stderr || 'Minions runtime is not installed or configured.';
+      liveState.donePayload = { type: 'done', text, actions: [], sessionId: null, missingRuntime: true };
+      if (liveState.writer) liveState.writer(liveState.donePayload);
+      if (liveState.endResponse) liveState.endResponse();
+      _scheduleCcLiveCleanup(tabId);
+    };
     try {
       const body = await readBody(req);
       if (!body.message && !body.reconnect) { res.statusCode = 400; res.end('message required'); return; }
@@ -5176,6 +5197,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
+        }
+
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
         if (!result.text && wasResume && result.code !== 0 && !req.destroyed) {
           // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
@@ -5197,6 +5223,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             // Fresh session succeeded — use retryResult from here
             Object.assign(result, retryResult);
           }
+        }
+        if (result.missingRuntime) {
+          finishMissingRuntime(result, liveState);
+          return;
         }
         if (!result.text) {
           if (req.destroyed) { _ccStreamEnded = true; return; } // client already gone — nothing to send
@@ -5381,6 +5411,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse', direct: true,
         engineConfig: CONFIG.engine,
       });
+      if (result.missingRuntime) {
+        return jsonReply(res, 503, { error: result.text || result.stderr || 'Minions runtime is not installed or configured.', missingRuntime: true });
+      }
       const parsed = JSON.parse(result.text.trim());
       if (!parsed.cron) return jsonReply(res, 422, { error: 'Could not parse schedule' });
       return jsonReply(res, 200, { cron: parsed.cron, description: parsed.description || '' });
