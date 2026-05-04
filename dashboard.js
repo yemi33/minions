@@ -4927,20 +4927,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, e.statusCode || 400, { error: e.message });
       }
 
-      const project = {
-        name, description, localPath: target.replace(/\\/g, '/'),
-        repoHost: detected.repoHost || 'ado', repositoryId: detected.repositoryId || '',
-        adoOrg: detected.org || '', adoProject: detected.project || '',
-        repoName: detected.repoName || name, mainBranch: detected.mainBranch || 'main',
-        prUrlBase: projectDiscovery.buildPrUrlBase({
-          repoHost: detected.repoHost,
-          org: detected.org,
-          project: detected.project,
-          repoName: detected.repoName,
-          prUrlBase: detected.prUrlBase,
-        }),
-        workSources: { pullRequests: { enabled: true, cooldownMinutes: 30 }, workItems: { enabled: true, cooldownMinutes: 0 } }
-      };
+      const project = projectDiscovery.buildProjectEntry({
+        name, description, localPath: target,
+        repoHost: detected.repoHost || 'github',
+        repositoryId: detected.repositoryId || '',
+        org: detected.org || '',
+        project: detected.project || '',
+        repoName: detected.repoName || name,
+        mainBranch: detected.mainBranch || 'main',
+        prUrlBase: detected.prUrlBase,
+      });
 
       config.projects.push(project);
       safeWrite(configPath, config);

@@ -10,7 +10,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeJson, safeRead, getProjects, log, ts, dateStamp, truncateTextBytes, ENGINE_DEFAULTS, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT, getProjectOrg } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, getKnowledgeBaseIndex, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -29,7 +29,7 @@ function getPrCreateInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    const org = project?.adoOrg || '';
+    const org = getProjectOrg(project);
     const repo = project?.repoName || '';
     const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
     return `Use \`gh pr create\` to create a pull request:\n` +
@@ -56,7 +56,7 @@ function getPrCommentInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    const org = project?.adoOrg || '';
+    const org = getProjectOrg(project);
     const repo = project?.repoName || '';
     return `Use \`gh pr comment\` to post a comment on the PR:\n` +
       `- Write the Markdown comment to a temporary file, then run: \`gh pr comment <number> --body-file <body-file.md> --repo ${org}/${repo}\`\n` +
@@ -75,7 +75,7 @@ function getPrCommentInstructions(project) {
 function getPrFetchInstructions(project) {
   const host = getRepoHost(project);
   if (host === 'github') {
-    const org = project?.adoOrg || '';
+    const org = getProjectOrg(project);
     const repo = project?.repoName || '';
     const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
     return `Use \`gh pr view\` to fetch PR status:\n` +
@@ -100,7 +100,7 @@ function getPrVoteInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    const org = project?.adoOrg || '';
+    const org = getProjectOrg(project);
     const repo = project?.repoName || '';
     return `**IMPORTANT: GitHub blocks self-approval** — all agents share the same credentials, so \`--approve\` and \`--request-changes\` will fail with "can't approve your own PR." Use \`--comment\` instead.\n\n` +
       `Submit your review verdict using \`gh pr review\` with \`--comment\`:\n` +
@@ -411,13 +411,15 @@ function renderPlaybook(type, vars) {
     ...dispatchProject,
     adoOrg: vars.ado_org || vars.adoOrg || dispatchProject.adoOrg,
     adoProject: vars.ado_project || vars.adoProject || dispatchProject.adoProject,
+    githubOrg: vars.github_org || vars.githubOrg || dispatchProject.githubOrg,
     repoName: vars.repo_name || vars.repoName || dispatchProject.repoName,
     repoHost: vars.repo_host || vars.repoHost || dispatchProject.repoHost,
   };
   const repoHost = getRepoHost(renderProject);
   const projectVars = {
     project_name: renderProject.name || 'Unknown Project',
-    ado_org: renderProject.adoOrg || 'Unknown',
+    ado_org: repoHost === 'ado' ? (renderProject.adoOrg || 'Unknown') : '',
+    github_org: repoHost === 'github' ? getProjectOrg(renderProject) : '',
     ado_project: renderProject.adoProject || 'Unknown',
     repo_name: renderProject.repoName || 'Unknown',
     repo_host: repoHost,
@@ -503,7 +505,7 @@ function buildSystemPrompt(agentId, config, project) {
 
   // Project context (fixed size)
   prompt += `## Project: ${project.name || 'Unknown Project'}\n\n`;
-  prompt += `- Repo: ${project.repoName || 'Unknown'} (${project.adoOrg || 'Unknown'}/${project.adoProject || 'Unknown'})\n`;
+  prompt += `- Repo: ${project.repoName || 'Unknown'} (${getProjectOrg(project) || 'Unknown'}${project.repoHost === 'ado' ? '/' + (project.adoProject || 'Unknown') : ''})\n`;
   prompt += `- Repo ID: ${project.repositoryId || ''}\n`;
   prompt += `- Repo host: ${getRepoHostLabel(project)}\n`;
   prompt += `- Main branch: ${project.mainBranch || 'main'}\n\n`;
@@ -648,8 +650,9 @@ function buildBaseVars(agentId, config, project) {
     team_root: MINIONS_DIR,
     repo_id: project?.repositoryId || '',
     project_name: project?.name || 'Unknown Project',
-    ado_org: project?.adoOrg || 'Unknown',
-    ado_project: project?.adoProject || 'Unknown',
+    ado_org: project?.repoHost === 'ado' ? (project?.adoOrg || 'Unknown') : '',
+    ado_project: project?.repoHost === 'ado' ? (project?.adoProject || 'Unknown') : '',
+    github_org: project?.repoHost === 'github' ? getProjectOrg(project) : '',
     repo_name: project?.repoName || 'Unknown',
     repo_host: getRepoHost(project),
     main_branch: project?.mainBranch || 'main',

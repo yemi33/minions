@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker, getProjectOrg } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -33,7 +33,7 @@ function isGitHub(project) {
 
 /** Get GitHub owner/repo slug from project config (e.g. "x3-design/Bebop_Workspaces") */
 function getRepoSlug(project) {
-  const org = project.adoOrg || '';
+  const org = getProjectOrg(project);
   const repo = project.repoName || '';
   if (!org || !repo) return null;
   return `${org}/${repo}`;

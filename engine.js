@@ -3191,7 +3191,9 @@ function buildProjectContext(projects, assignedProject, isFanOut, agentName, age
   const projectList = projects.map(p => {
     let line = `### ${p.name}\n`;
     line += `- **Path:** ${p.localPath}\n`;
-    line += `- **Repo:** ${p.adoOrg}/${p.adoProject}/${p.repoName} (ID: ${p.repositoryId || 'unknown'}, host: ${getRepoHostLabel(p)})\n`;
+    line += p.repoHost === 'github'
+      ? `- **Repo:** ${p.githubOrg || p.adoOrg || ''}/${p.repoName} (host: ${getRepoHostLabel(p)})\n`
+      : `- **Repo:** ${p.adoOrg}/${p.adoProject}/${p.repoName} (ID: ${p.repositoryId || 'unknown'}, host: ${getRepoHostLabel(p)})\n`;
     if (p.description) line += `- **What it is:** ${p.description}\n`;
     return line;
   }).join('\n');

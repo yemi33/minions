@@ -183,8 +183,12 @@ function listProjects() {
     console.log(`  ${p.name}`);
     if (p.description) console.log(`    Desc: ${p.description}`);
     console.log(`    Path: ${p.localPath} ${exists ? '' : '(NOT FOUND)'}`);
-    console.log(`    Repo: ${p.adoOrg}/${p.adoProject}/${p.repoName} (${p.repoHost || 'ado'})`);
-    console.log(`    ID:   ${p.repositoryId || 'none'}`);
+    if (p.repoHost === 'github') {
+      console.log(`    Repo: ${p.githubOrg || p.adoOrg || ''}/${p.repoName} (github)`);
+    } else {
+      console.log(`    Repo: ${p.adoOrg}/${p.adoProject}/${p.repoName} (${p.repoHost || 'ado'})`);
+      console.log(`    ID:   ${p.repositoryId || 'none'}`);
+    }
     console.log('');
   }
   rl.close();
