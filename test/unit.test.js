@@ -25191,6 +25191,56 @@ async function testSchedulerAdditionalCoverage() {
     }
   });
 
+  await test('createScheduledWorkItem: manual runs use scheduled work-item shape', () => {
+    const wi = scheduler.createScheduledWorkItem({
+      id: 'W-mo5u52v2aabv-manual',
+      cron: '0 9 *',
+      title: 'Manual {{date}}',
+      type: 'test',
+      priority: 'high',
+      description: 'Run manual {{date}}',
+      agent: 'ripley',
+      project: 'minions',
+      enabled: false,
+    });
+    const today = new Date().toISOString().slice(0, 10);
+    assert.ok(wi.id.startsWith('sched-W-mo5u52v2aabv-manual-'));
+    assert.strictEqual(wi.title, `Manual ${today}`);
+    assert.strictEqual(wi.type, shared.WORK_TYPE.TEST);
+    assert.strictEqual(wi.priority, 'high');
+    assert.strictEqual(wi.description, `Run manual ${today}`);
+    assert.strictEqual(wi.status, shared.WI_STATUS.PENDING);
+    assert.strictEqual(wi.createdBy, 'scheduler');
+    assert.strictEqual(wi.agent, 'ripley');
+    assert.strictEqual(wi.project, 'minions');
+    assert.strictEqual(wi._scheduleId, 'W-mo5u52v2aabv-manual');
+  });
+
+  await test('recordScheduleRun: preserves completion metadata while updating lastRun/work item', () => {
+    const restoreFiles = snapshotAndClearScheduleRuns();
+    try {
+      const realPath = scheduler.SCHEDULE_RUNS_PATH;
+      const prior = '2026-03-30T09:00:30.000Z';
+      fs.writeFileSync(realPath, JSON.stringify({
+        'W-mo5u52v2aabv-record': {
+          lastRun: prior,
+          lastWorkItemId: 'sched-old',
+          lastResult: 'success',
+          lastCompletedAt: prior,
+        },
+      }));
+      const entry = scheduler.recordScheduleRun('W-mo5u52v2aabv-record', 'sched-new');
+      const runs = JSON.parse(fs.readFileSync(realPath, 'utf8'));
+      assert.strictEqual(entry.lastWorkItemId, 'sched-new');
+      assert.strictEqual(runs['W-mo5u52v2aabv-record'].lastWorkItemId, 'sched-new');
+      assert.notStrictEqual(runs['W-mo5u52v2aabv-record'].lastRun, prior);
+      assert.strictEqual(runs['W-mo5u52v2aabv-record'].lastResult, 'success');
+      assert.strictEqual(runs['W-mo5u52v2aabv-record'].lastCompletedAt, prior);
+    } finally {
+      restoreFiles();
+    }
+  });
+
   await test('discoverScheduledWork: agentLock and hardAgent both set work item agentLock', () => {
     const restoreFiles = snapshotAndClearScheduleRuns();
     try {
@@ -26923,6 +26973,34 @@ async function testScheduleDetailModal() {
     assert.ok(src.includes('SCHED_PER_PAGE'), 'should have pagination constant');
     assert.ok(src.includes('_schedPrev'), 'should have prev page function');
     assert.ok(src.includes('_schedNext'), 'should have next page function');
+  });
+
+  await test('render-schedules exposes visible Run now action through schedules API', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    assert.ok(src.includes('async function runScheduleNow'), 'should define runScheduleNow handler');
+    assert.ok(src.includes("fetch('/api/schedules/run-now'"), 'should call schedule run-now API');
+    assert.ok(src.includes('Run now'), 'schedule list/detail should render a visible Run now action');
+    assert.ok(src.includes('window.MinionsSchedules') && src.includes('runScheduleNow'),
+      'runScheduleNow should be exposed with schedule dashboard functions');
+  });
+
+  await test('dashboard exposes schedule Run Now API that enqueues scheduler work item', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path: '/api/schedules/run-now'"), 'should register /api/schedules/run-now route');
+    const start = src.indexOf('async function handleSchedulesRunNow');
+    const end = src.indexOf('async function handleSchedulesParseNatural');
+    assert.ok(start >= 0 && end > start, 'handleSchedulesRunNow should exist before parse-natural handler');
+    const handler = src.slice(start, end);
+    assert.ok(handler.includes('schedulerMod.createScheduledWorkItem'),
+      'API should reuse scheduler work-item construction');
+    assert.ok(handler.includes("path.join(MINIONS_DIR, 'work-items.json')") && handler.includes('mutateJsonFileLocked(centralPath'),
+      'API should enqueue the work item into central work-items.json under lock');
+    assert.ok(handler.includes('schedulerMod.recordScheduleRun'),
+      'API should update schedule-runs metadata after enqueueing');
+    assert.ok(handler.includes('_wakeupAt'),
+      'API should wake the engine so the manual run is picked up promptly');
+    assert.ok(handler.includes('duplicate') && handler.includes('409'),
+      'API should reject duplicate active scheduled work items instead of enqueueing another copy');
   });
 }
 

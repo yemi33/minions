@@ -5336,6 +5336,69 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true });
   }
 
+  async function handleSchedulesRunNow(req, res) {
+    const body = await readBody(req);
+    const { id } = body;
+    if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+    reloadConfig();
+    const sched = (CONFIG.schedules || []).find(s => s.id === id);
+    if (!sched) return jsonReply(res, 404, { error: 'Schedule not found' });
+
+    const schedulerMod = require('./engine/scheduler');
+    let item;
+    try {
+      item = schedulerMod.createScheduledWorkItem(sched);
+    } catch (e) {
+      return jsonReply(res, 400, { error: e.message });
+    }
+
+    let meeting = null;
+    if (item.type === WORK_TYPE.MEETING) {
+      const { createMeeting } = require('./engine/meeting');
+      meeting = createMeeting({
+        title: item.title,
+        agenda: item.description,
+        participants: Array.isArray(sched.participants) ? sched.participants : [],
+      });
+    } else {
+      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+      let duplicate = null;
+      mutateJsonFileLocked(centralPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        duplicate = items.find(i =>
+          i._scheduleId === item._scheduleId &&
+          i.status !== WI_STATUS.DONE &&
+          i.status !== WI_STATUS.FAILED
+        );
+        if (!duplicate) items.push(item);
+        return items;
+      }, { defaultValue: [] });
+      if (duplicate) {
+        return jsonReply(res, 409, {
+          error: 'Schedule already has an active work item',
+          id: duplicate.id,
+          scheduleId: sched.id,
+        });
+      }
+    }
+
+    const runEntry = schedulerMod.recordScheduleRun(sched.id, item.id);
+    try {
+      shared.mutateControl(control => ({ ...control, _wakeupAt: Date.now() }));
+    } catch (e) {
+      shared.log('warn', `Schedule run-now wakeup failed for ${sched.id}: ${e.message}`);
+    }
+    invalidateStatusCache();
+    return jsonReply(res, 200, {
+      ok: true,
+      id: item.id,
+      scheduleId: sched.id,
+      lastRun: runEntry?.lastRun || null,
+      ...(meeting ? { meetingId: meeting.id } : {}),
+    });
+  }
+
   async function handleSchedulesParseNatural(req, res) {
     const body = await readBody(req);
     const { text } = body;
@@ -6309,6 +6372,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'cron, title, id?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
     { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
     { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
+    { method: 'POST', path: '/api/schedules/run-now', desc: 'Manually enqueue the work item for a schedule', params: 'id', handler: handleSchedulesRunNow },
 
     // Watches
     { method: 'GET', path: '/api/watches', desc: 'List all watches', handler: handleWatchesList },
