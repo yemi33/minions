@@ -379,6 +379,28 @@ const commands = {
     // refactor. No disk write — the on-disk config still carries `ccModel`.
     try { shared.applyLegacyCcModelMigration(config, { logger: e.log }); }
     catch (err) { e.log('warn', `legacy ccModel migration failed: ${err.message}`); }
+
+    // Auto-heal projects missing workSources (cloned-repo / hand-rolled-config
+    // footgun): without this block, discoverFromWorkItems / discoverFromPrs
+    // bail silently and the engine looks healthy but never dispatches. The
+    // disk-side mutation re-derives heal state from the on-disk copy so we
+    // don't clobber a concurrent dashboard write between the in-memory check
+    // and the lock acquire. skipWriteIfUnchanged makes the write a no-op when
+    // nothing needed healing (e.g. dashboard already fixed it).
+    try {
+      const heal = shared.backfillProjectWorkSourceDefaults(config);
+      if (heal.changed) {
+        const configPath = path.join(shared.MINIONS_DIR, 'config.json');
+        shared.mutateJsonFileLocked(configPath, (onDisk) => {
+          shared.backfillProjectWorkSourceDefaults(onDisk);
+          return onDisk;
+        }, { defaultValue: {}, skipWriteIfUnchanged: true });
+        for (const h of heal.healed) {
+          e.log('info', `Auto-healed project "${h.project}" — backfilled missing workSources: ${h.sources.join(', ')}`);
+        }
+        console.log(`  Auto-healed ${heal.healed.length} project(s) with missing workSources defaults — engine will now dispatch their work.`);
+      }
+    } catch (err) { e.log('warn', `workSources auto-heal failed: ${err.message}`); }
     const interval = config.engine?.tickInterval || shared.ENGINE_DEFAULTS.tickInterval;
 
     const { getProjects } = require('./shared');

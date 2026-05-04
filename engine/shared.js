@@ -1185,6 +1185,44 @@ function projectWorkSourceWarnings(config, getDataCounts) {
   return warnings;
 }
 
+/**
+ * Boot-time auto-heal for the cloned-repo / hand-rolled-config footgun: any
+ * project missing a `workSources.workItems` or `workSources.pullRequests`
+ * sub-block gets the dashboard's default backfilled. We only touch *missing*
+ * sub-blocks — an explicit `enabled: false` is treated as user intent and
+ * left alone.
+ *
+ * Pure helper — mutates `config` in place and returns
+ * `{ changed: boolean, healed: Array<{ project, sources }> }` so the caller
+ * can decide whether to persist + log. Returns `{ changed: false, healed: [] }`
+ * for null/empty/malformed input.
+ */
+function backfillProjectWorkSourceDefaults(config) {
+  const result = { changed: false, healed: [] };
+  if (!config || typeof config !== 'object') return result;
+  const projects = Array.isArray(config.projects) ? config.projects : [];
+  for (const project of projects) {
+    if (!project || typeof project !== 'object') continue;
+    const filled = [];
+    if (!project.workSources || typeof project.workSources !== 'object') {
+      project.workSources = {};
+    }
+    if (!project.workSources.pullRequests) {
+      project.workSources.pullRequests = { enabled: true, cooldownMinutes: 30 };
+      filled.push('pullRequests');
+    }
+    if (!project.workSources.workItems) {
+      project.workSources.workItems = { enabled: true, cooldownMinutes: 0 };
+      filled.push('workItems');
+    }
+    if (filled.length > 0) {
+      result.changed = true;
+      result.healed.push({ project: project.name, sources: filled });
+    }
+  }
+  return result;
+}
+
 // ─── Status & Type Constants ─────────────────────────────────────────────────
 
 const WI_STATUS = {
@@ -2581,6 +2619,7 @@ module.exports = {
   applyLegacyCcModelMigration, _resetLegacyCcModelMigrationFlag,
   runtimeConfigWarnings,
   projectWorkSourceWarnings,
+  backfillProjectWorkSourceDefaults,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, PR_PENDING_REASON, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
   WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,

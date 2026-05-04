@@ -3828,6 +3828,57 @@ async function testRuntimeFleetHelpers() {
       'preflight should call shared.projectWorkSourceWarnings so `minions doctor` surfaces the silent-discovery footgun');
   });
 
+  // ── backfillProjectWorkSourceDefaults: boot-time auto-heal ───────────────
+
+  await test('backfillProjectWorkSourceDefaults: fills missing workSources block on a project that has none', () => {
+    const config = { projects: [{ name: 'Office', localPath: '/x' }] };
+    const r = shared.backfillProjectWorkSourceDefaults(config);
+    assert.strictEqual(r.changed, true);
+    assert.strictEqual(r.healed.length, 1);
+    assert.deepStrictEqual(r.healed[0].sources.sort(), ['pullRequests', 'workItems']);
+    assert.strictEqual(config.projects[0].workSources.workItems.enabled, true);
+    assert.strictEqual(config.projects[0].workSources.pullRequests.enabled, true);
+  });
+
+  await test('backfillProjectWorkSourceDefaults: leaves explicit enabled:false alone (respects user intent)', () => {
+    const config = { projects: [{ name: 'P1', workSources: { workItems: { enabled: false }, pullRequests: { enabled: false } } }] };
+    const r = shared.backfillProjectWorkSourceDefaults(config);
+    assert.strictEqual(r.changed, false, 'must not flip explicit false to true');
+    assert.strictEqual(config.projects[0].workSources.workItems.enabled, false);
+  });
+
+  await test('backfillProjectWorkSourceDefaults: fills only the missing sub-block when half is present', () => {
+    const config = { projects: [{ name: 'Half', workSources: { pullRequests: { enabled: true, cooldownMinutes: 30 } } }] };
+    const r = shared.backfillProjectWorkSourceDefaults(config);
+    assert.strictEqual(r.changed, true);
+    assert.deepStrictEqual(r.healed[0].sources, ['workItems']);
+    assert.strictEqual(config.projects[0].workSources.workItems.enabled, true);
+    // pre-existing pullRequests is untouched
+    assert.strictEqual(config.projects[0].workSources.pullRequests.cooldownMinutes, 30);
+  });
+
+  await test('backfillProjectWorkSourceDefaults: idempotent — second call is a no-op', () => {
+    const config = { projects: [{ name: 'P', localPath: '/x' }] };
+    shared.backfillProjectWorkSourceDefaults(config);
+    const r2 = shared.backfillProjectWorkSourceDefaults(config);
+    assert.strictEqual(r2.changed, false);
+    assert.strictEqual(r2.healed.length, 0);
+  });
+
+  await test('backfillProjectWorkSourceDefaults: returns no-op for malformed input', () => {
+    assert.deepStrictEqual(shared.backfillProjectWorkSourceDefaults(null), { changed: false, healed: [] });
+    assert.deepStrictEqual(shared.backfillProjectWorkSourceDefaults({}), { changed: false, healed: [] });
+    assert.deepStrictEqual(shared.backfillProjectWorkSourceDefaults({ projects: 'bogus' }), { changed: false, healed: [] });
+  });
+
+  await test('engine/cli.js start() invokes backfillProjectWorkSourceDefaults so broken clients self-heal at boot', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('backfillProjectWorkSourceDefaults'),
+      'cli.js start() must call backfillProjectWorkSourceDefaults so users with pre-fix configs get auto-healed on next engine boot');
+    assert.ok(src.includes('mutateJsonFileLocked'),
+      'auto-heal must persist via mutateJsonFileLocked so the dashboard sees the fix too');
+  });
+
   // ── Wiring sanity: engine/cli.js + engine/preflight.js consume helpers ─────
 
   await test('engine/cli.js calls applyLegacyCcModelMigration during start()', () => {
