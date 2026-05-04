@@ -42581,6 +42581,44 @@ async function testAdoPureHelpers() {
   delete require.cache[require.resolve(adoPath)];
   const ado = require(adoPath);
 
+  function extractAdoFunctionSource(name) {
+    const start = adoSrc.indexOf(`function ${name}(`);
+    assert.ok(start !== -1, `${name} function must exist in ado.js`);
+    const bodyStart = adoSrc.indexOf('{', start);
+    assert.ok(bodyStart !== -1, `${name} function must have a body`);
+    let depth = 0;
+    for (let i = bodyStart; i < adoSrc.length; i++) {
+      if (adoSrc[i] === '{') depth++;
+      if (adoSrc[i] === '}') depth--;
+      if (depth === 0) return adoSrc.slice(start, i + 1);
+    }
+    assert.fail(`${name} function body must be balanced`);
+  }
+
+  function loadAdoPureHelper(name, deps = {}) {
+    const argNames = Object.keys(deps);
+    const argValues = Object.values(deps);
+    return new Function(...argNames, `${extractAdoFunctionSource(name)}; return ${name};`)(...argValues);
+  }
+
+  const adoGuidReMatch = adoSrc.match(/const ADO_GUID_RE = (\/.*?\/[a-z]*);/);
+  assert.ok(adoGuidReMatch, 'ADO_GUID_RE constant must exist in ado.js');
+  const ADO_GUID_RE = new Function(`return ${adoGuidReMatch[1]};`)();
+
+  const isGitHubProject = loadAdoPureHelper('isGitHubProject');
+  const isAdoGuid = loadAdoPureHelper('isAdoGuid', { ADO_GUID_RE });
+  const getAdoRepositoryLookupKey = loadAdoPureHelper('getAdoRepositoryLookupKey');
+  const getAdoRepositoryId = loadAdoPureHelper('getAdoRepositoryId', { getAdoRepositoryLookupKey });
+  const getConfiguredAdoRepositoryGuid = loadAdoPureHelper('getConfiguredAdoRepositoryGuid', { isAdoGuid });
+  const getAdoProjectLabel = loadAdoPureHelper('getAdoProjectLabel');
+  const sameAdoProject = loadAdoPureHelper('sameAdoProject', { path });
+  const markBuildStatusStale = loadAdoPureHelper('markBuildStatusStale');
+  const clearBuildStatusStale = loadAdoPureHelper('clearBuildStatusStale');
+  const applyAdoPrMetadata = loadAdoPureHelper('applyAdoPrMetadata', {
+    shared,
+    stripRefsHeads: s => (s || '').replace('refs/heads/', ''),
+  });
+
   // classifyBuildStatus is a module-local function (not exported). Cover it via a safe eval
   // of its source so we exercise the real code path rather than mirroring the logic.
   //
@@ -42595,6 +42633,166 @@ async function testAdoPureHelpers() {
   const votesFnMatch = adoSrc.match(/function votesToReviewStatus\(votes\) \{[\s\S]*?\n\}/m);
   assert.ok(votesFnMatch, 'votesToReviewStatus function must exist in ado.js');
   const votesToReviewStatus = new Function(`${votesFnMatch[0]}; return votesToReviewStatus;`)();
+
+  // ── project/repository metadata helpers ─────────────────────────────────
+
+  await test('isGitHubProject matches repoHost=github case-insensitively and rejects non-GitHub inputs', () => {
+    assert.strictEqual(isGitHubProject({ repoHost: 'github' }), true);
+    assert.strictEqual(isGitHubProject({ repoHost: 'GitHub' }), true);
+    assert.strictEqual(isGitHubProject({ repoHost: 'GITHUB' }), true);
+    assert.strictEqual(isGitHubProject({ repoHost: 'ado' }), false);
+    assert.strictEqual(isGitHubProject({}), false);
+    assert.strictEqual(isGitHubProject(null), false);
+  });
+
+  await test('isAdoGuid accepts canonical GUIDs with whitespace and rejects non-GUID values', () => {
+    assert.strictEqual(isAdoGuid('11111111-2222-3333-4444-555555555555'), true);
+    assert.strictEqual(isAdoGuid(' AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE '), true);
+    assert.strictEqual(isAdoGuid('11111111-2222-3333-4444-55555555555'), false);
+    assert.strictEqual(isAdoGuid('not-a-guid'), false);
+    assert.strictEqual(isAdoGuid(''), false);
+    assert.strictEqual(isAdoGuid(null), false);
+    assert.strictEqual(isAdoGuid(undefined), false);
+  });
+
+  await test('getAdoRepositoryLookupKey and getAdoRepositoryId prefer repositoryId, then repoName, then empty string', () => {
+    const withId = { repositoryId: ' 11111111-1111-1111-1111-111111111111 ', repoName: 'repo-name' };
+    assert.strictEqual(getAdoRepositoryLookupKey(withId), '11111111-1111-1111-1111-111111111111');
+    assert.strictEqual(getAdoRepositoryId(withId), '11111111-1111-1111-1111-111111111111');
+    assert.strictEqual(getAdoRepositoryLookupKey({ repositoryId: ' ', repoName: ' repo-name ' }), 'repo-name');
+    assert.strictEqual(getAdoRepositoryId({ repoName: ' repo-name ' }), 'repo-name');
+    assert.strictEqual(getAdoRepositoryLookupKey({}), '');
+    assert.strictEqual(getAdoRepositoryId(null), '');
+  });
+
+  await test('getConfiguredAdoRepositoryGuid returns only configured GUID repositoryIds', () => {
+    assert.strictEqual(
+      getConfiguredAdoRepositoryGuid({ repositoryId: ' 22222222-2222-2222-2222-222222222222 ' }),
+      '22222222-2222-2222-2222-222222222222'
+    );
+    assert.strictEqual(getConfiguredAdoRepositoryGuid({ repositoryId: 'repo-name-guid-looking', repoName: 'repo-name' }), '');
+    assert.strictEqual(getConfiguredAdoRepositoryGuid({ repoName: '33333333-3333-3333-3333-333333333333' }), '');
+    assert.strictEqual(getConfiguredAdoRepositoryGuid({}), '');
+    assert.strictEqual(getConfiguredAdoRepositoryGuid(null), '');
+  });
+
+  await test('getAdoProjectLabel prefers name, repoName, org/project, then unknown fallback', () => {
+    assert.strictEqual(getAdoProjectLabel({ name: 'Friendly', repoName: 'repo', adoOrg: 'org', adoProject: 'proj' }), 'Friendly');
+    assert.strictEqual(getAdoProjectLabel({ repoName: 'repo', adoOrg: 'org', adoProject: 'proj' }), 'repo');
+    assert.strictEqual(getAdoProjectLabel({ adoOrg: 'org', adoProject: 'proj' }), 'org/proj');
+    assert.strictEqual(getAdoProjectLabel({ adoOrg: 'org' }), 'org/unknown-project');
+    assert.strictEqual(getAdoProjectLabel(null), 'unknown-org/unknown-project');
+  });
+
+  await test('sameAdoProject matches by name or resolved localPath before comparing repository identity', () => {
+    assert.strictEqual(sameAdoProject({ name: 'demo' }, { name: 'demo' }), true);
+    assert.strictEqual(sameAdoProject(
+      { localPath: path.join(MINIONS_DIR, 'projects', '..', 'repo') },
+      { localPath: path.join(MINIONS_DIR, 'repo') }
+    ), true);
+  });
+
+  await test('sameAdoProject matches ADO repository identity with default repoHost and case-insensitive host', () => {
+    assert.strictEqual(sameAdoProject(
+      { adoOrg: 'org', adoProject: 'proj', repoName: 'repo' },
+      { adoOrg: 'org', adoProject: 'proj', repoName: 'repo', repoHost: 'ADO' }
+    ), true);
+  });
+
+  await test('sameAdoProject rejects null inputs and repository identity mismatches', () => {
+    const base = { adoOrg: 'org', adoProject: 'proj', repoName: 'repo', repoHost: 'ado' };
+    assert.strictEqual(sameAdoProject(null, base), false);
+    assert.strictEqual(sameAdoProject(base, undefined), false);
+    assert.strictEqual(sameAdoProject(base, { ...base, adoOrg: 'other' }), false);
+    assert.strictEqual(sameAdoProject(base, { ...base, adoProject: 'other' }), false);
+    assert.strictEqual(sameAdoProject(base, { ...base, repoName: 'other' }), false);
+    assert.strictEqual(sameAdoProject(base, { ...base, repoHost: 'github' }), false);
+  });
+
+  await test('markBuildStatusStale sets stale flag/detail and clearBuildStatusStale removes them', () => {
+    const pr = {};
+    markBuildStatusStale(pr, 'build API unavailable');
+    assert.deepStrictEqual(pr, {
+      _buildStatusStale: true,
+      _buildStatusDetail: 'build API unavailable',
+    });
+    clearBuildStatusStale(pr);
+    assert.deepStrictEqual(pr, {});
+  });
+
+  await test('clearBuildStatusStale is a no-op when stale fields are absent', () => {
+    const pr = { buildStatus: 'passing' };
+    clearBuildStatusStale(pr);
+    assert.deepStrictEqual(pr, { buildStatus: 'passing' });
+  });
+
+  await test('applyAdoPrMetadata returns false for null inputs', () => {
+    assert.strictEqual(applyAdoPrMetadata(null, { title: 'x' }), false);
+    assert.strictEqual(applyAdoPrMetadata({}, null), false);
+  });
+
+  await test('applyAdoPrMetadata applies branch/title/empty description/author and clears missing-branch markers', () => {
+    const longTitle = 'T'.repeat(130);
+    const longDescription = 'D'.repeat(520);
+    const pr = {
+      branch: '',
+      title: 'placeholder',
+      description: '',
+      agent: 'human',
+      _branchResolutionError: 'not found',
+      _pendingReason: shared.PR_PENDING_REASON.MISSING_BRANCH,
+    };
+    const updated = applyAdoPrMetadata(pr, {
+      sourceRefName: 'refs/heads/feature/ado-metadata',
+      title: longTitle,
+      description: longDescription,
+      createdBy: { displayName: 'Ada Lovelace' },
+    });
+    assert.strictEqual(updated, true);
+    assert.strictEqual(pr.branch, 'feature/ado-metadata');
+    assert.strictEqual(pr.title, 'T'.repeat(120));
+    assert.strictEqual(pr.description, 'D'.repeat(500));
+    assert.strictEqual(pr.agent, 'Ada Lovelace');
+    assert.ok(!Object.prototype.hasOwnProperty.call(pr, '_branchResolutionError'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(pr, '_pendingReason'));
+  });
+
+  await test('applyAdoPrMetadata preserves non-empty description and non-human agent while updating changed title', () => {
+    const pr = {
+      branch: 'feature/existing',
+      title: 'Old title',
+      description: 'Existing description',
+      agent: 'dallas',
+    };
+    const updated = applyAdoPrMetadata(pr, {
+      sourceRefName: 'refs/heads/feature/existing',
+      title: 'New title',
+      description: 'Upstream description should not replace existing text',
+      createdBy: { displayName: 'Ada Lovelace' },
+    });
+    assert.strictEqual(updated, true);
+    assert.strictEqual(pr.title, 'New title');
+    assert.strictEqual(pr.description, 'Existing description');
+    assert.strictEqual(pr.agent, 'dallas');
+  });
+
+  await test('applyAdoPrMetadata returns false when metadata is already represented', () => {
+    const pr = {
+      branch: 'feature/current',
+      title: 'Current title',
+      description: 'Existing description',
+      agent: 'dallas',
+    };
+    const before = { ...pr };
+    const updated = applyAdoPrMetadata(pr, {
+      sourceRefName: 'refs/heads/feature/current',
+      title: ' Current title ',
+      description: 'Ignored because description is already set',
+      createdBy: { displayName: 'Ada Lovelace' },
+    });
+    assert.strictEqual(updated, false);
+    assert.deepStrictEqual(pr, before);
+  });
 
   // ── classifyBuildStatus ────────────────────────────────────────────────
 
