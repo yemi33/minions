@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1706 (2026-05-04)
+
+### Features
+- preserve CC fan-out dedup scope (#2037)
+
 ## 0.1.1705 (2026-05-04)
 
 ### Features
