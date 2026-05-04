@@ -1129,14 +1129,35 @@ async function spawnAgent(dispatchItem, config) {
     const procInfo = activeProcesses.get(id);
     ackPendingSteeringFiles(agentId, procInfo, stdout);
 
+    if (procInfo?._deferredSteeringFiles?.length && procInfo.sessionId) {
+      const deferredPaths = new Set(procInfo._deferredSteeringFiles);
+      const pendingDeferred = steering.listUnreadSteeringMessages(agentId)
+        .filter(entry => deferredPaths.has(entry.path) && entry.message.trim());
+      if (pendingDeferred.length > 0) {
+        log('info', `Steering: delivering ${pendingDeferred.length} deferred message(s) for ${agentId} at resumable checkpoint`);
+        procInfo._steeringMessage = pendingDeferred.map(entry => entry.message.trim()).join('\n\n');
+        procInfo._steeringSessionId = procInfo.sessionId;
+        procInfo._steeringEntry = pendingDeferred;
+        procInfo._steeringDeferredCheckpoint = true;
+        delete procInfo._deferredSteeringFiles;
+      } else {
+        delete procInfo._deferredSteeringFiles;
+      }
+    } else if (procInfo?._deferredSteeringFiles?.length) {
+      log('warn', `Steering: ${agentId} exited before a resumable sessionId was available — message remains pending`);
+      try { fs.appendFileSync(liveOutputPath, `\n[steering-pending] Agent exited before a resumable session was available. Your message remains unread and will be retried on the next dispatch.\n`); } catch {}
+    }
+
     // Check if this was a steering kill — re-spawn with resume
     if (procInfo?._steeringMessage) {
       const steerMsg = procInfo._steeringMessage;
       const steerSessionId = procInfo._steeringSessionId;
       const steerEntry = procInfo._steeringEntry;
+      const steeringDeferredCheckpoint = procInfo._steeringDeferredCheckpoint === true;
       delete procInfo._steeringMessage;
       delete procInfo._steeringSessionId;
       delete procInfo._steeringEntry;
+      delete procInfo._steeringDeferredCheckpoint;
 
       // Guard: can't resume without a session
       if (!steerSessionId) {
@@ -1247,9 +1268,13 @@ async function spawnAgent(dispatchItem, config) {
         ),
       });
 
-      // Reset output buffers so post-completion parsing only sees the resumed session
-      stdout = '';
-      stderr = '';
+      // Live steering kills discard partial old output. Deferred checkpoint
+      // steering keeps the completed turn output so completion parsing still
+      // sees the original work if the follow-up only acknowledges steering.
+      if (!steeringDeferredCheckpoint) {
+        stdout = '';
+        stderr = '';
+      }
       sessionCaptureState.sessionLineBuffer = '';
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {

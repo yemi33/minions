@@ -203,6 +203,7 @@ function resolveMinionsHome(forInit = false) {
 const [cmd, ...rest] = process.argv.slice(2);
 let force = rest.includes('--force');
 const skipScan = rest.includes('--skip-scan');
+const skipStart = rest.includes('--skip-start') || rest.includes('--no-start');
 const MINIONS_HOME = resolveMinionsHome(cmd === 'init');
 
 function isSubpath(parent, child) {
@@ -339,7 +340,12 @@ function init() {
     printPreflight(results, { label: 'Preflight checks' });
   } catch {}
 
-  // Auto-start on fresh install; force-upgrade restarts automatically.
+  if (isUpgrade && skipStart) {
+    console.log(`\n  Upgrade complete (${pkgVersion}). Restart skipped by caller.\n`);
+    return;
+  }
+
+  // Auto-start on fresh install; direct force-upgrade restarts automatically.
   if (isUpgrade) {
     try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
   }
@@ -436,7 +442,7 @@ function showVersion() {
   if (installed) {
     console.log(`  Installed version: ${installed}`);
     if (installed !== pkg) {
-      console.log('\n  Update available! Run: minions init --force');
+      console.log('\n  Update available! Run: minions update');
     } else {
       console.log('  Up to date.');
     }
@@ -449,7 +455,7 @@ function showVersion() {
     const latest = execSync('npm view @yemi33/minions version', { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
     if (latest && latest !== pkg) {
       console.log(`\n  Latest on npm:     ${latest}`);
-      console.log('  To update: npm update -g @yemi33/minions && minions init --force');
+      console.log('  To update: minions update');
     }
   } catch {} // offline or npm not available — skip silently
 
@@ -489,7 +495,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   Setup:
     minions init                     Bootstrap ~/.minions/ (first time)
-    minions update                   Update to latest version (npm update + init --force)
+    minions update                   Update to latest version (npm update + one restart)
     minions version                  Show installed vs package version
     minions doctor                   Check prerequisites and runtime health
     minions add <project-dir>        Link a project (interactive)
@@ -538,7 +544,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
       console.error('  npm update failed:', e.message);
       process.exit(1);
     }
-    execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
+    execSync('minions init --force --skip-start', { stdio: 'inherit', timeout: 120000 });
   }
   // Restart engine + dashboard so they pick up the new code
   console.log('\n  Restarting engine and dashboard...\n');
@@ -761,4 +767,3 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   console.log('  Run "minions help" for usage.\n');
   process.exit(1);
 }
-
