@@ -310,6 +310,10 @@ Agents inherit MCP servers directly from `~/.claude.json` as Claude Code process
 
 Manually refresh with `minions mcp-sync`.
 
+### GitHub Users
+
+For GitHub repos, install and authenticate the [GitHub CLI](https://cli.github.com/). Agents should use `gh` for GitHub PR creation, PR lookup, comments, reviews, issues, and workflow checks. If GitHub or Copilot auth fails, refresh GitHub credentials with `gh auth status` and `gh auth login`, or provide `GH_TOKEN`/`COPILOT_GITHUB_TOKEN` from the environment. Azure DevOps authentication and tooling paths do not apply to GitHub repo work.
+
 ### Azure DevOps Users
 
 For the best experience with ADO repos, install the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) with the Azure DevOps extension. Agents should use the `az` CLI first for Azure DevOps operations such as PR creation, PR lookup, comments, reviewers, work items, and pipelines. Use the Azure DevOps MCP fallback only when `az` is unavailable in the environment or insufficient for a specific action.
@@ -402,7 +406,7 @@ No bash or shell involved — Node spawns Node directly. Dependency branches are
 - **Working directory** — project root (agent creates worktrees as needed)
 - **MCP servers** — inherited from `~/.claude.json` (no extra config needed)
 - **Full tool access** — all built-in tools plus all MCP tools
-- **Permission mode** — `bypassPermissions` (no interactive prompts)
+- **Permission bypass** — runtime-owned; Claude uses `--dangerously-skip-permissions`, while Copilot uses `--autopilot --allow-all --no-ask-user` (no dashboard `permissionMode` control)
 - **Output format** — `stream-json` (real-time streaming for live dashboard + completion recovery)
 
 ### Post-Completion

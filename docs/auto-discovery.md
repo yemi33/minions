@@ -250,10 +250,12 @@ Combines:
 ```bash
 claude -p --system-prompt-file <sysprompt-file> \
   --output-format stream-json --max-turns 100 --verbose \
-  --permission-mode bypassPermissions
+  --dangerously-skip-permissions
 # Prompt text is piped via stdin (not passed as an arg).
 # Agent dispatches route through engine/spawn-agent.js; CC / doc-chat use a direct
 # spawn path in engine/llm.js that bypasses spawn-agent.js entirely.
+# Permission bypass is runtime-owned: Copilot uses
+# --autopilot --allow-all --no-ask-user instead.
 ```
 
 - Process runs in the worktree directory (or rootDir for reviews)
