@@ -1135,9 +1135,13 @@ function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
 
-  const docEditOnly = /\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|fix)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\b/.test(text)
-    && !/\b(dispatch|delegate|assign|work item|task|ticket|agent|bug|issue|code|test|tests|build|ci|pr|pull request|crash|error|exception|regression|feature|refactor|implement|investigate|audit|review|verify|endpoint|api|ui|workflow|integration)\b/.test(text);
-  if (docEditOnly) return false;
+  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
+    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
+  const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
+    || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
+  if (explicitDocEdit && !explicitOrchestration) return false;
 
   return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
     || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)

@@ -47655,6 +47655,9 @@ async function testDashboardPureHelpers() {
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
     assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
     assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
     assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
@@ -47670,6 +47673,18 @@ async function testDashboardPureHelpers() {
     assert.ok(parsed.answer.includes('Summary of the document.'));
     assert.ok(!parsed.answer.includes('===ACTIONS==='),
       'ignored doc-chat action blocks should be stripped from display text');
+  });
+
+  await test('_parseDocChatResultText keeps plan edits with engineering terms on the edit path', () => {
+    const message = 'Update this plan to add tests for the API section';
+    const allowActions = _messageRequestsOrchestration(message);
+    assert.strictEqual(allowActions, false,
+      'explicit plan/document edits must not allow action parsing just because they mention tests or APIs');
+    const text = `Updated the plan.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Do not run","workType":"test"}]\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nUpdated plan body with API test coverage notes.`;
+    const parsed = _parseDocChatResultText(text, { allowActions });
+    assert.strictEqual(parsed.answer, 'Updated the plan.');
+    assert.strictEqual(parsed.content, 'Updated plan body with API test coverage notes.');
+    assert.deepStrictEqual(parsed.actions, []);
   });
 
   await test('_parseDocChatResultText accepts actions only when explicitly allowed', () => {
