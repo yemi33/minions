@@ -184,6 +184,7 @@ function workItemCreateFingerprint(item, options = {}) {
     type: routing.normalizeWorkType(item?.type || item?.workType, WORK_TYPE.IMPLEMENT),
     priority: normalizeWorkItemDedupText(item?.priority || 'medium').toLowerCase(),
     description: normalizeWorkItemDedupText(item?.description),
+    scope: normalizeWorkItemDedupText(item?.scope).toLowerCase(),
     prIdentity: normalizeWorkItemDedupPrIdentity(item, project),
   };
 }
@@ -211,6 +212,7 @@ function findDuplicateWorkItemCreate(items, candidate, options = {}) {
       existingFingerprint.type === candidateFingerprint.type &&
       existingFingerprint.priority === candidateFingerprint.priority &&
       existingFingerprint.description === candidateFingerprint.description &&
+      existingFingerprint.scope === candidateFingerprint.scope &&
       existingFingerprint.prIdentity === candidateFingerprint.prIdentity;
   }) || null;
 }
@@ -1654,6 +1656,7 @@ async function executeCCActions(actions) {
             priority: action.priority || 'medium', description: action.description || '',
             status: WI_STATUS.PENDING, created: new Date().toISOString(),
             createdBy: 'command-center', project: targetProject?.name || project,
+            ...(action.scope ? { scope: action.scope } : {}),
             ...(agentHints.length ? { preferred_agent: agentHints[0], agents: agentHints } : {}),
             ...(isOneShot ? { oneShot: true } : {}),
           };

@@ -29797,6 +29797,8 @@ async function testPrWriteRaceConditions() {
       'CC client should forward action.agent (singular) so the server can preserve soft preference');
     assert.ok(/agents:\s*action\.agents/.test(dispatchCase),
       'CC client should still forward action.agents (plural) for multi-agent / fan-out cases');
+    assert.ok(/scope:\s*action\.scope/.test(dispatchCase),
+      'CC client should forward action.scope so explicit fan-out requests reach /api/work-items');
   });
 
   await test('CC review action sets oneShot on dispatched work item', () => {
@@ -30929,6 +30931,8 @@ async function testDashboardAuditMedium() {
       'dedup must block pending, dispatched, and queued items');
     assert.ok(src.includes('workItemCreateFingerprint') && src.includes('description: normalizeWorkItemDedupText'),
       'dedup fingerprint must include normalized description so same-title distinct items can coexist');
+    assert.ok(src.includes('scope: normalizeWorkItemDedupText'),
+      'dedup fingerprint must include scope so explicit fan-out requests can coexist with regular items');
     assert.ok(src.includes('prIdentity: normalizeWorkItemDedupPrIdentity'),
       'dedup fingerprint must include PR identity so distinct PR-scoped items can coexist');
   });
@@ -49822,6 +49826,71 @@ async function testDashboardPureHelpers() {
       assert.strictEqual(second[0].duplicateOf, first[0].id);
       const items = isolated.shared.safeJson(wiPath) || [];
       assert.strictEqual(items.length, 1, 'action replay must not append a second item');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: CC fan-out action preserves scope while replay deduplicates', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const action = {
+        type: 'dispatch',
+        workType: 'explore',
+        title: 'Fan out dashboard audit',
+        priority: 'medium',
+        description: 'Have all available agents audit the dashboard.',
+        scope: 'fan-out',
+      };
+
+      const first = await isolated.dashboard.executeCCActions([action]);
+      const second = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(first.length, 1);
+      assert.strictEqual(first[0].ok, true);
+      assert.ok(!first[0].duplicate, 'first fan-out action should create the work item');
+      assert.strictEqual(second.length, 1);
+      assert.strictEqual(second[0].duplicate, true, 'fan-out action replay must still deduplicate');
+      assert.strictEqual(second[0].duplicateOf, first[0].id);
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.strictEqual(items.length, 1, 'fan-out replay must not append a duplicate work item');
+      assert.strictEqual(items[0].scope, 'fan-out', 'explicit fan-out scope must survive CC action creation');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: explicit fan-out scope does not collide with regular item', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const regularAction = {
+        type: 'dispatch',
+        workType: 'explore',
+        title: 'Fan out dashboard audit',
+        priority: 'medium',
+        description: 'Have all available agents audit the dashboard.',
+      };
+      const fanOutAction = { ...regularAction, scope: 'fan-out' };
+
+      const regular = await isolated.dashboard.executeCCActions([regularAction]);
+      const fanOut = await isolated.dashboard.executeCCActions([fanOutAction]);
+      const fanOutReplay = await isolated.dashboard.executeCCActions([fanOutAction]);
+
+      assert.strictEqual(regular.length, 1);
+      assert.strictEqual(regular[0].ok, true);
+      assert.ok(!regular[0].duplicate, 'regular action should create the first work item');
+      assert.strictEqual(fanOut.length, 1);
+      assert.strictEqual(fanOut[0].ok, true);
+      assert.ok(!fanOut[0].duplicate, 'explicit fan-out action must create a distinct work item');
+      assert.notStrictEqual(fanOut[0].id, regular[0].id);
+      assert.strictEqual(fanOutReplay.length, 1);
+      assert.strictEqual(fanOutReplay[0].duplicate, true, 'fan-out replay must still deduplicate against fan-out item');
+      assert.strictEqual(fanOutReplay[0].duplicateOf, fanOut[0].id);
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.strictEqual(items.length, 2, 'regular and fan-out intent must coexist');
+      assert.deepStrictEqual(items.map(i => i.scope || ''), ['', 'fan-out']);
     } finally {
       isolated.cleanup();
     }
