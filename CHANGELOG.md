@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1702 (2026-05-04)
+
+### Other
+- Fix re-review dispatch for pending live status
+
 ## 0.1.1700 (2026-05-04)
 
 ### Features
