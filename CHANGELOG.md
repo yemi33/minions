@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1712 (2026-05-04)
+
+### Fixes
+- not a git repository" stderr on npm-installed clients
+
+### Other
+- Silence git revision lookup stderr
+
 ## 0.1.1711 (2026-05-04)
 
 ### Other

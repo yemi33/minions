@@ -36,6 +36,7 @@ const ISOLATED_MODULES = [
   '../engine/playbook',
   '../engine/routing',
   '../engine/issues',
+  '../engine/project-discovery',
   '../engine.js',
 ];
 
@@ -463,6 +464,32 @@ async function testBranchSanitization() {
 
   await test('sanitizeBranch handles empty string', () => {
     assert.strictEqual(shared.sanitizeBranch(''), '');
+  });
+
+  await test('buildWorktreeDirName uses compact Windows names', () => {
+    const dir = shared.buildWorktreeDirName({
+      dispatchId: 'ralph-fix-morhx3ac0005422c',
+      projectName: 'SkypeSpaces-Android-With-A-Very-Long-Project-Name',
+      branchName: 'feat/W-morhwytr00036c70-fix-review-dispatch-for-an-extremely-long-windows-branch-name',
+      platform: 'win32',
+    });
+
+    assert.strictEqual(dir, 'W-morhx3ac0005422c');
+    assert.ok(dir.length <= 32, `Windows worktree dir should stay compact: ${dir}`);
+    assert.ok(!dir.includes('SkypeSpaces'), 'Windows worktree dir must not embed project name');
+    assert.ok(!dir.includes('fix-review-dispatch'), 'Windows worktree dir must not embed branch name');
+    assert.ok(!dir.includes('/') && !dir.includes('\\'), 'Windows worktree dir must be a single path segment');
+  });
+
+  await test('buildWorktreeDirName preserves legacy descriptive names off Windows', () => {
+    const dir = shared.buildWorktreeDirName({
+      dispatchId: 'ralph-fix-morhx3ac0005422c',
+      projectName: 'minions',
+      branchName: 'work/W-morhwytr00036c70',
+      platform: 'linux',
+    });
+
+    assert.strictEqual(dir, 'minions-work/W-morhwytr00036c70-morhx3ac0005422c');
   });
 }
 
@@ -3790,18 +3817,17 @@ async function testRuntimeFleetHelpers() {
   });
 
   await test('minions.js buildProjectEntry sets workSources defaults — CLI add path mirrors dashboard add path', () => {
-    // The dashboard's POST /api/projects has always set workSources defaults.
-    // The CLI add path used to omit them, so projects added via `minions add`
-    // silently failed work-item discovery. Source-string check ensures the
-    // defaults stay in lockstep with dashboard.js (search "workSources").
+    // The dashboard and CLI now share project-discovery.js for project entries;
+    // exercise the helper directly so both entry points keep the same defaults.
+    const discovery = require('../engine/project-discovery');
+    const entry = discovery.buildProjectEntry({ name: 'demo', localPath: 'D:\\demo', repoHost: 'ado' });
+    assert.deepStrictEqual(entry.workSources, {
+      pullRequests: { enabled: true, cooldownMinutes: 30 },
+      workItems: { enabled: true, cooldownMinutes: 0 },
+    });
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
-    const idx = src.indexOf('function buildProjectEntry');
-    assert.ok(idx >= 0, 'buildProjectEntry should exist in minions.js');
-    const block = src.slice(idx, idx + 1500);
-    assert.ok(block.includes('workSources'),
-      'buildProjectEntry must set workSources defaults — without them, CLI-added projects silently skip discovery');
-    assert.ok(block.includes('pullRequests') && block.includes('workItems'),
-      'workSources should declare both pullRequests and workItems sub-blocks');
+    assert.ok(src.includes('projectDiscovery.buildProjectEntry'),
+      'minions.js should use shared project-discovery buildProjectEntry');
   });
 
   await test('engine.js discoverFromWorkItems calls _warnSilentDiscoveryOnce when bailing', () => {
@@ -4148,6 +4174,11 @@ async function testProjectHelpers() {
     assert.strictEqual(result, 'https://dev.azure.com/myorg');
   });
 
+  await test('getAdoOrgBase preserves DefaultCollection from visualstudio.com prUrlBase', () => {
+    const project = { prUrlBase: 'https://myorg.visualstudio.com/DefaultCollection/myproj/_git/repo/pullrequest/' };
+    assert.strictEqual(shared.getAdoOrgBase(project), 'https://myorg.visualstudio.com/DefaultCollection');
+  });
+
   await test('getAdoOrgBase constructs from adoOrg (short name)', () => {
     const project = { adoOrg: 'myorg' };
     assert.strictEqual(shared.getAdoOrgBase(project), 'https://dev.azure.com/myorg');
@@ -4156,6 +4187,75 @@ async function testProjectHelpers() {
   await test('getAdoOrgBase constructs from adoOrg (FQDN)', () => {
     const project = { adoOrg: 'myorg.visualstudio.com' };
     assert.strictEqual(shared.getAdoOrgBase(project), 'https://myorg.visualstudio.com');
+  });
+
+  await test('parseAdoRemoteUrl handles dev.azure.com, visualstudio.com, and DefaultCollection remotes', () => {
+    const discovery = require('../engine/project-discovery');
+    const cases = [
+      [
+        'https://dev.azure.com/fabrikam/Proj%20Name/_git/Repo.Name',
+        { org: 'fabrikam', project: 'Proj Name', repoName: 'Repo.Name', orgUrl: 'https://dev.azure.com/fabrikam' },
+      ],
+      [
+        'https://fabrikam.visualstudio.com/Proj/_git/Repo',
+        { org: 'fabrikam', project: 'Proj', repoName: 'Repo', orgUrl: 'https://fabrikam.visualstudio.com' },
+      ],
+      [
+        'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/Repo.git',
+        { org: 'fabrikam', project: 'Proj', repoName: 'Repo', orgUrl: 'https://fabrikam.visualstudio.com/DefaultCollection' },
+      ],
+    ];
+    for (const [remoteUrl, expected] of cases) {
+      const parsed = discovery.parseAdoRemoteUrl(remoteUrl);
+      assert.ok(parsed, `Expected ${remoteUrl} to parse as ADO`);
+      assert.strictEqual(parsed.org, expected.org);
+      assert.strictEqual(parsed.project, expected.project);
+      assert.strictEqual(parsed.repoName, expected.repoName);
+      assert.strictEqual(parsed.orgUrl, expected.orgUrl);
+      assert.strictEqual(parsed.repoHost, 'ado');
+    }
+  });
+
+  await test('discoverProjectMetadata uses az repos metadata to populate ADO repository GUID and canonical URL', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    fs.writeFileSync(path.join(repoDir, 'package.json'), JSON.stringify({ name: 'legacy-repo' }));
+    const guid = '11111111-2222-3333-4444-555555555555';
+    const calls = [];
+    const execFileSync = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') return 'refs/remotes/origin/master\n';
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/Repo.git\n';
+      if (cmd === 'az' && args.slice(0, 2).join(' ') === 'repos show') {
+        return JSON.stringify({
+          id: guid,
+          name: 'CanonicalRepo',
+          remoteUrl: 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo',
+          webUrl: 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo',
+          project: { name: 'CanonicalProj' },
+        });
+      }
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.repoHost, 'ado');
+    assert.strictEqual(detected.org, 'fabrikam');
+    assert.strictEqual(detected.project, 'CanonicalProj');
+    assert.strictEqual(detected.repoName, 'CanonicalRepo');
+    assert.strictEqual(detected.repositoryId, guid);
+    assert.strictEqual(detected.prUrlBase, 'https://fabrikam.visualstudio.com/DefaultCollection/Proj/_git/CanonicalRepo/pullrequest/');
+    assert.ok(calls.some(([cmd, args]) => cmd === 'az' && args.includes('repos') && args.includes('show')),
+      'ADO discovery should prefer az repos show after parsing the remote');
+  });
+
+  await test('dashboard and CLI project add use shared project discovery helpers', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
+    assert.ok(dashboardSrc.includes("require('./engine/project-discovery')"),
+      'dashboard project add/scan should use shared project-discovery');
+    assert.ok(cliSrc.includes("require('./engine/project-discovery')"),
+      'CLI project add/scan should use shared project-discovery');
   });
 }
 
@@ -9212,8 +9312,8 @@ async function testWorktreeManagement() {
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('worktreeDirMatchesBranch'),
-      'Post-merge cleanup should use the shared slug-boundary helper instead of fuzzy substring matching');
+    assert.ok(src.includes('worktreeMatchesBranch'),
+      'Post-merge cleanup should use the shared branch-aware helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
   });
@@ -29337,6 +29437,20 @@ async function testCheckpointResume() {
       'Should match simple branch names with suffix');
   });
 
+  await test('worktreeMatchesBranch falls back to actual git branch for compact dirs', () => {
+    const cleanup = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+    const { worktreeMatchesBranch } = cleanup;
+    assert.ok(typeof worktreeMatchesBranch === 'function',
+      'worktreeMatchesBranch should be exported');
+
+    assert.ok(worktreeMatchesBranch('w-morhx3ac0005422c', 'work/W-morhwytr00036c70', 'work/W-morhwytr00036c70'),
+      'Compact worktree dirs should match by actual branch metadata');
+    assert.ok(!worktreeMatchesBranch('w-morhx3ac0005422c', 'work/W-other', 'work/W-morhwytr00036c70'),
+      'Actual branch metadata should not match unrelated branches');
+    assert.ok(worktreeMatchesBranch('minions-work/w-morhwytr00036c70-morhx3ac0005422c', 'work/W-morhwytr00036c70', ''),
+      'Legacy dir-name matching should remain available as a fallback');
+  });
+
   // ── Behavioral: readdirSync isolation prevents cascade failures ──
 
   await test('cleanup temp scan continues when one directory is unreadable', () => {
@@ -29382,15 +29496,17 @@ async function testCheckpointResume() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('function worktreeDirMatchesBranch'),
       'Should define worktreeDirMatchesBranch helper');
+    assert.ok(src.includes('function worktreeMatchesBranch'),
+      'Should define branch-aware worktree matching helper');
     // The inline pattern should no longer appear — only the helper call
     const inlinePatternCount = (src.match(/dirLower === branchSlug \|\| dirLower\.includes\(branchSlug/g) || []).length;
     assert.strictEqual(inlinePatternCount, 1,
       'Inline branch matching should appear only once (in the helper definition), not duplicated in call sites');
-    // Helper should be called in the worktree cleanup section
-    assert.ok(src.includes('worktreeDirMatchesBranch(dirLower'),
-      'Should call worktreeDirMatchesBranch with dirLower');
-    assert.ok(src.includes('worktreeDirMatchesBranch(entryDirLower'),
-      'Should call worktreeDirMatchesBranch with entryDirLower');
+    // Cleanup call sites should use the branch-aware wrapper so compact Windows dirs still match.
+    assert.ok(src.includes('worktreeMatchesBranch(dirLower'),
+      'Should call worktreeMatchesBranch with dirLower');
+    assert.ok(src.includes('worktreeMatchesBranch(entryDirLower'),
+      'Should call worktreeMatchesBranch with entryDirLower');
   });
 
   await test('cleanup.js wraps swept KB and PRD migration readdirSync individually', () => {
@@ -30825,26 +30941,22 @@ async function testStatusMutationGuards() {
     assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
   });
 
-  await test('dashboard.js: project git metadata uses hidden direct git calls and add invalidates status cache', () => {
+  await test('dashboard.js: project git metadata uses shared discovery and add invalidates status cache', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const helperStart = src.indexOf('function _execGitInRepo');
-    const helperEnd = src.indexOf('async function handleProjectsAdd', helperStart);
-    const helperBody = src.slice(helperStart, helperEnd);
-    assert.ok(helperBody.includes("execFileSync('git'"), 'project git helper should execute git directly');
-    assert.ok(helperBody.includes('windowsHide: true'), 'project git helper should hide Windows git console windows');
+    const discoverySrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'project-discovery.js'), 'utf8');
+    assert.ok(discoverySrc.includes("execFileSync('git'"), 'shared project discovery should execute git directly');
+    assert.ok(discoverySrc.includes('windowsHide: true'), 'shared project discovery should hide Windows git console windows');
 
     const addStart = src.indexOf('async function handleProjectsAdd');
     const addEnd = src.indexOf('async function handleProjectsRemove', addStart);
     const addBody = src.slice(addStart, addEnd);
-    assert.ok(addBody.includes("_execGitInRepo(target, ['symbolic-ref', 'refs/remotes/origin/HEAD']"), 'handleProjectsAdd should resolve origin HEAD with the hidden git helper');
-    assert.ok(addBody.includes("if (!head) throw new Error('empty git ref');"), 'handleProjectsAdd should fall back to main when git returns an empty branch ref');
-    assert.ok(addBody.includes("_execGitInRepo(target, ['remote', 'get-url', 'origin']"), 'handleProjectsAdd should resolve remotes with the hidden git helper');
+    assert.ok(addBody.includes('projectDiscovery.discoverProjectMetadata(target)'), 'handleProjectsAdd should resolve metadata with shared project discovery');
     assert.ok(addBody.includes('invalidateStatusCache();'), 'handleProjectsAdd should invalidate cached status so refresh sees the new project immediately');
 
     const scanStart = src.indexOf('async function handleProjectsScan');
     const scanEnd = src.indexOf('async function handleFileBug', scanStart);
     const scanBody = src.slice(scanStart, scanEnd);
-    assert.ok(scanBody.includes("_execGitInRepo(repoPath, ['remote', 'get-url', 'origin'], 3000)"), 'handleProjectsScan should reuse the hidden git helper for repo metadata');
+    assert.ok(scanBody.includes('projectDiscovery.discoverProjectMetadata(repoPath'), 'handleProjectsScan should reuse shared project discovery for repo metadata');
     assert.ok(!scanBody.includes("execSync('git remote get-url origin'"), 'handleProjectsScan should not shell out through execSync for repo metadata');
   });
 }
@@ -31368,10 +31480,10 @@ async function testDashboardAuditMedium() {
       'duplicate response must identify the existing item via duplicateOf');
     assert.ok(src.includes('WI_STATUS.PENDING') && src.includes('WI_STATUS.DISPATCHED') && src.includes('WI_STATUS.QUEUED'),
       'dedup must block pending, dispatched, and queued items');
-    assert.ok(src.includes('workItemCreateFingerprint') && src.includes('description: normalizeWorkItemDedupText'),
-      'dedup fingerprint must include normalized description so same-title distinct items can coexist');
-    assert.ok(src.includes('scope: normalizeWorkItemDedupText'),
-      'dedup fingerprint must include scope so explicit fan-out requests can coexist with regular items');
+    assert.ok(src.includes('workItemCreateFingerprint'),
+      'dedup must use the shared work-item create fingerprint helper');
+    assert.ok(src.includes('isCompatibleWorkItemCreateScope'),
+      'dedup must keep explicit fan-out requests distinct from regular items');
     assert.ok(src.includes('prIdentity: normalizeWorkItemDedupPrIdentity'),
       'dedup fingerprint must include PR identity so distinct PR-scoped items can coexist');
   });
@@ -50777,7 +50889,7 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('work-item create dedup: same title with different description creates a distinct item', () => {
+  await test('work-item create dedup: same title with different description and metadata deduplicates', () => {
     const isolated = loadIsolatedDashboardForDedup();
     try {
       const wiPath = path.join(isolated.dir, 'work-items.json');
@@ -50792,17 +50904,214 @@ async function testDashboardPureHelpers() {
         ...base,
         id: 'W-first-description',
         description: 'Retry dropped streams before falling back.',
+        acceptanceCriteria: ['Retry once before surfacing an error'],
+        references: ['https://github.com/yemi33/minions/issues/2044'],
       });
       const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
         ...base,
         id: 'W-second-description',
+        priority: 'medium',
         description: 'Persist retry diagnostics to live-output.log.',
+        acceptanceCriteria: ['Write diagnostics to the live log'],
+        references: ['github:yemi33/minions#2044'],
       });
 
       assert.strictEqual(first.created, true);
-      assert.strictEqual(second.created, true, 'different normalized descriptions must not deduplicate');
+      assert.strictEqual(second.created, false, 'same normalized title/type must deduplicate despite changed metadata');
+      assert.strictEqual(second.duplicateOf, 'W-first-description');
       const items = isolated.shared.safeJson(wiPath) || [];
-      assert.deepStrictEqual(items.map(i => i.id), ['W-first-description', 'W-second-description']);
+      assert.deepStrictEqual(items.map(i => i.id), ['W-first-description']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: title normalization ignores case and whitespace runs', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-normalized-title',
+        title: '  Harden   Command Center\nStream Retry Resilience  ',
+        type: 'fix',
+        priority: 'high',
+        description: 'First wording.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-case-title',
+        title: 'harden command center stream retry resilience',
+        type: 'fix',
+        priority: 'high',
+        description: 'Second wording.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, false, 'case and whitespace variants of the same title must deduplicate');
+      assert.strictEqual(second.duplicateOf, 'W-normalized-title');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), ['W-normalized-title']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same title in different project queues remains distinct', () => {
+    const projectA = { name: 'minions', localPath: path.join(os.tmpdir(), 'minions-dedup-project-a') };
+    const projectB = { name: 'other', localPath: path.join(os.tmpdir(), 'minions-dedup-project-b') };
+    const isolated = loadIsolatedDashboardForDedup({ projects: [projectA, projectB], agents: {}, engine: {} });
+    try {
+      const pathA = isolated.shared.projectWorkItemsPath(projectA);
+      const pathB = isolated.shared.projectWorkItemsPath(projectB);
+      const base = {
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'Same title, different project.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+
+      const first = isolated.dashboard._createWorkItemWithDedup(pathA, {
+        ...base,
+        id: 'W-project-a',
+        project: projectA.name,
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(pathB, {
+        ...base,
+        id: 'W-project-b',
+        project: projectB.name,
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'same-title work in a different project queue must remain distinct');
+      assert.deepStrictEqual((isolated.shared.safeJson(pathA) || []).map(i => i.id), ['W-project-a']);
+      assert.deepStrictEqual((isolated.shared.safeJson(pathB) || []).map(i => i.id), ['W-project-b']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: same title with different work type remains distinct', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const base = {
+        title: 'Loosen work item create dedupe',
+        priority: 'high',
+        description: 'Same title, different work type.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      };
+
+      const first = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-fix-type',
+        type: 'fix',
+      });
+      const second = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        ...base,
+        id: 'W-review-type',
+        type: 'review',
+      });
+
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.created, true, 'same title with an incompatible work type must remain distinct');
+      assert.deepStrictEqual((isolated.shared.safeJson(wiPath) || []).map(i => i.id), ['W-fix-type', 'W-review-type']);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: done and failed items do not block new creation', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      fs.writeFileSync(wiPath, JSON.stringify([
+        {
+          id: 'W-done-duplicate-title',
+          title: 'Loosen work item create dedupe',
+          type: 'fix',
+          priority: 'high',
+          description: 'Completed prior item.',
+          status: 'done',
+          created: new Date().toISOString(),
+        },
+        {
+          id: 'W-failed-duplicate-title',
+          title: 'Loosen work item create dedupe',
+          type: 'fix',
+          priority: 'high',
+          description: 'Failed prior item.',
+          status: 'failed',
+          created: new Date().toISOString(),
+        },
+      ]));
+
+      const created = isolated.dashboard._createWorkItemWithDedup(wiPath, {
+        id: 'W-new-duplicate-title',
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'New active item.',
+        status: 'pending',
+        created: new Date().toISOString(),
+      });
+
+      assert.strictEqual(created.created, true, 'inactive work items must not block same-title creation');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.id), [
+        'W-done-duplicate-title',
+        'W-failed-duplicate-title',
+        'W-new-duplicate-title',
+      ]);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('work-item create dedup: configured window limits active title matches', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const nowMs = Date.parse('2026-05-04T18:00:00.000Z');
+      const windowMs = 15 * 60 * 1000;
+      const candidate = {
+        id: 'W-candidate',
+        title: 'Loosen work item create dedupe',
+        type: 'fix',
+        priority: 'medium',
+        description: 'New metadata should not matter inside the dedupe window.',
+        status: 'pending',
+        created: new Date(nowMs).toISOString(),
+      };
+      const recentDuplicate = {
+        id: 'W-recent-title-match',
+        title: 'loosen   work item create dedupe',
+        type: 'fix',
+        priority: 'high',
+        description: 'Different old metadata.',
+        status: 'queued',
+        created: new Date(nowMs - windowMs + 1).toISOString(),
+      };
+      const staleDuplicate = {
+        ...recentDuplicate,
+        id: 'W-stale-title-match',
+        created: new Date(nowMs - windowMs - 1).toISOString(),
+      };
+
+      assert.strictEqual(
+        isolated.dashboard._findDuplicateWorkItemCreate([recentDuplicate], candidate, { nowMs, windowMs })?.id,
+        recentDuplicate.id,
+        'recent active title match must deduplicate within the configured window'
+      );
+      assert.strictEqual(
+        isolated.dashboard._findDuplicateWorkItemCreate([staleDuplicate], candidate, { nowMs, windowMs }),
+        null,
+        'active title match outside the configured window must not block new creation'
+      );
     } finally {
       isolated.cleanup();
     }

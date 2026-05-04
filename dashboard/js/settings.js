@@ -75,7 +75,7 @@ async function openSettings() {
       settingsField('Heartbeat Timeout', 'set-heartbeatTimeout', e.heartbeatTimeout || 300000, 'ms', 'No output = dead after this') +
       settingsField('Worktree Create Timeout', 'set-worktreeCreateTimeout', e.worktreeCreateTimeout || 300000, 'ms', 'Timeout for git worktree add (increase for large repos/Windows)') +
       settingsField('Worktree Create Retries', 'set-worktreeCreateRetries', e.worktreeCreateRetries || 1, '', 'Retry count for transient worktree add failures (0-3)') +
-      settingsField('Worktree Root', 'set-worktreeRoot', e.worktreeRoot || '../worktrees', '', 'Relative path for git worktrees') +
+      settingsField('Worktree Root', 'set-worktreeRoot', e.worktreeRoot || '../worktrees', '', 'Relative or absolute path for git worktrees; on Windows prefer a short path like C:\\wt') +
       settingsField('Idle Alert', 'set-idleAlertMinutes', e.idleAlertMinutes || 15, 'min', 'Alert after agent idle this long') +
       settingsField('Shutdown Timeout', 'set-shutdownTimeout', e.shutdownTimeout || 300000, 'ms', 'Max wait for agents during graceful shutdown') +
       settingsField('Restart Grace Period', 'set-restartGracePeriod', e.restartGracePeriod || 1200000, 'ms', 'Grace period before orphan detection on restart') +
