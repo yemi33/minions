@@ -140,6 +140,42 @@ function shouldRunNow(schedule, lastRunAt) {
   return true;
 }
 
+function createScheduledWorkItem(sched) {
+  if (!sched || !sched.id || !sched.title) {
+    throw new Error('schedule id and title are required');
+  }
+  const workItemId = `sched-${sched.id}-${Date.now()}`;
+  return {
+    id: workItemId,
+    title: resolveScheduleTemplateVars(sched.title),
+    type: routing.normalizeWorkType(sched.type, WORK_TYPE.IMPLEMENT),
+    priority: sched.priority || 'medium',
+    description: resolveScheduleTemplateVars(sched.description || sched.title),
+    status: WI_STATUS.PENDING,
+    created: ts(),
+    createdBy: 'scheduler',
+    agent: sched.agent || null,
+    ...(sched.agentLock === true || sched.hardAgent === true ? { agentLock: true } : {}),
+    project: sched.project || null,
+    _scheduleId: sched.id,
+  };
+}
+
+function writeScheduleRunEntry(runs, scheduleId, workItemId) {
+  const existing = typeof runs[scheduleId] === 'object' && runs[scheduleId] ? runs[scheduleId] : {};
+  runs[scheduleId] = { ...existing, lastRun: ts(), lastWorkItemId: workItemId };
+  return runs[scheduleId];
+}
+
+function recordScheduleRun(scheduleId, workItemId) {
+  let entry = null;
+  mutateJsonFileLocked(SCHEDULE_RUNS_PATH, (runs) => {
+    entry = writeScheduleRunEntry(runs, scheduleId, workItemId);
+    return runs;
+  }, { defaultValue: {} });
+  return entry;
+}
+
 /**
  * Discover work items from configured schedules.
  * @param {object} config -- full config object
@@ -164,21 +200,8 @@ function discoverScheduledWork(config) {
       // Substitute schedule-time template vars (e.g. {{date}}) before the work
       // item is written — single-pass playbook rendering can't reach placeholders
       // embedded inside task_description, so they must be resolved up front.
-      const workItemId = `sched-${sched.id}-${Date.now()}`;
-      work.push({
-        id: workItemId,
-        title: resolveScheduleTemplateVars(sched.title),
-        type: routing.normalizeWorkType(sched.type, WORK_TYPE.IMPLEMENT),
-        priority: sched.priority || 'medium',
-        description: resolveScheduleTemplateVars(sched.description || sched.title),
-        status: WI_STATUS.PENDING,
-        created: ts(),
-        createdBy: 'scheduler',
-        agent: sched.agent || null,
-        ...(sched.agentLock === true || sched.hardAgent === true ? { agentLock: true } : {}),
-        project: sched.project || null,
-        _scheduleId: sched.id,
-      });
+      const workItem = createScheduledWorkItem(sched);
+      work.push(workItem);
 
       // Record run time AND work-item ID at dispatch time — preserve existing
       // completion fields (lastResult, lastCompletedAt). Writing lastWorkItemId
@@ -186,12 +209,20 @@ function discoverScheduledWork(config) {
       // the dispatched work item crashes or the engine restarts before
       // lifecycle.runPostCompletionHooks runs. This is the fix that closes
       // the double-fire window alongside the same-minute guard (W-mo3zu273f8tm).
-      const existing = typeof runs[sched.id] === 'object' && runs[sched.id] ? runs[sched.id] : {};
-      runs[sched.id] = { ...existing, lastRun: ts(), lastWorkItemId: workItemId };
+      writeScheduleRunEntry(runs, sched.id, workItem.id);
     }
   }, { defaultValue: {} });
 
   return work;
 }
 
-module.exports = { parseCronExpr, parseCronField, shouldRunNow, discoverScheduledWork, resolveScheduleTemplateVars, SCHEDULE_RUNS_PATH };
+module.exports = {
+  parseCronExpr,
+  parseCronField,
+  shouldRunNow,
+  discoverScheduledWork,
+  createScheduledWorkItem,
+  recordScheduleRun,
+  resolveScheduleTemplateVars,
+  SCHEDULE_RUNS_PATH,
+};

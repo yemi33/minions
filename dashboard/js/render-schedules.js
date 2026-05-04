@@ -302,6 +302,7 @@ function renderSchedules(schedules) {
         '<td>' + enabledBadge + '</td>' +
         '<td><span class="pr-date">' + escHtml(lastRun) + '</span></td>' +
         '<td style="white-space:nowrap">' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();runScheduleNow(\'' + escHtml(s.id) + '\',this)" title="Run now">Run now</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';border-color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';margin-right:4px" onclick="event.stopPropagation();toggleScheduleEnabled(\'' + escHtml(s.id) + '\',' + !s.enabled + ')" title="' + (s.enabled ? 'Disable' : 'Enable') + '">' + (s.enabled ? '&#x23F8;' : '&#x25B6;') + '</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();openEditScheduleModal(\'' + escHtml(s.id) + '\')" title="Edit">&#x270E;</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteSchedule(\'' + escHtml(s.id) + '\')" title="Delete">&#x2715;</button>' +
@@ -336,6 +337,7 @@ function openScheduleDetail(id) {
 
   document.getElementById('modal-title').innerHTML = escHtml(s.title || s.id) +
     ' <div style="display:flex;gap:4px;margin-top:4px">' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" onclick="runScheduleNow(\'' + escHtml(s.id) + '\',this)">Run now</button>' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--blue)" onclick="closeModal();openEditScheduleModal(\'' + escHtml(s.id) + '\')">Edit</button>' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + '" onclick="toggleScheduleEnabled(\'' + escHtml(s.id) + '\',' + !s.enabled + ');closeModal()">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" onclick="deleteSchedule(\'' + escHtml(s.id) + '\');closeModal()">Delete</button>' +
@@ -544,6 +546,26 @@ async function toggleScheduleEnabled(id, enabled) {
   } catch (e) { _showScheduleError('Toggle error: ' + e.message); refresh(); }
 }
 
+async function runScheduleNow(id, btn) {
+  if (btn) { btn.textContent = 'Running...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  try {
+    const res = await fetch('/api/schedules/run-now', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (res.ok) {
+      showToast('cmd-toast', 'Schedule run queued', true);
+      refresh();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      showToast('cmd-toast', 'Run failed: ' + (d.error || 'unknown'), false);
+    }
+  } catch (e) {
+    showToast('cmd-toast', 'Run error: ' + e.message, false);
+  }
+  if (btn) { btn.textContent = 'Run now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+}
+
 async function deleteSchedule(id) {
   if (!confirm('Delete scheduled task "' + id + '"?')) return;
   showToast('cmd-toast', 'Schedule deleted', true);
@@ -562,4 +584,4 @@ async function deleteSchedule(id) {
 // Expose _generateScheduleId globally for the inline oninput handler
 window._generateScheduleId = _generateScheduleId;
 
-window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, openScheduleDetail, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview, _schedPrev, _schedNext, _schedSetView };
+window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, openScheduleDetail, submitSchedule, toggleScheduleEnabled, runScheduleNow, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview, _schedPrev, _schedNext, _schedSetView };
