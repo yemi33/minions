@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1697 (2026-05-04)
+
+### Features
+- guard engine shutdown ownership (#2021)
+- preserve doc-chat final payload (#2019)
+
 ## 0.1.1695 (2026-05-04)
 
 ### Features
