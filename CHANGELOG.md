@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1711 (2026-05-04)
+
+### Other
+- Ensure meetings advance after terminal outcomes
+
 ## 0.1.1710 (2026-05-04)
 
 ### Other
