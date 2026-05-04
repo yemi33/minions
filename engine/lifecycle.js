@@ -1439,12 +1439,19 @@ function updatePrAfterFix(pr, project, source) {
     if (!target) return prs;
     // Never downgrade from approved — fix was dispatched but PR is already approved
     if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+    const fixedAt = ts();
+    const fixedHead = {
+      fixedAt,
+      ...(target.headSha ? { fixedHeadSha: target.headSha } : {}),
+      ...(target._adoHeadCommit ? { fixedAdoHeadCommit: target._adoHeadCommit } : {}),
+      ...(target._adoSourceCommit ? { fixedAdoSourceCommit: target._adoSourceCommit } : {}),
+    };
     if (source === 'pr-human-feedback') {
       if (target.humanFeedback) target.humanFeedback.pendingFix = false;
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
+      target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', ...fixedHead };
       log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
     } else {
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
+      target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', ...fixedHead };
       log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
     }
     return prs;
@@ -2287,6 +2294,10 @@ function reviewVerdictFromCompletion(completion) {
   return normalizeReviewVerdict(completion.verdict || completion.review_verdict || completion.reviewVerdict);
 }
 
+function reviewCompletionHasUsableOutcome(resultSummary, structuredCompletion) {
+  return !!(reviewVerdictFromCompletion(structuredCompletion) || parseReviewVerdict(resultSummary) || isReviewBailout(resultSummary));
+}
+
 function reviewContentMatchesPr(content, pr, project) {
   const text = String(content || '').trim();
   if (!text) return false;
@@ -2745,7 +2756,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const hardContractFail = completionContractFailure?.severity === 'hard'
     || completionContractFailure?.nonTerminal === true;
   const finalResult = hardContractFail ? DISPATCH_RESULT.ERROR : (effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
-  if (type === WORK_TYPE.REVIEW && finalResult === DISPATCH_RESULT.SUCCESS && !skipDoneStatus) {
+  const reviewHasUsableOutcome = reviewCompletionHasUsableOutcome(resultSummary, structuredCompletion);
+  if (type === WORK_TYPE.REVIEW && !skipDoneStatus && !hardContractFail && (effectiveSuccess || reviewHasUsableOutcome)) {
     await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary, structuredCompletion, dispatchItem);
   } else if (type === WORK_TYPE.REVIEW) {
     log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);

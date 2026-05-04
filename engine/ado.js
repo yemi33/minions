@@ -197,6 +197,37 @@ function votesToReviewStatus(votes) {
   return 'pending';
 }
 
+function markFixedAdoHead(pr, headCommit, sourceCommit) {
+  if (pr.reviewStatus !== 'waiting' || !pr.minionsReview?.fixedAt) return false;
+  const next = { ...pr.minionsReview };
+  let changed = false;
+  if (headCommit && next.fixedAdoHeadCommit !== headCommit) {
+    next.fixedAdoHeadCommit = headCommit;
+    changed = true;
+  }
+  if (sourceCommit && next.fixedAdoSourceCommit !== sourceCommit) {
+    next.fixedAdoSourceCommit = sourceCommit;
+    changed = true;
+  }
+  if (changed) pr.minionsReview = next;
+  return changed;
+}
+
+function isFixedAdoHead(pr, headCommit, sourceCommit) {
+  if (pr.reviewStatus !== 'waiting' || !pr.minionsReview?.fixedAt) return false;
+  let hasIdentity = false;
+  if (headCommit && pr.minionsReview.fixedAdoHeadCommit) {
+    hasIdentity = true;
+    if (pr.minionsReview.fixedAdoHeadCommit === headCommit) return true;
+  }
+  if (sourceCommit && pr.minionsReview.fixedAdoSourceCommit) {
+    hasIdentity = true;
+    if (pr.minionsReview.fixedAdoSourceCommit === sourceCommit) return true;
+  }
+  if (hasIdentity) return false;
+  return !pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt;
+}
+
 // ─── ADO Token Cache ─────────────────────────────────────────────────────────
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
@@ -535,6 +566,7 @@ async function pollPrStatus(config) {
       pr._adoSourceCommit = sourceCommit;
       updated = true;
     }
+    if (markFixedAdoHead(pr, headCommit, sourceCommit)) updated = true;
 
     const reviewers = prData.reviewers || [];
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
@@ -558,7 +590,7 @@ async function pollPrStatus(config) {
       }
     } else if (votes.length > 0) {
       if (votes.some(v => v === -10)) {
-        if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
+        if (isFixedAdoHead(pr, headCommit, sourceCommit)) {
           newReviewStatus = 'waiting';
         } else {
           newReviewStatus = 'changes-requested';
@@ -1038,6 +1070,9 @@ async function checkLiveReviewStatus(pr, project) {
     if (!prData) return null;
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';
+    const headCommit = prData.lastMergeCommit?.commitId || prData.lastMergeSourceCommit?.commitId || '';
+    const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
+    if (votes.some(v => v === -10) && isFixedAdoHead(pr, headCommit, sourceCommit)) return 'waiting';
     return votesToReviewStatus(votes);
   } catch (e) {
     log('warn', `Live review check for ${pr.id}: ${e.message}`);

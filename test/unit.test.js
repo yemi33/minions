@@ -27811,6 +27811,471 @@ async function testReviewReDispatchLoop() {
     }
   });
 
+  await test('failed review dispatches do not stamp PR review timestamps needed for redispatch', async () => {
+    const restore = createTestMinionsDir();
+    let originalCheckLiveReviewStatus = null;
+    try {
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries', '../engine/github']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const github = require('../engine/github');
+      originalCheckLiveReviewStatus = github.checkLiveReviewStatus;
+      github.checkLiveReviewStatus = async () => 'pending';
+      const lifecycle = require('../engine/lifecycle');
+      const testDir = freshShared.MINIONS_DIR;
+      const project = {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'demo',
+        prUrlBase: 'https://github.com/octo/demo/pull/',
+      };
+      const config = { projects: [project], agents: { ripley: { name: 'Ripley' } }, engine: {} };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      const prPath = freshShared.projectPrPath(project);
+
+      const initialReviewPr = {
+        id: 'github:octo/demo#101',
+        prNumber: 101,
+        title: 'Needs initial review retry',
+        agent: 'ripley',
+        prdItems: ['W-101'],
+        status: freshShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        lastPushedAt: '2026-05-04T00:00:00.000Z',
+        url: 'https://github.com/octo/demo/pull/101',
+      };
+      freshShared.safeWrite(prPath, [initialReviewPr]);
+
+      await lifecycle.runPostCompletionHooks({
+        id: 'D-review-failed-initial',
+        type: freshShared.WORK_TYPE.REVIEW,
+        agent: 'ripley',
+        task: 'Review PR #101',
+        meta: {
+          source: 'pr',
+          dispatchKey: 'review-demo-PR-101',
+          project,
+          pr: { id: initialReviewPr.id, prNumber: 101, url: initialReviewPr.url },
+          runtimeName: 'copilot',
+        },
+      }, 'ripley', 1, 'Review failed before posting a verdict.', config);
+
+      let [updatedInitial] = freshShared.safeJson(prPath);
+      assert.strictEqual(updatedInitial.reviewStatus, 'pending');
+      assert.ok(!updatedInitial.lastReviewedAt, 'failed initial review must not stamp lastReviewedAt');
+      assert.ok(!updatedInitial.minionsReview?.reviewedAt, 'failed initial review must not stamp minionsReview.reviewedAt');
+      const alreadyReviewed = updatedInitial.lastReviewedAt && (!updatedInitial.lastPushedAt || updatedInitial.lastPushedAt <= updatedInitial.lastReviewedAt);
+      const needsReview = updatedInitial.reviewStatus === 'pending' && !alreadyReviewed;
+      assert.strictEqual(needsReview, true, 'pending PR should remain eligible for initial review redispatch');
+
+      const rereviewPr = {
+        id: 'github:octo/demo#102',
+        prNumber: 102,
+        title: 'Needs re-review retry',
+        agent: 'ripley',
+        prdItems: ['W-102'],
+        status: freshShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'waiting',
+        lastReviewedAt: '2026-05-04T00:00:00.000Z',
+        minionsReview: {
+          reviewer: 'Ripley',
+          reviewedAt: '2026-05-04T00:00:00.000Z',
+          fixedAt: '2026-05-04T00:10:00.000Z',
+          note: 'Fixed, awaiting re-review',
+        },
+        url: 'https://github.com/octo/demo/pull/102',
+      };
+      freshShared.safeWrite(prPath, [rereviewPr]);
+
+      await lifecycle.runPostCompletionHooks({
+        id: 'D-review-failed-rereview',
+        type: freshShared.WORK_TYPE.REVIEW,
+        agent: 'ripley',
+        task: 'Re-review PR #102',
+        meta: {
+          source: 'pr',
+          dispatchKey: 'rereview-demo-PR-102',
+          project,
+          pr: { id: rereviewPr.id, prNumber: 102, url: rereviewPr.url },
+          runtimeName: 'copilot',
+        },
+      }, 'ripley', 1, 'Re-review failed before posting a verdict.', config);
+
+      const [updatedRereview] = freshShared.safeJson(prPath);
+      assert.strictEqual(updatedRereview.lastReviewedAt, rereviewPr.lastReviewedAt,
+        'failed re-review must not advance lastReviewedAt past fixedAt');
+      assert.strictEqual(updatedRereview.minionsReview.reviewedAt, rereviewPr.minionsReview.reviewedAt,
+        'failed re-review must not stamp a new minionsReview.reviewedAt');
+      assert.strictEqual(updatedRereview.minionsReview.fixedAt, rereviewPr.minionsReview.fixedAt,
+        'failed re-review must preserve fixedAt');
+      const fixedAfterReview = !!(updatedRereview.minionsReview?.fixedAt &&
+        (!updatedRereview.lastReviewedAt || updatedRereview.minionsReview.fixedAt > updatedRereview.lastReviewedAt));
+      assert.strictEqual(fixedAfterReview, true, 'waiting PR should remain eligible for re-review redispatch');
+    } finally {
+      try {
+        const github = require('../engine/github');
+        if (originalCheckLiveReviewStatus) github.checkLiveReviewStatus = originalCheckLiveReviewStatus;
+      } catch {}
+      restore();
+      for (const mod of ['../engine/shared', '../engine/lifecycle', '../engine/queries', '../engine/github']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('GitHub stale change-requested review stays waiting on fixed head and queues re-review', async () => {
+    const restore = createTestMinionsDir();
+    let originalExecAsync = null;
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/github',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      originalExecAsync = freshShared.execAsync;
+      freshShared.execAsync = async (cmd) => {
+        if (cmd.includes('repos/octo/repo/pulls/77/reviews')) {
+          return JSON.stringify([{ user: { login: 'reviewer' }, state: 'CHANGES_REQUESTED' }]);
+        }
+        if (cmd.includes('repos/octo/repo/pulls/77')) {
+          return JSON.stringify({
+            state: 'open',
+            merged: false,
+            title: 'Fix stale GitHub vote',
+            user: { login: 'dallas' },
+            head: { ref: 'feat/fix-stale-github-vote', sha: 'sha-fixed' },
+          });
+        }
+        if (cmd.includes('repos/octo/repo/commits/sha-fixed/check-runs')) {
+          return JSON.stringify({ check_runs: [] });
+        }
+        if (cmd.includes('repos/octo/repo"')) {
+          return JSON.stringify({ full_name: 'octo/repo' });
+        }
+        throw new Error(`Unexpected gh command: ${cmd}`);
+      };
+
+      const github = require('../engine/github');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo-gh',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(prPath, [{
+        id: 'github:octo/repo#77',
+        prNumber: 77,
+        status: 'active',
+        reviewStatus: 'waiting',
+        agent: 'dallas',
+        title: 'Fix stale GitHub vote',
+        branch: 'feat/fix-stale-github-vote',
+        prdItems: ['W-gh-77'],
+        headSha: 'sha-before-fix',
+        lastReviewedAt: '2026-05-04T00:00:00.000Z',
+        minionsReview: {
+          reviewedAt: '2026-05-04T00:00:00.000Z',
+          fixedAt: '2026-05-04T00:10:00.000Z',
+          fixedHeadSha: 'sha-before-fix',
+          note: 'Fixed, awaiting re-review',
+        },
+        url: 'https://github.com/octo/repo/pull/77',
+      }]);
+      freshQueries.invalidateDispatchCache();
+
+      await github.pollPrStatus(config);
+      const [polled] = freshShared.safeJson(prPath);
+      assert.strictEqual(polled.reviewStatus, 'waiting',
+        'old CHANGES_REQUESTED review must not overwrite waiting when the newly observed head is the fixed head');
+      assert.strictEqual(polled.headSha, 'sha-fixed');
+      assert.strictEqual(polled.minionsReview.fixedHeadSha, 'sha-fixed',
+        'polling should record the newly observed fixed GitHub head identity');
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].type, 'review');
+      assert.strictEqual(discovered[0].meta?.dispatchKey, 'rereview-demo-gh-PR-77-sha-fixed');
+      freshShared.execAsync = originalExecAsync;
+    } finally {
+      try {
+        const freshShared = require('../engine/shared');
+        if (originalExecAsync) freshShared.execAsync = originalExecAsync;
+      } catch {}
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/github',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('GitHub live pending status does not suppress waiting re-review dispatch', async () => {
+    const restore = createTestMinionsDir();
+    let originalExecAsync = null;
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/github',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      originalExecAsync = freshShared.execAsync;
+      freshShared.execAsync = async (cmd) => {
+        if (cmd.includes('repos/octo/repo/pulls/79/reviews')) return JSON.stringify([]);
+        throw new Error(`Unexpected gh command: ${cmd}`);
+      };
+
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo-gh-pending',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { ghPollEnabled: true, evalLoop: true },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(prPath, [{
+        id: 'github:octo/repo#79',
+        prNumber: 79,
+        status: 'active',
+        reviewStatus: 'waiting',
+        agent: 'dallas',
+        title: 'Re-review when live status is pending',
+        branch: 'feat/pending-live-rereview',
+        prdItems: ['W-gh-79'],
+        lastReviewedAt: '2026-05-04T00:00:00.000Z',
+        minionsReview: {
+          reviewedAt: '2026-05-04T00:00:00.000Z',
+          fixedAt: '2026-05-04T00:10:00.000Z',
+          note: 'Fixed, awaiting re-review',
+        },
+        url: 'https://github.com/octo/repo/pull/79',
+      }]);
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].type, 'review');
+      assert.strictEqual(discovered[0].meta?.dispatchKey, 'rereview-demo-gh-pending-PR-79');
+      const [after] = freshShared.safeJson(prPath);
+      assert.strictEqual(after.reviewStatus, 'waiting',
+        'live pending should not overwrite waiting because the PR still needs a re-review');
+      freshShared.execAsync = originalExecAsync;
+    } finally {
+      try {
+        const freshShared = require('../engine/shared');
+        if (originalExecAsync) freshShared.execAsync = originalExecAsync;
+      } catch {}
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/github',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('ADO stale rejected vote stays waiting on fixed commit and queues re-review', async () => {
+    const restore = createTestMinionsDir();
+    const originalFetch = globalThis.fetch;
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/ado',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const ado = require('../engine/ado');
+      ado._setAdoTokenForTest('eyJ-fake-test-token');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = {
+        name: 'demo-ado',
+        localPath: testDir,
+        repoHost: 'ado',
+        adoOrg: 'org',
+        adoProject: 'proj',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: { adoPollEnabled: true, evalLoop: true },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      const prPath = freshShared.projectPrPath(project);
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), { pending: [], active: [], completed: [] });
+      freshShared.safeWrite(prPath, [{
+        id: 'ado:org/proj/repo#88',
+        prNumber: 88,
+        status: 'active',
+        reviewStatus: 'waiting',
+        agent: 'dallas',
+        title: 'Fix stale ADO vote',
+        branch: 'feat/fix-stale-ado-vote',
+        prdItems: ['W-ado-88'],
+        _adoHeadCommit: 'merge-before-fix',
+        _adoSourceCommit: 'source-before-fix',
+        lastReviewedAt: '2026-05-04T00:00:00.000Z',
+        minionsReview: {
+          reviewedAt: '2026-05-04T00:00:00.000Z',
+          fixedAt: '2026-05-04T00:10:00.000Z',
+          fixedAdoHeadCommit: 'merge-before-fix',
+          fixedAdoSourceCommit: 'source-before-fix',
+          note: 'Fixed, awaiting re-review',
+        },
+        url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/88',
+      }]);
+      freshQueries.invalidateDispatchCache();
+
+      globalThis.fetch = async (url) => {
+        if (url.includes('/repositories/repo/pullrequests/88?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              title: 'Fix stale ADO vote',
+              status: 'active',
+              mergeStatus: 'succeeded',
+              sourceRefName: 'refs/heads/feat/fix-stale-ado-vote',
+              lastMergeCommit: { commitId: 'merge-fixed' },
+              lastMergeSourceCommit: { commitId: 'source-fixed' },
+              reviewers: [{ displayName: 'Reviewer', vote: -10 }],
+            }),
+            headers: { get: () => null },
+          };
+        }
+        if (url.includes('/_apis/build/builds?')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ value: [] }),
+            headers: { get: () => null },
+          };
+        }
+        return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => null } };
+      };
+
+      await ado.pollPrStatus(config);
+      const [polled] = freshShared.safeJson(prPath);
+      assert.strictEqual(polled.reviewStatus, 'waiting',
+        'old ADO -10 vote must not overwrite waiting when the newly observed commit is the fixed head');
+      assert.strictEqual(polled._adoHeadCommit, 'merge-fixed');
+      assert.strictEqual(polled._adoSourceCommit, 'source-fixed');
+      assert.strictEqual(polled.minionsReview.fixedAdoHeadCommit, 'merge-fixed',
+        'polling should record the newly observed fixed ADO merge commit');
+      assert.strictEqual(polled.minionsReview.fixedAdoSourceCommit, 'source-fixed',
+        'polling should record the newly observed fixed ADO source commit');
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].type, 'review');
+      assert.strictEqual(discovered[0].meta?.dispatchKey, 'rereview-demo-ado-PR-88-source-fixed');
+    } finally {
+      globalThis.fetch = originalFetch;
+      try {
+        const ado = require('../engine/ado');
+        if (ado._setAdoTokenForTest) ado._setAdoTokenForTest(null);
+      } catch {}
+      restore();
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine/ado',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
     const reReviewIdx = src.indexOf("const needsReReview = reReviewEnabled && reviewStatus === 'waiting'");

@@ -149,6 +149,19 @@ async function ghApiWithBackoff(endpoint, slug) {
   return result;
 }
 
+function markFixedGitHubHead(pr, headSha) {
+  if (!headSha || pr.reviewStatus !== 'waiting' || !pr.minionsReview?.fixedAt) return false;
+  if (pr.minionsReview.fixedHeadSha === headSha) return false;
+  pr.minionsReview = { ...pr.minionsReview, fixedHeadSha: headSha };
+  return true;
+}
+
+function isFixedGitHubHead(pr, headSha) {
+  if (pr.reviewStatus !== 'waiting' || !pr.minionsReview?.fixedAt) return false;
+  if (headSha && pr.minionsReview.fixedHeadSha) return pr.minionsReview.fixedHeadSha === headSha;
+  return !pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt;
+}
+
 const BUILD_ERROR_LOG_MAX_LINES = 150;
 
 /**
@@ -367,9 +380,13 @@ async function pollPrStatus(config) {
     else if (prData.state === 'open') newStatus = PR_STATUS.ACTIVE;
 
     // Track head SHA changes to detect new pushes (used for review re-dispatch gating)
-    if (prData.head?.sha && pr.headSha !== prData.head.sha) {
-      pr.headSha = prData.head.sha;
+    const headSha = prData.head?.sha || '';
+    if (headSha && pr.headSha !== headSha) {
+      pr.headSha = headSha;
       pr.lastPushedAt = ts();
+      markFixedGitHubHead(pr, headSha);
+      updated = true;
+    } else if (markFixedGitHubHead(pr, headSha)) {
       updated = true;
     }
 
@@ -431,7 +448,7 @@ async function pollPrStatus(config) {
       if (pr.reviewStatus === 'approved') {
         newReviewStatus = 'approved';
       } else if (states.some(s => s === 'CHANGES_REQUESTED')) {
-        if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
+        if (isFixedGitHubHead(pr, headSha || pr.headSha)) {
           newReviewStatus = 'waiting';
         } else {
           newReviewStatus = 'changes-requested';
@@ -817,7 +834,7 @@ async function checkLiveReviewStatus(pr, project) {
       latestByUser.set(r.user?.login || '', r.state);
     }
     const states = [...latestByUser.values()];
-    if (states.some(s => s === 'CHANGES_REQUESTED')) return 'changes-requested';
+    if (states.some(s => s === 'CHANGES_REQUESTED')) return isFixedGitHubHead(pr, pr.headSha) ? 'waiting' : 'changes-requested';
     if (states.some(s => s === 'APPROVED')) return 'approved';
     if (states.length > 0) return 'pending';
     return 'pending';
