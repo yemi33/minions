@@ -475,7 +475,8 @@ function resolveWorkItemPath(meta) {
 
 /** Check if a work item is in a terminal completed state. */
 function isItemCompleted(item) {
-  return item.status === WI_STATUS.DONE || !!item.completedAt;
+  if (!item || typeof item !== 'object') return false;
+  return DONE_STATUSES.has(item.status) || !!item.completedAt;
 }
 
 // ─── Work Item Status ────────────────────────────────────────────────────────

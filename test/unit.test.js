@@ -6642,6 +6642,186 @@ async function testLifecycleHelpers() {
   });
 }
 
+async function testLifecyclePureParsers() {
+  console.log('\n── lifecycle.js — Pure parsers ──');
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+
+  await test('parseReviewVerdict parses approve variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: APPROVE'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: approve'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('Review posted.\nVERDICT: **APPROVE**'), 'approved');
+  });
+
+  await test('parseReviewVerdict parses request-changes separator variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST_CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST-CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: **request_changes**'), 'changes-requested');
+  });
+
+  await test('parseReviewVerdict returns null without a verdict marker', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('Reviewed the PR and left comments.'), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(null), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(''), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(undefined), null);
+  });
+
+  await test('isReviewBailout detects idempotent bailout phrases case-insensitively', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('I will bail out and not duplicate the review.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('BAILING OUT because the review exists.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('A minions review was already posted.'), true);
+  });
+
+  await test('isReviewBailout rejects verdict-only and non-string output', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('VERDICT: APPROVE'), false);
+    assert.strictEqual(lifecycle.isReviewBailout(null), false);
+    assert.strictEqual(lifecycle.isReviewBailout(undefined), false);
+    assert.strictEqual(lifecycle.isReviewBailout(42), false);
+  });
+
+  await test('parseCompletionFieldSummary parses allowed multi-field summaries and strips unknown fields', () => {
+    const summary = [
+      'status: success',
+      'summary: Implemented lifecycle parser coverage',
+      'tests: npm test',
+      'unknown: ignored',
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Implemented lifecycle parser coverage',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary rejects status-only success summaries', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary('status: success'), null);
+  });
+
+  await test('parseCompletionFieldSummary accepts status-only failure summaries', () => {
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: failed'), { status: 'failed' });
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: error'), { status: 'error' });
+  });
+
+  await test('parseCompletionFieldSummary strips quotes and accepts bullet prefixes', () => {
+    const summary = [
+      '- status: `success`',
+      '* summary: "Parser tests added"',
+      "- tests: 'npm test'",
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Parser tests added',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary returns null for empty or non-string input', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(null), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(''), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(undefined), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary({ status: 'success' }), null);
+  });
+
+  await test('parseCompletionReportFile reads valid report files and tags source metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'completions', 'D-valid-report.json');
+      sharedInner.safeWrite(reportPath, { status: 'success', summary: 'Done' });
+
+      const result = lifecycleInner.parseCompletionReportFile({
+        id: 'D-valid-report',
+        meta: { completionReportPath: reportPath },
+      });
+
+      assert.deepStrictEqual(result, {
+        status: 'success',
+        summary: 'Done',
+        _source: 'report-file',
+        _path: reportPath,
+      });
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for missing report files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const missingPath = sharedInner.dispatchCompletionReportPath('D-missing-report');
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-missing-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile(
+        { id: 'D-missing-report', meta: { completionReportPath: missingPath } },
+        { warnIfMissing: true },
+      ), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for malformed or non-object reports', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const malformedPath = sharedInner.dispatchCompletionReportPath('D-malformed-report');
+      const arrayPath = sharedInner.dispatchCompletionReportPath('D-array-report');
+      fs.mkdirSync(path.dirname(malformedPath), { recursive: true });
+      fs.writeFileSync(malformedPath, '{not json');
+      sharedInner.safeWrite(arrayPath, ['status', 'success']);
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-malformed-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-array-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null when status and outcome are missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-no-status-report');
+      sharedInner.safeWrite(reportPath, { summary: 'No status here' });
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-no-status-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile promotes outcome to status', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-outcome-report');
+      sharedInner.safeWrite(reportPath, { outcome: 'success', summary: 'Outcome only' });
+
+      const result = lifecycleInner.parseCompletionReportFile({ id: 'D-outcome-report' });
+
+      assert.strictEqual(result.status, 'success');
+      assert.strictEqual(result.outcome, 'success');
+      assert.strictEqual(result.summary, 'Outcome only');
+      assert.strictEqual(result._source, 'report-file');
+      assert.strictEqual(result._path, reportPath);
+    } finally { restore(); }
+  });
+
+  await test('isItemCompleted returns true for canonical and legacy done statuses', () => {
+    for (const status of shared.DONE_STATUSES) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), true, `expected ${status} to count as completed`);
+    }
+  });
+
+  await test('isItemCompleted returns false for non-completed or missing statuses', () => {
+    for (const status of [shared.WI_STATUS.PENDING, shared.WI_STATUS.DISPATCHED, shared.WI_STATUS.FAILED]) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), false, `expected ${status} to be incomplete`);
+    }
+    assert.strictEqual(lifecycle.isItemCompleted(null), false);
+    assert.strictEqual(lifecycle.isItemCompleted(undefined), false);
+    assert.strictEqual(lifecycle.isItemCompleted({}), false);
+  });
+}
+
 async function testSyncPrdItemStatus() {
   console.log('\n── lifecycle.js — PRD Sync ──');
 
@@ -26934,6 +27114,7 @@ async function main() {
 
     // lifecycle.js tests
     await testLifecycleHelpers();
+    await testLifecyclePureParsers();
     await testSyncPrdItemStatus();
 
     // consolidation.js tests
