@@ -24,6 +24,12 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 const MISSING_RUNTIME_EXIT_CODE = 78;
+// Grace window between 'exit' and a fallback resolve, in case the runtime
+// child has spawned a detached grandchild that inherited stdout/stderr.
+// In that case `proc.on('close', …)` may never fire (the OS-level pipe stays
+// open until the grandchild also closes its fd). 250ms is plenty for any
+// already-buffered stdout to drain through the 'data' events.
+const STREAM_EXIT_FALLBACK_GRACE_MS = 250;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 //
@@ -738,9 +744,14 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    let settled = false;
+    let exitFallbackTimer = null;
+    const finishStream = (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
@@ -759,11 +770,27 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    };
+
+    proc.on('exit', (code) => {
+      // 'close' fires after stdio streams close, but if a detached grandchild
+      // inherited stdout/stderr the OS-level pipe stays open and 'close' may
+      // never fire. Schedule a fallback after a brief drain window so we
+      // still resolve once the process itself has exited.
+      if (settled || exitFallbackTimer) return;
+      exitFallbackTimer = setTimeout(() => finishStream(code), STREAM_EXIT_FALLBACK_GRACE_MS);
+    });
+
+    proc.on('close', (code) => {
+      finishStream(code);
     });
 
     proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM-stream spawn error (${label}): ${err.message}`);
       resolve({
