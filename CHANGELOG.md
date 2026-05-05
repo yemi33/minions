@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1731 (2026-05-05)
+
+### Features
+- fix project discovery main branch fallback (#2085)
+- detect no-op PR fixes (#2077)
+
 ## 0.1.1728 (2026-05-05)
 
 ### Features
