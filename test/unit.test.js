@@ -22682,6 +22682,41 @@ async function testDashboardUIFunctions() {
   const prsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
   const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
   const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+  const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+  const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+
+  function buildPipelineRenderHarness() {
+    const elements = {};
+    function makeEl() {
+      return {
+        innerHTML: '',
+        textContent: '',
+        style: {},
+        classList: {
+          add() {},
+          contains() { return false; },
+        },
+      };
+    }
+    const documentStub = {
+      getElementById(id) {
+        if (!elements[id]) elements[id] = makeEl();
+        return elements[id];
+      },
+      querySelectorAll() { return []; },
+    };
+    const windowStub = {};
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const api = new Function(
+      'document', 'window', 'setInterval', 'clearInterval', 'fetch', 'alert', 'Intl',
+      'escHtml', 'isDeleted', 'timeSinceStr', 'renderMd', 'showToast', 'refresh', 'closeModal',
+      schedulesSrc + '\n' + pipelineSrc + '\nreturn { cronToHuman: _cronToHuman, renderPipelines, openPipelineDetail };'
+    )(
+      documentStub, windowStub, () => 1, () => {}, () => Promise.reject(new Error('unused')), () => {},
+      Intl, esc, () => false, () => 'now', esc, () => {}, () => {}, () => {}
+    );
+    return { api, elements };
+  }
 
   // Work item creation modal
   await test('openCreateWorkItemModal exists', () => {
@@ -22712,13 +22747,42 @@ async function testDashboardUIFunctions() {
       'Detail modal should not truncate description content to 1000 chars');
   });
 
+  await test('_cronToHuman supports common 5-field pipeline cron without changing 3-field list fallback', () => {
+    const { api } = buildPipelineRenderHarness();
+    assert.strictEqual(api.cronToHuman('0 9 * * *'), 'Daily at 09:00');
+    assert.strictEqual(api.cronToHuman('0 9 * * 1-5'), 'Weekdays at 09:00');
+    assert.strictEqual(api.cronToHuman('30 8 * * 0,6'), 'Weekends at 08:30');
+    assert.strictEqual(api.cronToHuman('15 14 * * 1,3'), 'Mondays, Wednesdays at 14:15');
+    assert.strictEqual(api.cronToHuman('0 9 *'), 'Daily at 09:00');
+    assert.strictEqual(api.cronToHuman('0 9 1,3'), '0 9 1,3');
+  });
+
+  await test('pipeline cards and details render 5-field cron as local schedule text', () => {
+    const { api, elements } = buildPipelineRenderHarness();
+    const pipeline = {
+      id: 'momentum-daily-one-bug-fix',
+      title: 'Momentum daily one bug fix',
+      trigger: { cron: '0 9 * * *' },
+      stages: [{ id: 'fix', type: 'task', title: 'Fix one bug' }],
+      runs: [],
+    };
+    api.renderPipelines([pipeline]);
+    const cardHtml = elements['pipelines-content'].innerHTML;
+    assert.ok(cardHtml.includes('Daily at 09:00'), 'pipeline card should show human schedule text');
+    assert.ok(!cardHtml.includes('0 9 * * *'), 'pipeline card should not show raw 5-field cron');
+
+    api.openPipelineDetail('momentum-daily-one-bug-fix');
+    const detailHtml = elements['modal-body'].innerHTML;
+    assert.ok(detailHtml.includes('Daily at 09:00'), 'pipeline detail should show human schedule text');
+    assert.ok(detailHtml.includes(Intl.DateTimeFormat().resolvedOptions().timeZone), 'pipeline detail should include the local timezone');
+    assert.ok(!detailHtml.includes('0 9 * * *'), 'pipeline detail should not show raw 5-field cron');
+  });
+
   await test('dashboard cards ignore click-to-open while user is selecting text', () => {
     const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
-    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
     const plansCardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
-    const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
     const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
     const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
     assert.ok(utilsSrc.includes('function shouldIgnoreSelectionClick()'),

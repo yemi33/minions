@@ -5,20 +5,53 @@
 const _DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const _DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 
-/** Convert 3-field cron (minute hour dayOfWeek) to human-readable text */
+function _formatCronDowList(days, timeStr, fallback) {
+  const normalized = [...new Set(days)].sort((a, b) => a - b);
+  const key = normalized.join(',');
+  if (key === '0,1,2,3,4,5,6') return 'Daily at ' + timeStr;
+  if (key === '1,2,3,4,5') return 'Weekdays at ' + timeStr;
+  if (key === '0,6') return 'Weekends at ' + timeStr;
+  if (normalized.length === 1) return _DAY_NAMES[normalized[0]] + ' at ' + timeStr;
+  if (normalized.length > 1) return normalized.map(d => _DAY_NAMES[d]).join(', ') + ' at ' + timeStr;
+  return fallback;
+}
+
+function _parseCronDowList(dow, allowSevenAsSunday) {
+  if (!dow || typeof dow !== 'string') return null;
+  const values = [];
+  const parts = dow.split(',');
+  for (const part of parts) {
+    const token = part.trim();
+    if (!/^\d+$/.test(token)) return null;
+    let day = parseInt(token, 10);
+    if (allowSevenAsSunday && day === 7) day = 0;
+    if (day < 0 || day > 6) return null;
+    values.push(day);
+  }
+  return values;
+}
+
+function _cronTimeString(minute, hour) {
+  const h = parseInt(hour, 10);
+  const m = parseInt(minute, 10);
+  if (isNaN(h) || isNaN(m)) return null;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+/** Convert 3-field Minions cron or common 5-field cron to human-readable text */
 function _cronToHuman(cron) {
   if (!cron || typeof cron !== 'string') return cron || '';
   const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 3) return cron;
-  const [minute, hour, dow] = parts;
+  if (parts.length !== 3 && parts.length !== 5) return cron;
+  const minute = parts[0];
+  const hour = parts[1];
+  const dow = parts.length === 3 ? parts[2] : parts[4];
 
-  if (minute === '*' && hour === '*' && dow === '*') return 'Every minute';
+  if (parts.length === 5 && (parts[2] !== '*' || parts[3] !== '*')) return cron;
+  if (parts.length === 3 && minute === '*' && hour === '*' && dow === '*') return 'Every minute';
 
-  const h = parseInt(hour, 10);
-  const m = parseInt(minute, 10);
-  if (isNaN(h) || isNaN(m)) return cron;
-
-  const timeStr = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  const timeStr = _cronTimeString(minute, hour);
+  if (!timeStr) return cron;
 
   if (dow === '*') return 'Daily at ' + timeStr;
 
@@ -26,11 +59,18 @@ function _cronToHuman(cron) {
   const normalized = dow.split(',').map(d => d.trim()).sort().join(',');
   if (dow === '1-5' || normalized === '1,2,3,4,5') return 'Weekdays at ' + timeStr;
   if (normalized === '0,6' || normalized === '6,0') return 'Weekends at ' + timeStr;
+  if (parts.length === 5 && (dow === '0-6' || dow === '0-7')) return 'Daily at ' + timeStr;
 
   // Single day
-  const dayNum = parseInt(dow, 10);
-  if (!isNaN(dayNum) && dayNum >= 0 && dayNum <= 6 && String(dayNum) === dow) {
+  let dayNum = parseInt(dow, 10);
+  if (parts.length === 5 && dayNum === 7 && dow === '7') dayNum = 0;
+  if (!isNaN(dayNum) && dayNum >= 0 && dayNum <= 6 && String(parseInt(dow, 10)) === dow) {
     return _DAY_NAMES[dayNum] + ' at ' + timeStr;
+  }
+
+  if (parts.length === 5) {
+    const days = _parseCronDowList(dow, true);
+    if (days) return _formatCronDowList(days, timeStr, cron);
   }
 
   return cron;
