@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1724 (2026-05-05)
+
+### Features
+- add per-cause PR automation dedupe (#2075)
+
 ## 0.1.1723 (2026-05-05)
 
 ### Other
