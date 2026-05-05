@@ -15399,7 +15399,7 @@ async function testDiscoverFromPrs() {
       const config = {
         projects: [project],
         workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
-        engine: { ghPollEnabled: false, evalLoop: true, maxBuildFixAttempts: 3 },
+        engine: { ghPollEnabled: true, evalLoop: true, maxBuildFixAttempts: 3 },
         agents: { ralph: { name: 'Ralph', role: 'Engineer' } },
       };
       freshShared.safeWrite(path.join(testDir, 'config.json'), config);
@@ -16229,8 +16229,22 @@ async function testDiscoverFromPrs() {
     const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
     assert.ok(changesBlock.includes('evalLoopEnabled'),
       'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+    assert.ok(changesBlock.includes('pollEnabled'),
+      'changes-requested fix dispatch must be gated on the PR provider poll toggle so stale vote state cannot dispatch fixes');
     assert.ok(changesBlock.includes('autoFixReviewFeedback'),
       'changes-requested fix dispatch must be independently configurable');
+  });
+
+  await test('discoverFromPrs gates cached PR-state fix dispatches on provider polling', () => {
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixHumanComments'),
+      'human-comment fix dispatch must require the PR provider poll toggle');
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixBuilds'),
+      'build-fix dispatch must require the PR provider poll toggle');
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixConflicts'),
+      'conflict-fix dispatch must require the PR provider poll toggle');
   });
 
   await test('discoverFromPrs applies provider throttle to review, re-review, review-fix, and human-comment fix dispatches', () => {
@@ -40238,6 +40252,20 @@ async function testPrReviewFixFlows() {
       assert.ok(settingsSrc.includes(id), `settings UI should include checkbox ${id}`);
       assert.ok(settingsSrc.includes(`getElementById('${id}').checked`), `saveSettings should read checkbox ${id}`);
     }
+  });
+
+  await test('settings UI presents PR automation gates as provider-neutral', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('ADO PR dispatch gates are inert when this is off'),
+      'ADO polling copy should describe only the provider poll gate');
+    assert.ok(settingsSrc.includes('GitHub PR dispatch gates are inert when this is off'),
+      'GitHub polling copy should describe only the provider poll gate');
+    assert.ok(settingsSrc.includes('Shared dispatch gate: auto-fix agent when a PR build fails'),
+      'auto-fix build copy should be shared across ADO and GitHub');
+    assert.ok(settingsSrc.includes('also requires that PR provider polling is enabled'),
+      'automation gate copy should state provider polling is also required');
+    assert.ok(!settingsSrc.includes('downstream of ADO Polling'),
+      'shared automation toggles must not be described as ADO-only');
   });
 
   await test('dashboard exposes dispatch completion report endpoint', () => {

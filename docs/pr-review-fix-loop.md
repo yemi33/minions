@@ -54,7 +54,7 @@ When multiple problems coexist, earlier triggers get the first chance to enqueue
 
 ### C. Build failures (`buildStatus === 'failing'`)
 
-- Gate: `buildFixAttempts < maxBuildFixAttempts` (default 3) + grace period expired
+- Gate: provider polling enabled (`adoPollEnabled` or `ghPollEnabled`) + `autoFixBuilds` + `buildStatus === 'failing'` + grace period expired
 - **Grace period** (`_buildFixPushedAt`): after fix dispatches, waits `buildFixGracePeriod` (default 10min, configurable in `ENGINE_DEFAULTS`) for CI to run before re-dispatching. Cleared when poller detects build status transition (CI actually ran).
 - **Error logs**: GitHub fetches annotations (failures only, not warnings) + Actions job log (always). ADO queries builds API directly (not status checks), fetches build timeline → failed task logs (up to 10 per build, up to 10 failing pipelines).
 - **Build-fix escalation**: after 3 failed attempts, writes an inbox alert, sets `buildFixEscalated = true`, and stops *only this trigger* (auto-dispatch for build fixes). The counter resets when the build recovers. Independent of `_evalEscalated`.
@@ -63,7 +63,7 @@ When multiple problems coexist, earlier triggers get the first chance to enqueue
 
 ### D. Merge conflicts (`_mergeConflict`)
 
-- Gate: `autoFixConflicts` + `status === 'active'` + `_mergeConflict` + `!fixDispatched`
+- Gate: provider polling enabled (`adoPollEnabled` or `ghPollEnabled`) + `autoFixConflicts` + `status === 'active'` + `_mergeConflict` + `!fixDispatched`
 - Routes to the PR author to resolve target-branch conflicts
 - Runs after review, human, and build triggers; if any earlier trigger enqueued a fix for this PR, the conflict fix waits for a later discovery pass
 

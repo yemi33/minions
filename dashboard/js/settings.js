@@ -94,17 +94,17 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">PR Polling &amp; Dispatch Gates</h3>' +
     '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px">' +
       '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">' +
-        settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Keeps ADO PR build results, votes, and comments fresh each tick — the two fix gates below are silently inert when this is off') +
-        '<div style="margin-left:20px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
-          settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Dispatch gate: auto-fix agent when build fails (downstream of ADO Polling)') +
-          settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Dispatch gate: auto-fix agent when merge conflict detected (downstream of ADO Polling)') +
-          settingsToggle('Auto-review PRs', 'set-autoReviewPrs', e.autoReviewPrs !== false, 'Dispatch gate: review agent for newly opened agent PRs (throttle-aware)') +
-          settingsToggle('Auto-re-review PRs', 'set-autoReReviewPrs', e.autoReReviewPrs !== false, 'Dispatch gate: review agent after a fix push is awaiting re-review (throttle-aware)') +
-          settingsToggle('Auto-fix Review Feedback', 'set-autoFixReviewFeedback', e.autoFixReviewFeedback !== false, 'Dispatch gate: fix agent for minions changes-requested verdicts (throttle-aware)') +
-          settingsToggle('Auto-fix Human Comments', 'set-autoFixHumanComments', e.autoFixHumanComments !== false, 'Dispatch gate: fix agent for actionable human PR comments (throttle-aware)') +
-        '</div>' +
+        settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Keeps ADO PR build results, votes, and comments fresh each tick; ADO PR dispatch gates are inert when this is off') +
+        settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick; GitHub PR dispatch gates are inert when this is off') +
       '</div>' +
-      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick (reconciliation always runs regardless)') +
+      '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
+        settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Shared dispatch gate: auto-fix agent when a PR build fails; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Shared dispatch gate: auto-fix agent when a PR merge conflict is detected; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-review PRs', 'set-autoReviewPrs', e.autoReviewPrs !== false, 'Shared dispatch gate: review agent for newly opened agent PRs; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-re-review PRs', 'set-autoReReviewPrs', e.autoReReviewPrs !== false, 'Shared dispatch gate: review agent after a fix push is awaiting re-review; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Review Feedback', 'set-autoFixReviewFeedback', e.autoFixReviewFeedback !== false, 'Shared dispatch gate: fix agent for minions changes-requested verdicts; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Human Comments', 'set-autoFixHumanComments', e.autoFixHumanComments !== false, 'Shared dispatch gate: fix agent for actionable human PR comments; also requires that PR provider polling is enabled') +
+      '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">' +
         settingsField('PR Status Poll Frequency', 'set-prPollStatusEvery', e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
         settingsField('PR Comments Poll Frequency', 'set-prPollCommentsEvery', e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +

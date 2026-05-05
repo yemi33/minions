@@ -2450,7 +2450,7 @@ async function discoverFromPrs(config, project) {
     // awaiting a stale-vote re-review or has build-fix retries escalated.
     const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if (autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
       const key = humanFixKey;
       let staleCoalesced = [];
       const alreadyDispatched = isAlreadyDispatched(key);
@@ -2544,9 +2544,9 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); }
     }
 
-    // PRs with changes requested → route back to author for fix
-    // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
-    if (evalLoopEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
+    // PRs with changes requested → route back to author for fix.
+    // Gate on evalLoopEnabled and provider polling — the review→fix cycle depends on fresh vote state.
+    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
       const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
@@ -2571,7 +2571,7 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
+    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
@@ -2661,9 +2661,9 @@ async function discoverFromPrs(config, project) {
       }
     }
 
-    // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
+    // PRs with merge conflicts — dispatch fix to resolve (gated by provider polling + autoFixConflicts)
     const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
-    if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
       const key = `conflict-fix-${project?.name || 'default'}-${prDisplayId}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
