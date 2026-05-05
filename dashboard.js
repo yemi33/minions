@@ -652,7 +652,7 @@ function _compareVersions(a, b) {
 
 // Kick off first npm check on startup, then re-check every 4 hours
 checkNpmVersion().catch(() => {});
-setInterval(() => checkNpmVersion().catch(() => {}), _getVersionCheckInterval());
+setInterval(() => checkNpmVersion().catch(() => {}), _getVersionCheckInterval()).unref();
 
 // Cache disk version + git commit (only changes on deploy/pull, not per-request)
 let _diskVersionCache = null;
@@ -913,7 +913,7 @@ setInterval(() => {
   for (const res of _statusStreamClients) {
     try { res.write('data: ' + data + '\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
   }
-}, 10000);
+}, 10000).unref();
 
 
 // ── Command Center: session state + helpers ─────────────────────────────────
@@ -7191,7 +7191,7 @@ if (require.main === module) {
       } catch (e) {
         console.error(`[watchdog] Error: ${e.message}`);
       }
-    }, 30000);
+    }, 30000).unref();
     console.log(`  Engine watchdog: active (checks every 30s)`);
   });
 
