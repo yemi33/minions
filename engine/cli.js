@@ -745,6 +745,16 @@ const commands = {
     }
     watchForWorkChanges();
 
+    // Drain in-memory buffers (metrics, logs) before any process.exit. Logs
+    // a stderr line if a flush fails so a refactor mistake (typo, missing
+    // export) doesn't go silent.
+    function drainBuffers() {
+      try { require('./llm').flushMetricsBuffer(); }
+      catch (err) { try { console.error(`[shutdown] flushMetricsBuffer failed: ${err.message}`); } catch {} }
+      try { shared.flushLogs(); }
+      catch (err) { try { console.error(`[shutdown] flushLogs failed: ${err.message}`); } catch {} }
+    }
+
     // Graceful shutdown — wait for active agents before exiting
     let shuttingDown = false;
     function gracefulShutdown(signal) {
@@ -768,7 +778,7 @@ const commands = {
           e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
         }
         e.log('info', 'Graceful shutdown complete (no active agents)');
-        shared.flushLogs(); // drain buffered log entries before exit
+        drainBuffers();
         console.log('No active agents — stopped.');
         process.exit(0);
       }
@@ -785,7 +795,7 @@ const commands = {
             e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
           }
           e.log('info', 'Graceful shutdown complete (all agents finished)');
-          shared.flushLogs(); // drain buffered log entries before exit
+          drainBuffers();
           console.log('All agents finished — stopped.');
           process.exit(0);
         }
@@ -796,7 +806,7 @@ const commands = {
             e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
           }
           e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
-          shared.flushLogs(); // drain buffered log entries before exit
+          drainBuffers();
           console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
           process.exit(1);
         }
@@ -811,7 +821,7 @@ const commands = {
       const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
       console.error(`[FATAL] Unhandled promise rejection: ${msg}`);
       try { shared.log('fatal', `Unhandled promise rejection: ${msg}`); } catch { /* best effort */ }
-      try { shared.flushLogs(); } catch { /* best effort */ }
+      drainBuffers();
       process.exit(1);
     });
 
@@ -819,7 +829,7 @@ const commands = {
       const msg = err instanceof Error ? err.stack || err.message : String(err);
       console.error(`[FATAL] Uncaught exception: ${msg}`);
       try { shared.log('fatal', `Uncaught exception: ${msg}`); } catch { /* best effort */ }
-      try { shared.flushLogs(); } catch { /* best effort */ }
+      drainBuffers();
       process.exit(1);
     });
   },
@@ -1359,11 +1369,11 @@ const commands = {
     console.log(`\nDone: ${killed.length} dispatches killed, agents reset.`);
   },
 
-  cleanup() {
+  async cleanup() {
     const e = engine();
     const config = getConfig();
     console.log('\n=== Cleanup ===\n');
-    const result = e.runCleanup(config, true);
+    const result = await e.runCleanup(config, true);
     console.log(`\nDone: ${result.tempFiles} temp files, ${result.liveOutputs} live outputs, ${result.worktrees} worktrees, ${result.zombies} zombies cleaned.`);
   },
 

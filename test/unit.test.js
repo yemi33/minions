@@ -9530,6 +9530,7 @@ async function testLlmModule() {
       '_buildSpawnAgentFlags',
       '_createStreamAccumulator',
       '_resetBinCache',
+      '_resetMetricsBufferForTest',
       '_resolveBin',
       '_resolveModelFor',
       '_resolveModelForRuntime',
@@ -9537,6 +9538,7 @@ async function testLlmModule() {
       '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
+      'flushMetricsBuffer',
       'trackEngineUsage',
     ]);
   });
@@ -9657,6 +9659,7 @@ async function testLlmModule() {
         costUsd: 0.05, inputTokens: 1000, outputTokens: 500,
         cacheRead: 200, cacheCreation: 100, durationMs: 3000,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['agent-dispatch'];
       assert.strictEqual(cat.calls, 1);
@@ -9678,6 +9681,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreation: 5, durationMs: 1000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.02, inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreation: 10, durationMs: 2000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.04, inputTokens: 400, outputTokens: 100, cacheRead: 30, cacheCreation: 15, durationMs: 1500 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['command-center'];
       assert.strictEqual(cat.calls, 3);
@@ -9698,6 +9702,7 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       // Only costUsd present — all other fields missing
       freshLlm.trackEngineUsage('doc-chat', { costUsd: 0.001 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['doc-chat'];
       assert.strictEqual(cat.calls, 1);
@@ -9720,6 +9725,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.01, durationMs: 500 });
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.02 }); // no duration
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.03, durationMs: 750 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['consolidation'];
       assert.strictEqual(cat.calls, 3);
@@ -9736,6 +9742,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('agent-dispatch', {
         costUsd: 0.5, inputTokens: 5000, outputTokens: 1000, cacheRead: 200,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       assert.ok(metrics._daily, '_daily bucket should exist');
@@ -9757,6 +9764,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.1, inputTokens: 100, outputTokens: 50, cacheRead: 10 });
       freshLlm.trackEngineUsage('consolidation',  { costUsd: 0.2, inputTokens: 200, outputTokens: 80, cacheRead: 20 });
       freshLlm.trackEngineUsage('doc-chat',       { costUsd: 0.3, inputTokens: 300, outputTokens: 90, cacheRead: 30 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       const daily = metrics._daily[today];
@@ -9802,7 +9810,8 @@ async function testLlmModule() {
       fs.unlinkSync(metricsPath);
       assert.ok(!fs.existsSync(metricsPath), 'precondition: file absent');
       freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 50 });
-      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first call');
+      freshLlm.flushMetricsBuffer();
+      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first flush');
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(metrics._engine['agent-dispatch'].calls, 1);
       assert.strictEqual(metrics._engine['agent-dispatch'].inputTokens, 50);
@@ -9823,6 +9832,7 @@ async function testLlmModule() {
       };
       fs.writeFileSync(metricsPath, JSON.stringify(seed));
       freshLlm.trackEngineUsage('new-cat', { costUsd: 0.01, inputTokens: 100 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(metrics._engine['other-cat'], seed._engine['other-cat'],
         'unrelated category must be preserved byte-for-byte');
@@ -9840,9 +9850,10 @@ async function testLlmModule() {
       for (let i = 0; i < 25; i++) {
         freshLlm.trackEngineUsage('stress-cat', { costUsd: 0.001, inputTokens: 10, outputTokens: 4, cacheRead: 1, cacheCreation: 0 });
       }
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['stress-cat'];
-      assert.strictEqual(cat.calls, 25, 'every mutateJsonFileLocked call must land — no dropped writes');
+      assert.strictEqual(cat.calls, 25, 'every buffered call must land in the flush — no dropped counters');
       assert.strictEqual(cat.inputTokens, 250);
       assert.strictEqual(cat.outputTokens, 100);
       assert.strictEqual(cat.cacheRead, 25);
@@ -9857,12 +9868,13 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       fs.unlinkSync(metricsPath);
       fs.mkdirSync(metricsPath); // force any write attempt to fail
-      // Must not throw — trackEngineUsage catches and logs internally
+      // Must not throw — flushMetricsBuffer catches and logs internally
       const origErr = console.error;
       let caught = false;
       console.error = () => { caught = true; };
       try {
         freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 10 });
+        freshLlm.flushMetricsBuffer();
       } finally {
         console.error = origErr;
       }
@@ -31102,7 +31114,9 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have unhandledRejection handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
   });
 
@@ -31113,8 +31127,23 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have uncaughtException handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
+  });
+
+  await test('cli.js: drainBuffers helper drains both metrics and logs in a single shutdown step', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const idx = src.indexOf('function drainBuffers');
+    assert.ok(idx > 0, 'cli.js should define a drainBuffers helper for shutdown paths');
+    const block = src.slice(idx, idx + 600);
+    assert.ok(block.includes('flushMetricsBuffer'),
+      'drainBuffers must call llm.flushMetricsBuffer so pending engine-usage deltas survive shutdown');
+    assert.ok(block.includes('flushLogs'),
+      'drainBuffers must call shared.flushLogs so buffered log entries survive shutdown');
+    assert.ok(block.includes('console.error'),
+      'drainBuffers must console.error on flush failure so a refactor mistake (typo, missing export) is not silent');
   });
 
   // Bug #37: consolidation.js word length cap for ReDoS prevention

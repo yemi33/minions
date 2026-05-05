@@ -26,41 +26,119 @@ const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 const MISSING_RUNTIME_EXIT_CODE = 78;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
+//
+// Updates accumulate in an in-memory buffer and flush every
+// metricsFlushIntervalMs (default 10s). Replaces the per-call mutateJsonFileLocked
+// that was both serializing the LLM hot path and bumping metrics.json mtime
+// on every call — defeating the dashboard fast-state mtime-based early-exit.
+
+let _pendingMetrics = { engine: Object.create(null), daily: Object.create(null) };
+let _flushTimer = null;
+
+function _emptyEngineDelta() {
+  return { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalDurationMs: 0, timedCalls: 0 };
+}
+
+function _emptyDailyDelta() {
+  return { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0 };
+}
+
+function _ensureFlushTimer() {
+  if (_flushTimer) return;
+  const interval = shared.ENGINE_DEFAULTS.metricsFlushIntervalMs || 10000;
+  _flushTimer = setInterval(flushMetricsBuffer, interval);
+  if (typeof _flushTimer.unref === 'function') _flushTimer.unref();
+}
 
 function trackEngineUsage(category, usage) {
   if (!usage) return;
   if (category && (category.startsWith('_test') || category.startsWith('test-'))) return;
+
+  if (!_pendingMetrics.engine[category]) _pendingMetrics.engine[category] = _emptyEngineDelta();
+  const cat = _pendingMetrics.engine[category];
+  cat.calls++;
+  cat.costUsd += usage.costUsd || 0;
+  cat.inputTokens += usage.inputTokens || 0;
+  cat.outputTokens += usage.outputTokens || 0;
+  cat.cacheRead += usage.cacheRead || 0;
+  cat.cacheCreation += usage.cacheCreation || 0;
+  if (usage.durationMs) {
+    cat.totalDurationMs += usage.durationMs;
+    cat.timedCalls += 1;
+  }
+
+  const today = ts().slice(0, 10);
+  if (!_pendingMetrics.daily[today]) _pendingMetrics.daily[today] = _emptyDailyDelta();
+  const daily = _pendingMetrics.daily[today];
+  daily.costUsd += usage.costUsd || 0;
+  daily.inputTokens += usage.inputTokens || 0;
+  daily.outputTokens += usage.outputTokens || 0;
+  daily.cacheRead += usage.cacheRead || 0;
+
+  _ensureFlushTimer();
+}
+
+function flushMetricsBuffer() {
+  const pending = _pendingMetrics;
+  if (!Object.keys(pending.engine).length && !Object.keys(pending.daily).length) return;
+  _pendingMetrics = { engine: Object.create(null), daily: Object.create(null) };
+
   try {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
     mutateJsonFileLocked(metricsPath, (metrics) => {
       if (!metrics._engine) metrics._engine = {};
-      if (!metrics._engine[category]) {
-        metrics._engine[category] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 };
+      for (const [category, delta] of Object.entries(pending.engine)) {
+        if (!metrics._engine[category]) {
+          metrics._engine[category] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 };
+        }
+        const cat = metrics._engine[category];
+        cat.calls = (cat.calls || 0) + delta.calls;
+        cat.costUsd = (cat.costUsd || 0) + delta.costUsd;
+        cat.inputTokens = (cat.inputTokens || 0) + delta.inputTokens;
+        cat.outputTokens = (cat.outputTokens || 0) + delta.outputTokens;
+        cat.cacheRead = (cat.cacheRead || 0) + delta.cacheRead;
+        cat.cacheCreation = (cat.cacheCreation || 0) + delta.cacheCreation;
+        if (delta.timedCalls > 0) {
+          cat.totalDurationMs = (cat.totalDurationMs || 0) + delta.totalDurationMs;
+          cat.timedCalls = (cat.timedCalls || 0) + delta.timedCalls;
+        }
       }
-      const cat = metrics._engine[category];
-      cat.calls++;
-      cat.costUsd += usage.costUsd || 0;
-      cat.inputTokens += usage.inputTokens || 0;
-      cat.outputTokens += usage.outputTokens || 0;
-      cat.cacheRead += usage.cacheRead || 0;
-      cat.cacheCreation = (cat.cacheCreation || 0) + (usage.cacheCreation || 0);
-      if (usage.durationMs) {
-        cat.totalDurationMs = (cat.totalDurationMs || 0) + usage.durationMs;
-        cat.timedCalls = (cat.timedCalls || 0) + 1;
-      }
-
-      const today = ts().slice(0, 10);
       if (!metrics._daily) metrics._daily = {};
-      if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
-      const daily = metrics._daily[today];
-      daily.costUsd += usage.costUsd || 0;
-      daily.inputTokens += usage.inputTokens || 0;
-      daily.outputTokens += usage.outputTokens || 0;
-      daily.cacheRead += usage.cacheRead || 0;
-
+      for (const [day, delta] of Object.entries(pending.daily)) {
+        if (!metrics._daily[day]) {
+          metrics._daily[day] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
+        }
+        const d = metrics._daily[day];
+        d.costUsd += delta.costUsd;
+        d.inputTokens += delta.inputTokens;
+        d.outputTokens += delta.outputTokens;
+        d.cacheRead += delta.cacheRead;
+      }
       return metrics;
     });
-  } catch (e) { console.error('metrics update:', e.message); }
+  } catch (e) {
+    // Re-merge pending so the next flush retries — never drop counters silently.
+    for (const [category, delta] of Object.entries(pending.engine)) {
+      if (!_pendingMetrics.engine[category]) _pendingMetrics.engine[category] = _emptyEngineDelta();
+      const c = _pendingMetrics.engine[category];
+      c.calls += delta.calls; c.costUsd += delta.costUsd;
+      c.inputTokens += delta.inputTokens; c.outputTokens += delta.outputTokens;
+      c.cacheRead += delta.cacheRead; c.cacheCreation += delta.cacheCreation;
+      c.totalDurationMs += delta.totalDurationMs; c.timedCalls += delta.timedCalls;
+    }
+    for (const [day, delta] of Object.entries(pending.daily)) {
+      if (!_pendingMetrics.daily[day]) _pendingMetrics.daily[day] = _emptyDailyDelta();
+      const d = _pendingMetrics.daily[day];
+      d.costUsd += delta.costUsd; d.inputTokens += delta.inputTokens;
+      d.outputTokens += delta.outputTokens; d.cacheRead += delta.cacheRead;
+    }
+    console.error('metrics flush:', e.message);
+  }
+}
+
+function _resetMetricsBufferForTest() {
+  _pendingMetrics = { engine: Object.create(null), daily: Object.create(null) };
+  if (_flushTimer) { clearInterval(_flushTimer); _flushTimer = null; }
 }
 
 // ─── Runtime Binary Resolution (TTL-cached) ──────────────────────────────────
@@ -83,7 +161,10 @@ function _resolveBin(runtime) {
   if (!runtime) return null;
   const key = runtime.name;
   const cached = _binCache.get(key);
-  if (cached && Date.now() - cached.ts < _BIN_TTL && fs.existsSync(cached.bin)) {
+  // Trust the 30-min TTL — skip per-call existsSync (10-50ms on Windows w/ AV).
+  // If the binary disappears mid-window, spawn fails with ENOENT and the
+  // adapter's resolveBinary() reprobes on the next cache miss.
+  if (cached && Date.now() - cached.ts < _BIN_TTL) {
     return { bin: cached.bin, native: cached.native, leadingArgs: cached.leadingArgs };
   }
   let resolved = null;
@@ -700,10 +781,12 @@ module.exports = {
   callLLM,
   callLLMStreaming,
   trackEngineUsage,
+  flushMetricsBuffer,
   // Exposed for unit tests — engine code MUST use the runtime adapter contract.
   _buildSpawnAgentFlags,
   _resolveBin,
   _resetBinCache,
+  _resetMetricsBufferForTest,
   _resolveRuntimeFor,
   _resolveModelFor,
   _resolveModelForRuntime,

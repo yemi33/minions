@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { exec, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
+const { exec, execAsync, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
 const { safeJson, safeWrite, safeReadDir, mutateCooldowns, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
@@ -51,6 +51,15 @@ function worktreeMatchesBranch(dirLower, branch, actualBranch = '') {
 function getWorktreeBranch(wtPath) {
   try {
     return exec(`git -C "${wtPath}" branch --show-current`, { encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true }).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function getWorktreeBranchAsync(wtPath) {
+  try {
+    const out = await execAsync(`git -C "${wtPath}" branch --show-current`, { encoding: 'utf8', timeout: 5000 });
+    return (out || '').toString().trim();
   } catch {
     return '';
   }
@@ -134,7 +143,7 @@ function _killProcessInWorktree(dir, activeProcesses, activeIds) {
 
 // ─── Cleanup Orchestrator ────────────────────────────────────────────────────
 
-function runCleanup(config, verbose = false) {
+async function runCleanup(config, verbose = false) {
   const activeProcesses = engine().activeProcesses;
   const projects = getProjects(config);
   let cleaned = { tempFiles: 0, liveOutputs: 0, worktrees: 0, zombies: 0 };
@@ -248,11 +257,26 @@ function runCleanup(config, verbose = false) {
       const dispatch = getDispatch();
       const activeDispatchIds = new Set((dispatch.active || []).map(d => d.id));
 
+      // Probe `git branch --show-current` for every worktree in chunks of 5.
+      // Sequential probing was the dominant cost in the cleanup phase
+      // (5–15s tick stall every 10 ticks at 50+ worktrees), but unbounded
+      // Promise.all would spawn 50+ concurrent git children — bad on Windows
+      // where each fork pays AV-scan overhead. Mirrors engine/ado.js:611.
+      const BRANCH_PROBE_CONCURRENCY = 5;
+      const branchMap = new Map();
+      for (let i = 0; i < allDirs.length; i += BRANCH_PROBE_CONCURRENCY) {
+        const batch = allDirs.slice(i, i + BRANCH_PROBE_CONCURRENCY);
+        const pairs = await Promise.all(
+          batch.map(async ({ wtPath }) => [wtPath, await getWorktreeBranchAsync(wtPath)])
+        );
+        for (const [wtPath, branch] of pairs) branchMap.set(wtPath, branch);
+      }
+
       for (const { dir, wtPath } of allDirs) {
 
         let shouldClean = false;
         let isProtected = false;
-        const actualBranch = getWorktreeBranch(wtPath);
+        const actualBranch = branchMap.get(wtPath) || '';
 
         // Check if this worktree's branch is merged/abandoned
         // Prefer actual git branch metadata; compact Windows dirs intentionally omit branch names.
