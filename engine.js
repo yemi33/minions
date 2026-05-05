@@ -2214,6 +2214,12 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+function isPrNoOpFixCauseSuppressed(pr, cause) {
+  if (!shared.isPrNoOpFixCausePaused(pr, cause)) return false;
+  log('warn', `PR ${pr.id}: suppressing ${cause} automation after repeated no-op fix attempts; waiting for human resume or new evidence`);
+  return true;
+}
+
 const PR_PENDING_MISSING_BRANCH = shared.PR_PENDING_REASON.MISSING_BRANCH;
 
 function normalizePrBranch(value) {
@@ -2539,7 +2545,8 @@ async function discoverFromPrs(config, project) {
     const humanCauseKey = getPrAutomationCauseKey('human-comment', pr);
     const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.HUMAN_FEEDBACK)) {
       const key = humanFixKey;
       if (isPrAutomationCauseHandledOrPending(project, pr, humanCauseKey)) continue;
       let staleCoalesced = [];
@@ -2636,7 +2643,8 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix.
     // Gate on evalLoopEnabled and provider polling — the review→fix cycle depends on fresh vote state.
-    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
+    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.REVIEW_FEEDBACK)) {
       const reviewCauseKey = getPrAutomationCauseKey('review-feedback', pr);
       const key = getPrAutomationDispatchKey(`fix-${project?.name || 'default'}-${prDisplayId}`, reviewCauseKey);
       if (isPrAutomationCauseHandledOrPending(project, pr, reviewCauseKey)) continue;
@@ -2663,7 +2671,8 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
+    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing'
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.BUILD_FAILURE)) {
       const buildCauseKey = getPrAutomationCauseKey('build', pr);
       const key = getPrAutomationDispatchKey(`build-fix-${project?.name || 'default'}-${prDisplayId}`, buildCauseKey);
       if (isPrAutomationCauseHandledOrPending(project, pr, buildCauseKey)) continue;
@@ -2757,7 +2766,8 @@ async function discoverFromPrs(config, project) {
 
     // PRs with merge conflicts — dispatch fix to resolve (gated by provider polling + autoFixConflicts)
     const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
-    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.MERGE_CONFLICT)) {
       const conflictCauseKey = getPrAutomationCauseKey('merge-conflict', pr);
       const key = getPrAutomationDispatchKey(`conflict-fix-${project?.name || 'default'}-${prDisplayId}`, conflictCauseKey);
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
