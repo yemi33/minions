@@ -154,6 +154,17 @@ const realActivityMap = new Map(); // dispatchId → timestamp of last agent std
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 const engineRestartGraceExempt = new Set(); // dispatch IDs with confirmed-dead PIDs at restart — bypass grace period
 
+function cleanupTempAgent(agentId) {
+  if (!tempAgents.has(agentId)) return;
+  tempAgents.delete(agentId);
+  try {
+    const agentDir = path.join(AGENTS_DIR, agentId);
+    // Keep output archive but remove temp agent directory (live-output.log etc.)
+    fs.rmSync(agentDir, { recursive: true, force: true });
+    log('info', `Temp agent ${agentId} cleaned up`);
+  } catch { /* cleanup */ }
+}
+
 // Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
 // Cleared at the start of each tick cycle (see tickInner)
 const _failedRefCache = new Set();
@@ -692,6 +703,7 @@ async function spawnAgent(dispatchItem, config) {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
           _cleanupPromptFiles();
           completeDispatch(id, DISPATCH_RESULT.ERROR, 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
+          cleanupTempAgent(agentId);
           return null;
         }
       }
@@ -945,6 +957,7 @@ async function spawnAgent(dispatchItem, config) {
                 });
               } catch (e) { log('warn', `Failed to auto-queue conflict-fix: ${e.message}`); }
             }
+            cleanupTempAgent(agentId);
             return;
           }
         } catch (e) {
@@ -1091,6 +1104,7 @@ async function spawnAgent(dispatchItem, config) {
     // orphan detector's "logSize > stub-only" check can tell this apart from a
     // hung process. Then rethrow so the dispatch loop handles it normally.
     try { fs.appendFileSync(liveOutputPath, `[${new Date().toISOString()}] spawn-failed: ${spawnErr.message}\n[process-exit] spawn-failed\n`); } catch { /* cleanup-only best effort */ }
+    cleanupTempAgent(agentId);
     throw spawnErr;
   }
 
@@ -1222,6 +1236,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] No session to resume. Message was: ${steerMsg}\n`); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering skipped (no session)', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1252,6 +1267,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Could not write prompt. Message was: ${steerMsg}\n`); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering prompt write failed', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1274,6 +1290,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering not supported by runtime', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1302,6 +1319,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering spawn failed', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1420,6 +1438,7 @@ async function spawnAgent(dispatchItem, config) {
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
+      cleanupTempAgent(agentId);
       return;
     }
 
@@ -1443,6 +1462,7 @@ async function spawnAgent(dispatchItem, config) {
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
+      cleanupTempAgent(agentId);
       return;
     }
 
@@ -1539,16 +1559,7 @@ async function spawnAgent(dispatchItem, config) {
       } catch (err) { log('warn', `Artifact tracking: ${err.message}`); }
     }
 
-    // Clean up temp agent directory
-    if (tempAgents.has(agentId)) {
-      tempAgents.delete(agentId);
-      try {
-        const agentDir = path.join(AGENTS_DIR, agentId);
-        // Keep output archive but remove temp agent directory (live-output.log etc.)
-        fs.rmSync(agentDir, { recursive: true, force: true });
-        log('info', `Temp agent ${agentId} cleaned up`);
-      } catch { /* cleanup */ }
-    }
+    cleanupTempAgent(agentId);
   }
 
   proc.on('close', onAgentClose);
@@ -1558,6 +1569,7 @@ async function spawnAgent(dispatchItem, config) {
     activeProcesses.delete(id);
     realActivityMap.delete(id);
     completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
+    cleanupTempAgent(agentId);
   });
 
   // Safety: if process exits immediately (within 3s), log it

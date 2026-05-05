@@ -15022,6 +15022,19 @@ async function testTempAgentBudget() {
     } finally { restore(); }
   });
 
+  await test('resolveAgent dryRun does not retain temp agent metadata — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: true, maxConcurrent: 5 } };
+      routing.setTempBudget(1);
+      const resolved = routing.resolveAgent('implement', config, { dryRun: true });
+      assert.strictEqual(resolved, 'temp-preview', 'dryRun should report temp availability without allocating a real temp id');
+      assert.strictEqual(routing.tempAgents.size, 0, 'dryRun must not add entries to tempAgents');
+      assert.strictEqual(routing.getTempBudget(), 1, 'dryRun must not consume temp-agent budget');
+      assert.strictEqual(routing._claimedAgents.size, 0, 'dryRun must not claim agents');
+    } finally { restore(); }
+  });
+
   await test('tempBudget resets between ticks via setTempBudget — behavioral', () => {
     const { routing, restore } = loadFreshRouting();
     try {
@@ -23432,6 +23445,13 @@ async function testRecentFeatures() {
     assert.ok(dashSrc.includes('_hotReloadClients') && dashSrc.includes('reload'),
       'Should push reload event to connected browsers on rebuild');
   });
+
+  await test('dashboard SSE clients have heartbeat cleanup instead of bare Set retention', () => {
+    assert.ok(dashSrc.includes('function _trackSseClient') && dashSrc.includes("': heartbeat\\n\\n'"),
+      'SSE clients should get heartbeat writes that clean up dead responses even when status does not change');
+    assert.ok(dashSrc.includes('_removeSseClient(_statusStreamClients') && dashSrc.includes('_removeSseClient(_hotReloadClients'),
+      'SSE write failures should run cleanup, not just delete the response from the Set');
+  });
 }
 
 // ─── Dashboard UI Function Tests ───────────────────────────────────────────
@@ -24202,8 +24222,8 @@ async function testDispatchCycleIntegration() {
   await test('Dashboard pushes status via SSE using _statusStreamClients', () => {
     assert.ok(dashSrc.includes('_statusStreamClients'),
       'dashboard.js must define _statusStreamClients');
-    assert.ok(dashSrc.includes('_statusStreamClients.add(res'),
-      'Dashboard must add clients to _statusStreamClients on SSE connect');
+    assert.ok(dashSrc.includes('_trackSseClient(_statusStreamClients'),
+      'Dashboard must register status stream clients via _trackSseClient (heartbeat + cleanup)');
     assert.ok(dashSrc.includes('res.write(') && dashSrc.includes('data:'),
       'Dashboard must write SSE data frames to connected clients');
   });
@@ -24444,6 +24464,14 @@ async function testMeetings() {
       'Streaming CC should keep buffered live state for reconnect grace windows');
     assert.ok(dashSrc.includes('body.reconnect') && dashSrc.includes('No live command-center response to reconnect'),
       'Streaming CC should support reconnect requests for an in-flight tab');
+  });
+
+  await test('CC live stream reconnect buffers have hard-age cleanup', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('CC_LIVE_STREAM_MAX_AGE_MS') && dashSrc.includes('shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs'),
+      'CC live stream buffers should have a configured hard max age');
+    assert.ok(dashSrc.includes('function _sweepCcLiveStreams') && dashSrc.includes('_ccLiveSweepTimer'),
+      'CC live stream buffers should be swept if abort/cleanup stalls');
   });
 }
 
@@ -35013,6 +35041,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
     assert.ok(resolveFn.includes('_sessionExpired'), 'resolveSession should use shared expiry helper');
     assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+  });
+
+  await test('doc-session store prunes by TTL and max entries outside access path', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('DOC_SESSION_MAX_ENTRIES') && src.includes('shared.ENGINE_DEFAULTS.docSessionMaxEntries'),
+      'Doc sessions should have a configured max-entry cap');
+    assert.ok(src.includes('function pruneDocSessions') && src.includes('_docSessionPruneTimer'),
+      'Doc sessions should be pruned periodically, not only when resolveSession touches a key');
+    // CRLF-tolerant: dashboard.js may be checked out with either line ending.
+    assert.ok(/pruneDocSessions\(\);\r?\n\s+const obj = \{\};/.test(src),
+      'persistDocSessions should prune before serializing sessions to disk');
   });
 
   await test('resolveSession TTL check comes after turnCount check', () => {

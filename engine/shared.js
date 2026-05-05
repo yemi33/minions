@@ -684,10 +684,34 @@ function execAsync(cmd, opts = {}) {
  * Cached per rootDir to avoid repeated git calls within a tick.
  */
 const _mainBranchCache = new Map();
+function _pruneTimedMap(map, { maxEntries, ttlMs, getTs, now = Date.now() }) {
+  const max = Number(maxEntries) > 0 ? Number(maxEntries) : Infinity;
+  const ttl = Number(ttlMs) > 0 ? Number(ttlMs) : Infinity;
+  for (const [key, value] of map) {
+    const entryTs = Number(getTs(value)) || 0;
+    if (entryTs <= 0 || now - entryTs > ttl) map.delete(key);
+  }
+  if (map.size <= max) return;
+  const oldest = Array.from(map.entries())
+    .sort((a, b) => (Number(getTs(a[1])) || 0) - (Number(getTs(b[1])) || 0));
+  for (const [key] of oldest.slice(0, Math.max(0, map.size - max))) map.delete(key);
+}
+
+function _setMainBranchCache(cacheKey, branch) {
+  _pruneTimedMap(_mainBranchCache, {
+    maxEntries: ENGINE_DEFAULTS.mainBranchCacheMaxEntries,
+    ttlMs: ENGINE_DEFAULTS.mainBranchCacheTtlMs,
+    getTs: entry => entry?.ts,
+  });
+  _mainBranchCache.set(cacheKey, { branch, ts: Date.now() });
+}
+
 function resolveMainBranch(rootDir, configuredBranch) {
   const cacheKey = rootDir + ':' + (configuredBranch || '');
+  // _setMainBranchCache prunes on every write, which bounds the map without
+  // an extra O(n) scan on hits. The TTL check below handles per-entry expiry.
   const cached = _mainBranchCache.get(cacheKey);
-  if (cached && (Date.now() - cached.ts) < 300000) return cached.branch; // 5min TTL
+  if (cached && (Date.now() - cached.ts) < ENGINE_DEFAULTS.mainBranchCacheTtlMs) return cached.branch;
 
   const gitOpts = { cwd: rootDir, encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true };
 
@@ -695,12 +719,12 @@ function resolveMainBranch(rootDir, configuredBranch) {
   if (configuredBranch) {
     try {
       _execSync(`git rev-parse --verify "${configuredBranch}"`, gitOpts);
-      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, configuredBranch);
       return configuredBranch;
     } catch { /* configured branch doesn't exist locally */ }
     try {
       _execSync(`git rev-parse --verify "origin/${configuredBranch}"`, gitOpts);
-      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, configuredBranch);
       return configuredBranch;
     } catch { /* not on remote either */ }
   }
@@ -710,14 +734,14 @@ function resolveMainBranch(rootDir, configuredBranch) {
     const ref = _execSync('git symbolic-ref refs/remotes/origin/HEAD', gitOpts).trim();
     const branch = ref.replace('refs/remotes/origin/', '');
     if (branch) {
-      _mainBranchCache.set(cacheKey, { branch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, branch);
       return branch;
     }
   } catch { /* no remote HEAD set */ }
 
   // 3. Fallback
   const fallback = configuredBranch || 'main';
-  _mainBranchCache.set(cacheKey, { branch: fallback, ts: Date.now() });
+  _setMainBranchCache(cacheKey, fallback);
   return fallback;
 }
 
@@ -885,9 +909,15 @@ const ENGINE_DEFAULTS = {
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
   maxStateFileBytes: 100 * 1024 * 1024, // 100 MB — fail startup with a clear error when dispatch.json / cooldowns.json exceed this, rather than silently OOMing on JSON.parse (#1167)
+  mainBranchCacheTtlMs: 300000, // 5min — cache git default-branch detection, then prune expired entries
+  mainBranchCacheMaxEntries: 100, // bound repo/branch detection cache in long-lived dashboard/engine processes
+  removeWorktreeFailureTtlMs: 24 * 60 * 60 * 1000, // stale failed paths are forgotten after a day
+  removeWorktreeFailureMaxEntries: 1000, // bound failed-worktree retry suppression cache
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
   ccSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — keep chats resumable after breaks, still bounded by turn cap
   docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
+  docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity
+  ccLiveStreamMaxAgeMs: 30 * 60 * 1000, // hard cap reconnect buffers if abort/cleanup stalls
   maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
   maxLlmStderrBytes: 64 * 1024, // keep only a bounded stderr tail from direct Claude calls
   maxLlmLineBufferBytes: 128 * 1024, // cap the incremental JSON line buffer to avoid malformed-stream OOMs
@@ -2485,6 +2515,13 @@ function mutatePullRequests(filePath, mutator) {
  * 2. cmd /c rd /s /q as final fallback handles any remaining reserved names
  */
 const _removeWorktreeFailures = new Map(); // path → { count, lastAttempt }
+function _pruneRemoveWorktreeFailures() {
+  _pruneTimedMap(_removeWorktreeFailures, {
+    maxEntries: ENGINE_DEFAULTS.removeWorktreeFailureMaxEntries,
+    ttlMs: ENGINE_DEFAULTS.removeWorktreeFailureTtlMs,
+    getTs: entry => entry?.lastAttempt,
+  });
+}
 
 // Windows reserved device names that cannot be deleted via normal paths
 const _WIN_RESERVED_NAMES = new Set([
@@ -2583,6 +2620,7 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
     log('warn', `removeWorktree: refusing to remove ${wtPath} — not under ${worktreeRoot}`);
     return false;
   }
+  _pruneRemoveWorktreeFailures();
   // Skip paths that failed 3+ times — retry after 1 hour cooldown
   const prior = _removeWorktreeFailures.get(resolved);
   if (prior && prior.count >= 3 && Date.now() - prior.lastAttempt < 3600000) return false;
@@ -2619,6 +2657,7 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
       fail.count++;
       fail.lastAttempt = Date.now();
       _removeWorktreeFailures.set(resolved, fail);
+      _pruneRemoveWorktreeFailures();
       if (fail.count <= 3) log('warn', `removeWorktree: failed for ${wtPath} (attempt ${fail.count}/3): ${rmErr.message}`);
       return false;
     }

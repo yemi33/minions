@@ -472,6 +472,43 @@ let HTML = HTML_RAW;
 let HTML_GZ = zlib.gzipSync(HTML);
 let HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
 
+const SSE_CLIENT_HEARTBEAT_MS = 30000;
+const _sseClientCleanups = new WeakMap();
+function _removeSseClient(clientSet, res) {
+  const cleanup = _sseClientCleanups.get(res);
+  if (cleanup) cleanup();
+  else clientSet.delete(res);
+}
+
+function _trackSseClient(clientSet, req, res, { heartbeatMs = SSE_CLIENT_HEARTBEAT_MS } = {}) {
+  let closed = false;
+  let heartbeatTimer = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    clientSet.delete(res);
+    _sseClientCleanups.delete(res);
+  };
+  const heartbeat = () => {
+    if (res.destroyed || res.writableEnded) {
+      cleanup();
+      return;
+    }
+    try { res.write(': heartbeat\n\n'); } catch { cleanup(); }
+  };
+  heartbeatTimer = setInterval(heartbeat, heartbeatMs);
+  if (heartbeatTimer.unref) heartbeatTimer.unref();
+  _sseClientCleanups.set(res, cleanup);
+  clientSet.add(res);
+  req.on('close', cleanup);
+  req.on('aborted', cleanup);
+  res.on('close', cleanup);
+  res.on('error', cleanup);
+  return cleanup;
+}
+
 // Hot-reload: watch dashboard/ directory for changes, rebuild, and push reload to browsers
 const _hotReloadClients = new Set();
 
@@ -486,11 +523,11 @@ function rebuildDashboardHtml() {
     console.log('  Dashboard hot-reloaded');
     // Push reload to all connected browsers via status-stream (saves a connection)
     for (const res of _statusStreamClients) {
-      try { res.write('event: reload\ndata: reload\n\n'); } catch { _statusStreamClients.delete(res); }
+      try { res.write('event: reload\ndata: reload\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
     }
     // Legacy hot-reload clients
     for (const res of _hotReloadClients) {
-      try { res.write('data: reload\n\n'); } catch { _hotReloadClients.delete(res); }
+      try { res.write('data: reload\n\n'); } catch { _removeSseClient(_hotReloadClients, res); }
     }
   } catch (e) { console.error('  Hot-reload error:', e.message); }
 }
@@ -742,7 +779,7 @@ function invalidateStatusCache(opts) {
     if (_statusStreamClients.size === 0) return;
     const data = getStatusJson();
     for (const res of _statusStreamClients) {
-      try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+      try { res.write('data: ' + data + '\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
     }
   }, 500);
 }
@@ -874,7 +911,7 @@ setInterval(() => {
   if (data === _lastStatusPushRef) return; // O(1) reference comparison — new string ref means content changed
   _lastStatusPushRef = data;
   for (const res of _statusStreamClients) {
-    try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+    try { res.write('data: ' + data + '\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
   }
 }, 10000);
 
@@ -894,6 +931,7 @@ const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to r
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
 const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
+const CC_LIVE_STREAM_MAX_AGE_MS = shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs;
 // Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
 // 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
 // edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
@@ -901,6 +939,9 @@ const DOC_CHAT_TIMEOUT_MS = 360000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
+}
+function _touchCcLiveStream(state) {
+  if (state) state.updatedAt = Date.now();
 }
 function _clearCcLiveTimers(tabId) {
   const state = _getCcLiveStream(tabId);
@@ -934,6 +975,8 @@ function _ensureCcLiveStream(tabId) {
     abortFn: null,
     abortTimer: null,
     cleanupTimer: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
   };
   ccLiveStreams.set(tabId, state);
   return state;
@@ -943,6 +986,7 @@ function _attachCcLiveStream(tabId, writer, endResponse) {
   _clearCcLiveTimers(tabId);
   state.writer = writer;
   state.endResponse = endResponse;
+  _touchCcLiveStream(state);
   return state;
 }
 function _detachCcLiveStream(tabId, writer) {
@@ -961,7 +1005,9 @@ function _scheduleCcLiveAbort(tabId) {
     const live = _getCcLiveStream(tabId);
     if (!live || live.donePayload || live.writer) return;
     try { if (live.abortFn) live.abortFn(); } catch {}
+    _scheduleCcLiveCleanup(tabId, CC_STREAM_REATTACH_GRACE_MS);
   }, CC_STREAM_REATTACH_GRACE_MS);
+  if (state.abortTimer.unref) state.abortTimer.unref();
 }
 function _scheduleCcLiveCleanup(tabId, delayMs = CC_STREAM_DONE_RETENTION_MS) {
   const state = _getCcLiveStream(tabId);
@@ -972,7 +1018,25 @@ function _scheduleCcLiveCleanup(tabId, delayMs = CC_STREAM_DONE_RETENTION_MS) {
     if (!live || live.writer) return;
     _clearCcLiveStream(tabId);
   }, delayMs);
+  if (state.cleanupTimer.unref) state.cleanupTimer.unref();
 }
+function _sweepCcLiveStreams() {
+  const now = Date.now();
+  for (const [tabId, state] of ccLiveStreams.entries()) {
+    const age = now - (state.updatedAt || state.createdAt || now);
+    if (state.donePayload && !state.writer && age > CC_STREAM_DONE_RETENTION_MS) {
+      _clearCcLiveStream(tabId);
+      continue;
+    }
+    if (age <= CC_LIVE_STREAM_MAX_AGE_MS) continue;
+    try { if (state.abortFn) state.abortFn(); } catch {}
+    try { if (state.endResponse) state.endResponse(); } catch {}
+    _releaseCCTab(tabId);
+    _clearCcLiveStream(tabId);
+  }
+}
+const _ccLiveSweepTimer = setInterval(_sweepCcLiveStreams, Math.min(CC_LIVE_STREAM_MAX_AGE_MS, 5 * 60 * 1000));
+if (_ccLiveSweepTimer.unref) _ccLiveSweepTimer.unref();
 function _ccTabIsInFlight(tabId) {
   if (!ccInFlightTabs.has(tabId)) return false;
   // Auto-release stale locks — if a request has been in-flight longer than CC_INFLIGHT_TIMEOUT_MS,
@@ -1797,7 +1861,7 @@ async function executeCCActions(actions) {
           // Pre-flight routing check: warn the user if no agent is currently available so the new
           // item won't sit pending invisibly. Routing failure is non-fatal — the WI was created.
           try {
-            const resolvedAgent = routing.resolveAgent(workType, CONFIG, { agentHints });
+            const resolvedAgent = routing.resolveAgent(workType, CONFIG, { agentHints, dryRun: true });
             if (!resolvedAgent) {
               const lastResult = results[results.length - 1];
               lastResult.warning = `Created ${id} but no agent is currently available to dispatch (routing returned no match for workType=${workType}${agentHints.length ? ', hints=' + agentHints.join(',') : ''}). Item will sit pending until an agent becomes available.`;
@@ -1841,12 +1905,20 @@ async function executeCCActions(actions) {
             project_path: project.localPath || '',
             task: `Build & test ${pr.id}: ${pr.title || ''}`,
           }, `Build & test ${pr.id}: ${pr.title || ''}`,
-          { dispatchKey, source: 'cc-build-and-test', pr, branch: pr.branch, project: { name: project.name, localPath: project.localPath } });
+           { dispatchKey, source: 'cc-build-and-test', pr, branch: pr.branch, project: { name: project.name, localPath: project.localPath } });
           if (!item) {
+            if (agentId?.startsWith('temp-')) {
+              routing.tempAgents.delete(agentId);
+              routing._claimedAgents.delete(agentId);
+            }
             results.push({ type: 'build-and-test', error: 'Failed to render build-and-test playbook' });
             break;
           }
           const id = dispatchMod.addToDispatch(item);
+          if (agentId?.startsWith('temp-')) {
+            routing.tempAgents.delete(agentId);
+            routing._claimedAgents.delete(agentId);
+          }
           results.push({ type: 'build-and-test', id, agent: agentId, pr: pr.id, ok: true });
           break;
         }
@@ -1975,7 +2047,35 @@ async function executeDocChatActions(actions) {
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
 const DOC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.docSessionTtlMs;
+const DOC_SESSION_MAX_ENTRIES = shared.ENGINE_DEFAULTS.docSessionMaxEntries;
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
+
+function _docSessionLastActiveMs(session) {
+  const ms = Date.parse(session?.lastActiveAt || session?.createdAt || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function pruneDocSessions() {
+  let changed = false;
+  for (const [key, s] of docSessions.entries()) {
+    if (!s || (s.turnCount || 0) >= CC_SESSION_MAX_TURNS ||
+        _sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS) ||
+        s._promptHash !== _docChatPromptHash) {
+      docSessions.delete(key);
+      changed = true;
+    }
+  }
+  const maxEntries = Number(DOC_SESSION_MAX_ENTRIES) > 0 ? Number(DOC_SESSION_MAX_ENTRIES) : 200;
+  if (docSessions.size > maxEntries) {
+    const oldest = Array.from(docSessions.entries())
+      .sort((a, b) => _docSessionLastActiveMs(a[1]) - _docSessionLastActiveMs(b[1]));
+    for (const [key] of oldest.slice(0, docSessions.size - maxEntries)) {
+      docSessions.delete(key);
+      changed = true;
+    }
+  }
+  return changed;
+}
 
 // Load persisted doc sessions on startup
 try {
@@ -1986,14 +2086,21 @@ try {
       if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) continue;
       docSessions.set(key, s);
     }
+    pruneDocSessions();
   }
 } catch { /* optional */ }
 
 function persistDocSessions() {
+  pruneDocSessions();
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
   safeWrite(DOC_SESSIONS_PATH, obj);
 }
+
+const _docSessionPruneTimer = setInterval(() => {
+  if (pruneDocSessions()) persistDocSessions();
+}, Math.min(DOC_SESSION_TTL_MS, 60 * 60 * 1000));
+if (_docSessionPruneTimer.unref) _docSessionPruneTimer.unref();
 
 // Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
 let _persistDocSessionsTimer = null;
@@ -2062,6 +2169,7 @@ function updateSession(store, key, sessionId, existing) {
       _docHash: prev?._docHash || null,
       _promptHash: _docChatPromptHash,
     });
+    pruneDocSessions();
     schedulePersistDocSessions();
   }
 }
@@ -5255,6 +5363,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       sessionId, effort, direct: true,
       engineConfig,
       onChunk: (text) => {
+        _touchCcLiveStream(liveState);
         const display = stripCCActionsForStream(text);
         liveState.text = display;
         // Once text is flowing, the SSE-replay branch (live.thinkingSent &&
@@ -5263,11 +5372,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
       },
       onToolUse: (name, input) => {
+        _touchCcLiveStream(liveState);
         toolUses.push({ name, input: input || {} });
         liveState.tools.push({ name, input: input || {} });
         if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
       },
       onThinking: () => {
+        _touchCcLiveStream(liveState);
         liveState.thinkingSent = true;
         if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
       },
@@ -6318,15 +6429,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/status-stream', desc: 'SSE stream of real-time status updates', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       res.write('data: ' + getStatusJson() + '\n\n');
-      _statusStreamClients.add(res);
-      req.on('close', () => _statusStreamClients.delete(res));
+      _trackSseClient(_statusStreamClients, req, res);
     }},
     { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
     { method: 'GET', path: '/api/hot-reload', desc: 'SSE stream for dashboard hot-reload notifications', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       res.write('data: connected\n\n');
-      _hotReloadClients.add(res);
-      req.on('close', () => _hotReloadClients.delete(res));
+      _trackSseClient(_hotReloadClients, req, res);
     }},
 
     // Work items
