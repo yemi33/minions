@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1722 (2026-05-05)
+
+### Other
+- Improve schedule run now feedback
+
 ## 0.1.1721 (2026-05-05)
 
 ### Fixes
