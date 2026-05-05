@@ -42,22 +42,71 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 const _BEARER_RE = /Bearer\s+[A-Za-z0-9+/=._\-]{20,}/g;
 const _JWT_RE = /ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(?:\.[A-Za-z0-9_\-]{10,})?/g;
 const _AZUREAUTH_RE = /"token"\s*:\s*"[A-Za-z0-9+/=._\-]{20,}"/g;
+const _URL_RE = /\b(?:https?|ssh):\/\/[^\s<>"'`]+/gi;
+const _GITHUB_REPO_URL_RE = /\b(?:(?:https?:\/\/|ssh:\/\/git@)github\.com[/:]|git@github\.com:)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_DEV_REPO_URL_RE = /\bhttps?:\/\/dev\.azure\.com\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_VISUALSTUDIO_REPO_URL_RE = /\bhttps?:\/\/[^/\s<>"'`]+\.visualstudio\.com\/(?:DefaultCollection\/)?[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_SSH_REPO_URL_RE = /\b(?:ssh:\/\/)?git@ssh\.dev\.azure\.com[:/]v3\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/[^/\s<>"'`)]+/gi;
+const _TOKEN_URL_PARAM_RE = /[?&](?:access[_-]?token|auth[_-]?token|token|api[_-]?key|sig|signature|pat)=/i;
+const _URL_CREDENTIALS_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 
-function _redactString(s) {
-  if (typeof s !== 'string' || s.length === 0) return s;
+function _escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _redactedWithTrailingPunctuation(raw, replacement) {
+  const match = String(raw).match(/^(.+?)([.,;:!?)]*)$/);
+  return replacement + (match ? match[2] : '');
+}
+
+function _redactUrlMatch(raw, replacement) {
+  return _redactedWithTrailingPunctuation(raw, replacement);
+}
+
+function _redactTokenBearingUrls(s) {
+  return s.replace(_URL_RE, url => (
+    _TOKEN_URL_PARAM_RE.test(url) || _URL_CREDENTIALS_RE.test(url)
+      ? _redactUrlMatch(url, '[REDACTED_URL]')
+      : url
+  ));
+}
+
+function _redactRepositoryUrls(s) {
   return s
+    .replace(_GITHUB_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_DEV_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_VISUALSTUDIO_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_SSH_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'));
+}
+
+function _redactConfiguredRepositoryIdentifiers(s, options) {
+  const entries = Array.isArray(options?.repositoryIdentifiers) ? options.repositoryIdentifiers : [];
+  let out = s;
+  for (const entry of entries) {
+    const value = typeof entry === 'string' ? entry : entry?.value;
+    const replacement = typeof entry === 'string' ? '[REDACTED_REPO]' : (entry?.replacement || '[REDACTED_REPO]');
+    if (typeof value !== 'string' || value.length < 4) continue;
+    out = out.replace(new RegExp(_escapeRegExp(value), 'gi'), replacement);
+  }
+  return out;
+}
+
+function _redactString(s, options = {}) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  const repoRedacted = options.redactRepositoryUrls ? _redactRepositoryUrls(s) : s;
+  return _redactTokenBearingUrls(_redactConfiguredRepositoryIdentifiers(repoRedacted, options))
     .replace(_AZUREAUTH_RE, '"token":"[REDACTED_AZUREAUTH]"')
     .replace(_BEARER_RE, 'Bearer [REDACTED]')
     .replace(_JWT_RE, '[REDACTED_JWT]');
 }
 
-function redactSecrets(value) {
+function redactSecrets(value, options = {}) {
   if (value == null) return value;
-  if (typeof value === 'string') return _redactString(value);
-  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (typeof value === 'string') return _redactString(value, options);
+  if (Array.isArray(value)) return value.map(v => redactSecrets(v, options));
   if (typeof value === 'object') {
     const out = {};
-    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k]);
+    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k], options);
     return out;
   }
   return value;

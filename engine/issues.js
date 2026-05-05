@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync: _execFileSync } = require('child_process');
+const shared = require('./shared');
 
 const DEFAULT_REPO = 'yemi33/minions';
 const DEFAULT_LABELS = ['bug'];
@@ -117,6 +118,63 @@ function buildWarning(labelsSkipped, filedWithoutLabels) {
   return filedWithoutLabels ? `${base} Filed without labels.` : base;
 }
 
+function _addRedactionIdentifier(entries, seen, value, replacement) {
+  const clean = String(value || '').trim().replace(/\/+$/, '');
+  if (clean.length < 4) return;
+  const key = `${replacement}:${clean.toLowerCase()}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  entries.push({ value: clean, replacement });
+}
+
+function _stripPrUrlBase(url) {
+  return String(url || '')
+    .trim()
+    .replace(/\/(?:pull|pullrequest)\/?$/i, '')
+    .replace(/\/+$/, '');
+}
+
+function _buildIssueRedactionIdentifiers({ repo, projects = [] } = {}) {
+  const entries = [];
+  const seen = new Set();
+  _addRedactionIdentifier(entries, seen, repo, '[REDACTED_REPO]');
+
+  for (const project of projects || []) {
+    if (!project || typeof project !== 'object') continue;
+    const owner = project.adoOrg || project.org || project.owner || '';
+    const repoName = project.repoName || project.repositoryName || '';
+    const adoProject = project.adoProject || project.project || '';
+
+    if (owner && repoName) {
+      _addRedactionIdentifier(entries, seen, `${owner}/${repoName}`, '[REDACTED_REPO]');
+    }
+    if (owner && adoProject && repoName) {
+      _addRedactionIdentifier(entries, seen, `${owner}/${adoProject}/_git/${repoName}`, '[REDACTED_REPO]');
+      _addRedactionIdentifier(entries, seen, `${owner}/${adoProject}/${repoName}`, '[REDACTED_REPO]');
+    }
+    const repositoryId = String(project.repositoryId || '').trim();
+    if (repositoryId.length >= 8) {
+      _addRedactionIdentifier(entries, seen, repositoryId, '[REDACTED_REPOSITORY_ID]');
+    }
+
+    for (const field of ['remoteUrl', 'repositoryUrl', 'cloneUrl', 'sshUrl', 'webUrl']) {
+      _addRedactionIdentifier(entries, seen, project[field], '[REDACTED_REPO_URL]');
+    }
+    const prBase = _stripPrUrlBase(project.prUrlBase);
+    _addRedactionIdentifier(entries, seen, prBase, '[REDACTED_REPO_URL]');
+  }
+
+  entries.sort((a, b) => b.value.length - a.value.length);
+  return entries;
+}
+
+function _redactIssueContent(value, { repo, projects } = {}) {
+  return shared.redactSecrets(String(value || ''), {
+    redactRepositoryUrls: true,
+    repositoryIdentifiers: _buildIssueRedactionIdentifiers({ repo, projects }),
+  });
+}
+
 function createIssueWithLabels({ title, bodyFile, repo, labels, execFileSync }) {
   const args = ['issue', 'create', '--repo', repo, '--title', title, '--body-file', bodyFile];
   if (labels.length > 0) args.push('--label', labels.join(','));
@@ -133,6 +191,7 @@ function createGitHubIssue({
   description = '',
   labels,
   repo = DEFAULT_REPO,
+  projects,
   tmpDir,
   execFileSync = _execFileSync,
 } = {}) {
@@ -144,7 +203,10 @@ function createGitHubIssue({
     throw new GitHubIssueError('gh CLI not found. Install from https://cli.github.com/');
   }
 
-  const issueBody = `${description || ''}\n\n---\n_Filed via Minions dashboard_`;
+  const redactionProjects = projects || shared.getProjects();
+  const safeTitle = _redactIssueContent(title, { repo, projects: redactionProjects });
+  const safeDescription = _redactIssueContent(description || '', { repo, projects: redactionProjects });
+  const issueBody = `${safeDescription}\n\n---\n_Filed via Minions dashboard_`;
   const dir = tmpDir || path.join(__dirname, 'tmp');
   fs.mkdirSync(dir, { recursive: true });
   const bodyFile = path.join(dir, `bug-body-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.md`);
@@ -154,7 +216,7 @@ function createGitHubIssue({
   try {
     resolved = resolveLabels({ labels, repo, execFileSync });
     const created = createIssueWithLabels({
-      title,
+      title: safeTitle,
       bodyFile,
       repo,
       labels: resolved.labelsToApply,
@@ -175,7 +237,7 @@ function createGitHubIssue({
     if (isAuthError(e)) throw new GitHubIssueError('GitHub auth required. Run: gh auth login', 401);
     if (resolved && resolved.labelsToApply.length > 0 && isLabelUnavailableError(e)) {
       try {
-        const created = createIssueWithLabels({ title, bodyFile, repo, labels: [], execFileSync });
+        const created = createIssueWithLabels({ title: safeTitle, bodyFile, repo, labels: [], execFileSync });
         const skipped = normalizeLabels([...resolved.labelsSkipped, ...resolved.labelsToApply], []);
         return {
           ok: true,
@@ -203,4 +265,5 @@ module.exports = {
   normalizeLabels,
   isLabelUnavailableError,
   createGitHubIssue,
+  _buildIssueRedactionIdentifiers,
 };

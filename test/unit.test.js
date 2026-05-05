@@ -2659,11 +2659,14 @@ async function testGitHubIssueCreation() {
   function fakeGh(fixtures) {
     const calls = [];
     const execFileSync = (file, args) => {
-      calls.push({ file, args: args.slice() });
+      const call = { file, args: args.slice() };
+      calls.push(call);
       const key = args.slice(0, 2).join(' ');
       if (key === '--version') return 'gh version 2.0.0\n';
       if (key === 'label list') return fixtures.labelsJson;
       if (key === 'issue create') {
+        const bodyFile = args[args.indexOf('--body-file') + 1];
+        call.body = fs.readFileSync(bodyFile, 'utf8');
         const createCalls = calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'create').length;
         if (fixtures.throwOnCreateCall === createCalls) {
           const err = new Error(fixtures.createError || 'could not add label: "missing" not found');
@@ -2737,6 +2740,50 @@ async function testGitHubIssueCreation() {
     assert.deepStrictEqual(result.labelsSkipped, ['bug']);
     assert.ok(/filed without labels/i.test(result.warning), 'fallback warning should be user-friendly, not raw gh stderr');
     assert.ok(!/could not add label/i.test(result.warning), 'raw gh label failure must not be the final UX');
+  });
+
+  await test('createGitHubIssue redacts repository identifiers from title and body before gh create', () => {
+    const gh = fakeGh({ labelsJson: '[]' });
+    issues.createGitHubIssue({
+      title: 'Bug in https://github.com/SecretOrg/PrivateRepo and SecretOrg/PrivateRepo',
+      description: [
+        'Useful context: stack trace line 123',
+        'GitHub URL: https://github.com/SecretOrg/PrivateRepo/issues/99',
+        'GitHub SSH: git@github.com:SecretOrg/PrivateRepo.git',
+        'ADO URL: https://dev.azure.com/SecretOrg/SecretProject/_git/PrivateRepo/pullrequest/7',
+        'Token URL: https://example.test/path?access_token=ghp_abcdefghijklmnopqrstuvwxyz123456',
+        'Configured remote: ssh://git@private.example.com/team/topsecret.git',
+        'Configured repo id: 11111111-2222-3333-4444-555555555555',
+      ].join('\n'),
+      labels: [],
+      repo: 'yemi33/minions',
+      projects: [{
+        repoHost: 'github',
+        adoOrg: 'SecretOrg',
+        adoProject: 'SecretProject',
+        repoName: 'PrivateRepo',
+        repositoryId: '11111111-2222-3333-4444-555555555555',
+        prUrlBase: 'https://github.com/SecretOrg/PrivateRepo/pull/',
+        remoteUrl: 'ssh://git@private.example.com/team/topsecret.git',
+      }],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const create = gh.calls.find(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    const sentTitle = create.args[create.args.indexOf('--title') + 1];
+    const sentBody = create.body;
+    const sent = `${sentTitle}\n${sentBody}`;
+
+    assert.ok(sentTitle.includes('[REDACTED_REPO_URL]'), 'repo URL in title should be redacted');
+    assert.ok(sentTitle.includes('[REDACTED_REPO]'), 'owner/repo identifier in title should be redacted');
+    assert.ok(sentBody.includes('Useful context: stack trace line 123'), 'non-sensitive context should be preserved');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'GitHub/ADO repo URLs in body should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_URL]'), 'token-bearing non-repo URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'configured private remote URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPOSITORY_ID]'), 'configured repositoryId should be redacted');
+    assert.ok(!/SecretOrg\/PrivateRepo|github\.com\/SecretOrg\/PrivateRepo|dev\.azure\.com\/SecretOrg|private\.example\.com|access_token=|11111111-2222-3333-4444-555555555555/.test(sent),
+      'raw sensitive repository URLs, identifiers, token URLs, and repository IDs must not be sent to gh');
   });
 }
 
