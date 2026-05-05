@@ -1289,21 +1289,28 @@ function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
 
-  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
-  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docTarget = '\\b(document|doc|text|selection|selected text|selected paragraph|selected section|paragraph|section|wording|copy|markdown|plan)\\b';
   const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
   const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
     || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
-  if (explicitDocEdit && !explicitOrchestration) return false;
+  const actionTerm = '\\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\\b';
+  const untrustedActionMention = new RegExp(
+    `${docTarget}[\\s\\S]{0,120}\\b(says|contains|mentions|includes|reads|states|instructs|asks|tells|literal|literally)\\b[\\s\\S]{0,160}${actionTerm}`
+  ).test(text)
+    || new RegExp(`\\b(summarize|explain|quote|describe|analyze|extract)\\b[\\s\\S]{0,160}${docTarget}[\\s\\S]{0,160}${actionTerm}`).test(text);
+  const explicitFollowupAction = /\b(and|then|also)\b[\s\S]{0,80}\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\b/.test(text);
+  if (untrustedActionMention && !explicitFollowupAction) return false;
 
-  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)
-    || /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
+  const dispatchAction = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify|build)\b/.test(text);
+  const workItemAction = /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const stateAction = /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
     || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text)
-    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(bug|issue|error|crash|exception|regression|failing test|test failure|build failure|ci|feature|code|endpoint|api|ui|workflow|integration|pr|pull request)\b/.test(text)
-    || /\b(run|add|write)\b[\s\S]{0,80}\b(test|tests|coverage)\b/.test(text);
+    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
+  const agentEngineeringAction = /\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b[\s\S]{0,120}\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b/.test(text)
+    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b/.test(text);
+  const explicitActionIntent = dispatchAction || workItemAction || stateAction || agentEngineeringAction;
+  if (explicitDocEdit && !explicitActionIntent) return false;
+  return explicitActionIntent;
 }
 
 function _escapeRegExp(str) {
