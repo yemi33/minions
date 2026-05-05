@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.1730 (2026-05-05)
+
+### Features
+- detect no-op PR fixes (#2077)
+
+## 0.1.1728 (2026-05-05)
+
+### Features
+- redact repository URLs in filed issues (#2069)
+
+## 0.1.1727 (2026-05-05)
+
+### Features
+- fix Brady Gaster Squad link (#2080)
+
+## 0.1.1726 (2026-05-05)
+
+### Other
+- Extend command center timeout
+
+## 0.1.1724 (2026-05-05)
+
+### Features
+- add per-cause PR automation dedupe (#2075)
+
 ## 0.1.1723 (2026-05-05)
 
 ### Other

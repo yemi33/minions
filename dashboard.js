@@ -888,6 +888,7 @@ let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCoun
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const ccLiveStreams = new Map(); // tabId → buffered live stream state for reconnect-after-disconnect
+const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long-running CC orchestration can span many tool calls
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
@@ -1310,21 +1311,28 @@ function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
 
-  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
-  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docTarget = '\\b(document|doc|text|selection|selected text|selected paragraph|selected section|paragraph|section|wording|copy|markdown|plan)\\b';
   const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
   const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
     || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
-  if (explicitDocEdit && !explicitOrchestration) return false;
+  const actionTerm = '\\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\\b';
+  const untrustedActionMention = new RegExp(
+    `${docTarget}[\\s\\S]{0,120}\\b(says|contains|mentions|includes|reads|states|instructs|asks|tells|literal|literally)\\b[\\s\\S]{0,160}${actionTerm}`
+  ).test(text)
+    || new RegExp(`\\b(summarize|explain|quote|describe|analyze|extract)\\b[\\s\\S]{0,160}${docTarget}[\\s\\S]{0,160}${actionTerm}`).test(text);
+  const explicitFollowupAction = /\b(and|then|also)\b[\s\S]{0,80}\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\b/.test(text);
+  if (untrustedActionMention && !explicitFollowupAction) return false;
 
-  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)
-    || /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
+  const dispatchAction = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify|build)\b/.test(text);
+  const workItemAction = /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const stateAction = /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
     || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text)
-    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(bug|issue|error|crash|exception|regression|failing test|test failure|build failure|ci|feature|code|endpoint|api|ui|workflow|integration|pr|pull request)\b/.test(text)
-    || /\b(run|add|write)\b[\s\S]{0,80}\b(test|tests|coverage)\b/.test(text);
+    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
+  const agentEngineeringAction = /\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b[\s\S]{0,120}\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b/.test(text)
+    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b/.test(text);
+  const explicitActionIntent = dispatchAction || workItemAction || stateAction || agentEngineeringAction;
+  if (explicitDocEdit && !explicitActionIntent) return false;
+  return explicitActionIntent;
 }
 
 function _escapeRegExp(str) {
@@ -1581,6 +1589,70 @@ function meetingParticipantsFromAction(action) {
   );
 }
 
+function normalizePipelineForCompare(pipeline) {
+  if (!pipeline || typeof pipeline !== 'object') return null;
+  return {
+    title: pipeline.title || '',
+    stages: Array.isArray(pipeline.stages) ? pipeline.stages : [],
+    trigger: pipeline.trigger && typeof pipeline.trigger === 'object' ? pipeline.trigger : {},
+    enabled: pipeline.enabled !== false,
+    stopWhen: pipeline.stopWhen || null,
+    monitoredResources: Array.isArray(pipeline.monitoredResources) ? pipeline.monitoredResources : [],
+  };
+}
+
+function buildPipelineFromAction(action) {
+  const pipeline = {
+    id: String(action.id || '').trim(),
+    title: String(action.title || '').trim(),
+    stages: action.stages,
+    trigger: action.trigger && typeof action.trigger === 'object' ? action.trigger : {},
+    enabled: action.enabled !== false,
+  };
+  if (action.stopWhen) pipeline.stopWhen = action.stopWhen;
+  if (Array.isArray(action.monitoredResources) && action.monitoredResources.length > 0) {
+    pipeline.monitoredResources = action.monitoredResources;
+  }
+  return pipeline;
+}
+
+function pipelineDefinitionsEqual(a, b) {
+  return JSON.stringify(normalizePipelineForCompare(a)) === JSON.stringify(normalizePipelineForCompare(b));
+}
+
+function createPipelineFromAction(action) {
+  const { savePipeline, getPipeline } = require('./engine/pipeline');
+  const pipeline = buildPipelineFromAction(action);
+  const existing = getPipeline(pipeline.id);
+  if (existing) {
+    if (pipelineDefinitionsEqual(existing, pipeline)) {
+      return {
+        type: 'create-pipeline',
+        id: pipeline.id,
+        ok: true,
+        duplicate: true,
+        duplicateOf: pipeline.id,
+        warning: `Pipeline "${pipeline.id}" already exists; no changes made.`,
+      };
+    }
+    return {
+      type: 'create-pipeline',
+      id: pipeline.id,
+      error: `Pipeline "${pipeline.id}" already exists with a different definition. Use edit-pipeline to update it.`,
+    };
+  }
+  savePipeline(pipeline);
+  const persisted = getPipeline(pipeline.id);
+  if (!persisted) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" was not persisted.` };
+  }
+  if (!pipelineDefinitionsEqual(persisted, pipeline)) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" persisted with unexpected contents.` };
+  }
+  invalidateStatusCache();
+  return { type: 'create-pipeline', id: pipeline.id, ok: true, created: true };
+}
+
 // Required-field validator for CC actions. Returns null when valid, an error string when not.
 // Centralises field-required checks so the model can't quietly emit a malformed action and have
 // the server silently fall back to placeholder values (e.g. "Untitled"). The handler invokes this
@@ -1615,6 +1687,11 @@ function _ccValidateAction(action) {
       if (meetingParticipantsFromAction(action).length < 2) return 'create-meeting action requires at least 2 participants';
       return null;
     }
+    case 'create-pipeline':
+      if (!action.id || typeof action.id !== 'string' || !action.id.trim()) return 'create-pipeline action missing required field: id';
+      if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return 'create-pipeline action missing required field: title';
+      if (!Array.isArray(action.stages) || action.stages.length === 0) return 'create-pipeline action requires non-empty stages array';
+      return null;
     default:
       return null; // unknown types fall through to existing handler / generic fallback
   }
@@ -1853,6 +1930,10 @@ async function executeCCActions(actions) {
           results.push({ type: 'create-meeting', id: meeting.id, ok: true });
           break;
         }
+        case 'create-pipeline': {
+          results.push(createPipelineFromAction(action));
+          break;
+        }
         case 'delete-watch': {
           const deleted = watchesMod.deleteWatch(action.id);
           if (deleted) invalidateStatusCache();
@@ -1997,7 +2078,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2086,7 +2167,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -5169,7 +5250,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   function _invokeCcStream({ prompt, sessionId, liveState, toolUses, model, effort, maxTurns, engineConfig }) {
     const { callLLMStreaming } = require('./engine/llm');
     return callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-      timeout: 900000, label: 'command-center', model, maxTurns,
+      timeout: CC_CALL_TIMEOUT_MS, label: 'command-center', model, maxTurns,
       allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       sessionId, effort, direct: true,
       engineConfig,
@@ -6942,6 +7023,7 @@ module.exports = {
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
+  _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
 };
 

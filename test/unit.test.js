@@ -2659,11 +2659,14 @@ async function testGitHubIssueCreation() {
   function fakeGh(fixtures) {
     const calls = [];
     const execFileSync = (file, args) => {
-      calls.push({ file, args: args.slice() });
+      const call = { file, args: args.slice() };
+      calls.push(call);
       const key = args.slice(0, 2).join(' ');
       if (key === '--version') return 'gh version 2.0.0\n';
       if (key === 'label list') return fixtures.labelsJson;
       if (key === 'issue create') {
+        const bodyFile = args[args.indexOf('--body-file') + 1];
+        call.body = fs.readFileSync(bodyFile, 'utf8');
         const createCalls = calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'create').length;
         if (fixtures.throwOnCreateCall === createCalls) {
           const err = new Error(fixtures.createError || 'could not add label: "missing" not found');
@@ -2737,6 +2740,50 @@ async function testGitHubIssueCreation() {
     assert.deepStrictEqual(result.labelsSkipped, ['bug']);
     assert.ok(/filed without labels/i.test(result.warning), 'fallback warning should be user-friendly, not raw gh stderr');
     assert.ok(!/could not add label/i.test(result.warning), 'raw gh label failure must not be the final UX');
+  });
+
+  await test('createGitHubIssue redacts repository identifiers from title and body before gh create', () => {
+    const gh = fakeGh({ labelsJson: '[]' });
+    issues.createGitHubIssue({
+      title: 'Bug in https://github.com/SecretOrg/PrivateRepo and SecretOrg/PrivateRepo',
+      description: [
+        'Useful context: stack trace line 123',
+        'GitHub URL: https://github.com/SecretOrg/PrivateRepo/issues/99',
+        'GitHub SSH: git@github.com:SecretOrg/PrivateRepo.git',
+        'ADO URL: https://dev.azure.com/SecretOrg/SecretProject/_git/PrivateRepo/pullrequest/7',
+        'Token URL: https://example.test/path?access_token=ghp_abcdefghijklmnopqrstuvwxyz123456',
+        'Configured remote: ssh://git@private.example.com/team/topsecret.git',
+        'Configured repo id: 11111111-2222-3333-4444-555555555555',
+      ].join('\n'),
+      labels: [],
+      repo: 'yemi33/minions',
+      projects: [{
+        repoHost: 'github',
+        adoOrg: 'SecretOrg',
+        adoProject: 'SecretProject',
+        repoName: 'PrivateRepo',
+        repositoryId: '11111111-2222-3333-4444-555555555555',
+        prUrlBase: 'https://github.com/SecretOrg/PrivateRepo/pull/',
+        remoteUrl: 'ssh://git@private.example.com/team/topsecret.git',
+      }],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const create = gh.calls.find(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    const sentTitle = create.args[create.args.indexOf('--title') + 1];
+    const sentBody = create.body;
+    const sent = `${sentTitle}\n${sentBody}`;
+
+    assert.ok(sentTitle.includes('[REDACTED_REPO_URL]'), 'repo URL in title should be redacted');
+    assert.ok(sentTitle.includes('[REDACTED_REPO]'), 'owner/repo identifier in title should be redacted');
+    assert.ok(sentBody.includes('Useful context: stack trace line 123'), 'non-sensitive context should be preserved');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'GitHub/ADO repo URLs in body should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_URL]'), 'token-bearing non-repo URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'configured private remote URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPOSITORY_ID]'), 'configured repositoryId should be redacted');
+    assert.ok(!/SecretOrg\/PrivateRepo|github\.com\/SecretOrg\/PrivateRepo|dev\.azure\.com\/SecretOrg|private\.example\.com|access_token=|11111111-2222-3333-4444-555555555555/.test(sent),
+      'raw sensitive repository URLs, identifiers, token URLs, and repository IDs must not be sent to gh');
   });
 }
 
@@ -4324,6 +4371,50 @@ async function testProjectHelpers() {
       'ADO discovery should prefer az repos show after parsing the remote');
   });
 
+  await test('discoverProjectMetadata refreshes origin HEAD before using mainBranch when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let originHeadReads = 0;
+    const calls = [];
+    const execFileSync = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') {
+        originHeadReads++;
+        if (originHeadReads === 1) throw new Error('origin/HEAD unset');
+        return 'refs/remotes/origin/main\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') return 'origin/HEAD set to main\n';
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, 'main');
+    assert.ok(detected._found.includes('main branch'), 'main branch should be marked as discovered after refreshing origin/HEAD');
+    assert.ok(calls.some(([cmd, args]) => cmd === 'git' && args.join(' ') === 'remote set-head origin -a'),
+      'discovery should ask git to refresh origin/HEAD before defaulting');
+  });
+
+  await test('discoverProjectMetadata does not derive mainBranch from checked-out HEAD when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let localHeadAsked = false;
+    const execFileSync = (cmd, args) => {
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') throw new Error('origin/HEAD unset');
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') throw new Error('remote HEAD unavailable');
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref HEAD') {
+        localHeadAsked = true;
+        return 'refs/heads/feature/transient-checkout\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, undefined);
+    assert.strictEqual(localHeadAsked, false, 'project discovery must not use local HEAD as a mainBranch fallback');
+  });
+
   await test('dashboard and CLI project add use shared project discovery helpers', () => {
     const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
@@ -5072,6 +5163,326 @@ async function testPrAttachmentContract() {
         'failed dispatch should be removed from active');
       assert.ok(!testQueries.getDispatch().completed.some(d => d.id === dispatchItem.id),
         'failed human-feedback dispatch should not leave a completed dedupe blocker');
+    } finally { restore(); }
+  });
+
+  await test('comment-only human-feedback fix clears pending feedback without marking branch fixed', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-human',
+        title: 'Triage Firebase preview comment',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        humanFeedback: { pendingFix: true, feedbackContent: 'Firebase preview is ready.' },
+        minionsReview: { fixedAt: '2026-05-04T00:00:00.000Z', note: 'old fix marker' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-human',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage preview comment',
+        meta: {
+          source: 'pr-human-feedback',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#208', prNumber: 208, url: 'https://github.com/octo/demo/pull/208' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment explaining the Firebase/Appetize preview status; no branch changes were needed.',
+        files_changed: 'none',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'comment-only triage should still consume the pending human-feedback item');
+      assert.strictEqual(updatedPr.reviewStatus, 'pending',
+        'comment-only triage must not move a pending PR to awaiting re-review');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only triage must not leave fixedAt set because no branch update happened');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
+  await test('comment-only review-feedback fix does not create a re-review trigger', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-review',
+        title: 'Triage review feedback',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#209',
+        prNumber: 209,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        minionsReview: { note: 'Reviewer asked whether preview comments require changes.' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-review',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage review feedback',
+        meta: {
+          source: 'pr',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#209', prNumber: 209, url: 'https://github.com/octo/demo/pull/209' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment; no branch changes were needed.',
+        files_changed: 'comment-only',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting',
+        'review-feedback triage should wait for reviewer action instead of redispatching another fix');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only review-feedback triage must not trigger automatic re-review');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only review-feedback triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
+  await test('no-op PR fix completion records attempt without resetting review state', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: {} };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7001',
+        prNumber: 7001,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop',
+        humanFeedback: {
+          pendingFix: false,
+          lastProcessedCommentDate: '2026-05-05T07:00:00.000Z',
+          feedbackContent: 'Please fix the edge case.',
+        },
+        minionsReview: { note: 'Please fix the edge case.', reviewedAt: '2026-05-05T06:00:00.000Z' },
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7001', prNumber: 7001 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: {
+            id: 'D-noop-human-1',
+            task: 'Fix PR-7001: no-op — human feedback',
+            meta: { dispatchKey: 'human-fix-demo-PR-7001' },
+          },
+          branchChange: {
+            changed: false,
+            beforeHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            afterHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: true, cause: testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK, paused: false, count: 1 });
+      assert.strictEqual(updatedPr.reviewStatus, 'changes-requested',
+        'no-op fix must not reset reviewStatus to waiting');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'no-op fix must not stamp fixedAt or trigger re-review');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, true,
+        'first no-op human-feedback fix should restore pendingFix so one retry is possible');
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].count, 1);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].paused, false);
+    } finally { restore(); }
+  });
+
+  await test('repeated no-op PR fix pauses only the unchanged automation cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: { prNoOpFixPauseAttempts: 2 } };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7002',
+        prNumber: 7002,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop-pause',
+        humanFeedback: {
+          pendingFix: true,
+          lastProcessedCommentDate: '2026-05-05T07:30:00.000Z',
+          feedbackContent: 'Still broken.',
+        },
+        minionsReview: { note: 'Review feedback still applies.', reviewedAt: '2026-05-05T06:30:00.000Z' },
+      }]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-1', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-2', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-review-1', task: 'Fix PR-7002 — review feedback', meta: { dispatchKey: 'fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      const humanRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK];
+      const reviewRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK];
+      assert.strictEqual(humanRecord.count, 2);
+      assert.strictEqual(humanRecord.paused, true,
+        'second no-op for same human-feedback evidence should pause that cause');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'paused human-feedback cause should not immediately requeue the same fix');
+      assert.strictEqual(reviewRecord.count, 1);
+      assert.strictEqual(reviewRecord.paused, false,
+        'separate review-feedback cause should not be paused by human-feedback no-ops');
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(updatedPr, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), true);
+      const withNewEvidence = {
+        ...updatedPr,
+        humanFeedback: { ...updatedPr.humanFeedback, feedbackContent: 'Still broken, plus a new failing case.' },
+      };
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(withNewEvidence, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), false,
+        'changed evidence should allow automation again without clearing other cause records');
+    } finally { restore(); }
+  });
+
+  await test('PR discovery checks paused no-op fix causes before dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function isPrNoOpFixCauseSuppressed'),
+      'engine discovery should have a shared suppression helper');
+    for (const cause of ['HUMAN_FEEDBACK', 'REVIEW_FEEDBACK', 'BUILD_FAILURE', 'MERGE_CONFLICT']) {
+      assert.ok(src.includes(`isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.${cause})`),
+        `discoverFromPrs must suppress paused no-op ${cause} automation before dispatch`);
+    }
+  });
+
+  await test('changed-branch PR fix completion preserves normal waiting re-review behavior', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      const pr = {
+        id: 'PR-7003',
+        prNumber: 7003,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/changed',
+        minionsReview: { note: 'Needs a fix.' },
+      };
+      pr._noOpFixes = {
+        [testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK]: {
+          count: 1,
+          paused: false,
+          evidenceFingerprint: testShared.prFixEvidenceFingerprint(pr, testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK),
+        },
+      };
+      testShared.safeWrite(prPath, [pr]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7003', prNumber: 7003 },
+        project,
+        'pr',
+        {
+          dispatchItem: {
+            id: 'D-changed-review-1',
+            task: 'Fix PR-7003 — review feedback',
+            meta: { dispatchKey: 'fix-demo-PR-7003' },
+          },
+          branchChange: {
+            changed: true,
+            beforeHead: 'cccccccccccccccccccccccccccccccccccccccc',
+            afterHead: 'dddddddddddddddddddddddddddddddddddddddd',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: false, cause: testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK });
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting');
+      assert.ok(updatedPr.minionsReview.fixedAt, 'changed branch should stamp fixedAt for re-review');
+      assert.strictEqual(updatedPr.minionsReview.note, 'Fixed, awaiting re-review');
+      assert.ok(!updatedPr._noOpFixes, 'successful changed-branch fix should clear stale no-op record');
+      assert.ok(!updatedPr._lastNoOpFix, 'successful changed-branch fix should clear stale no-op marker');
     } finally { restore(); }
   });
 
@@ -7965,8 +8376,90 @@ async function testGithubHelpers() {
       'Minions approval comments should not trigger human-feedback fixes');
     assert.ok(github._isAgentComment({ body: '**VERDICT: REQUEST_CHANGES**\n\nPlease fix this issue.' }),
       'Minions request-changes comments should not trigger human-feedback fixes');
+    assert.ok(github._isAgentComment({ body: 'Minions triage: Firebase preview comment is informational; no code changes needed.' }),
+      'Minions-authored triage comments should not trigger human-feedback fixes');
     assert.strictEqual(github._isAgentComment({ body: 'Please fix the typo on line 42.' }), false,
       'Ordinary human feedback should still trigger fixes');
+  });
+
+  await test('GitHub treats Firebase/Appetize bot preview comments as non-actionable while preserving human feedback', () => {
+    const firebasePreview = {
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: '## Firebase App Distribution\n\nAndroid preview uploaded. View this release in the Firebase console.',
+    };
+    const appetizePreview = {
+      user: { login: 'appetize-preview[bot]', type: 'Bot' },
+      body: '### Appetize Preview\n\nOpen the Android preview at https://appetize.io/app/example.',
+    };
+    const explicitHumanFeedback = {
+      user: { login: 'alice', type: 'User' },
+      body: 'The Firebase/Appetize preview crashes after sign-in; please fix it.',
+    };
+
+    assert.ok(github._isNonActionableComment(firebasePreview, { engine: {} }),
+      'Firebase App Distribution bot status comments should advance cutoff without dispatching fixes');
+    assert.ok(github._isNonActionableComment(appetizePreview, { engine: {} }),
+      'Appetize bot preview comments should advance cutoff without dispatching fixes');
+    assert.strictEqual(github._isNonActionableComment(explicitHumanFeedback, { engine: {} }), false,
+      'Explicit human comments that mention preview systems must remain actionable');
+  });
+
+  await test('GitHub comment poll advances cutoff for PR #208-like preview and Minions triage comments without pending fix', async () => {
+    const restore = createTestMinionsDir();
+    const oldPath = process.env.PATH;
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const binDir = path.join(testDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const fakeGh = path.join(binDir, 'gh');
+      fs.writeFileSync(fakeGh, `#!/bin/sh
+case "$2" in
+  repos/octo/demo)
+    printf '%s' '{"name":"demo"}'
+    ;;
+  repos/octo/demo/issues/208/comments)
+    printf '%s' '[{"id":1,"created_at":"2026-05-05T08:01:00Z","updated_at":"2026-05-05T08:01:00Z","body":"## Firebase App Distribution\\n\\nAndroid preview uploaded. View this release in Firebase.","user":{"login":"github-actions[bot]","type":"Bot"}},{"id":2,"created_at":"2026-05-05T08:02:00Z","updated_at":"2026-05-05T08:02:00Z","body":"Minions triage: Appetize preview is informational; no code changes needed.","user":{"login":"yemi33","type":"User"}}]'
+    ;;
+  repos/octo/demo/pulls/208/comments)
+    printf '%s' '[]'
+    ;;
+  *)
+    printf '%s' '[]'
+    ;;
+esac
+`);
+      fs.chmodSync(fakeGh, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath || ''}`;
+
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+      testShared.safeWrite(testShared.projectPrPath(project), [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        url: 'https://github.com/octo/demo/pull/208',
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        created: '2026-05-05T08:00:00Z',
+      }]);
+
+      delete require.cache[require.resolve('../engine/github')];
+      const freshGithub = require('../engine/github');
+      await freshGithub.pollPrHumanComments(config);
+
+      const [updatedPr] = testShared.safeJson(testShared.projectPrPath(project));
+      assert.strictEqual(updatedPr.humanFeedback?.lastProcessedCommentDate, '2026-05-05T08:02:00Z',
+        'non-actionable preview/triage comments should advance the processed cutoff');
+      assert.ok(!updatedPr.humanFeedback?.pendingFix,
+        'non-actionable preview/triage comments must not create pending human feedback');
+      assert.ok(!updatedPr.humanFeedback?.feedbackContent,
+        'non-actionable preview/triage comments must not become fix-agent context');
+    } finally {
+      process.env.PATH = oldPath;
+      try { delete require.cache[require.resolve('../engine/github')]; } catch {}
+      restore();
+    }
   });
 }
 
@@ -9243,13 +9736,12 @@ async function testPrReviewFixCycle() {
       'updatePrAfterFix should reset reviewStatus to waiting for re-review');
   });
 
-  await test('Human feedback cooldown key uses PR ID only (no timestamp)', () => {
+  await test('Human feedback cooldown base key uses PR ID before per-cause suffix', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // The key should NOT include lastProcessedCommentDate
-    assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
-      'Human fix key should not include timestamp (prevents cooldown bypass)');
-    assert.ok(src.includes("const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
-      'Human fix key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixBaseKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
+      'Human fix base key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);"),
+      'Human fix dispatch key should add a normalized per-comment cause suffix');
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
@@ -15346,6 +15838,93 @@ async function testDiscoverFromPrs() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
 
+  async function withPrCauseDiscovery(pr, opts, assertion) {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const previousGithubModule = require.cache[githubPath];
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+        '../engine/github',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: {
+          pollPrStatus: async () => {},
+          pollPrHumanComments: async () => {},
+          reconcilePrs: async () => {},
+          checkLiveReviewStatus: async () => opts?.liveReview || 'changes-requested',
+          checkLiveBuildAndConflict: async () => opts?.liveBuild || ({ buildStatus: 'failing', mergeConflict: true }),
+          isGhThrottled: () => false,
+        },
+      };
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = opts?.project || {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = opts?.config || {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: {
+          ghPollEnabled: true,
+          evalLoop: true,
+          autoFixReviewFeedback: true,
+          autoFixHumanComments: true,
+          autoFixBuilds: true,
+          autoFixConflicts: true,
+        },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), opts?.dispatch || { pending: [], active: [], completed: [] });
+      freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      await assertion({ discovered, freshShared, freshQueries, project, config });
+    } finally {
+      restore();
+      if (previousGithubModule) require.cache[githubPath] = previousGithubModule;
+      else delete require.cache[githubPath];
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  }
+
   await test('discoverFromPrs skips non-active PRs', () => {
     assert.ok(src.includes("pr.status !== 'active'"),
       'Should skip PRs not in active status');
@@ -15365,6 +15944,127 @@ async function testDiscoverFromPrs() {
   await test('discoverFromPrs handles human feedback pendingFix', () => {
     assert.ok(src.includes('pendingFix') || src.includes('humanFeedback'),
       'Should discover fix work when human feedback is pending');
+  });
+
+  await test('discoverFromPrs does not redispatch handled review-feedback cause', async () => {
+    const causeKey = 'review-feedback:review-dispatch-1';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2050',
+      prNumber: 2050,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Same review feedback',
+      branch: 'feat/pr-2050',
+      prdItems: ['W-2050'],
+      minionsReview: { dispatchId: 'review-dispatch-1', note: 'Fix the boundary.' },
+      _automationFixCauses: { [causeKey]: { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2050',
+    }, {}, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'handled review-feedback cause must not dispatch another fix');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed review-feedback cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2051',
+      prNumber: 2051,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Changed review feedback',
+      branch: 'feat/pr-2051',
+      prdItems: ['W-2051'],
+      minionsReview: { dispatchId: 'new-review', note: 'A different review finding.' },
+      _automationFixCauses: { 'review-feedback:old-review': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2051',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'review-feedback:new-review');
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('fix-demo-PR-2051-'),
+        'dispatch key should stay PR-scoped while including a cause-specific suffix');
+    });
+  });
+
+  await test('discoverFromPrs does not redispatch pending human-comment cause', async () => {
+    const causeKey = 'human-comment:comment-77';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2052',
+      prNumber: 2052,
+      status: 'active',
+      reviewStatus: 'waiting',
+      agent: 'dallas',
+      title: 'Same human comment',
+      branch: 'feat/pr-2052',
+      prdItems: ['W-2052'],
+      humanFeedback: {
+        pendingFix: true,
+        lastProcessedCommentKey: 'comment-77',
+        feedbackContent: 'Please address this comment.',
+      },
+      url: 'https://github.com/octo/repo/pull/2052',
+    }, {
+      dispatch: {
+        pending: [{
+          id: 'pending-human-fix',
+          type: 'fix',
+          agent: 'dallas',
+          meta: {
+            dispatchKey: 'human-fix-demo-PR-2052-human-comment-comment-77',
+            automationCauseKey: causeKey,
+            project: { name: 'demo' },
+            pr: { id: 'github:octo/repo#2052', prNumber: 2052, url: 'https://github.com/octo/repo/pull/2052' },
+          },
+        }],
+        active: [],
+        completed: [],
+      },
+    }, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'pending same-comment fix must block duplicate dispatch');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed build failure signature', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2053',
+      prNumber: 2053,
+      status: 'active',
+      reviewStatus: 'waiting',
+      buildStatus: 'failing',
+      buildFailReason: 'CI',
+      buildFailureSignature: 'new-signature',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed build failure',
+      branch: 'feat/pr-2053',
+      prdItems: ['W-2053'],
+      _automationFixCauses: { 'build:CI:head-1:old-signature': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2053',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'build:CI:head-1:new-signature');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed merge-conflict base cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2054',
+      prNumber: 2054,
+      status: 'active',
+      reviewStatus: 'waiting',
+      _mergeConflict: true,
+      baseSha: 'base-2',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed conflict base',
+      branch: 'feat/pr-2054',
+      prdItems: ['W-2054'],
+      _automationFixCauses: { 'merge-conflict:base-1:head-1': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2054',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'merge-conflict:base-2:head-1');
+    });
   });
 
   await test('discoverFromPrs dispatches new human feedback even after build-fix escalation (#1907)', async () => {
@@ -15437,7 +16137,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh reviewer comments must dispatch despite buildFixEscalated');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1907');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1907-'));
       assert.ok(discovered[0].prompt.includes('Please address this new review finding.'),
         'human-feedback fix prompt must include the fresh reviewer comment');
     } finally {
@@ -15542,7 +16243,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh comments should create one human-feedback fix, not a stale re-review');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1908');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1908-'));
       assert.ok(!String(discovered[0].meta?.dispatchKey).startsWith('rereview-'),
         'pending human feedback must not be hidden behind a stale-vote re-review dispatch');
     } finally {
@@ -16348,7 +17050,7 @@ async function testBuildFixRetryCap() {
       'Pollers may still clean old build-fix attempt fields when a PR recovers/closes');
   });
 
-  await test('PR comment pollers do not ignore bot authors by default', () => {
+  await test('PR comment pollers use explicit non-actionable classification instead of blanket bot filtering', () => {
     const ghCommentsBlock = githubSrc.slice(
       githubSrc.indexOf('async function pollPrHumanComments'),
       githubSrc.indexOf('// ─── PR Reconciliation', githubSrc.indexOf('async function pollPrHumanComments'))
@@ -16358,13 +17060,13 @@ async function testBuildFixRetryCap() {
       adoSrc.indexOf('if (totalUpdated > 0)', adoSrc.indexOf('async function pollPrHumanComments'))
     );
 
-    assert.ok(!ghCommentsBlock.includes("user?.type === 'Bot'"),
-      'GitHub comment poll must not ignore GitHub Bot users by default');
+    assert.ok(ghCommentsBlock.includes('_isNonActionableComment(c, config)'),
+      'GitHub comment poll should classify non-actionable comments through a dedicated helper');
     assert.ok(!/dependabot|renovate|github-actions|azure-pipelines|codecov|sonar/.test(ghCommentsBlock),
-      'GitHub comment poll must not ignore common bot logins by default');
+      'GitHub comment poll must not ignore common bot logins by blanket login defaults');
     assert.ok(!adoCommentsBlock.includes('/\\b(bot|service|build|pipeline|codecov|sonar)\\b/i.test(authorName)'),
       'ADO comment poll must not ignore bot/service authors by default');
-    assert.ok(ghCommentsBlock.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
+    assert.ok(githubSrc.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
       'explicit ignoredCommentAuthors settings should still be honored');
   });
 }
@@ -19078,6 +19780,65 @@ async function testLifecycleUncoveredFns() {
         'pr-human-feedback source must use the human-feedback specific note');
       assert.strictEqual(after[0].humanFeedback.pendingFix, false,
         'pr-human-feedback fixes must clear humanFeedback.pendingFix');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: stale human-feedback completion preserves newer pendingFix cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-human-race', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          reviewStatus: 'waiting', status: 'active',
+          humanFeedback: {
+            pendingFix: true,
+            lastProcessedCommentKey: 'new-comment',
+            feedbackContent: 'Newer feedback still needs a fix.',
+          } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          humanFeedback: {
+            lastProcessedCommentKey: 'old-comment',
+            feedbackContent: 'Older feedback already fixed.',
+          } },
+        project, 'pr-human-feedback', 'human-comment:old-comment', 'old-dispatch');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].humanFeedback.pendingFix, true,
+        'old human-feedback fix completion must not clear a newer pending comment cause');
+      assert.strictEqual(after[0].humanFeedback.lastProcessedCommentKey, 'new-comment',
+        'newer comment cause metadata must be preserved');
+      assert.strictEqual(after[0]._automationFixCauses['human-comment:old-comment'].status, 'handled',
+        'the completed old comment cause should still be marked handled');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: marks automation cause handled when provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-cause', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14,
+          reviewStatus: 'changes-requested', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14 },
+        project, 'pr', 'review-feedback:review-14', 'dispatch-14');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].status, 'handled');
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].dispatchId, 'dispatch-14');
     } finally { restore(); }
   });
 
@@ -22707,15 +23468,20 @@ async function testDashboardUIFunctions() {
     };
     const windowStub = {};
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const formatLocalClock = (hour, minute) => {
+      const date = new Date();
+      date.setHours(Number(hour) || 0, Number(minute) || 0, 0, 0);
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    };
     const api = new Function(
       'document', 'window', 'setInterval', 'clearInterval', 'fetch', 'alert', 'Intl',
-      'escHtml', 'isDeleted', 'timeSinceStr', 'renderMd', 'showToast', 'refresh', 'closeModal',
+      'escHtml', 'isDeleted', 'timeSinceStr', 'renderMd', 'showToast', 'refresh', 'closeModal', 'formatLocalClock',
       schedulesSrc + '\n' + pipelineSrc + '\nreturn { cronToHuman: _cronToHuman, renderPipelines, openPipelineDetail };'
     )(
       documentStub, windowStub, () => 1, () => {}, () => Promise.reject(new Error('unused')), () => {},
-      Intl, esc, () => false, () => 'now', esc, () => {}, () => {}, () => {}
+      Intl, esc, () => false, () => 'now', esc, () => {}, () => {}, () => {}, formatLocalClock
     );
-    return { api, elements };
+    return { api, elements, formatLocalClock };
   }
 
   // Work item creation modal
@@ -22748,17 +23514,18 @@ async function testDashboardUIFunctions() {
   });
 
   await test('_cronToHuman supports common 5-field pipeline cron without changing 3-field list fallback', () => {
-    const { api } = buildPipelineRenderHarness();
-    assert.strictEqual(api.cronToHuman('0 9 * * *'), 'Daily at 09:00');
-    assert.strictEqual(api.cronToHuman('0 9 * * 1-5'), 'Weekdays at 09:00');
-    assert.strictEqual(api.cronToHuman('30 8 * * 0,6'), 'Weekends at 08:30');
-    assert.strictEqual(api.cronToHuman('15 14 * * 1,3'), 'Mondays, Wednesdays at 14:15');
-    assert.strictEqual(api.cronToHuman('0 9 *'), 'Daily at 09:00');
+    const { api, formatLocalClock } = buildPipelineRenderHarness();
+    assert.strictEqual(api.cronToHuman('0 9 * * *'), 'Daily at ' + formatLocalClock(9, 0));
+    assert.strictEqual(api.cronToHuman('0 9 * * 1-5'), 'Weekdays at ' + formatLocalClock(9, 0));
+    assert.strictEqual(api.cronToHuman('30 8 * * 0,6'), 'Weekends at ' + formatLocalClock(8, 30));
+    assert.strictEqual(api.cronToHuman('15 14 * * 1,3'), 'Mondays, Wednesdays at ' + formatLocalClock(14, 15));
+    assert.strictEqual(api.cronToHuman('0 9 *'), 'Daily at ' + formatLocalClock(9, 0));
     assert.strictEqual(api.cronToHuman('0 9 1,3'), '0 9 1,3');
   });
 
   await test('pipeline cards and details render 5-field cron as local schedule text', () => {
-    const { api, elements } = buildPipelineRenderHarness();
+    const { api, elements, formatLocalClock } = buildPipelineRenderHarness();
+    const expectedDaily = 'Daily at ' + formatLocalClock(9, 0);
     const pipeline = {
       id: 'momentum-daily-one-bug-fix',
       title: 'Momentum daily one bug fix',
@@ -22768,12 +23535,12 @@ async function testDashboardUIFunctions() {
     };
     api.renderPipelines([pipeline]);
     const cardHtml = elements['pipelines-content'].innerHTML;
-    assert.ok(cardHtml.includes('Daily at 09:00'), 'pipeline card should show human schedule text');
+    assert.ok(cardHtml.includes(expectedDaily), 'pipeline card should show human schedule text');
     assert.ok(!cardHtml.includes('0 9 * * *'), 'pipeline card should not show raw 5-field cron');
 
     api.openPipelineDetail('momentum-daily-one-bug-fix');
     const detailHtml = elements['modal-body'].innerHTML;
-    assert.ok(detailHtml.includes('Daily at 09:00'), 'pipeline detail should show human schedule text');
+    assert.ok(detailHtml.includes(expectedDaily), 'pipeline detail should show human schedule text');
     assert.ok(detailHtml.includes(Intl.DateTimeFormat().resolvedOptions().timeZone), 'pipeline detail should include the local timezone');
     assert.ok(!detailHtml.includes('0 9 * * *'), 'pipeline detail should not show raw 5-field cron');
   });
@@ -31923,6 +32690,27 @@ async function testEngineAuditCritical() {
       'openPipelineDetail must render per-stage monitoredResources');
   });
 
+  await test('render-pipelines.js shows clear empty run copy for cron pipelines', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _getPipelineEmptyRunCopy'),
+      'pipeline renderer should centralize empty run copy');
+    assert.ok(src.includes('pipeline-empty-runs'),
+      'pipeline detail should render a styled empty run state');
+    assert.ok(src.includes('Scheduled for'),
+      'cron-triggered pipelines should explain their schedule before first run');
+  });
+
+  await test('dashboard date rendering uses shared local format helpers', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const scheduleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function formatLocalDateTime'), 'utils should expose formatLocalDateTime');
+    assert.ok(utilsSrc.includes('function formatLocalTime'), 'utils should expose formatLocalTime');
+    assert.ok(utilsSrc.includes('function formatLocalClock'), 'utils should expose formatLocalClock for cron display');
+    assert.ok(pipelineSrc.includes('formatLocalDateTime(r.startedAt)'), 'pipeline run timestamps should use shared local date formatting');
+    assert.ok(scheduleSrc.includes('formatLocalClock(h, m)'), 'cron labels should use local clock formatting');
+  });
+
   await test('pipeline abort button shows Aborting then refreshes detail', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
@@ -34082,6 +34870,17 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('doc-chat uses a shorter timeout than command center', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Command Center should define a 1-hour backend call timeout');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    const invokeFn = src.slice(src.indexOf('function _invokeCcStream'), src.indexOf('function finishMissingRuntime'));
+    assert.ok(ccCallFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Non-streaming CC should default to the 1-hour call timeout');
+    assert.ok(ccStreamFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Streaming CC should default to the 1-hour call timeout');
+    assert.ok(invokeFn.includes('timeout: CC_CALL_TIMEOUT_MS'),
+      'SSE Command Center path should use the 1-hour call timeout');
     assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
       'Doc-chat should define a dedicated 6-minute timeout');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
@@ -34090,6 +34889,14 @@ async function testAutoRecoveryAndAtomicity() {
       'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Streaming doc-chat should use the dedicated doc-chat timeout');
+  });
+
+  await test('CC frontend stream timeout buffers the 1-hour backend timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('var CC_STREAM_FETCH_TIMEOUT_MS = (60 * 60 * 1000) + 60000'),
+      'CC frontend stream timeout should be backend hour plus delivery buffer');
+    assert.ok(src.includes('AbortSignal.timeout(CC_STREAM_FETCH_TIMEOUT_MS)'),
+      'CC stream fetch should use the named timeout constant');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -40407,8 +41214,8 @@ async function testPrReviewFixFlows() {
   console.log('\n── Comment Filtering ──');
 
   await test('agent comments included in context but do not trigger fix', () => {
-    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('!isAgent'),
-      'GitHub should detect agent comments and exclude from trigger');
+    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('_isNonActionableComment(c, config)'),
+      'GitHub should detect agent comments through the non-actionable classifier and exclude them from trigger');
   });
 
   await test('Minions signature patterns detected', () => {
@@ -41404,8 +42211,8 @@ async function testAdoThrottleDashboard() {
     const src = fnMatch[0];
     assert.ok(src.includes('retryAfter'),
       'renderAdoThrottleAlert must reference retryAfter to show resume time');
-    // Should format time (HH:MM)
-    assert.ok(src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
+    // Should format time via shared local formatter or direct local-time formatting.
+    assert.ok(src.includes('formatLocalTime') || src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
       'renderAdoThrottleAlert must format retryAfter as a local time');
   });
 
@@ -50379,18 +51186,25 @@ async function testDashboardPureHelpers() {
 
   // ── doc-chat action/document parsing ─────────────────────────────────────
 
-  await test('_messageRequestsOrchestration matches explicit orchestration and engineering asks', () => {
+  await test('_messageRequestsOrchestration requires explicit human orchestration intent', () => {
     assert.strictEqual(_messageRequestsOrchestration('Summarize the selected paragraph'), false);
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
+    assert.strictEqual(_messageRequestsOrchestration('Summarize the document text that says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('The selected text says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Quote the selection: dispatch fix for this'), false);
     assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
     assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
     assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
+    assert.strictEqual(_messageRequestsOrchestration('The document says "dispatch fix for this"; then dispatch a fix for it.'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
+    assert.strictEqual(_messageRequestsOrchestration('dispatch fix for this'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Create a work item for the documented API bug'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Have Minions investigate why CI is failing here'), true);
     assert.strictEqual(_messageRequestsOrchestration('Create a watch for PR 123 until build passes'), true);
   });
 
@@ -50450,8 +51264,8 @@ async function testDashboardPureHelpers() {
       fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
       delete require.cache[require.resolve(dashboardPath)];
       const freshDashboard = require(dashboardPath);
-      const allowActions = freshDashboard._messageRequestsOrchestration('Fix this bug described in the doc');
-      assert.strictEqual(allowActions, true, 'complex engineering doc-chat ask should allow action parsing');
+      const allowActions = freshDashboard._messageRequestsOrchestration('dispatch fix for this');
+      assert.strictEqual(allowActions, true, 'explicit doc-chat dispatch ask should allow action parsing');
       const parsed = freshDashboard._parseDocChatResultText(
         'I will open a work item for that bug.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix documented bug","workType":"fix","priority":"high","description":"Investigate and fix the bug described in the document."}]',
         { allowActions }
@@ -50470,10 +51284,10 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('doc-chat system prompt routes engineering work to Command Center action JSON', () => {
+  await test('doc-chat system prompt routes explicit orchestration to Command Center action JSON', () => {
     const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
-    assert.ok(prompt.includes('Complex Engineering Requests'),
-      'doc-chat prompt should distinguish engineering delegation from document editing');
+    assert.ok(prompt.includes('Explicit Minions Orchestration Requests'),
+      'doc-chat prompt should distinguish explicit orchestration from document editing');
     assert.ok(prompt.includes('"type": "dispatch"') || prompt.includes('"type":"dispatch"'),
       'doc-chat prompt should show the Command Center dispatch action shape');
     assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
@@ -50955,7 +51769,7 @@ async function testDashboardPureHelpers() {
     if (config) fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
     fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
     fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
-    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
     const isolatedDashboard = require('../dashboard');
@@ -50966,12 +51780,89 @@ async function testDashboardPureHelpers() {
       dir: testDir,
       cleanup() {
         restore();
-        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
           try { delete require.cache[require.resolve(mod)]; } catch {}
         }
       },
     };
   }
+
+  await test('executeCCActions: create-pipeline reports success only after persistence', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-persisted',
+        title: 'CC Pipeline Persisted',
+        trigger: { cron: '0 9 1-5' },
+        stages: [
+          { id: 'audit', type: 'task', title: 'Audit reliability', taskType: 'explore' },
+          { id: 'plan', type: 'plan', title: 'Plan fixes', dependsOn: ['audit'] },
+        ],
+      };
+
+      const results = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true, results[0].error || 'create-pipeline should succeed');
+      assert.strictEqual(results[0].created, true);
+      assert.strictEqual(results[0].id, action.id);
+      const saved = isolated.shared.safeJson(path.join(isolated.dir, 'pipelines', action.id + '.json'));
+      assert.ok(saved, 'pipeline must exist on disk before reporting success');
+      assert.strictEqual(saved.title, action.title);
+      assert.deepStrictEqual(saved.trigger, action.trigger);
+      assert.strictEqual(saved.stages.length, 2);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: duplicate create-pipeline replay returns clear ok duplicate', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-duplicate',
+        title: 'CC Pipeline Duplicate',
+        trigger: { cron: '30 8 *' },
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+
+      const first = await isolated.dashboard.executeCCActions([action]);
+      const second = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.strictEqual(first[0].created, true);
+      assert.strictEqual(second[0].ok, true);
+      assert.strictEqual(second[0].duplicate, true, 'replayed action should be duplicate, not failure');
+      assert.strictEqual(second[0].duplicateOf, action.id);
+      assert.ok(/already exists/i.test(second[0].warning || ''), 'duplicate response should explain already-created state');
+      const files = fs.readdirSync(path.join(isolated.dir, 'pipelines')).filter(f => f === action.id + '.json');
+      assert.strictEqual(files.length, 1, 'duplicate replay must leave one pipeline file');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: create-pipeline existing different definition returns error', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const base = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-conflict',
+        title: 'CC Pipeline Conflict',
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+      const first = await isolated.dashboard.executeCCActions([base]);
+      const second = await isolated.dashboard.executeCCActions([{ ...base, title: 'Different Definition' }]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.ok(second[0].error, 'different existing pipeline should require edit-pipeline instead of silent success');
+      assert.ok(/different definition/i.test(second[0].error));
+    } finally {
+      isolated.cleanup();
+    }
+  });
 
   await test('work-item create dedup: CC action returns API fallback duplicate instead of creating another item', async () => {
     const isolated = loadIsolatedDashboardForDedup();

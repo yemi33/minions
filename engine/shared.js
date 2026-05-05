@@ -42,22 +42,71 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 const _BEARER_RE = /Bearer\s+[A-Za-z0-9+/=._\-]{20,}/g;
 const _JWT_RE = /ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(?:\.[A-Za-z0-9_\-]{10,})?/g;
 const _AZUREAUTH_RE = /"token"\s*:\s*"[A-Za-z0-9+/=._\-]{20,}"/g;
+const _URL_RE = /\b(?:https?|ssh):\/\/[^\s<>"'`]+/gi;
+const _GITHUB_REPO_URL_RE = /\b(?:(?:https?:\/\/|ssh:\/\/git@)github\.com[/:]|git@github\.com:)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_DEV_REPO_URL_RE = /\bhttps?:\/\/dev\.azure\.com\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_VISUALSTUDIO_REPO_URL_RE = /\bhttps?:\/\/[^/\s<>"'`]+\.visualstudio\.com\/(?:DefaultCollection\/)?[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_SSH_REPO_URL_RE = /\b(?:ssh:\/\/)?git@ssh\.dev\.azure\.com[:/]v3\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/[^/\s<>"'`)]+/gi;
+const _TOKEN_URL_PARAM_RE = /[?&](?:access[_-]?token|auth[_-]?token|token|api[_-]?key|sig|signature|pat)=/i;
+const _URL_CREDENTIALS_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 
-function _redactString(s) {
-  if (typeof s !== 'string' || s.length === 0) return s;
+function _escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _redactedWithTrailingPunctuation(raw, replacement) {
+  const match = String(raw).match(/^(.+?)([.,;:!?)]*)$/);
+  return replacement + (match ? match[2] : '');
+}
+
+function _redactUrlMatch(raw, replacement) {
+  return _redactedWithTrailingPunctuation(raw, replacement);
+}
+
+function _redactTokenBearingUrls(s) {
+  return s.replace(_URL_RE, url => (
+    _TOKEN_URL_PARAM_RE.test(url) || _URL_CREDENTIALS_RE.test(url)
+      ? _redactUrlMatch(url, '[REDACTED_URL]')
+      : url
+  ));
+}
+
+function _redactRepositoryUrls(s) {
   return s
+    .replace(_GITHUB_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_DEV_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_VISUALSTUDIO_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_SSH_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'));
+}
+
+function _redactConfiguredRepositoryIdentifiers(s, options) {
+  const entries = Array.isArray(options?.repositoryIdentifiers) ? options.repositoryIdentifiers : [];
+  let out = s;
+  for (const entry of entries) {
+    const value = typeof entry === 'string' ? entry : entry?.value;
+    const replacement = typeof entry === 'string' ? '[REDACTED_REPO]' : (entry?.replacement || '[REDACTED_REPO]');
+    if (typeof value !== 'string' || value.length < 4) continue;
+    out = out.replace(new RegExp(_escapeRegExp(value), 'gi'), replacement);
+  }
+  return out;
+}
+
+function _redactString(s, options = {}) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  const repoRedacted = options.redactRepositoryUrls ? _redactRepositoryUrls(s) : s;
+  return _redactTokenBearingUrls(_redactConfiguredRepositoryIdentifiers(repoRedacted, options))
     .replace(_AZUREAUTH_RE, '"token":"[REDACTED_AZUREAUTH]"')
     .replace(_BEARER_RE, 'Bearer [REDACTED]')
     .replace(_JWT_RE, '[REDACTED_JWT]');
 }
 
-function redactSecrets(value) {
+function redactSecrets(value, options = {}) {
   if (value == null) return value;
-  if (typeof value === 'string') return _redactString(value);
-  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (typeof value === 'string') return _redactString(value, options);
+  if (Array.isArray(value)) return value.map(v => redactSecrets(v, options));
   if (typeof value === 'object') {
     const out = {};
-    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k]);
+    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k], options);
     return out;
   }
   return value;
@@ -785,6 +834,7 @@ const ENGINE_DEFAULTS = {
   autoReReviewPrs: true, // auto-dispatch review agents after a PR fix is pushed
   autoFixReviewFeedback: true, // auto-dispatch fix agents for minions review changes-requested verdicts
   autoFixHumanComments: true, // auto-dispatch fix agents for actionable human PR comments
+  prNoOpFixPauseAttempts: 2, // pause one PR automation cause after repeated no-op fixes for unchanged evidence
   completionReportRetentionDays: 90, // retain completion report sidecars beyond capped dispatch history
   completionReportMaxFiles: 5000, // hard cap for completion report sidecars during cleanup
   meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
@@ -2443,6 +2493,62 @@ const _WIN_RESERVED_NAMES = new Set([
   'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
 ]);
 
+const PR_FIX_CAUSE = {
+  HUMAN_FEEDBACK: 'human-feedback',
+  REVIEW_FEEDBACK: 'review-feedback',
+  BUILD_FAILURE: 'build-failure',
+  MERGE_CONFLICT: 'merge-conflict',
+  UNKNOWN: 'pr-fix',
+};
+
+function getPrFixAutomationCause({ dispatchKey = '', source = '', task = '' } = {}) {
+  const key = String(dispatchKey || '').toLowerCase();
+  const src = String(source || '').toLowerCase();
+  const title = String(task || '').toLowerCase();
+  if (src === 'pr-human-feedback' || key.startsWith('human-fix-') || title.includes('human feedback')) return PR_FIX_CAUSE.HUMAN_FEEDBACK;
+  if (key.startsWith('build-fix-') || title.includes('build failure')) return PR_FIX_CAUSE.BUILD_FAILURE;
+  if (key.startsWith('conflict-fix-') || title.includes('merge conflict')) return PR_FIX_CAUSE.MERGE_CONFLICT;
+  if (key.startsWith('fix-') || src === 'pr') return PR_FIX_CAUSE.REVIEW_FEEDBACK;
+  return PR_FIX_CAUSE.UNKNOWN;
+}
+
+function prFixEvidenceFingerprint(pr, cause = PR_FIX_CAUSE.UNKNOWN) {
+  const review = pr?.minionsReview || {};
+  const feedback = pr?.humanFeedback || {};
+  const evidence = { cause };
+  if (cause === PR_FIX_CAUSE.HUMAN_FEEDBACK) {
+    evidence.lastProcessedCommentDate = feedback.lastProcessedCommentDate || '';
+    evidence.feedbackContent = feedback.feedbackContent || '';
+  } else if (cause === PR_FIX_CAUSE.BUILD_FAILURE) {
+    evidence.buildStatus = pr?.buildStatus || '';
+    evidence.buildFailReason = pr?.buildFailReason || '';
+    evidence.buildErrorLog = pr?.buildErrorLog || '';
+    evidence.buildStatusDetail = pr?._buildStatusDetail || '';
+  } else if (cause === PR_FIX_CAUSE.MERGE_CONFLICT) {
+    evidence.mergeConflict = !!pr?._mergeConflict;
+    evidence.mergeStatus = pr?.mergeStatus || '';
+    evidence.mergeConflictDetail = pr?._mergeConflictDetail || '';
+  } else {
+    evidence.reviewStatus = pr?.reviewStatus || '';
+    evidence.lastReviewedAt = pr?.lastReviewedAt || '';
+    evidence.reviewedAt = review.reviewedAt || '';
+    evidence.reviewNote = review.note || pr?.reviewNote || '';
+  }
+  return crypto.createHash('sha1').update(JSON.stringify(evidence)).digest('hex').slice(0, 16);
+}
+
+function getPrNoOpFixRecord(pr, cause) {
+  if (!pr || !cause || !pr._noOpFixes || typeof pr._noOpFixes !== 'object') return null;
+  const record = pr._noOpFixes[cause];
+  return record && typeof record === 'object' ? record : null;
+}
+
+function isPrNoOpFixCausePaused(pr, cause) {
+  const record = getPrNoOpFixRecord(pr, cause);
+  if (!record?.paused) return false;
+  return record.evidenceFingerprint === prFixEvidenceFingerprint(pr, cause);
+}
+
 /**
  * Recursively purge Windows reserved-name pseudo-files (NUL, CON, PRN, AUX, etc.)
  * using the \\?\ extended path prefix that bypasses reserved-name interpretation.
@@ -2530,6 +2636,40 @@ function safeSlugComponent(text, maxLen = 80) {
   const hash = crypto.createHash('md5').update(raw).digest('hex').slice(0, 8);
   const base = slugify(raw, Math.max(8, maxLen - 9)) || 'item';
   return `${base}-${hash}`.slice(0, maxLen);
+}
+
+const PR_AUTOMATION_CAUSE_LIMIT = 50;
+
+function getPrAutomationCauses(pr) {
+  const causes = pr?._automationFixCauses;
+  return causes && typeof causes === 'object' && !Array.isArray(causes) ? causes : {};
+}
+
+function hasPrAutomationCause(pr, causeKey) {
+  return !!(causeKey && getPrAutomationCauses(pr)[causeKey]);
+}
+
+function markPrAutomationCause(pr, causeKey, details = {}) {
+  if (!pr || !causeKey) return false;
+  const now = ts();
+  const causes = { ...getPrAutomationCauses(pr) };
+  causes[causeKey] = {
+    ...(causes[causeKey] || {}),
+    ...details,
+    status: details.status || causes[causeKey]?.status || 'handled',
+    updatedAt: now,
+  };
+  if (!causes[causeKey].firstSeenAt) causes[causeKey].firstSeenAt = now;
+
+  const entries = Object.entries(causes);
+  if (entries.length > PR_AUTOMATION_CAUSE_LIMIT) {
+    entries
+      .sort((a, b) => String(b[1]?.updatedAt || b[1]?.firstSeenAt || '').localeCompare(String(a[1]?.updatedAt || a[1]?.firstSeenAt || '')))
+      .slice(PR_AUTOMATION_CAUSE_LIMIT)
+      .forEach(([key]) => delete causes[key]);
+  }
+  pr._automationFixCauses = causes;
+  return true;
 }
 
 function formatTranscriptEntry(t) {
@@ -2704,6 +2844,11 @@ module.exports = {
   validateProjectName,
   validateProjectPath,
   validatePid,
+  PR_FIX_CAUSE,
+  getPrFixAutomationCause,
+  prFixEvidenceFingerprint,
+  getPrNoOpFixRecord,
+  isPrNoOpFixCausePaused,
   parseSkillFrontmatter,
   sleepMs,
   killGracefully,
@@ -2716,6 +2861,9 @@ module.exports = {
   redactSecrets,
   slugify,
   safeSlugComponent,
+  getPrAutomationCauses,
+  hasPrAutomationCause,
+  markPrAutomationCause,
   formatTranscriptEntry,
   getPinnedItems,
   _logBuffer, // exported for testing

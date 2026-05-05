@@ -2214,6 +2214,12 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+function isPrNoOpFixCauseSuppressed(pr, cause) {
+  if (!shared.isPrNoOpFixCausePaused(pr, cause)) return false;
+  log('warn', `PR ${pr.id}: suppressing ${cause} automation after repeated no-op fix attempts; waiting for human resume or new evidence`);
+  return true;
+}
+
 const PR_PENDING_MISSING_BRANCH = shared.PR_PENDING_REASON.MISSING_BRANCH;
 
 function normalizePrBranch(value) {
@@ -2306,6 +2312,93 @@ function ensurePrBranchForDispatch(project, pr, automationType) {
     log('warn', `PR ${pr.id}: ${reason}`);
   }
   return '';
+}
+
+function prCausePart(value, fallback = 'unknown') {
+  const raw = String(value || '').trim();
+  return shared.safeSlugComponent(raw || fallback, 80);
+}
+
+function getPrCauseHead(pr) {
+  return pr?.headSha
+    || pr?.headSHA
+    || pr?.head?.sha
+    || pr?._adoSourceCommit
+    || pr?._adoHeadCommit
+    || pr?.lastMergeSourceCommit?.commitId
+    || pr?.lastMergeCommit?.commitId
+    || '';
+}
+
+function getPrCauseBase(pr) {
+  return pr?.baseSha
+    || pr?.base?.sha
+    || pr?._adoTargetCommit
+    || pr?.lastMergeTargetCommit?.commitId
+    || pr?.targetSha
+    || pr?.targetRefSha
+    || pr?.baseRefName
+    || pr?.targetRefName
+    || '';
+}
+
+function getPrAutomationCauseKey(kind, pr) {
+  if (kind === 'review-feedback') {
+    const reviewRef = pr?.minionsReview?.dispatchId
+      || pr?.minionsReview?.reviewedAt
+      || pr?.lastReviewedAt
+      || getPrCauseHead(pr)
+      || pr?.reviewNote
+      || pr?.minionsReview?.note
+      || 'review';
+    return `review-feedback:${prCausePart(reviewRef)}`;
+  }
+  if (kind === 'human-comment') {
+    const commentRef = pr?.humanFeedback?.lastProcessedCommentKey
+      || pr?.humanFeedback?.lastProcessedCommentId
+      || pr?.humanFeedback?.commentId
+      || pr?.humanFeedback?.lastProcessedCommentDate
+      || pr?.humanFeedback?.feedbackContent
+      || 'comment';
+    return `human-comment:${prCausePart(commentRef)}`;
+  }
+  if (kind === 'build') {
+    const checkName = pr?.buildFailReason || pr?._buildStatusDetail || 'check';
+    const signature = pr?.buildFailureSignature
+      || pr?.buildErrorLog
+      || pr?._buildStatusDetail
+      || pr?.buildStatusDetail
+      || pr?.buildFailReason
+      || 'failure';
+    return `build:${prCausePart(checkName)}:${prCausePart(getPrCauseHead(pr), 'unknown-head')}:${prCausePart(signature)}`;
+  }
+  if (kind === 'merge-conflict') {
+    return `merge-conflict:${prCausePart(getPrCauseBase(pr), 'unknown-base')}:${prCausePart(getPrCauseHead(pr), 'unknown-head')}`;
+  }
+  return `${kind}:${prCausePart(getPrCauseHead(pr) || pr?.id || 'pr')}`;
+}
+
+function getPrAutomationDispatchKey(baseKey, causeKey) {
+  return `${baseKey}-${shared.safeSlugComponent(causeKey, 96)}`;
+}
+
+function isPrAutomationCausePending(project, pr, causeKey) {
+  if (!causeKey) return false;
+  const prCanonicalId = shared.getCanonicalPrId(project, pr, pr?.url || '');
+  const dispatch = getDispatch();
+  return [...(dispatch.pending || []), ...(dispatch.active || [])].some(d => {
+    if (d.meta?.automationCauseKey !== causeKey) return false;
+    if (!prCanonicalId) return true;
+    const dispatchProject = d.meta?.project?.name
+      ? (getProjects(getConfig()).find(p => p.name === d.meta.project.name) || d.meta.project)
+      : (d.meta?.project || null);
+    const dispatchPrId = shared.getCanonicalPrId(dispatchProject, d.meta?.pr, d.meta?.pr?.url || '');
+    return !dispatchPrId || dispatchPrId === prCanonicalId;
+  });
+}
+
+function isPrAutomationCauseHandledOrPending(project, pr, causeKey) {
+  return shared.hasPrAutomationCause(pr, causeKey) || isPrAutomationCausePending(project, pr, causeKey);
 }
 
 
@@ -2448,10 +2541,14 @@ async function discoverFromPrs(config, project) {
 
     // Fresh reviewer comments are actionable fixes, even while the PR is otherwise
     // awaiting a stale-vote re-review or has build-fix retries escalated.
-    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
+    const humanFixBaseKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
+    const humanCauseKey = getPrAutomationCauseKey('human-comment', pr);
+    const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.HUMAN_FEEDBACK)) {
       const key = humanFixKey;
+      if (isPrAutomationCauseHandledOrPending(project, pr, humanCauseKey)) continue;
       let staleCoalesced = [];
       const alreadyDispatched = isAlreadyDispatched(key);
       const blockedByCooldown = isOnCooldown(key, cooldownMs);
@@ -2492,7 +2589,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, automationCauseKey: humanCauseKey, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); fixDispatched = true; }
     }
 
@@ -2546,8 +2643,11 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix.
     // Gate on evalLoopEnabled and provider polling — the review→fix cycle depends on fresh vote state.
-    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
-      const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
+    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.REVIEW_FEEDBACK)) {
+      const reviewCauseKey = getPrAutomationCauseKey('review-feedback', pr);
+      const key = getPrAutomationDispatchKey(`fix-${project?.name || 'default'}-${prDisplayId}`, reviewCauseKey);
+      if (isPrAutomationCauseHandledOrPending(project, pr, reviewCauseKey)) continue;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
@@ -2557,7 +2657,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, automationCauseKey: reviewCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
       }
@@ -2571,8 +2671,11 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
+    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing'
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.BUILD_FAILURE)) {
+      const buildCauseKey = getPrAutomationCauseKey('build', pr);
+      const key = getPrAutomationDispatchKey(`build-fix-${project?.name || 'default'}-${prDisplayId}`, buildCauseKey);
+      if (isPrAutomationCauseHandledOrPending(project, pr, buildCauseKey)) continue;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
@@ -2633,7 +2736,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
         review_note: reviewNote,
-      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, automationCauseKey: buildCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         try {
@@ -2663,14 +2766,16 @@ async function discoverFromPrs(config, project) {
 
     // PRs with merge conflicts — dispatch fix to resolve (gated by provider polling + autoFixConflicts)
     const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
-    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
-      const key = `conflict-fix-${project?.name || 'default'}-${prDisplayId}`;
+    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.MERGE_CONFLICT)) {
+      const conflictCauseKey = getPrAutomationCauseKey('merge-conflict', pr);
+      const key = getPrAutomationDispatchKey(`conflict-fix-${project?.name || 'default'}-${prDisplayId}`, conflictCauseKey);
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
-      if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      if (!withinLag && !fixThrottled && !isPrAutomationCauseHandledOrPending(project, pr, conflictCauseKey) && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         // Pre-dispatch live conflict check — cached `_mergeConflict` may be
         // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
         // so a successful upstream merge can leave the flag set even after the
@@ -2702,7 +2807,7 @@ async function discoverFromPrs(config, project) {
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
               pr_id: pr.id, pr_branch: prBranch,
               review_note: `This PR has merge conflicts with the target branch. Inspect the live PR and repository history, choose the safest merge/rebase/update strategy, resolve all conflicts, validate the result, and push the branch.`,
-            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, automationCauseKey: conflictCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
             if (item) {
               newWork.push(item);
               setCooldown(key);

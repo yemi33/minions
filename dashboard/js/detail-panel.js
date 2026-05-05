@@ -42,8 +42,8 @@ function renderDetailContent(detail, tab) {
       html += '<h4>Current Status</h4><div class="section">';
       html += 'Status: <span style="color:var(--' + (detail.statusData.status === 'working' ? 'yellow' : detail.statusData.status === 'done' ? 'green' : 'muted') + ')">' + (detail.statusData.status || 'idle').toUpperCase() + '</span>\n';
       if (detail.statusData.task) html += 'Task: ' + escHtml(detail.statusData.task) + '\n';
-      if (detail.statusData.started_at) html += 'Started: ' + detail.statusData.started_at + '\n';
-      if (detail.statusData.completed_at) html += 'Completed: ' + detail.statusData.completed_at + '\n';
+      if (detail.statusData.started_at) html += 'Started: ' + formatLocalDateTime(detail.statusData.started_at) + '\n';
+      if (detail.statusData.completed_at) html += 'Completed: ' + formatLocalDateTime(detail.statusData.completed_at) + '\n';
       if (detail.statusData.started_at && detail.statusData.completed_at) {
         var dMs = new Date(detail.statusData.completed_at).getTime() - new Date(detail.statusData.started_at).getTime();
         if (dMs > 0) {
@@ -132,7 +132,7 @@ function renderDetailContent(detail, tab) {
           '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(d.task) + '">' + escHtml(d.task.slice(0, 80)) + '</td>' +
           '<td><span class="dispatch-type ' + d.type + '">' + escHtml(d.type) + '</span></td>' +
           '<td style="color:' + color + '"' + reason + '>' + escHtml(d.result) + (isError && d.reason ? ' <span style="font-size:10px;color:var(--muted)">(' + escHtml(d.reason.slice(0, 50)) + ')</span>' : '') + '</td>' +
-          '<td style="font-size:10px;color:var(--muted)">' + (d.completed_at ? new Date(d.completed_at).toLocaleString() : '') + '</td>' +
+          '<td style="font-size:10px;color:var(--muted)">' + (d.completed_at ? formatLocalDateTime(d.completed_at) : '') + '</td>' +
         '</tr>';
       });
       html += '</tbody></table>';

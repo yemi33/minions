@@ -1431,26 +1431,246 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 }
 
-function updatePrAfterFix(pr, project, source) {
+function getHumanFeedbackAutomationCauseKey(pr) {
+  const feedback = pr?.humanFeedback;
+  if (!feedback || typeof feedback !== 'object') return '';
+  const commentRef = feedback.lastProcessedCommentKey
+    || feedback.lastProcessedCommentId
+    || feedback.commentId
+    || feedback.lastProcessedCommentDate
+    || feedback.feedbackContent
+    || '';
+  return commentRef ? `human-comment:${shared.safeSlugComponent(commentRef, 80)}` : '';
+}
 
+function shouldClearHumanFeedbackPendingFix(target, completedPr, automationCauseKey) {
+  if (!target?.humanFeedback?.pendingFix) return true;
+  const currentCauseKey = getHumanFeedbackAutomationCauseKey(target);
+  const completedCauseKey = automationCauseKey || getHumanFeedbackAutomationCauseKey(completedPr);
+  return !currentCauseKey || !completedCauseKey || currentCauseKey === completedCauseKey;
+}
+
+function fixCompletionChangedBranch(structuredCompletion) {
+  if (!structuredCompletion || !Object.prototype.hasOwnProperty.call(structuredCompletion, 'files_changed')) {
+    return true;
+  }
+  const value = structuredCompletion.files_changed;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return true;
+  if (/^(?:none|no|n\/a|na|null|false|0|\[\]|-)$/.test(text)) return false;
+  if (/^(?:no\s+)?(?:files?|code)\s+(?:changed?|changes?)(?:\s*\([^)]*\))?$/.test(text)) return false;
+  if (/^(?:comment|comments|triage)[-\s]*only(?:\s*\([^)]*\))?$/.test(text)) return false;
+  if (/^(?:no\s+)?branch\s+(?:changed?|changes?|updates?)(?:\s*\([^)]*\))?$/.test(text)) return false;
+  return true;
+}
+
+function normalizePrFixBranchName(branch) {
+  return String(branch || '').trim().replace(/^refs\/heads\//, '');
+}
+
+function getPrFixBaselineHead(pr) {
+  return String(pr?.headSha || pr?._adoSourceCommit || pr?._adoHeadCommit || '').trim();
+}
+
+function findPrFixWorktree(meta, project, config) {
+  const branch = normalizePrFixBranchName(meta?.branch || meta?.pr?.branch);
+  const rootDir = project?.localPath ? path.resolve(project.localPath) : null;
+  if (!branch || !rootDir) return null;
+  const worktreeRoot = path.resolve(rootDir, config?.engine?.worktreeRoot || ENGINE_DEFAULTS.worktreeRoot);
+  try {
+    if (!fs.existsSync(worktreeRoot)) return null;
+    for (const dir of fs.readdirSync(worktreeRoot)) {
+      const wtPath = path.join(worktreeRoot, dir);
+      if (!fs.statSync(wtPath).isDirectory()) continue;
+      if (worktreeMatchesBranch(dir.toLowerCase(), branch, getWorktreeBranch(wtPath))) return wtPath;
+    }
+  } catch (err) {
+    log('warn', `PR fix no-op worktree lookup for ${meta?.pr?.id || branch}: ${err.message}`);
+  }
+  return null;
+}
+
+async function gitRevParse(cwd, ref) {
+  try {
+    const out = await runFileCapture('git', ['rev-parse', '--verify', `${ref}^{commit}`], { cwd, timeout: 10000 });
+    return String(out || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+async function detectPrFixBranchChange(meta, config) {
+  const branch = normalizePrFixBranchName(meta?.branch || meta?.pr?.branch);
+  const project = resolvePrFallbackProject(meta, config) || meta?.project || null;
+  const rootDir = project?.localPath ? path.resolve(project.localPath) : null;
+  const beforeHead = getPrFixBaselineHead(meta?.pr);
+  if (!meta?.pr?.id || !branch || !rootDir || !beforeHead) {
+    return { changed: null, reason: 'missing PR branch baseline' };
+  }
+
+  const worktreePath = findPrFixWorktree(meta, project, config);
+  if (worktreePath) {
+    try {
+      const dirty = await runFileCapture('git', ['status', '--porcelain'], { cwd: worktreePath, timeout: 10000 });
+      if (String(dirty || '').trim()) {
+        return { changed: true, beforeHead, afterHead: beforeHead, evidence: 'worktree-diff' };
+      }
+    } catch (err) {
+      log('warn', `PR fix no-op dirty check for ${meta.pr.id}: ${err.message}`);
+    }
+  }
+
+  let fetched = false;
+  try {
+    await runFileCapture('git', ['fetch', 'origin', branch], { cwd: rootDir, timeout: 30000 });
+    fetched = true;
+  } catch (err) {
+    log('warn', `PR fix no-op fetch for ${meta.pr.id} (${branch}) failed: ${err.message}`);
+  }
+
+  const remoteHead = await gitRevParse(rootDir, `refs/remotes/origin/${branch}`);
+  if (remoteHead && remoteHead !== beforeHead) {
+    return { changed: true, beforeHead, afterHead: remoteHead, evidence: 'remote-head' };
+  }
+
+  if (worktreePath) {
+    const localHead = await gitRevParse(worktreePath, 'HEAD');
+    if (localHead && localHead !== beforeHead) {
+      return { changed: true, beforeHead, afterHead: localHead, evidence: 'local-head' };
+    }
+  }
+
+  if (fetched && remoteHead && remoteHead === beforeHead) {
+    return { changed: false, beforeHead, afterHead: remoteHead, evidence: 'remote-head' };
+  }
+
+  return { changed: null, beforeHead, afterHead: remoteHead || '', reason: 'unable to prove branch head after fix' };
+}
+
+function recordPrNoOpFixAttempt(target, cause, source, dispatchItem, branchChange, config) {
+  const evidenceFingerprint = shared.prFixEvidenceFingerprint(target, cause);
+  const prior = shared.getPrNoOpFixRecord(target, cause);
+  const sameEvidence = prior?.evidenceFingerprint === evidenceFingerprint;
+  const count = sameEvidence ? (Number(prior.count) || 0) + 1 : 1;
+  const pauseAfter = Number(config?.engine?.prNoOpFixPauseAttempts) || ENGINE_DEFAULTS.prNoOpFixPauseAttempts;
+  const paused = count >= pauseAfter;
+  const now = ts();
+  target._noOpFixes = target._noOpFixes && typeof target._noOpFixes === 'object' ? target._noOpFixes : {};
+  target._noOpFixes[cause] = {
+    count,
+    paused,
+    evidenceFingerprint,
+    firstAt: sameEvidence ? (prior.firstAt || now) : now,
+    lastAt: now,
+    dispatchId: dispatchItem?.id || null,
+    dispatchKey: dispatchItem?.meta?.dispatchKey || null,
+    source: source || null,
+    beforeHead: branchChange?.beforeHead || '',
+    afterHead: branchChange?.afterHead || '',
+    reason: branchChange?.reason || 'fix completed without changing the PR branch',
+  };
+  target._lastNoOpFix = {
+    cause,
+    at: now,
+    paused,
+    dispatchId: dispatchItem?.id || null,
+    beforeHead: branchChange?.beforeHead || '',
+    afterHead: branchChange?.afterHead || '',
+  };
+
+  if (cause === shared.PR_FIX_CAUSE.HUMAN_FEEDBACK && target.humanFeedback) {
+    target.humanFeedback.pendingFix = !paused;
+    if (paused) target.humanFeedback.noOpPaused = true;
+    else delete target.humanFeedback.noOpPaused;
+  }
+  if (cause === shared.PR_FIX_CAUSE.BUILD_FAILURE) delete target._buildFixPushedAt;
+  if (cause === shared.PR_FIX_CAUSE.MERGE_CONFLICT) delete target._conflictFixedAt;
+  return target._noOpFixes[cause];
+}
+
+function clearPrNoOpFixAttempt(target, cause) {
+  if (!target?._noOpFixes || !target._noOpFixes[cause]) return;
+  delete target._noOpFixes[cause];
+  if (Object.keys(target._noOpFixes).length === 0) delete target._noOpFixes;
+  if (target._lastNoOpFix?.cause === cause) delete target._lastNoOpFix;
+  if (target.humanFeedback) delete target.humanFeedback.noOpPaused;
+}
+
+function updatePrAfterFix(pr, project, source, options = {}, legacyDispatchId = '') {
   if (!pr?.id) return;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    options = { automationCauseKey: options, dispatchId: legacyDispatchId };
+  }
+  const explicitlyChangedBranch = options.branchChanged !== false;
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+  const automationCauseKey = options.automationCauseKey || options.dispatchItem?.meta?.automationCauseKey || '';
+  const fixDispatchId = options.dispatchItem?.id || options.dispatchId || legacyDispatchId || '';
+  const cause = shared.getPrFixAutomationCause({
+    dispatchKey: options.dispatchItem?.meta?.dispatchKey,
+    source,
+    task: options.dispatchItem?.task,
+  });
+  let result = null;
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
     const target = shared.findPrRecord(prs, pr, project);
     if (!target) return prs;
-    // Never downgrade from approved — fix was dispatched but PR is already approved
-    if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
-    if (source === 'pr-human-feedback') {
-      if (target.humanFeedback) target.humanFeedback.pendingFix = false;
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
-      log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
-    } else {
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
-      log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+    const triagedReview = (note) => {
+      const next = { ...target.minionsReview, note, triagedAt: ts() };
+      delete next.fixedAt;
+      target.minionsReview = next;
+    };
+    if (explicitlyChangedBranch && options.branchChange?.changed === false) {
+      const record = recordPrNoOpFixAttempt(target, cause, source, options.dispatchItem, options.branchChange, options.config);
+      result = { noOp: true, cause, paused: !!record.paused, count: record.count };
+      log('warn', `Updated ${pr.id} → recorded no-op ${cause} fix attempt ${record.count}${record.paused ? ' (paused)' : ''}; PR branch was unchanged`);
+      return prs;
     }
+    clearPrNoOpFixAttempt(target, cause);
+    if (source === 'pr-human-feedback') {
+      const clearPendingFix = shouldClearHumanFeedbackPendingFix(target, pr, automationCauseKey);
+      if (target.humanFeedback && clearPendingFix) target.humanFeedback.pendingFix = false;
+      if (explicitlyChangedBranch) {
+        // Never downgrade from approved — fix was dispatched but PR is already approved
+        if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+        target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
+        if (clearPendingFix) {
+          log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+        } else {
+          log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix, reset to waiting for re-review`);
+        }
+      } else {
+        triagedReview('Triaged human feedback; no branch changes');
+        if (clearPendingFix) {
+          log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix after comment-only triage`);
+        } else {
+          log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix after comment-only triage`);
+        }
+      }
+    } else {
+      if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+      if (explicitlyChangedBranch) {
+        target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
+        log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+      } else {
+        triagedReview('Triaged fix feedback; no branch changes');
+        log('info', `Updated ${pr.id} → reviewStatus: waiting (comment-only fix triage)`);
+      }
+    }
+    if (automationCauseKey) {
+      shared.markPrAutomationCause(target, automationCauseKey, {
+        source,
+        dispatchId: fixDispatchId || null,
+        status: 'handled',
+        handledAt: ts(),
+      });
+    }
+    result = { noOp: false, cause };
     return prs;
   }, { defaultValue: [] });
+  return result;
 }
 
 // ─── Post-Merge Rebase ──────────────────────────────────────────────────────
@@ -2680,6 +2900,16 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   // Archive is manual — user archives plans from the dashboard when ready
 
+  let prFixBranchChange = null;
+  if (type === WORK_TYPE.FIX && effectiveSuccess && meta?.pr?.id) {
+    try {
+      prFixBranchChange = await detectPrFixBranchChange(meta, config);
+    } catch (err) {
+      log('warn', `PR fix no-op detection for ${meta.pr.id}: ${err.message}`);
+      prFixBranchChange = { changed: null, reason: err.message };
+    }
+  }
+
   // Scheduled task back-reference: update schedule-runs.json and write linked inbox note
   if (meta?.item?._scheduleId) {
     try {
@@ -2762,7 +2992,13 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);
   }
   if (type === WORK_TYPE.FIX && effectiveSuccess) {
-    updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+    updatePrAfterFix(meta?.pr, meta?.project, meta?.source, {
+      branchChanged: fixCompletionChangedBranch(structuredCompletion),
+      automationCauseKey: meta?.automationCauseKey,
+      dispatchItem,
+      branchChange: prFixBranchChange,
+      config,
+    });
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
     // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.
     // Use the PR's prdItems to propagate done status when the original work item is done.
@@ -2976,6 +3212,7 @@ module.exports = {
   syncPrsFromOutput,
   updatePrAfterReview,
   updatePrAfterFix,
+  fixCompletionChangedBranch,
   handlePostMerge,
   checkForLearnings,
   extractSkillsFromOutput,

@@ -708,6 +708,7 @@ async function pollPrStatus(config) {
           delete pr.buildStatus;
           delete pr.buildFailReason;
           delete pr.buildErrorLog;
+          delete pr.buildFailureSignature;
           delete pr._buildFailNotified;
           delete pr._buildStatusStale;
           delete pr._buildStatusDetail;
@@ -736,6 +737,11 @@ async function pollPrStatus(config) {
     const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
     if (sourceCommit && pr._adoSourceCommit !== sourceCommit) {
       pr._adoSourceCommit = sourceCommit;
+      updated = true;
+    }
+    const targetCommit = prData.lastMergeTargetCommit?.commitId || '';
+    if (targetCommit && pr._adoTargetCommit !== targetCommit) {
+      pr._adoTargetCommit = targetCommit;
       updated = true;
     }
 
@@ -811,6 +817,7 @@ async function pollPrStatus(config) {
     const mergeCommitId = prData.lastMergeCommit?.commitId;
     let buildStatus = pr.buildStatus || 'none';
     let buildFailReason = pr.buildFailReason || '';
+    let buildFailureSignature = pr.buildFailureSignature || '';
     let buildStatusResolved = true;
     let buildStatusStaleDetail = '';
 
@@ -834,6 +841,11 @@ async function pollPrStatus(config) {
             if (buildStatus === 'failing') {
               const failed = prBuilds.find(b => b.result === 'failed');
               buildFailReason = failed?.definition?.name || 'Build failed';
+              buildFailureSignature = shared.safeSlugComponent([
+                failed?.definition?.name,
+                failed?.result,
+                failed?.status,
+              ].filter(Boolean).join('\n') || buildFailReason, 80);
             }
           } else if (allBuilds.length > 0 && pr.buildStatus) {
             // Stale merge-commit fallback — ADO returned builds for this PR's merge ref
@@ -879,6 +891,8 @@ async function pollPrStatus(config) {
         pr.buildStatus = buildStatus;
         if (buildFailReason) pr.buildFailReason = buildFailReason;
         else delete pr.buildFailReason;
+        if (buildFailureSignature) pr.buildFailureSignature = buildFailureSignature;
+        else delete pr.buildFailureSignature;
         // Build transitioned — clear grace period and auto-complete flag
         delete pr._buildFixPushedAt;
         if (buildStatus === 'failing') delete pr._autoCompleted;
@@ -894,6 +908,7 @@ async function pollPrStatus(config) {
           // fix agents to be dispatched blind.
           if (buildStatus === 'passing') {
             delete pr.buildErrorLog;
+            delete pr.buildFailureSignature;
             // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
             if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
           }
@@ -907,6 +922,16 @@ async function pollPrStatus(config) {
             const prFilePath = shared.projectPrPath(project);
             teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
           } catch {}
+        }
+      }
+      if (buildStatus === 'failing') {
+        if (buildFailReason && pr.buildFailReason !== buildFailReason) {
+          pr.buildFailReason = buildFailReason;
+          updated = true;
+        }
+        if (buildFailureSignature && pr.buildFailureSignature !== buildFailureSignature) {
+          pr.buildFailureSignature = buildFailureSignature;
+          updated = true;
         }
       }
     }
@@ -1041,6 +1066,8 @@ async function pollPrHumanComments(config) {
 
     pr.humanFeedback = {
       lastProcessedCommentDate: latestDate,
+      lastProcessedCommentId: String(newHumanComments[newHumanComments.length - 1].commentId),
+      lastProcessedCommentKey: `${newHumanComments[newHumanComments.length - 1].threadId}:${newHumanComments[newHumanComments.length - 1].commentId}`,
       pendingFix: true,
       feedbackContent
     };
