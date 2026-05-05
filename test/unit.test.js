@@ -5075,6 +5075,133 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  await test('comment-only human-feedback fix clears pending feedback without marking branch fixed', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-human',
+        title: 'Triage Firebase preview comment',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        humanFeedback: { pendingFix: true, feedbackContent: 'Firebase preview is ready.' },
+        minionsReview: { fixedAt: '2026-05-04T00:00:00.000Z', note: 'old fix marker' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-human',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage preview comment',
+        meta: {
+          source: 'pr-human-feedback',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#208', prNumber: 208, url: 'https://github.com/octo/demo/pull/208' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment explaining the Firebase/Appetize preview status; no branch changes were needed.',
+        files_changed: 'none',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'comment-only triage should still consume the pending human-feedback item');
+      assert.strictEqual(updatedPr.reviewStatus, 'pending',
+        'comment-only triage must not move a pending PR to awaiting re-review');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only triage must not leave fixedAt set because no branch update happened');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
+  await test('comment-only review-feedback fix does not create a re-review trigger', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-review',
+        title: 'Triage review feedback',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#209',
+        prNumber: 209,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        minionsReview: { note: 'Reviewer asked whether preview comments require changes.' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-review',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage review feedback',
+        meta: {
+          source: 'pr',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#209', prNumber: 209, url: 'https://github.com/octo/demo/pull/209' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment; no branch changes were needed.',
+        files_changed: 'comment-only',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting',
+        'review-feedback triage should wait for reviewer action instead of redispatching another fix');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only review-feedback triage must not trigger automatic re-review');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only review-feedback triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
   await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
     // Regression guard: the old regex-based prose scanner produced false
     // positives on phrases like "I checked the pending PRs", "build is in
@@ -7965,8 +8092,90 @@ async function testGithubHelpers() {
       'Minions approval comments should not trigger human-feedback fixes');
     assert.ok(github._isAgentComment({ body: '**VERDICT: REQUEST_CHANGES**\n\nPlease fix this issue.' }),
       'Minions request-changes comments should not trigger human-feedback fixes');
+    assert.ok(github._isAgentComment({ body: 'Minions triage: Firebase preview comment is informational; no code changes needed.' }),
+      'Minions-authored triage comments should not trigger human-feedback fixes');
     assert.strictEqual(github._isAgentComment({ body: 'Please fix the typo on line 42.' }), false,
       'Ordinary human feedback should still trigger fixes');
+  });
+
+  await test('GitHub treats Firebase/Appetize bot preview comments as non-actionable while preserving human feedback', () => {
+    const firebasePreview = {
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: '## Firebase App Distribution\n\nAndroid preview uploaded. View this release in the Firebase console.',
+    };
+    const appetizePreview = {
+      user: { login: 'appetize-preview[bot]', type: 'Bot' },
+      body: '### Appetize Preview\n\nOpen the Android preview at https://appetize.io/app/example.',
+    };
+    const explicitHumanFeedback = {
+      user: { login: 'alice', type: 'User' },
+      body: 'The Firebase/Appetize preview crashes after sign-in; please fix it.',
+    };
+
+    assert.ok(github._isNonActionableComment(firebasePreview, { engine: {} }),
+      'Firebase App Distribution bot status comments should advance cutoff without dispatching fixes');
+    assert.ok(github._isNonActionableComment(appetizePreview, { engine: {} }),
+      'Appetize bot preview comments should advance cutoff without dispatching fixes');
+    assert.strictEqual(github._isNonActionableComment(explicitHumanFeedback, { engine: {} }), false,
+      'Explicit human comments that mention preview systems must remain actionable');
+  });
+
+  await test('GitHub comment poll advances cutoff for PR #208-like preview and Minions triage comments without pending fix', async () => {
+    const restore = createTestMinionsDir();
+    const oldPath = process.env.PATH;
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const binDir = path.join(testDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const fakeGh = path.join(binDir, 'gh');
+      fs.writeFileSync(fakeGh, `#!/bin/sh
+case "$2" in
+  repos/octo/demo)
+    printf '%s' '{"name":"demo"}'
+    ;;
+  repos/octo/demo/issues/208/comments)
+    printf '%s' '[{"id":1,"created_at":"2026-05-05T08:01:00Z","updated_at":"2026-05-05T08:01:00Z","body":"## Firebase App Distribution\\n\\nAndroid preview uploaded. View this release in Firebase.","user":{"login":"github-actions[bot]","type":"Bot"}},{"id":2,"created_at":"2026-05-05T08:02:00Z","updated_at":"2026-05-05T08:02:00Z","body":"Minions triage: Appetize preview is informational; no code changes needed.","user":{"login":"yemi33","type":"User"}}]'
+    ;;
+  repos/octo/demo/pulls/208/comments)
+    printf '%s' '[]'
+    ;;
+  *)
+    printf '%s' '[]'
+    ;;
+esac
+`);
+      fs.chmodSync(fakeGh, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath || ''}`;
+
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+      testShared.safeWrite(testShared.projectPrPath(project), [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        url: 'https://github.com/octo/demo/pull/208',
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        created: '2026-05-05T08:00:00Z',
+      }]);
+
+      delete require.cache[require.resolve('../engine/github')];
+      const freshGithub = require('../engine/github');
+      await freshGithub.pollPrHumanComments(config);
+
+      const [updatedPr] = testShared.safeJson(testShared.projectPrPath(project));
+      assert.strictEqual(updatedPr.humanFeedback?.lastProcessedCommentDate, '2026-05-05T08:02:00Z',
+        'non-actionable preview/triage comments should advance the processed cutoff');
+      assert.ok(!updatedPr.humanFeedback?.pendingFix,
+        'non-actionable preview/triage comments must not create pending human feedback');
+      assert.ok(!updatedPr.humanFeedback?.feedbackContent,
+        'non-actionable preview/triage comments must not become fix-agent context');
+    } finally {
+      process.env.PATH = oldPath;
+      try { delete require.cache[require.resolve('../engine/github')]; } catch {}
+      restore();
+    }
   });
 }
 
@@ -16557,7 +16766,7 @@ async function testBuildFixRetryCap() {
       'Pollers may still clean old build-fix attempt fields when a PR recovers/closes');
   });
 
-  await test('PR comment pollers do not ignore bot authors by default', () => {
+  await test('PR comment pollers use explicit non-actionable classification instead of blanket bot filtering', () => {
     const ghCommentsBlock = githubSrc.slice(
       githubSrc.indexOf('async function pollPrHumanComments'),
       githubSrc.indexOf('// ─── PR Reconciliation', githubSrc.indexOf('async function pollPrHumanComments'))
@@ -16567,13 +16776,13 @@ async function testBuildFixRetryCap() {
       adoSrc.indexOf('if (totalUpdated > 0)', adoSrc.indexOf('async function pollPrHumanComments'))
     );
 
-    assert.ok(!ghCommentsBlock.includes("user?.type === 'Bot'"),
-      'GitHub comment poll must not ignore GitHub Bot users by default');
+    assert.ok(ghCommentsBlock.includes('_isNonActionableComment(c, config)'),
+      'GitHub comment poll should classify non-actionable comments through a dedicated helper');
     assert.ok(!/dependabot|renovate|github-actions|azure-pipelines|codecov|sonar/.test(ghCommentsBlock),
-      'GitHub comment poll must not ignore common bot logins by default');
+      'GitHub comment poll must not ignore common bot logins by blanket login defaults');
     assert.ok(!adoCommentsBlock.includes('/\\b(bot|service|build|pipeline|codecov|sonar)\\b/i.test(authorName)'),
       'ADO comment poll must not ignore bot/service authors by default');
-    assert.ok(ghCommentsBlock.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
+    assert.ok(githubSrc.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
       'explicit ignoredCommentAuthors settings should still be honored');
   });
 }
@@ -40651,8 +40860,8 @@ async function testPrReviewFixFlows() {
   console.log('\n── Comment Filtering ──');
 
   await test('agent comments included in context but do not trigger fix', () => {
-    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('!isAgent'),
-      'GitHub should detect agent comments and exclude from trigger');
+    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('_isNonActionableComment(c, config)'),
+      'GitHub should detect agent comments through the non-actionable classifier and exclude them from trigger');
   });
 
   await test('Minions signature patterns detected', () => {
