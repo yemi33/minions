@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1737 (2026-05-05)
+
+### Other
+- perf: buffered metrics, snapshot-diff sidecar, parallel worktree branch probes
+
 ## 0.1.1736 (2026-05-05)
 
 ### Other
