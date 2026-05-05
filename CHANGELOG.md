@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1730 (2026-05-05)
+
+### Features
+- detect no-op PR fixes (#2077)
+
 ## 0.1.1728 (2026-05-05)
 
 ### Features
