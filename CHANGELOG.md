@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1734 (2026-05-05)
+
+### Fixes
+- make GitHub comment poll fake gh cross-platform
+
 ## 0.1.1733 (2026-05-05)
 
 ### Features
