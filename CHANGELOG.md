@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1732 (2026-05-05)
+
+### Features
+- fix pipeline cron display (#2087)
+
 ## 0.1.1730 (2026-05-05)
 
 ### Features
