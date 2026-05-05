@@ -8544,11 +8544,51 @@ async function testGithubHelpers() {
   console.log('\n── github.js — Helper Functions ──');
 
   const github = require(path.join(MINIONS_DIR, 'engine', 'github'));
+  const assertBackoffNear = (entry, expectedMs) => {
+    const remainingMs = entry.backoffUntil - Date.now();
+    assert.ok(remainingMs > 0, 'backoffUntil should be in the future');
+    assert.ok(remainingMs <= expectedMs + 1000,
+      `backoff should be no more than ${expectedMs}ms, got ${remainingMs}ms`);
+    assert.ok(remainingMs >= expectedMs - 1000,
+      `backoff should be at least ${expectedMs}ms, got ${remainingMs}ms`);
+  };
 
   await test('github module exports required functions', () => {
     assert.ok(typeof github.pollPrStatus === 'function');
     assert.ok(typeof github.pollPrHumanComments === 'function');
     assert.ok(typeof github.reconcilePrs === 'function');
+    assert.ok(typeof github.isGitHub === 'function');
+    assert.ok(typeof github.getRepoSlug === 'function');
+    assert.ok(typeof github.isSlugInBackoff === 'function');
+    assert.ok(typeof github.recordSlugFailure === 'function');
+    assert.ok(typeof github.resetSlugBackoff === 'function');
+    assert.ok(typeof github._hasMinionsReviewVerdict === 'function');
+    assert.ok(github._ghPollBackoff instanceof Map);
+    assert.ok(github._ghThrottle);
+  });
+
+  await test('isGitHub returns true only for GitHub projects', () => {
+    assert.strictEqual(github.isGitHub({ repoHost: 'github' }), true);
+    assert.strictEqual(github.isGitHub({ repoHost: 'ado' }), false);
+    assert.strictEqual(github.isGitHub({}), false);
+    assert.strictEqual(github.isGitHub(null), false);
+  });
+
+  await test('getRepoSlug returns owner/repo only when org and repo are configured', () => {
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', githubOrg: 'yemi33', repoName: 'minions' }), 'yemi33/minions');
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', githubOrg: 'yemi33' }), null);
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', repoName: 'minions' }), null);
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github' }), null);
+  });
+
+  await test('GitHub verdict regex recognizes supported Minions review verdict forms', () => {
+    assert.strictEqual(github._hasMinionsReviewVerdict('VERDICT: APPROVE\n\nLooks good.'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('**VERDICT: REQUEST_CHANGES**\n\nPlease fix.'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('VERDICT: REQUEST-CHANGES'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('verdict: approve'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('Please fix the typo on line 42.'), false);
+    assert.strictEqual(github._hasMinionsReviewVerdict(''), false);
+    assert.strictEqual(github._hasMinionsReviewVerdict(null), false);
   });
 
   await test('GitHub treats Minions verdict comments as agent comments', () => {
@@ -8643,6 +8683,79 @@ process.stdout.write(Object.prototype.hasOwnProperty.call(responses, endpoint) ?
       try { delete require.cache[require.resolve('../engine/github')]; } catch {}
       restore();
     }
+  });
+
+  await test('slug backoff reports fresh and expired slugs as not throttled', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.set(slug, { failures: 1, backoffUntil: Date.now() - 1 });
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('recordSlugFailure applies base backoff for the first failure', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    const entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 1);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_BASE_MS);
+    assert.strictEqual(github.isSlugInBackoff(slug), true);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('recordSlugFailure doubles slug backoff and caps at the maximum', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    github.recordSlugFailure(slug);
+    let entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 2);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_BASE_MS * 2);
+
+    for (let i = 0; i < 10; i++) github.recordSlugFailure(slug);
+    entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 12);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_MAX_MS);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('resetSlugBackoff clears slug backoff entries', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    assert.strictEqual(github._ghPollBackoff.has(slug), true);
+    github.resetSlugBackoff(slug);
+    assert.strictEqual(github._ghPollBackoff.has(slug), false);
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('GitHub throttle wrappers expose initial and transition state snapshots', () => {
+    github._ghThrottle._reset();
+    assert.strictEqual(github.isGhThrottled(), false);
+    assert.deepStrictEqual(github.getGhThrottleState(), {
+      throttled: false,
+      retryAfter: 0,
+      consecutiveHits: 0,
+    });
+
+    github._ghThrottle.recordThrottle(5000);
+    assert.strictEqual(github.isGhThrottled(), true);
+    const throttled = github.getGhThrottleState();
+    assert.strictEqual(throttled.throttled, true);
+    assert.strictEqual(throttled.consecutiveHits, 1);
+    assert.ok(throttled.retryAfter > Date.now());
+
+    github._ghThrottle.recordSuccess();
+    assert.strictEqual(github.isGhThrottled(), false);
+    assert.deepStrictEqual(github.getGhThrottleState(), {
+      throttled: false,
+      retryAfter: throttled.retryAfter,
+      consecutiveHits: 0,
+    });
+    github._ghThrottle._reset();
   });
 }
 
