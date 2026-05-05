@@ -1450,33 +1450,75 @@ function shouldClearHumanFeedbackPendingFix(target, completedPr, automationCause
   return !currentCauseKey || !completedCauseKey || currentCauseKey === completedCauseKey;
 }
 
-function updatePrAfterFix(pr, project, source, automationCauseKey = '', dispatchId = '') {
+function fixCompletionChangedBranch(structuredCompletion) {
+  if (!structuredCompletion || !Object.prototype.hasOwnProperty.call(structuredCompletion, 'files_changed')) {
+    return true;
+  }
+  const value = structuredCompletion.files_changed;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return true;
+  if (/^(?:none|no|n\/a|na|null|false|0|\[\]|-)$/.test(text)) return false;
+  if (/^(?:no\s+)?(?:files?|code)\s+(?:changed?|changes?)(?:\s*\([^)]*\))?$/.test(text)) return false;
+  if (/^(?:comment|comments|triage)[-\s]*only(?:\s*\([^)]*\))?$/.test(text)) return false;
+  if (/^(?:no\s+)?branch\s+(?:changed?|changes?|updates?)(?:\s*\([^)]*\))?$/.test(text)) return false;
+  return true;
+}
+
+function updatePrAfterFix(pr, project, source, opts = {}, dispatchId = '') {
 
   if (!pr?.id) return;
+  const options = opts && typeof opts === 'object' && !Array.isArray(opts)
+    ? opts
+    : { automationCauseKey: opts, dispatchId };
+  const branchChanged = options.branchChanged !== false;
+  const automationCauseKey = options.automationCauseKey || '';
+  const fixDispatchId = options.dispatchId || dispatchId || '';
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
     const target = shared.findPrRecord(prs, pr, project);
     if (!target) return prs;
-    // Never downgrade from approved — fix was dispatched but PR is already approved
-    if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+    const triagedReview = (note) => {
+      const next = { ...target.minionsReview, note, triagedAt: ts() };
+      delete next.fixedAt;
+      target.minionsReview = next;
+    };
     if (source === 'pr-human-feedback') {
       const clearPendingFix = shouldClearHumanFeedbackPendingFix(target, pr, automationCauseKey);
       if (target.humanFeedback && clearPendingFix) target.humanFeedback.pendingFix = false;
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
-      if (clearPendingFix) {
-        log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+      if (branchChanged) {
+        // Never downgrade from approved — fix was dispatched but PR is already approved
+        if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+        target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
+        if (clearPendingFix) {
+          log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+        } else {
+          log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix, reset to waiting for re-review`);
+        }
       } else {
-        log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix, reset to waiting for re-review`);
+        triagedReview('Triaged human feedback; no branch changes');
+        if (clearPendingFix) {
+          log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix after comment-only triage`);
+        } else {
+          log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix after comment-only triage`);
+        }
       }
     } else {
-      target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
-      log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+      if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+      if (branchChanged) {
+        target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
+        log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+      } else {
+        triagedReview('Triaged fix feedback; no branch changes');
+        log('info', `Updated ${pr.id} → reviewStatus: waiting (comment-only fix triage)`);
+      }
     }
     if (automationCauseKey) {
       shared.markPrAutomationCause(target, automationCauseKey, {
         source,
-        dispatchId: dispatchId || null,
+        dispatchId: fixDispatchId || null,
         status: 'handled',
         handledAt: ts(),
       });
@@ -2794,7 +2836,11 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);
   }
   if (type === WORK_TYPE.FIX && effectiveSuccess) {
-    updatePrAfterFix(meta?.pr, meta?.project, meta?.source, meta?.automationCauseKey, dispatchItem?.id);
+    updatePrAfterFix(meta?.pr, meta?.project, meta?.source, {
+      branchChanged: fixCompletionChangedBranch(structuredCompletion),
+      automationCauseKey: meta?.automationCauseKey,
+      dispatchId: dispatchItem?.id,
+    });
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
     // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.
     // Use the PR's prdItems to propagate done status when the original work item is done.
@@ -3008,6 +3054,7 @@ module.exports = {
   syncPrsFromOutput,
   updatePrAfterReview,
   updatePrAfterFix,
+  fixCompletionChangedBranch,
   handlePostMerge,
   checkForLearnings,
   extractSkillsFromOutput,
