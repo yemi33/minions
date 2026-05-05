@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1728 (2026-05-05)
+
+### Features
+- redact repository URLs in filed issues (#2069)
+
 ## 0.1.1727 (2026-05-05)
 
 ### Features
