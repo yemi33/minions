@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1729 (2026-05-05)
+
+### Features
+- suppress comment-only fix loops (#2076)
+-  Allow explicit doc chat dispatch requests (#2072)
+- redact repository URLs in filed issues (#2069)
+
 ## 0.1.1727 (2026-05-05)
 
 ### Features
