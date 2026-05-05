@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1727 (2026-05-05)
+
+### Features
+- fix Brady Gaster Squad link (#2080)
+
 ## 0.1.1726 (2026-05-05)
 
 ### Other
