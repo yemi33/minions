@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1736 (2026-05-05)
+
+### Other
+- test(lifecycle): add unit tests for review-verdict, completion-field, and item-completed parsers (#2093)
+
 ## 0.1.1735 (2026-05-05)
 
 ### Other
