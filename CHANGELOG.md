@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1723 (2026-05-05)
+
+### Other
+- Extend command center session TTL
+
 ## 0.1.1722 (2026-05-05)
 
 ### Other
