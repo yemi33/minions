@@ -28,10 +28,18 @@ async function openSettings() {
 
   _settingsData = null;
   let data;
+  let featuresList = [];
   try {
-    const res = await fetch('/api/settings');
-    data = await res.json();
+    const [settingsRes, featuresRes] = await Promise.all([
+      fetch('/api/settings'),
+      fetch('/api/features').catch(() => null),
+    ]);
+    data = await settingsRes.json();
     _settingsData = data;
+    if (featuresRes && featuresRes.ok) {
+      const fjson = await featuresRes.json().catch(() => null);
+      if (fjson && Array.isArray(fjson.features)) featuresList = fjson.features;
+    }
   } catch (e) { showToast('cmd-toast', 'Failed to load settings: ' + e.message, false); return; }
 
   const e = data.engine || {};
@@ -276,6 +284,36 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
     '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
 
+    // Toggles persist immediately via POST /api/features/toggle — no Save needed.
+    '<details id="settings-features-details" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">' +
+      '<summary style="cursor:pointer;font-size:13px;color:var(--blue);user-select:none">Show experimental flags ' +
+        '<span style="font-size:10px;color:var(--muted)">(' + featuresList.length + ' registered)</span>' +
+      '</summary>' +
+      '<div style="font-size:10px;color:var(--muted);margin:8px 0 10px">In-progress UX or behavior gates. Toggles persist immediately. Registry: <code>engine/features.js</code>. Env override: <code>MINIONS_FEATURE_&lt;NAME&gt;=1</code>.</div>' +
+      (featuresList.length === 0
+        ? '<div style="font-size:11px;color:var(--muted);padding:12px;border:1px dashed var(--border);border-radius:4px;text-align:center">No experimental features registered. Add entries to <code>engine/features.js</code> to gate new work.</div>'
+        : '<div style="display:flex;flex-direction:column;gap:8px">' +
+          featuresList.map(function(f) {
+            const checked = f.enabled ? ' checked' : '';
+            const expiredBadge = f.expired
+              ? ' <span style="font-size:9px;padding:1px 5px;background:rgba(220,80,80,0.15);color:var(--red);border-radius:3px;margin-left:4px">EXPIRED</span>'
+              : '';
+            const meta = [];
+            if (f.addedIn) meta.push('added in ' + escHtml(f.addedIn));
+            if (f.expires) meta.push('expires ' + escHtml(f.expires));
+            meta.push(f.default ? 'default: on' : 'default: off');
+            return '<label data-feature-id="' + escHtml(f.id) + '" style="display:flex;align-items:flex-start;gap:8px;padding:8px;border:1px solid var(--border);border-radius:4px;cursor:pointer">' +
+              '<input type="checkbox" data-feature-toggle="' + escHtml(f.id) + '"' + checked + ' style="margin-top:3px;cursor:pointer">' +
+              '<div style="flex:1">' +
+                '<div style="font-size:11px;font-weight:600;color:var(--text)">' + escHtml(f.id) + expiredBadge + '</div>' +
+                (f.description ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escHtml(f.description) + '</div>' : '') +
+                '<div style="font-size:9px;color:var(--muted);margin-top:3px">' + meta.join(' · ') + '</div>' +
+              '</div>' +
+            '</label>';
+          }).join('') +
+        '</div>') +
+    '</details>' +
+
   '</div>';
 
   document.getElementById('modal-title').textContent = 'Settings';
@@ -312,6 +350,34 @@ async function openSettings() {
   // 3. On defaultCli change → re-fetch models so the input never shows stale list.
   // The same pattern wires ccCli → ccModel; ccCli inherits defaultCli when unset.
   initRuntimeFleetUI(e, agents);
+
+  document.querySelectorAll('input[data-feature-toggle]').forEach(function(input) {
+    input.addEventListener('change', async function() {
+      const id = input.getAttribute('data-feature-toggle');
+      const enabled = input.checked;
+      if (window.MinionsFeatures && typeof window.MinionsFeatures._setLocal === 'function') {
+        window.MinionsFeatures._setLocal(id, enabled);
+      }
+      try {
+        const r = await fetch('/api/features/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, enabled }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || ('HTTP ' + r.status));
+        }
+        showToast('cmd-toast', 'Feature "' + id + '" ' + (enabled ? 'enabled' : 'disabled'), true);
+      } catch (err) {
+        input.checked = !enabled;
+        if (window.MinionsFeatures && typeof window.MinionsFeatures._setLocal === 'function') {
+          window.MinionsFeatures._setLocal(id, !enabled);
+        }
+        showToast('cmd-toast', 'Failed to toggle "' + id + '": ' + err.message, false);
+      }
+    });
+  });
 }
 
 async function initRuntimeFleetUI(engineCfg, agentsCfg) {
