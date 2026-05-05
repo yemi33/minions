@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1726 (2026-05-05)
+
+### Other
+- Extend command center timeout
+
 ## 0.1.1724 (2026-05-05)
 
 ### Features
