@@ -28366,6 +28366,22 @@ async function testScheduleDetailModal() {
       'runScheduleNow should be exposed with schedule dashboard functions');
   });
 
+  await test('schedule Run now button is disabled while request is pending', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const start = src.indexOf('async function runScheduleNow');
+    const end = src.indexOf('async function deleteSchedule');
+    assert.ok(start >= 0 && end > start, 'runScheduleNow should exist before deleteSchedule');
+    const body = src.slice(start, end);
+    assert.ok(body.includes('if (btn && btn.disabled) return;'),
+      'runScheduleNow should ignore duplicate clicks while already disabled');
+    assert.ok(body.includes('btn.disabled = true') && body.includes("btn.textContent = 'Running...'"),
+      'runScheduleNow should immediately disable the clicked button and show pending text');
+    assert.ok(body.includes("btn.setAttribute('aria-busy', 'true')"),
+      'runScheduleNow should expose pending state to assistive tech');
+    assert.ok(body.includes('} finally {') && body.includes('btn.disabled = false') && body.includes("btn.removeAttribute('aria-busy')"),
+      'runScheduleNow should restore the button after success or failure');
+  });
+
   await test('dashboard exposes schedule Run Now API that enqueues scheduler work item', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     assert.ok(src.includes("path: '/api/schedules/run-now'"), 'should register /api/schedules/run-now route');

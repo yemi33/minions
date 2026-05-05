@@ -547,7 +547,15 @@ async function toggleScheduleEnabled(id, enabled) {
 }
 
 async function runScheduleNow(id, btn) {
-  if (btn) { btn.textContent = 'Running...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  if (btn && btn.disabled) return;
+  if (btn) {
+    btn.dataset.origText = btn.textContent;
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Running...';
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '0.6';
+  }
   try {
     const res = await fetch('/api/schedules/run-now', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -562,8 +570,16 @@ async function runScheduleNow(id, btn) {
     }
   } catch (e) {
     showToast('cmd-toast', 'Run error: ' + e.message, false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      btn.textContent = btn.dataset.origText || 'Run now';
+      delete btn.dataset.origText;
+      btn.style.pointerEvents = '';
+      btn.style.opacity = '';
+    }
   }
-  if (btn) { btn.textContent = 'Run now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
 }
 
 async function deleteSchedule(id) {
