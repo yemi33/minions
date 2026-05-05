@@ -39682,6 +39682,19 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
   });
 
+  await test('ccCloseTab fires DELETE /api/cc-sessions/:id so server entry is removed on explicit close', () => {
+    // CC sessions are non-expiring on the server. The user closing a tab must
+    // fan out to a server-side delete so cc-sessions.json stays in sync.
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccCloseTab'),
+      ccSrc.indexOf('\nfunction', ccSrc.indexOf('function ccCloseTab') + 1));
+    assert.ok(/fetch\([^)]*\/api\/cc-sessions\//.test(fn),
+      'ccCloseTab must call fetch on /api/cc-sessions/:id');
+    assert.ok(/method:\s*['"]DELETE['"]/.test(fn),
+      'ccCloseTab must use the DELETE method');
+    assert.ok(fn.includes('encodeURIComponent'),
+      'ccCloseTab should encode the tab id when constructing the URL');
+  });
+
   await test('tab bar rendered in layout.html', () => {
     assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
   });
@@ -39785,43 +39798,48 @@ async function testCCMultiTab() {
       'ccSwitchTab should call ccRenderTabBar');
   });
 
-  // ── Session TTL tests ──────────────────────────────────────────────────────
+  // ── Session lifecycle tests (CC sessions are non-expiring) ────────────────
 
-  await test('CC sessions use ENGINE_DEFAULTS TTL', () => {
-    assert.ok(dashSrc.includes('CC_SESSION_TTL_MS'), 'CC_SESSION_TTL_MS constant should exist');
-    assert.ok(dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
-      'CC session TTL should come from shared ENGINE_DEFAULTS');
+  await test('CC sessions do not auto-expire via TTL', () => {
+    // CC chat sessions are removed only when the user explicitly closes the
+    // tab (DELETE /api/cc-sessions/:id). The TTL knob was removed.
+    assert.ok(!dashSrc.includes('CC_SESSION_TTL_MS'),
+      'CC_SESSION_TTL_MS constant must not exist — CC sessions are non-expiring');
+    assert.ok(!dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
+      'CC session code must not consume ccSessionTtlMs');
+    assert.ok(!('ccSessionTtlMs' in shared.ENGINE_DEFAULTS),
+      'ENGINE_DEFAULTS.ccSessionTtlMs should be removed');
   });
 
-  await test('CC session TTL is long enough for users to resume chats after breaks', () => {
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
-    assert.ok(shared.ENGINE_DEFAULTS.ccSessionTtlMs >= weekMs,
-      'CC sessions should remain resumable for at least 7 days');
-  });
-
-  await test('ccSessionValid checks TTL before resuming', () => {
+  await test('ccSessionValid only checks sessionId presence and prompt hash (no TTL, no turnCount cap)', () => {
     // Extract ccSessionValid function body
     const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
     assert.ok(match, 'ccSessionValid should exist');
     const body = match[0];
-    assert.ok(body.includes('_sessionExpired'), 'ccSessionValid should use shared expiry helper');
-    assert.ok(body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid should apply CC session TTL');
-    assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
-    assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
+    assert.ok(body.includes('_promptHash'), 'ccSessionValid must still check prompt hash (correctness)');
+    assert.ok(body.includes('sessionId'), 'ccSessionValid must guard on sessionId presence');
+    assert.ok(!body.includes('_sessionExpired'), 'ccSessionValid must NOT call _sessionExpired (no TTL)');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid must NOT reference a TTL constant');
+    assert.ok(!body.includes('CC_SESSION_MAX_TURNS'),
+      'ccSessionValid must NOT cap by turnCount — sessions live until user closes the tab');
   });
 
-  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC sessions', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
     assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'resolveSession must not reference CC TTL constant');
     assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
-  await test('CC session restored on startup with TTL filtering', () => {
+  await test('CC session restored on startup without TTL filtering', () => {
     const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
     assert.ok(startupMatch, 'Should have CC session startup loader');
-    assert.ok(startupMatch[0].includes('_sessionExpired'), 'Startup loader should filter expired sessions');
+    assert.ok(!startupMatch[0].includes('_sessionExpired'),
+      'CC startup loader must NOT filter by TTL — sessions are non-expiring');
+    assert.ok(!startupMatch[0].includes('CC_SESSION_TTL_MS'),
+      'CC startup loader must NOT reference a TTL constant');
   });
 
   await test('doc sessions restored on startup with TTL filtering', () => {
@@ -39902,10 +39920,14 @@ async function testCCMultiTab() {
   const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
   const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
 
-  await test('cleanup.js prunes cc-sessions.json with cap', () => {
-    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
-    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
-    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  await test('cleanup.js does NOT auto-prune cc-sessions.json (sessions are non-expiring)', () => {
+    // CC chat sessions only disappear when the user explicitly closes a tab
+    // (DELETE /api/cc-sessions/:id). Auto-pruning would silently invalidate
+    // long-lived chat tabs the user expects to keep.
+    assert.ok(!cleanupSrc.includes('CC_SESSIONS_CAP'),
+      'cleanup.js must not define a CC_SESSIONS_CAP — sessions are non-expiring');
+    assert.ok(!/sessions\.sort\(\(a, b\)\s*=>\s*new Date\(b\.lastActiveAt[\s\S]*safeWrite\(ccSessionsPath/.test(cleanupSrc),
+      'cleanup.js must not sort+slice cc-sessions.json — that auto-expires tabs');
   });
 
   await test('cleanup.js prunes doc-sessions.json with cap', () => {
@@ -51808,72 +51830,75 @@ async function testDashboardPureHelpers() {
     assert.deepStrictEqual(_filterCcTabSessions([s1, s2, s3]), []);
   });
 
-  await test('_filterCcTabSessions drops sessions with turnCount >= CC_SESSION_MAX_TURNS', () => {
+  await test('_filterCcTabSessions keeps sessions with very high turnCount (no turn cap)', () => {
+    // CC chat sessions are non-expiring — turnCount is no longer a kill switch.
+    // A user with a long-running tab should be able to send hundreds of turns
+    // without the session disappearing from the list.
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const overTurns = { ...freshSession(), turnCount: max };
-    const wayOver = { ...freshSession(), turnCount: max + 10 };
-    assert.deepStrictEqual(_filterCcTabSessions([overTurns, wayOver]), []);
+    const wayOver = { ...freshSession(), id: 'tab-way-over', sessionId: 'sess-way-over', turnCount: max * 10 };
+    const kept = _filterCcTabSessions([overTurns, wayOver]);
+    assert.strictEqual(kept.length, 2,
+      'CC tab sessions must NOT be filtered by turnCount — sessions live until the user closes the tab');
   });
 
-  await test('_filterCcTabSessions keeps sessions with turnCount < CC_SESSION_MAX_TURNS', () => {
-    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
-    const underTurns = { ...freshSession(), turnCount: max - 1 };
-    const kept = _filterCcTabSessions([underTurns]);
-    assert.strictEqual(kept.length, 1);
-    assert.strictEqual(kept[0].turnCount, max - 1);
-  });
-
-  await test('_filterCcTabSessions drops sessions whose lastActiveAt is past TTL', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expired = {
+  await test('_filterCcTabSessions keeps sessions whose lastActiveAt is well past the old 7d TTL', () => {
+    // Old 7d TTL is gone — sessions older than a week (or month, or year)
+    // must still be kept until the user explicitly closes the tab.
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancient = {
       ...freshSession(),
-      lastActiveAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString(), // 70 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expired]), []);
+    const kept = _filterCcTabSessions([ancient]);
+    assert.strictEqual(kept.length, 1,
+      'CC tab sessions must NOT be filtered by lastActiveAt age — they are non-expiring');
+    assert.strictEqual(kept[0].id, 'tab-1');
   });
 
-  await test('_filterCcTabSessions falls back to createdAt when lastActiveAt missing', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expiredByCreatedAt = {
+  await test('_filterCcTabSessions keeps sessions with stale createdAt and no lastActiveAt', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancientByCreatedAt = {
       id: 'tab-2',
       sessionId: 'sess-2',
       turnCount: 0,
-      createdAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      createdAt: new Date(Date.now() - sevenDaysMs * 5).toISOString(), // 35 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expiredByCreatedAt]), []);
-
-    const freshByCreatedAt = {
-      id: 'tab-3',
-      sessionId: 'sess-3',
-      turnCount: 0,
-      createdAt: new Date().toISOString(),
-    };
-    assert.strictEqual(_filterCcTabSessions([freshByCreatedAt]).length, 1);
+    assert.strictEqual(_filterCcTabSessions([ancientByCreatedAt]).length, 1,
+      'Old sessions without lastActiveAt must still be kept — no TTL applies');
   });
 
   await test('_filterCcTabSessions drops sessions whose _promptHash does not match current hash', () => {
-    // A _promptHash that is definitely not the current 8-char md5 slice.
+    // Prompt-hash invalidation is correctness-driven and must remain.
     const mismatched = { ...freshSession(), _promptHash: 'deadbeef-impossible-hash' };
     assert.deepStrictEqual(_filterCcTabSessions([mismatched]), []);
   });
 
-  await test('_filterCcTabSessions filters a mixed list, keeping only valid sessions', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+  await test('_filterCcTabSessions filters mixed list — drops only invalid records and prompt-hash mismatches', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const sessions = [
-      freshSession(),                                                            // keep
-      { ...freshSession(), id: null },                                           // drop (no id)
-      { ...freshSession(), turnCount: max },                                     // drop (turns)
-      { ...freshSession(), lastActiveAt: new Date(Date.now() - ttl - 1).toISOString() }, // drop (expired)
-      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                    // drop (hash mismatch)
-      freshSession(),                                                            // keep
+      freshSession(),                                                                         // keep
+      { ...freshSession(), id: null },                                                        // drop (no id)
+      { ...freshSession(), id: 'tab-no-sess', sessionId: null },                              // drop (no sessionId)
+      { ...freshSession(), id: 'tab-many-turns', sessionId: 'sess-mt', turnCount: max * 5 },   // KEEP (no turn cap)
+      { ...freshSession(), id: 'tab-old', sessionId: 'sess-old',
+        lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString() },                // KEEP (no TTL)
+      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                                 // drop (hash mismatch)
+      { ...freshSession(), id: 'tab-fresh-2', sessionId: 'sess-fresh-2' },                    // keep
     ];
     const kept = _filterCcTabSessions(sessions);
-    assert.strictEqual(kept.length, 2);
+    assert.strictEqual(kept.length, 4,
+      'Should keep fresh, very-old, many-turns, and a second fresh — drop only invalid + hash mismatch');
     for (const s of kept) {
       assert.ok(s.id && s.sessionId, 'kept sessions must have id and sessionId');
-      assert.ok(s.turnCount < max, 'kept sessions must be under the turn cap');
+      assert.notStrictEqual(s._promptHash, 'wrong-hash-12345',
+        'kept sessions must not be the prompt-hash mismatch fixture');
     }
+    const keptIds = kept.map(s => s.id).sort();
+    assert.deepStrictEqual(keptIds,
+      ['tab-1', 'tab-fresh-2', 'tab-many-turns', 'tab-old'].sort(),
+      'kept records should be the four valid fixtures');
   });
 
   // ── _getVersionCheckInterval (patches queries.getConfig) ───────────────
