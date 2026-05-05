@@ -5249,6 +5249,199 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  await test('no-op PR fix completion records attempt without resetting review state', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: {} };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7001',
+        prNumber: 7001,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop',
+        humanFeedback: {
+          pendingFix: false,
+          lastProcessedCommentDate: '2026-05-05T07:00:00.000Z',
+          feedbackContent: 'Please fix the edge case.',
+        },
+        minionsReview: { note: 'Please fix the edge case.', reviewedAt: '2026-05-05T06:00:00.000Z' },
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7001', prNumber: 7001 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: {
+            id: 'D-noop-human-1',
+            task: 'Fix PR-7001: no-op — human feedback',
+            meta: { dispatchKey: 'human-fix-demo-PR-7001' },
+          },
+          branchChange: {
+            changed: false,
+            beforeHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            afterHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: true, cause: testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK, paused: false, count: 1 });
+      assert.strictEqual(updatedPr.reviewStatus, 'changes-requested',
+        'no-op fix must not reset reviewStatus to waiting');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'no-op fix must not stamp fixedAt or trigger re-review');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, true,
+        'first no-op human-feedback fix should restore pendingFix so one retry is possible');
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].count, 1);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].paused, false);
+    } finally { restore(); }
+  });
+
+  await test('repeated no-op PR fix pauses only the unchanged automation cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: { prNoOpFixPauseAttempts: 2 } };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7002',
+        prNumber: 7002,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop-pause',
+        humanFeedback: {
+          pendingFix: true,
+          lastProcessedCommentDate: '2026-05-05T07:30:00.000Z',
+          feedbackContent: 'Still broken.',
+        },
+        minionsReview: { note: 'Review feedback still applies.', reviewedAt: '2026-05-05T06:30:00.000Z' },
+      }]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-1', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-2', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-review-1', task: 'Fix PR-7002 — review feedback', meta: { dispatchKey: 'fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      const humanRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK];
+      const reviewRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK];
+      assert.strictEqual(humanRecord.count, 2);
+      assert.strictEqual(humanRecord.paused, true,
+        'second no-op for same human-feedback evidence should pause that cause');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'paused human-feedback cause should not immediately requeue the same fix');
+      assert.strictEqual(reviewRecord.count, 1);
+      assert.strictEqual(reviewRecord.paused, false,
+        'separate review-feedback cause should not be paused by human-feedback no-ops');
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(updatedPr, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), true);
+      const withNewEvidence = {
+        ...updatedPr,
+        humanFeedback: { ...updatedPr.humanFeedback, feedbackContent: 'Still broken, plus a new failing case.' },
+      };
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(withNewEvidence, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), false,
+        'changed evidence should allow automation again without clearing other cause records');
+    } finally { restore(); }
+  });
+
+  await test('PR discovery checks paused no-op fix causes before dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function isPrNoOpFixCauseSuppressed'),
+      'engine discovery should have a shared suppression helper');
+    for (const cause of ['HUMAN_FEEDBACK', 'REVIEW_FEEDBACK', 'BUILD_FAILURE', 'MERGE_CONFLICT']) {
+      assert.ok(src.includes(`isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.${cause})`),
+        `discoverFromPrs must suppress paused no-op ${cause} automation before dispatch`);
+    }
+  });
+
+  await test('changed-branch PR fix completion preserves normal waiting re-review behavior', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      const pr = {
+        id: 'PR-7003',
+        prNumber: 7003,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/changed',
+        minionsReview: { note: 'Needs a fix.' },
+      };
+      pr._noOpFixes = {
+        [testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK]: {
+          count: 1,
+          paused: false,
+          evidenceFingerprint: testShared.prFixEvidenceFingerprint(pr, testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK),
+        },
+      };
+      testShared.safeWrite(prPath, [pr]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7003', prNumber: 7003 },
+        project,
+        'pr',
+        {
+          dispatchItem: {
+            id: 'D-changed-review-1',
+            task: 'Fix PR-7003 — review feedback',
+            meta: { dispatchKey: 'fix-demo-PR-7003' },
+          },
+          branchChange: {
+            changed: true,
+            beforeHead: 'cccccccccccccccccccccccccccccccccccccccc',
+            afterHead: 'dddddddddddddddddddddddddddddddddddddddd',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: false, cause: testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK });
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting');
+      assert.ok(updatedPr.minionsReview.fixedAt, 'changed branch should stamp fixedAt for re-review');
+      assert.strictEqual(updatedPr.minionsReview.note, 'Fixed, awaiting re-review');
+      assert.ok(!updatedPr._noOpFixes, 'successful changed-branch fix should clear stale no-op record');
+      assert.ok(!updatedPr._lastNoOpFix, 'successful changed-branch fix should clear stale no-op marker');
+    } finally { restore(); }
+  });
+
   await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
     // Regression guard: the old regex-based prose scanner produced false
     // positives on phrases like "I checked the pending PRs", "build is in

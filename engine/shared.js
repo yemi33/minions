@@ -834,6 +834,7 @@ const ENGINE_DEFAULTS = {
   autoReReviewPrs: true, // auto-dispatch review agents after a PR fix is pushed
   autoFixReviewFeedback: true, // auto-dispatch fix agents for minions review changes-requested verdicts
   autoFixHumanComments: true, // auto-dispatch fix agents for actionable human PR comments
+  prNoOpFixPauseAttempts: 2, // pause one PR automation cause after repeated no-op fixes for unchanged evidence
   completionReportRetentionDays: 90, // retain completion report sidecars beyond capped dispatch history
   completionReportMaxFiles: 5000, // hard cap for completion report sidecars during cleanup
   meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
@@ -2492,6 +2493,62 @@ const _WIN_RESERVED_NAMES = new Set([
   'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
 ]);
 
+const PR_FIX_CAUSE = {
+  HUMAN_FEEDBACK: 'human-feedback',
+  REVIEW_FEEDBACK: 'review-feedback',
+  BUILD_FAILURE: 'build-failure',
+  MERGE_CONFLICT: 'merge-conflict',
+  UNKNOWN: 'pr-fix',
+};
+
+function getPrFixAutomationCause({ dispatchKey = '', source = '', task = '' } = {}) {
+  const key = String(dispatchKey || '').toLowerCase();
+  const src = String(source || '').toLowerCase();
+  const title = String(task || '').toLowerCase();
+  if (src === 'pr-human-feedback' || key.startsWith('human-fix-') || title.includes('human feedback')) return PR_FIX_CAUSE.HUMAN_FEEDBACK;
+  if (key.startsWith('build-fix-') || title.includes('build failure')) return PR_FIX_CAUSE.BUILD_FAILURE;
+  if (key.startsWith('conflict-fix-') || title.includes('merge conflict')) return PR_FIX_CAUSE.MERGE_CONFLICT;
+  if (key.startsWith('fix-') || src === 'pr') return PR_FIX_CAUSE.REVIEW_FEEDBACK;
+  return PR_FIX_CAUSE.UNKNOWN;
+}
+
+function prFixEvidenceFingerprint(pr, cause = PR_FIX_CAUSE.UNKNOWN) {
+  const review = pr?.minionsReview || {};
+  const feedback = pr?.humanFeedback || {};
+  const evidence = { cause };
+  if (cause === PR_FIX_CAUSE.HUMAN_FEEDBACK) {
+    evidence.lastProcessedCommentDate = feedback.lastProcessedCommentDate || '';
+    evidence.feedbackContent = feedback.feedbackContent || '';
+  } else if (cause === PR_FIX_CAUSE.BUILD_FAILURE) {
+    evidence.buildStatus = pr?.buildStatus || '';
+    evidence.buildFailReason = pr?.buildFailReason || '';
+    evidence.buildErrorLog = pr?.buildErrorLog || '';
+    evidence.buildStatusDetail = pr?._buildStatusDetail || '';
+  } else if (cause === PR_FIX_CAUSE.MERGE_CONFLICT) {
+    evidence.mergeConflict = !!pr?._mergeConflict;
+    evidence.mergeStatus = pr?.mergeStatus || '';
+    evidence.mergeConflictDetail = pr?._mergeConflictDetail || '';
+  } else {
+    evidence.reviewStatus = pr?.reviewStatus || '';
+    evidence.lastReviewedAt = pr?.lastReviewedAt || '';
+    evidence.reviewedAt = review.reviewedAt || '';
+    evidence.reviewNote = review.note || pr?.reviewNote || '';
+  }
+  return crypto.createHash('sha1').update(JSON.stringify(evidence)).digest('hex').slice(0, 16);
+}
+
+function getPrNoOpFixRecord(pr, cause) {
+  if (!pr || !cause || !pr._noOpFixes || typeof pr._noOpFixes !== 'object') return null;
+  const record = pr._noOpFixes[cause];
+  return record && typeof record === 'object' ? record : null;
+}
+
+function isPrNoOpFixCausePaused(pr, cause) {
+  const record = getPrNoOpFixRecord(pr, cause);
+  if (!record?.paused) return false;
+  return record.evidenceFingerprint === prFixEvidenceFingerprint(pr, cause);
+}
+
 /**
  * Recursively purge Windows reserved-name pseudo-files (NUL, CON, PRN, AUX, etc.)
  * using the \\?\ extended path prefix that bypasses reserved-name interpretation.
@@ -2787,6 +2844,11 @@ module.exports = {
   validateProjectName,
   validateProjectPath,
   validatePid,
+  PR_FIX_CAUSE,
+  getPrFixAutomationCause,
+  prFixEvidenceFingerprint,
+  getPrNoOpFixRecord,
+  isPrNoOpFixCausePaused,
   parseSkillFrontmatter,
   sleepMs,
   killGracefully,
