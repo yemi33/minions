@@ -36625,6 +36625,63 @@ async function testAutoRecoveryAndAtomicity() {
     }
   });
 
+  await test('callLLMStreaming settles after process exit even when inherited pipes stay open', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'exit-before-close-runtime-test-' + Date.now();
+    const childCode = 'setTimeout(() => {}, 4000)';
+    const script = [
+      "const { spawn } = require('child_process');",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: ['ignore', 'inherit', 'ignore'], detached: true });`,
+      'child.unref();',
+      "process.stdout.write(JSON.stringify({ type: 'result', result: 'exit fallback done', session_id: 'exit-session', usage: {} }) + '\\n', () => process.exit(0));",
+    ].join('\n');
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: { streamConsumer: true },
+      resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),
+      buildPrompt: (prompt) => prompt,
+      buildArgs: () => ['-e', script],
+      parseStreamChunk: (line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      },
+      createStreamConsumer: (ctx) => ({
+        consume(obj) {
+          if (obj?.type !== 'result') return;
+          ctx.setText(obj.result || '');
+          ctx.setSessionId(obj.session_id || '');
+          ctx.setUsage({ durationMs: 0 });
+        },
+      }),
+      parseOutput: (raw) => {
+        for (const line of String(raw || '').trim().split('\n').reverse()) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj?.type === 'result') {
+              return { text: obj.result || '', usage: { durationMs: 0 }, sessionId: obj.session_id || null, model: null };
+            }
+          } catch {}
+        }
+        return { text: '', usage: null, sessionId: null, model: null };
+      },
+      parseError: () => ({ message: '', code: null, retriable: true }),
+    });
+    try {
+      const started = Date.now();
+      const result = await llm.callLLMStreaming('hello', '', {
+        cli: name,
+        direct: true,
+        timeout: 10000,
+      });
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.text, 'exit fallback done');
+      assert.strictEqual(result.sessionId, 'exit-session');
+      assert.ok(elapsedMs < 3000, `should resolve from exit fallback before inherited pipe closes (elapsed ${elapsedMs}ms)`);
+    } finally {
+      runtimes._registry.delete(name);
+      llm._resetBinCache();
+    }
+  });
+
   await test('callLLM handles unknown configured runtime as a config error', async () => {
     const result = await llm.callLLM('hello', '', { cli: 'definitely-not-registered-' + Date.now(), direct: true });
     assert.strictEqual(result.code, 78);
@@ -39798,6 +39855,46 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('isSystem'), 'Should have isSystem variable');
     assert.ok(ccSrc.includes('!isUser && !isSystem'),
       'isAssistant should exclude system messages');
+  });
+
+  await test('runtime stored with tab session for runtime-switch detection', () => {
+    assert.ok(dashSrc.includes('runtime: currentRuntime'),
+      'Should persist runtime field on tab sessions');
+    assert.ok(dashSrc.includes('shared.resolveCcCli(CONFIG.engine)'),
+      'Should resolve current CC runtime');
+    assert.ok(dashSrc.includes("tabEntry.runtime") && dashSrc.includes("!== currentRuntime"),
+      'Stream handler should compare persisted runtime against current');
+  });
+
+  await test('runtime mismatch sets sessionResetReason and previousRuntime', () => {
+    assert.ok(dashSrc.includes("sessionResetReason = 'runtimeChanged'"),
+      'Runtime mismatch should set sessionResetReason');
+    assert.ok(dashSrc.includes('previousRuntime = tabEntry.runtime'),
+      'Should capture previousRuntime from persisted entry');
+    assert.ok(dashSrc.includes('donePayload.sessionResetReason') && dashSrc.includes('donePayload.previousRuntime'),
+      'Done payload should surface reset reason and previous runtime');
+  });
+
+  await test('transcript carryover helper prepends previous conversation on reset', () => {
+    assert.ok(dashSrc.includes('_buildTranscriptCarryover'),
+      'Should define transcript carryover helper');
+    assert.ok(dashSrc.includes('CC_CARRYOVER_MAX_TURNS'),
+      'Should cap carryover at a constant');
+    assert.ok(dashSrc.includes('Previous conversation'),
+      'Carryover header should mark prior dialogue clearly');
+    assert.ok(dashSrc.includes('sessionReset ? _buildTranscriptCarryover'),
+      'Carryover should fire only when session resets');
+  });
+
+  await test('frontend sends transcript and renders runtime-aware reset notice', () => {
+    assert.ok(ccSrc.includes('_ccBuildTranscript'),
+      'Frontend should build a transcript helper');
+    assert.ok(ccSrc.includes('transcript: _ccBuildTranscript'),
+      'Initial stream request should include transcript');
+    assert.ok(ccSrc.includes("evt.sessionResetReason === 'runtimeChanged'"),
+      'Frontend should branch on runtimeChanged reset reason');
+    assert.ok(ccSrc.includes('CC_TRANSCRIPT_MAX_TURNS'),
+      'Frontend should cap transcript turns');
   });
 
   // ── Resource cleanup tests ───────────────────────────────────────────────

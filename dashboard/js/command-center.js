@@ -101,6 +101,26 @@ function _ccActiveTab() {
   return _ccTabs.find(function(t) { return t.id === _ccActiveTabId; }) || null;
 }
 
+// Build a plain-text transcript from a tab's stored messages — sent on every
+// initial request so the server can carry it over if the session has to reset
+// (runtime switch, system-prompt change). Last 20 user/assistant turns only;
+// system/action rows are skipped because they're UI artifacts, not dialog.
+var CC_TRANSCRIPT_MAX_TURNS = 20;
+function _ccBuildTranscript(tab) {
+  if (!tab || !Array.isArray(tab.messages) || tab.messages.length === 0) return [];
+  var out = [];
+  for (var i = 0; i < tab.messages.length; i++) {
+    var m = tab.messages[i];
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    var html = typeof m.html === 'string' ? m.html : '';
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    var text = (tmp.textContent || tmp.innerText || '').trim();
+    if (text) out.push({ role: m.role, text: text });
+  }
+  return out.slice(-CC_TRANSCRIPT_MAX_TURNS);
+}
+
 function _ccMergeStreamText(prev, incoming) {
   // `prev` is already merged-clean from prior frames (server strips actions
   // before SSE emission, and any leaked partial was sanitized by the previous
@@ -756,7 +776,15 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         terminalEventSeen = true;
         _cleanupStreamDiv();
         if (evt.sessionReset) {
-          addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
+          var resetText;
+          if (evt.sessionResetReason === 'runtimeChanged' && evt.previousRuntime && evt.currentRuntime) {
+            resetText = 'Runtime switched (' + escHtml(evt.previousRuntime) + ' → ' + escHtml(evt.currentRuntime) + ') — started a fresh session and carried over recent history.';
+          } else if (evt.sessionResetReason === 'promptChanged') {
+            resetText = 'Minions was updated — started a fresh session and carried over recent history.';
+          } else {
+            resetText = 'Minions was updated — started a fresh session with latest context.';
+          }
+          addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">' + resetText + '</div>', false, activeTabId);
         }
         var finalText = _ccMergeStreamText(streamedText, evt.text || '');
         var rendered = renderMd(finalText || streamedText || '');
@@ -824,7 +852,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     while (true) {
       var consume = await _ccConsumeStream(
         reconnectAttempts === 0
-          ? { message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }
+          ? { message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null, transcript: _ccBuildTranscript(activeTab) }
           : { tabId: activeTabId, sessionId: activeTab.sessionId || null, reconnect: true },
         reconnectAttempts > 0
       );
