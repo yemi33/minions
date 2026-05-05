@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1733 (2026-05-05)
+
+### Features
+-  dryRun resolveAgent, bounded mainBranch cache, SSE heartbeat helper
+
 ## 0.1.1732 (2026-05-05)
 
 ### Features
