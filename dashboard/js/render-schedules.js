@@ -18,7 +18,7 @@ function _cronToHuman(cron) {
   const m = parseInt(minute, 10);
   if (isNaN(h) || isNaN(m)) return cron;
 
-  const timeStr = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  const timeStr = formatLocalClock(h, m);
 
   if (dow === '*') return 'Daily at ' + timeStr;
 
@@ -332,7 +332,7 @@ function openScheduleDetail(id) {
   const s = (window._lastSchedules || []).find(x => x.id === id);
   if (!s) return;
   const humanCron = _cronToHuman(s.cron || '');
-  const lastRun = s._lastRun ? new Date(s._lastRun).toLocaleString() : 'never';
+  const lastRun = s._lastRun ? formatLocalDateTime(s._lastRun) : 'never';
   const enabledLabel = s.enabled ? '<span class="pr-badge approved">enabled</span>' : '<span class="pr-badge rejected">disabled</span>';
 
   document.getElementById('modal-title').innerHTML = escHtml(s.title || s.id) +

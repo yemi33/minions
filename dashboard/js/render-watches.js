@@ -137,9 +137,9 @@ function openWatchDetail(id) {
   var w = (window._lastWatches || []).find(function(x) { return x.id === id; });
   if (!w) return;
   var statusBadge = _WATCH_STATUS_BADGES[w.status] || escHtml(w.status || '');
-  var lastChecked = w.last_checked ? new Date(w.last_checked).toLocaleString() : 'never';
-  var lastTriggered = w.last_triggered ? new Date(w.last_triggered).toLocaleString() : 'never';
-  var createdAt = w.created_at ? new Date(w.created_at).toLocaleString() : 'unknown';
+  var lastChecked = w.last_checked ? formatLocalDateTime(w.last_checked) : 'never';
+  var lastTriggered = w.last_triggered ? formatLocalDateTime(w.last_triggered) : 'never';
+  var createdAt = w.created_at ? formatLocalDateTime(w.created_at) : 'unknown';
   var targetLabel = _WATCH_TARGET_LABELS[w.targetType] || w.targetType;
   var condLabel = _WATCH_CONDITION_LABELS[w.condition] || w.condition;
 

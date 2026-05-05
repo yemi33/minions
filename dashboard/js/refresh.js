@@ -60,7 +60,7 @@ function _processStatusUpdate(data) {
     localStorage.setItem('minions-install-id', data.installId);
   }
   // Always update cheap elements
-  document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
+  document.getElementById('ts').textContent = formatLocalTime(data.timestamp);
   const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
   document.getElementById('setup-banner').style.display = (!data.initialized && engineState !== 'stopped') ? 'block' : 'none';
   const autoEl = document.getElementById('auto-approve-badge');
