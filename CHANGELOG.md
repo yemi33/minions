@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1721 (2026-05-05)
+
+### Fixes
+-  gate PR-derived dispatch on provider polling for both ADO and GitHub
+
 ## 0.1.1720 (2026-05-04)
 
 ### Features
