@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1725 (2026-05-05)
+
+### Features
+- fix pipeline action feedback (#2078)
+- add per-cause PR automation dedupe (#2075)
+
 ## 0.1.1723 (2026-05-05)
 
 ### Other
