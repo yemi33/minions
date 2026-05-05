@@ -1598,12 +1598,11 @@ function clearPrNoOpFixAttempt(target, cause) {
   if (target.humanFeedback) delete target.humanFeedback.noOpPaused;
 }
 
-function updatePrAfterFix(pr, project, source, opts = {}, legacyDispatchId = '') {
-
+function updatePrAfterFix(pr, project, source, options = {}, legacyDispatchId = '') {
   if (!pr?.id) return;
-  const options = opts && typeof opts === 'object' && !Array.isArray(opts)
-    ? opts
-    : { automationCauseKey: opts, dispatchId: legacyDispatchId };
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    options = { automationCauseKey: options, dispatchId: legacyDispatchId };
+  }
   const explicitlyChangedBranch = options.branchChanged !== false;
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   const automationCauseKey = options.automationCauseKey || options.dispatchItem?.meta?.automationCauseKey || '';
