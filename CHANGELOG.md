@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1735 (2026-05-05)
+
+### Other
+- chore(dashboard): unref top-level setIntervals for clean event-loop exit
+
 ## 0.1.1734 (2026-05-05)
 
 ### Fixes
