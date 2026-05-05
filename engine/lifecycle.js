@@ -1431,7 +1431,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 }
 
-function updatePrAfterFix(pr, project, source) {
+function updatePrAfterFix(pr, project, source, automationCauseKey = '', dispatchId = '') {
 
   if (!pr?.id) return;
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
@@ -1448,6 +1448,14 @@ function updatePrAfterFix(pr, project, source) {
     } else {
       target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
       log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+    }
+    if (automationCauseKey) {
+      shared.markPrAutomationCause(target, automationCauseKey, {
+        source,
+        dispatchId: dispatchId || null,
+        status: 'handled',
+        handledAt: ts(),
+      });
     }
     return prs;
   }, { defaultValue: [] });
@@ -2762,7 +2770,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     log('warn', `Skipping PR review metadata update for ${meta?.pr?.id || meta?.pr?.url || '(unknown PR)'} because review dispatch ${dispatchItem.id} did not complete cleanly`);
   }
   if (type === WORK_TYPE.FIX && effectiveSuccess) {
-    updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+    updatePrAfterFix(meta?.pr, meta?.project, meta?.source, meta?.automationCauseKey, dispatchItem?.id);
     // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
     // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.
     // Use the PR's prdItems to propagate done status when the original work item is done.

@@ -9243,13 +9243,12 @@ async function testPrReviewFixCycle() {
       'updatePrAfterFix should reset reviewStatus to waiting for re-review');
   });
 
-  await test('Human feedback cooldown key uses PR ID only (no timestamp)', () => {
+  await test('Human feedback cooldown base key uses PR ID before per-cause suffix', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // The key should NOT include lastProcessedCommentDate
-    assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
-      'Human fix key should not include timestamp (prevents cooldown bypass)');
-    assert.ok(src.includes("const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
-      'Human fix key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixBaseKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
+      'Human fix base key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);"),
+      'Human fix dispatch key should add a normalized per-comment cause suffix');
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
@@ -15346,6 +15345,93 @@ async function testDiscoverFromPrs() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
 
+  async function withPrCauseDiscovery(pr, opts, assertion) {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const previousGithubModule = require.cache[githubPath];
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+        '../engine/github',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: {
+          pollPrStatus: async () => {},
+          pollPrHumanComments: async () => {},
+          reconcilePrs: async () => {},
+          checkLiveReviewStatus: async () => opts?.liveReview || 'changes-requested',
+          checkLiveBuildAndConflict: async () => opts?.liveBuild || ({ buildStatus: 'failing', mergeConflict: true }),
+          isGhThrottled: () => false,
+        },
+      };
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = opts?.project || {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = opts?.config || {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: {
+          ghPollEnabled: true,
+          evalLoop: true,
+          autoFixReviewFeedback: true,
+          autoFixHumanComments: true,
+          autoFixBuilds: true,
+          autoFixConflicts: true,
+        },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), opts?.dispatch || { pending: [], active: [], completed: [] });
+      freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      await assertion({ discovered, freshShared, freshQueries, project, config });
+    } finally {
+      restore();
+      if (previousGithubModule) require.cache[githubPath] = previousGithubModule;
+      else delete require.cache[githubPath];
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  }
+
   await test('discoverFromPrs skips non-active PRs', () => {
     assert.ok(src.includes("pr.status !== 'active'"),
       'Should skip PRs not in active status');
@@ -15365,6 +15451,127 @@ async function testDiscoverFromPrs() {
   await test('discoverFromPrs handles human feedback pendingFix', () => {
     assert.ok(src.includes('pendingFix') || src.includes('humanFeedback'),
       'Should discover fix work when human feedback is pending');
+  });
+
+  await test('discoverFromPrs does not redispatch handled review-feedback cause', async () => {
+    const causeKey = 'review-feedback:review-dispatch-1';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2050',
+      prNumber: 2050,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Same review feedback',
+      branch: 'feat/pr-2050',
+      prdItems: ['W-2050'],
+      minionsReview: { dispatchId: 'review-dispatch-1', note: 'Fix the boundary.' },
+      _automationFixCauses: { [causeKey]: { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2050',
+    }, {}, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'handled review-feedback cause must not dispatch another fix');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed review-feedback cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2051',
+      prNumber: 2051,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Changed review feedback',
+      branch: 'feat/pr-2051',
+      prdItems: ['W-2051'],
+      minionsReview: { dispatchId: 'new-review', note: 'A different review finding.' },
+      _automationFixCauses: { 'review-feedback:old-review': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2051',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'review-feedback:new-review');
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('fix-demo-PR-2051-'),
+        'dispatch key should stay PR-scoped while including a cause-specific suffix');
+    });
+  });
+
+  await test('discoverFromPrs does not redispatch pending human-comment cause', async () => {
+    const causeKey = 'human-comment:comment-77';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2052',
+      prNumber: 2052,
+      status: 'active',
+      reviewStatus: 'waiting',
+      agent: 'dallas',
+      title: 'Same human comment',
+      branch: 'feat/pr-2052',
+      prdItems: ['W-2052'],
+      humanFeedback: {
+        pendingFix: true,
+        lastProcessedCommentKey: 'comment-77',
+        feedbackContent: 'Please address this comment.',
+      },
+      url: 'https://github.com/octo/repo/pull/2052',
+    }, {
+      dispatch: {
+        pending: [{
+          id: 'pending-human-fix',
+          type: 'fix',
+          agent: 'dallas',
+          meta: {
+            dispatchKey: 'human-fix-demo-PR-2052-human-comment-comment-77',
+            automationCauseKey: causeKey,
+            project: { name: 'demo' },
+            pr: { id: 'github:octo/repo#2052', prNumber: 2052, url: 'https://github.com/octo/repo/pull/2052' },
+          },
+        }],
+        active: [],
+        completed: [],
+      },
+    }, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'pending same-comment fix must block duplicate dispatch');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed build failure signature', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2053',
+      prNumber: 2053,
+      status: 'active',
+      reviewStatus: 'waiting',
+      buildStatus: 'failing',
+      buildFailReason: 'CI',
+      buildFailureSignature: 'new-signature',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed build failure',
+      branch: 'feat/pr-2053',
+      prdItems: ['W-2053'],
+      _automationFixCauses: { 'build:CI:head-1:old-signature': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2053',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'build:CI:head-1:new-signature');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed merge-conflict base cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2054',
+      prNumber: 2054,
+      status: 'active',
+      reviewStatus: 'waiting',
+      _mergeConflict: true,
+      baseSha: 'base-2',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed conflict base',
+      branch: 'feat/pr-2054',
+      prdItems: ['W-2054'],
+      _automationFixCauses: { 'merge-conflict:base-1:head-1': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2054',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'merge-conflict:base-2:head-1');
+    });
   });
 
   await test('discoverFromPrs dispatches new human feedback even after build-fix escalation (#1907)', async () => {
@@ -15437,7 +15644,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh reviewer comments must dispatch despite buildFixEscalated');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1907');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1907-'));
       assert.ok(discovered[0].prompt.includes('Please address this new review finding.'),
         'human-feedback fix prompt must include the fresh reviewer comment');
     } finally {
@@ -15542,7 +15750,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh comments should create one human-feedback fix, not a stale re-review');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1908');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1908-'));
       assert.ok(!String(discovered[0].meta?.dispatchKey).startsWith('rereview-'),
         'pending human feedback must not be hidden behind a stale-vote re-review dispatch');
     } finally {
@@ -19078,6 +19287,29 @@ async function testLifecycleUncoveredFns() {
         'pr-human-feedback source must use the human-feedback specific note');
       assert.strictEqual(after[0].humanFeedback.pendingFix, false,
         'pr-human-feedback fixes must clear humanFeedback.pendingFix');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: marks automation cause handled when provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-cause', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14,
+          reviewStatus: 'changes-requested', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14 },
+        project, 'pr', 'review-feedback:review-14', 'dispatch-14');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].status, 'handled');
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].dispatchId, 'dispatch-14');
     } finally { restore(); }
   });
 
