@@ -8412,24 +8412,27 @@ async function testGithubHelpers() {
       const testDir = process.env.MINIONS_TEST_DIR;
       const binDir = path.join(testDir, 'bin');
       fs.mkdirSync(binDir, { recursive: true });
-      const fakeGh = path.join(binDir, 'gh');
-      fs.writeFileSync(fakeGh, `#!/bin/sh
-case "$2" in
-  repos/octo/demo)
-    printf '%s' '{"name":"demo"}'
-    ;;
-  repos/octo/demo/issues/208/comments)
-    printf '%s' '[{"id":1,"created_at":"2026-05-05T08:01:00Z","updated_at":"2026-05-05T08:01:00Z","body":"## Firebase App Distribution\\n\\nAndroid preview uploaded. View this release in Firebase.","user":{"login":"github-actions[bot]","type":"Bot"}},{"id":2,"created_at":"2026-05-05T08:02:00Z","updated_at":"2026-05-05T08:02:00Z","body":"Minions triage: Appetize preview is informational; no code changes needed.","user":{"login":"yemi33","type":"User"}}]'
-    ;;
-  repos/octo/demo/pulls/208/comments)
-    printf '%s' '[]'
-    ;;
-  *)
-    printf '%s' '[]'
-    ;;
-esac
+      // Cross-platform fake gh: a Node.js dispatcher invoked via a shell shim
+      // on Unix and a .cmd shim on Windows. The previous "#!/bin/sh" fake
+      // only ran on POSIX, so this test was Windows-broken.
+      const ghJs = path.join(binDir, 'gh-fake.js');
+      fs.writeFileSync(ghJs, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const endpoint = args[1] || '';
+const responses = {
+  'repos/octo/demo': '{"name":"demo"}',
+  'repos/octo/demo/issues/208/comments': '[{"id":1,"created_at":"2026-05-05T08:01:00Z","updated_at":"2026-05-05T08:01:00Z","body":"## Firebase App Distribution\\\\n\\\\nAndroid preview uploaded. View this release in Firebase.","user":{"login":"github-actions[bot]","type":"Bot"}},{"id":2,"created_at":"2026-05-05T08:02:00Z","updated_at":"2026-05-05T08:02:00Z","body":"Minions triage: Appetize preview is informational; no code changes needed.","user":{"login":"yemi33","type":"User"}}]',
+  'repos/octo/demo/pulls/208/comments': '[]',
+};
+process.stdout.write(Object.prototype.hasOwnProperty.call(responses, endpoint) ? responses[endpoint] : '[]');
 `);
-      fs.chmodSync(fakeGh, 0o755);
+      if (process.platform === 'win32') {
+        fs.writeFileSync(path.join(binDir, 'gh.cmd'), `@echo off\r\nnode "${ghJs.replace(/\\/g, '\\\\')}" %*\r\n`);
+      } else {
+        const ghShim = path.join(binDir, 'gh');
+        fs.writeFileSync(ghShim, `#!/bin/sh\nexec node "${ghJs}" "$@"\n`);
+        fs.chmodSync(ghShim, 0o755);
+      }
       process.env.PATH = `${binDir}${path.delimiter}${oldPath || ''}`;
 
       const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
