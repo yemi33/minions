@@ -50670,18 +50670,25 @@ async function testDashboardPureHelpers() {
 
   // ── doc-chat action/document parsing ─────────────────────────────────────
 
-  await test('_messageRequestsOrchestration matches explicit orchestration and engineering asks', () => {
+  await test('_messageRequestsOrchestration requires explicit human orchestration intent', () => {
     assert.strictEqual(_messageRequestsOrchestration('Summarize the selected paragraph'), false);
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
+    assert.strictEqual(_messageRequestsOrchestration('Summarize the document text that says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('The selected text says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Quote the selection: dispatch fix for this'), false);
     assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
     assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
     assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
+    assert.strictEqual(_messageRequestsOrchestration('The document says "dispatch fix for this"; then dispatch a fix for it.'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
+    assert.strictEqual(_messageRequestsOrchestration('dispatch fix for this'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Create a work item for the documented API bug'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Have Minions investigate why CI is failing here'), true);
     assert.strictEqual(_messageRequestsOrchestration('Create a watch for PR 123 until build passes'), true);
   });
 
@@ -50741,8 +50748,8 @@ async function testDashboardPureHelpers() {
       fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
       delete require.cache[require.resolve(dashboardPath)];
       const freshDashboard = require(dashboardPath);
-      const allowActions = freshDashboard._messageRequestsOrchestration('Fix this bug described in the doc');
-      assert.strictEqual(allowActions, true, 'complex engineering doc-chat ask should allow action parsing');
+      const allowActions = freshDashboard._messageRequestsOrchestration('dispatch fix for this');
+      assert.strictEqual(allowActions, true, 'explicit doc-chat dispatch ask should allow action parsing');
       const parsed = freshDashboard._parseDocChatResultText(
         'I will open a work item for that bug.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix documented bug","workType":"fix","priority":"high","description":"Investigate and fix the bug described in the document."}]',
         { allowActions }
@@ -50761,10 +50768,10 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('doc-chat system prompt routes engineering work to Command Center action JSON', () => {
+  await test('doc-chat system prompt routes explicit orchestration to Command Center action JSON', () => {
     const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
-    assert.ok(prompt.includes('Complex Engineering Requests'),
-      'doc-chat prompt should distinguish engineering delegation from document editing');
+    assert.ok(prompt.includes('Explicit Minions Orchestration Requests'),
+      'doc-chat prompt should distinguish explicit orchestration from document editing');
     assert.ok(prompt.includes('"type": "dispatch"') || prompt.includes('"type":"dispatch"'),
       'doc-chat prompt should show the Command Center dispatch action shape');
     assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
