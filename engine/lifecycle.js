@@ -1431,6 +1431,25 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary, 
   }
 }
 
+function getHumanFeedbackAutomationCauseKey(pr) {
+  const feedback = pr?.humanFeedback;
+  if (!feedback || typeof feedback !== 'object') return '';
+  const commentRef = feedback.lastProcessedCommentKey
+    || feedback.lastProcessedCommentId
+    || feedback.commentId
+    || feedback.lastProcessedCommentDate
+    || feedback.feedbackContent
+    || '';
+  return commentRef ? `human-comment:${shared.safeSlugComponent(commentRef, 80)}` : '';
+}
+
+function shouldClearHumanFeedbackPendingFix(target, completedPr, automationCauseKey) {
+  if (!target?.humanFeedback?.pendingFix) return true;
+  const currentCauseKey = getHumanFeedbackAutomationCauseKey(target);
+  const completedCauseKey = automationCauseKey || getHumanFeedbackAutomationCauseKey(completedPr);
+  return !currentCauseKey || !completedCauseKey || currentCauseKey === completedCauseKey;
+}
+
 function updatePrAfterFix(pr, project, source, automationCauseKey = '', dispatchId = '') {
 
   if (!pr?.id) return;
@@ -1442,9 +1461,14 @@ function updatePrAfterFix(pr, project, source, automationCauseKey = '', dispatch
     // Never downgrade from approved — fix was dispatched but PR is already approved
     if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
     if (source === 'pr-human-feedback') {
-      if (target.humanFeedback) target.humanFeedback.pendingFix = false;
+      const clearPendingFix = shouldClearHumanFeedbackPendingFix(target, pr, automationCauseKey);
+      if (target.humanFeedback && clearPendingFix) target.humanFeedback.pendingFix = false;
       target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
-      log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+      if (clearPendingFix) {
+        log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+      } else {
+        log('info', `Updated ${pr.id} → preserved newer humanFeedback.pendingFix, reset to waiting for re-review`);
+      }
     } else {
       target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
       log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);

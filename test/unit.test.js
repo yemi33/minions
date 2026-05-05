@@ -19290,6 +19290,42 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
+  await test('updatePrAfterFix: stale human-feedback completion preserves newer pendingFix cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-human-race', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          reviewStatus: 'waiting', status: 'active',
+          humanFeedback: {
+            pendingFix: true,
+            lastProcessedCommentKey: 'new-comment',
+            feedbackContent: 'Newer feedback still needs a fix.',
+          } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          humanFeedback: {
+            lastProcessedCommentKey: 'old-comment',
+            feedbackContent: 'Older feedback already fixed.',
+          } },
+        project, 'pr-human-feedback', 'human-comment:old-comment', 'old-dispatch');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].humanFeedback.pendingFix, true,
+        'old human-feedback fix completion must not clear a newer pending comment cause');
+      assert.strictEqual(after[0].humanFeedback.lastProcessedCommentKey, 'new-comment',
+        'newer comment cause metadata must be preserved');
+      assert.strictEqual(after[0]._automationFixCauses['human-comment:old-comment'].status, 'handled',
+        'the completed old comment cause should still be marked handled');
+    } finally { restore(); }
+  });
+
   await test('updatePrAfterFix: marks automation cause handled when provided', () => {
     const restore = createTestMinionsDir();
     try {
