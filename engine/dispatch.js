@@ -24,18 +24,35 @@ function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); ret
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 
 /**
- * Sweep pending + active dispatch entries and move any oversized prompts to
- * sidecar files. Keeps dispatch.json from bloating to hundreds of MB when
- * fix-type prompts inline PR diffs / build logs / coalesced feedback (#1167).
- * Safe to call on every mutation: small prompts are untouched.
+ * Walk pending + active dispatch entries and snapshot {id → prompt} for items
+ * that have a string prompt. Used to diff before/after a mutation so we only
+ * re-check items the mutator actually touched (#1167).
  */
-function _sidecarOversizedPrompts(dispatch) {
-  const threshold = ENGINE_DEFAULTS.maxDispatchPromptBytes;
-  const lists = [dispatch.pending, dispatch.active];
-  for (const list of lists) {
+function _snapshotPrompts(dispatch) {
+  const snap = new Map();
+  for (const list of [dispatch.pending, dispatch.active]) {
     if (!Array.isArray(list)) continue;
     for (const item of list) {
-      if (item && typeof item.prompt === 'string') sidecarDispatchPrompt(item, threshold);
+      if (item && item.id && typeof item.prompt === 'string') snap.set(item.id, item.prompt);
+    }
+  }
+  return snap;
+}
+
+/**
+ * Sidecar oversized prompts only for items the mutator added or modified.
+ * Keeps dispatch.json safe from bloat (#1167) without paying O(n) on every
+ * unrelated mutation (e.g. status flips, completion-marking).
+ */
+function _sidecarChangedPrompts(dispatch, prevSnap) {
+  const threshold = ENGINE_DEFAULTS.maxDispatchPromptBytes;
+  for (const list of [dispatch.pending, dispatch.active]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item.prompt !== 'string') continue;
+      const prev = item.id ? prevSnap.get(item.id) : undefined;
+      if (prev === item.prompt) continue; // untouched — already validated on insert
+      sidecarDispatchPrompt(item, threshold);
     }
   }
 }
@@ -46,10 +63,11 @@ function mutateDispatch(mutator) {
     dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
     dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
     dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+    const prevSnap = _snapshotPrompts(dispatch);
     const next = mutator(dispatch) ?? dispatch;
-    // Prompt-size guard: runs on every write so a single bad item cannot bloat
-    // dispatch.json. Sidecars live in engine/contexts/<id>.md.
-    _sidecarOversizedPrompts(next);
+    // Prompt-size guard: only scan items whose prompt changed (or new items),
+    // so a 100-item status-flip doesn't re-byte-count every prompt.
+    _sidecarChangedPrompts(next, prevSnap);
     return next;
   }, { defaultValue: defaultDispatch });
   // Invalidate the read cache so next getDispatch() sees fresh data

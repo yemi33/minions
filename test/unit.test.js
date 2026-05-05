@@ -7053,6 +7053,186 @@ async function testLifecycleHelpers() {
   });
 }
 
+async function testLifecyclePureParsers() {
+  console.log('\n── lifecycle.js — Pure parsers ──');
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+
+  await test('parseReviewVerdict parses approve variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: APPROVE'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: approve'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('Review posted.\nVERDICT: **APPROVE**'), 'approved');
+  });
+
+  await test('parseReviewVerdict parses request-changes separator variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST_CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST-CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: **request_changes**'), 'changes-requested');
+  });
+
+  await test('parseReviewVerdict returns null without a verdict marker', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('Reviewed the PR and left comments.'), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(null), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(''), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(undefined), null);
+  });
+
+  await test('isReviewBailout detects idempotent bailout phrases case-insensitively', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('I will bail out and not duplicate the review.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('BAILING OUT because the review exists.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('A minions review was already posted.'), true);
+  });
+
+  await test('isReviewBailout rejects verdict-only and non-string output', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('VERDICT: APPROVE'), false);
+    assert.strictEqual(lifecycle.isReviewBailout(null), false);
+    assert.strictEqual(lifecycle.isReviewBailout(undefined), false);
+    assert.strictEqual(lifecycle.isReviewBailout(42), false);
+  });
+
+  await test('parseCompletionFieldSummary parses allowed multi-field summaries and strips unknown fields', () => {
+    const summary = [
+      'status: success',
+      'summary: Implemented lifecycle parser coverage',
+      'tests: npm test',
+      'unknown: ignored',
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Implemented lifecycle parser coverage',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary rejects status-only success summaries', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary('status: success'), null);
+  });
+
+  await test('parseCompletionFieldSummary accepts status-only failure summaries', () => {
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: failed'), { status: 'failed' });
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: error'), { status: 'error' });
+  });
+
+  await test('parseCompletionFieldSummary strips quotes and accepts bullet prefixes', () => {
+    const summary = [
+      '- status: `success`',
+      '* summary: "Parser tests added"',
+      "- tests: 'npm test'",
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Parser tests added',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary returns null for empty or non-string input', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(null), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(''), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(undefined), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary({ status: 'success' }), null);
+  });
+
+  await test('parseCompletionReportFile reads valid report files and tags source metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'completions', 'D-valid-report.json');
+      sharedInner.safeWrite(reportPath, { status: 'success', summary: 'Done' });
+
+      const result = lifecycleInner.parseCompletionReportFile({
+        id: 'D-valid-report',
+        meta: { completionReportPath: reportPath },
+      });
+
+      assert.deepStrictEqual(result, {
+        status: 'success',
+        summary: 'Done',
+        _source: 'report-file',
+        _path: reportPath,
+      });
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for missing report files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const missingPath = sharedInner.dispatchCompletionReportPath('D-missing-report');
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-missing-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile(
+        { id: 'D-missing-report', meta: { completionReportPath: missingPath } },
+        { warnIfMissing: true },
+      ), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for malformed or non-object reports', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const malformedPath = sharedInner.dispatchCompletionReportPath('D-malformed-report');
+      const arrayPath = sharedInner.dispatchCompletionReportPath('D-array-report');
+      fs.mkdirSync(path.dirname(malformedPath), { recursive: true });
+      fs.writeFileSync(malformedPath, '{not json');
+      sharedInner.safeWrite(arrayPath, ['status', 'success']);
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-malformed-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-array-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null when status and outcome are missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-no-status-report');
+      sharedInner.safeWrite(reportPath, { summary: 'No status here' });
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-no-status-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile promotes outcome to status', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-outcome-report');
+      sharedInner.safeWrite(reportPath, { outcome: 'success', summary: 'Outcome only' });
+
+      const result = lifecycleInner.parseCompletionReportFile({ id: 'D-outcome-report' });
+
+      assert.strictEqual(result.status, 'success');
+      assert.strictEqual(result.outcome, 'success');
+      assert.strictEqual(result.summary, 'Outcome only');
+      assert.strictEqual(result._source, 'report-file');
+      assert.strictEqual(result._path, reportPath);
+    } finally { restore(); }
+  });
+
+  await test('isItemCompleted returns true for canonical and legacy done statuses', () => {
+    for (const status of shared.DONE_STATUSES) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), true, `expected ${status} to count as completed`);
+    }
+  });
+
+  await test('isItemCompleted returns false for non-completed or missing statuses', () => {
+    for (const status of [shared.WI_STATUS.PENDING, shared.WI_STATUS.DISPATCHED, shared.WI_STATUS.FAILED]) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), false, `expected ${status} to be incomplete`);
+    }
+    assert.strictEqual(lifecycle.isItemCompleted(null), false);
+    assert.strictEqual(lifecycle.isItemCompleted(undefined), false);
+    assert.strictEqual(lifecycle.isItemCompleted({}), false);
+  });
+}
+
 async function testSyncPrdItemStatus() {
   console.log('\n── lifecycle.js — PRD Sync ──');
 
@@ -9350,6 +9530,7 @@ async function testLlmModule() {
       '_buildSpawnAgentFlags',
       '_createStreamAccumulator',
       '_resetBinCache',
+      '_resetMetricsBufferForTest',
       '_resolveBin',
       '_resolveModelFor',
       '_resolveModelForRuntime',
@@ -9357,6 +9538,7 @@ async function testLlmModule() {
       '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
+      'flushMetricsBuffer',
       'trackEngineUsage',
     ]);
   });
@@ -9477,6 +9659,7 @@ async function testLlmModule() {
         costUsd: 0.05, inputTokens: 1000, outputTokens: 500,
         cacheRead: 200, cacheCreation: 100, durationMs: 3000,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['agent-dispatch'];
       assert.strictEqual(cat.calls, 1);
@@ -9498,6 +9681,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreation: 5, durationMs: 1000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.02, inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreation: 10, durationMs: 2000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.04, inputTokens: 400, outputTokens: 100, cacheRead: 30, cacheCreation: 15, durationMs: 1500 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['command-center'];
       assert.strictEqual(cat.calls, 3);
@@ -9518,6 +9702,7 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       // Only costUsd present — all other fields missing
       freshLlm.trackEngineUsage('doc-chat', { costUsd: 0.001 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['doc-chat'];
       assert.strictEqual(cat.calls, 1);
@@ -9540,6 +9725,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.01, durationMs: 500 });
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.02 }); // no duration
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.03, durationMs: 750 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['consolidation'];
       assert.strictEqual(cat.calls, 3);
@@ -9556,6 +9742,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('agent-dispatch', {
         costUsd: 0.5, inputTokens: 5000, outputTokens: 1000, cacheRead: 200,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       assert.ok(metrics._daily, '_daily bucket should exist');
@@ -9577,6 +9764,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.1, inputTokens: 100, outputTokens: 50, cacheRead: 10 });
       freshLlm.trackEngineUsage('consolidation',  { costUsd: 0.2, inputTokens: 200, outputTokens: 80, cacheRead: 20 });
       freshLlm.trackEngineUsage('doc-chat',       { costUsd: 0.3, inputTokens: 300, outputTokens: 90, cacheRead: 30 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       const daily = metrics._daily[today];
@@ -9622,7 +9810,8 @@ async function testLlmModule() {
       fs.unlinkSync(metricsPath);
       assert.ok(!fs.existsSync(metricsPath), 'precondition: file absent');
       freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 50 });
-      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first call');
+      freshLlm.flushMetricsBuffer();
+      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first flush');
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(metrics._engine['agent-dispatch'].calls, 1);
       assert.strictEqual(metrics._engine['agent-dispatch'].inputTokens, 50);
@@ -9643,6 +9832,7 @@ async function testLlmModule() {
       };
       fs.writeFileSync(metricsPath, JSON.stringify(seed));
       freshLlm.trackEngineUsage('new-cat', { costUsd: 0.01, inputTokens: 100 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(metrics._engine['other-cat'], seed._engine['other-cat'],
         'unrelated category must be preserved byte-for-byte');
@@ -9660,9 +9850,10 @@ async function testLlmModule() {
       for (let i = 0; i < 25; i++) {
         freshLlm.trackEngineUsage('stress-cat', { costUsd: 0.001, inputTokens: 10, outputTokens: 4, cacheRead: 1, cacheCreation: 0 });
       }
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['stress-cat'];
-      assert.strictEqual(cat.calls, 25, 'every mutateJsonFileLocked call must land — no dropped writes');
+      assert.strictEqual(cat.calls, 25, 'every buffered call must land in the flush — no dropped counters');
       assert.strictEqual(cat.inputTokens, 250);
       assert.strictEqual(cat.outputTokens, 100);
       assert.strictEqual(cat.cacheRead, 25);
@@ -9677,12 +9868,13 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       fs.unlinkSync(metricsPath);
       fs.mkdirSync(metricsPath); // force any write attempt to fail
-      // Must not throw — trackEngineUsage catches and logs internally
+      // Must not throw — flushMetricsBuffer catches and logs internally
       const origErr = console.error;
       let caught = false;
       console.error = () => { caught = true; };
       try {
         freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 10 });
+        freshLlm.flushMetricsBuffer();
       } finally {
         console.error = origErr;
       }
@@ -27791,6 +27983,7 @@ async function main() {
 
     // lifecycle.js tests
     await testLifecycleHelpers();
+    await testLifecyclePureParsers();
     await testSyncPrdItemStatus();
 
     // consolidation.js tests
@@ -30921,7 +31114,9 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have unhandledRejection handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
   });
 
@@ -30932,8 +31127,23 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have uncaughtException handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
+  });
+
+  await test('cli.js: drainBuffers helper drains both metrics and logs in a single shutdown step', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const idx = src.indexOf('function drainBuffers');
+    assert.ok(idx > 0, 'cli.js should define a drainBuffers helper for shutdown paths');
+    const block = src.slice(idx, idx + 600);
+    assert.ok(block.includes('flushMetricsBuffer'),
+      'drainBuffers must call llm.flushMetricsBuffer so pending engine-usage deltas survive shutdown');
+    assert.ok(block.includes('flushLogs'),
+      'drainBuffers must call shared.flushLogs so buffered log entries survive shutdown');
+    assert.ok(block.includes('console.error'),
+      'drainBuffers must console.error on flush failure so a refactor mistake (typo, missing export) is not silent');
   });
 
   // Bug #37: consolidation.js word length cap for ReDoS prevention
@@ -36473,6 +36683,63 @@ async function testAutoRecoveryAndAtomicity() {
     }
   });
 
+  await test('callLLMStreaming settles after process exit even when inherited pipes stay open', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'exit-before-close-runtime-test-' + Date.now();
+    const childCode = 'setTimeout(() => {}, 4000)';
+    const script = [
+      "const { spawn } = require('child_process');",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: ['ignore', 'inherit', 'ignore'], detached: true });`,
+      'child.unref();',
+      "process.stdout.write(JSON.stringify({ type: 'result', result: 'exit fallback done', session_id: 'exit-session', usage: {} }) + '\\n', () => process.exit(0));",
+    ].join('\n');
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: { streamConsumer: true },
+      resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),
+      buildPrompt: (prompt) => prompt,
+      buildArgs: () => ['-e', script],
+      parseStreamChunk: (line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      },
+      createStreamConsumer: (ctx) => ({
+        consume(obj) {
+          if (obj?.type !== 'result') return;
+          ctx.setText(obj.result || '');
+          ctx.setSessionId(obj.session_id || '');
+          ctx.setUsage({ durationMs: 0 });
+        },
+      }),
+      parseOutput: (raw) => {
+        for (const line of String(raw || '').trim().split('\n').reverse()) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj?.type === 'result') {
+              return { text: obj.result || '', usage: { durationMs: 0 }, sessionId: obj.session_id || null, model: null };
+            }
+          } catch {}
+        }
+        return { text: '', usage: null, sessionId: null, model: null };
+      },
+      parseError: () => ({ message: '', code: null, retriable: true }),
+    });
+    try {
+      const started = Date.now();
+      const result = await llm.callLLMStreaming('hello', '', {
+        cli: name,
+        direct: true,
+        timeout: 10000,
+      });
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.text, 'exit fallback done');
+      assert.strictEqual(result.sessionId, 'exit-session');
+      assert.ok(elapsedMs < 3000, `should resolve from exit fallback before inherited pipe closes (elapsed ${elapsedMs}ms)`);
+    } finally {
+      runtimes._registry.delete(name);
+      llm._resetBinCache();
+    }
+  });
+
   await test('callLLM handles unknown configured runtime as a config error', async () => {
     const result = await llm.callLLM('hello', '', { cli: 'definitely-not-registered-' + Date.now(), direct: true });
     assert.strictEqual(result.code, 78);
@@ -39646,6 +39913,46 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('isSystem'), 'Should have isSystem variable');
     assert.ok(ccSrc.includes('!isUser && !isSystem'),
       'isAssistant should exclude system messages');
+  });
+
+  await test('runtime stored with tab session for runtime-switch detection', () => {
+    assert.ok(dashSrc.includes('runtime: currentRuntime'),
+      'Should persist runtime field on tab sessions');
+    assert.ok(dashSrc.includes('shared.resolveCcCli(CONFIG.engine)'),
+      'Should resolve current CC runtime');
+    assert.ok(dashSrc.includes("tabEntry.runtime") && dashSrc.includes("!== currentRuntime"),
+      'Stream handler should compare persisted runtime against current');
+  });
+
+  await test('runtime mismatch sets sessionResetReason and previousRuntime', () => {
+    assert.ok(dashSrc.includes("sessionResetReason = 'runtimeChanged'"),
+      'Runtime mismatch should set sessionResetReason');
+    assert.ok(dashSrc.includes('previousRuntime = tabEntry.runtime'),
+      'Should capture previousRuntime from persisted entry');
+    assert.ok(dashSrc.includes('donePayload.sessionResetReason') && dashSrc.includes('donePayload.previousRuntime'),
+      'Done payload should surface reset reason and previous runtime');
+  });
+
+  await test('transcript carryover helper prepends previous conversation on reset', () => {
+    assert.ok(dashSrc.includes('_buildTranscriptCarryover'),
+      'Should define transcript carryover helper');
+    assert.ok(dashSrc.includes('CC_CARRYOVER_MAX_TURNS'),
+      'Should cap carryover at a constant');
+    assert.ok(dashSrc.includes('Previous conversation'),
+      'Carryover header should mark prior dialogue clearly');
+    assert.ok(dashSrc.includes('sessionReset ? _buildTranscriptCarryover'),
+      'Carryover should fire only when session resets');
+  });
+
+  await test('frontend sends transcript and renders runtime-aware reset notice', () => {
+    assert.ok(ccSrc.includes('_ccBuildTranscript'),
+      'Frontend should build a transcript helper');
+    assert.ok(ccSrc.includes('transcript: _ccBuildTranscript'),
+      'Initial stream request should include transcript');
+    assert.ok(ccSrc.includes("evt.sessionResetReason === 'runtimeChanged'"),
+      'Frontend should branch on runtimeChanged reset reason');
+    assert.ok(ccSrc.includes('CC_TRANSCRIPT_MAX_TURNS'),
+      'Frontend should cap transcript turns');
   });
 
   // ── Resource cleanup tests ───────────────────────────────────────────────

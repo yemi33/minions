@@ -4071,7 +4071,7 @@ async function tickInner() {
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    safe('runCleanup', () => runCleanup(config));
+    try { await runCleanup(config); } catch (e) { log('warn', `runCleanup: ${e.message}`); }
   }
 
   // 2.55. Check persistent watches (3 tick-equivalents, default ~3 minutes)

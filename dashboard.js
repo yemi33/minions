@@ -1122,6 +1122,28 @@ function _readCcTabSessions({ prune = true } = {}) {
   return sessions;
 }
 
+const CC_CARRYOVER_MAX_TURNS = 20;
+const CC_CARRYOVER_PER_MSG_CHARS = 2000;
+
+function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
+  if (!Array.isArray(transcript) || transcript.length === 0) return '';
+  const filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  if (filtered.length === 0) return '';
+  const recent = filtered.slice(-CC_CARRYOVER_MAX_TURNS);
+  const truncated = filtered.length > recent.length;
+  const header = previousRuntime
+    ? `--- Previous conversation (carried over from ${previousRuntime} session) ---`
+    : `--- Previous conversation (carried over) ---`;
+  const lines = recent.map(m => {
+    const who = m.role === 'user' ? 'User' : 'Assistant';
+    let text = m.text.trim();
+    if (text.length > CC_CARRYOVER_PER_MSG_CHARS) text = text.slice(0, CC_CARRYOVER_PER_MSG_CHARS) + '… [truncated]';
+    return `${who}: ${text}`;
+  });
+  const truncationNote = truncated ? `[earlier messages truncated — showing last ${recent.length} of ${filtered.length}]\n\n` : '';
+  return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
+}
+
 // Load persisted CC session on startup
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
@@ -5557,7 +5579,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Session management — per-tab: use sessionId from request, don't mutate global ccSession
         let tabSessionId = body.sessionId || null;
         let sessionReset = false;
-        // If system prompt changed since this session was created, force a fresh session
+        let sessionResetReason = null;
+        let previousRuntime = null;
+        const currentRuntime = shared.resolveCcCli(CONFIG.engine);
+        // If system prompt or runtime changed since this session was created, force a fresh session
         if (tabSessionId) {
           const sessions = _readCcTabSessions();
           const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
@@ -5567,12 +5592,19 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           } else if (tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
             tabSessionId = null;
             sessionReset = true;
+            sessionResetReason = 'promptChanged';
+          } else if (tabEntry.runtime && tabEntry.runtime !== currentRuntime) {
+            tabSessionId = null;
+            sessionReset = true;
+            sessionResetReason = 'runtimeChanged';
+            previousRuntime = tabEntry.runtime;
           }
         }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
-        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
+        const carryover = sessionReset ? _buildTranscriptCarryover(body.transcript, { previousRuntime }) : '';
+        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + (carryover ? carryover + '\n\n---\n\n' : '') + body.message;
 
         const { trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
@@ -5650,8 +5682,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
               existing.preview = preview;
               existing._promptHash = _ccPromptHash;
+              existing.runtime = currentRuntime;
             } else {
-              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
+              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash, runtime: currentRuntime });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -5674,7 +5707,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Issue #1834: surface action JSON parse failures so the UI can warn
         // instead of silently dropping. Client renders this as a small notice.
         if (_actionParseError) donePayload.actionParseError = _actionParseError;
-        if (sessionReset) donePayload.sessionReset = true;
+        if (sessionReset) {
+          donePayload.sessionReset = true;
+          if (sessionResetReason) donePayload.sessionResetReason = sessionResetReason;
+          if (previousRuntime) donePayload.previousRuntime = previousRuntime;
+          donePayload.currentRuntime = currentRuntime;
+        }
         liveState.donePayload = donePayload;
         if (liveState.writer) liveState.writer(donePayload);
 

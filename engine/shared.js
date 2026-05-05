@@ -918,6 +918,7 @@ const ENGINE_DEFAULTS = {
   docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
   docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity
   ccLiveStreamMaxAgeMs: 30 * 60 * 1000, // hard cap reconnect buffers if abort/cleanup stalls
+  metricsFlushIntervalMs: 10000, // batch trackEngineUsage writes to metrics.json — flushed every 10s instead of per-call to cut lock contention and dashboard mtime churn
   maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
   maxLlmStderrBytes: 64 * 1024, // keep only a bounded stderr tail from direct Claude calls
   maxLlmLineBufferBytes: 128 * 1024, // cap the incremental JSON line buffer to avoid malformed-stream OOMs
