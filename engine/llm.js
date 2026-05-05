@@ -24,6 +24,11 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
 const MISSING_RUNTIME_EXIT_CODE = 78;
+// When the spawned process emits 'exit' but 'close' is delayed (a detached
+// grandchild inherited stdio), wait this long for trailing stdout data to
+// drain into our buffer before finalizing on the exit fallback path. 'close'
+// is preferred; this is a safety net so callers don't hang on inherited pipes.
+const EXIT_DRAIN_FALLBACK_MS = 100;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 //
@@ -635,9 +640,14 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    let resolved = false;
+    let exitFallbackTimer = null;
+    const finalizeAndResolve = (code) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
@@ -659,11 +669,23 @@ function callLLM(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    };
+
+    // 'close' fires after stdio streams close; if a detached grandchild
+    // inherited stdout, that can be delayed indefinitely. 'exit' fires when
+    // the child itself exits — schedule a short drain window then resolve.
+    proc.on('exit', (code) => {
+      if (resolved || exitFallbackTimer) return;
+      exitFallbackTimer = setTimeout(() => finalizeAndResolve(code), EXIT_DRAIN_FALLBACK_MS);
     });
+    proc.on('close', (code) => { finalizeAndResolve(code); });
 
     proc.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM spawn error (${label}): ${err.message}`);
       resolve({
@@ -738,9 +760,14 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    let resolved = false;
+    let exitFallbackTimer = null;
+    const finalizeAndResolve = (code) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
       const durationMs = Date.now() - _startMs;
@@ -759,11 +786,23 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    };
+
+    // 'close' fires after stdio streams close; if a detached grandchild
+    // inherited stdout, that can be delayed indefinitely. 'exit' fires when
+    // the child itself exits — schedule a short drain window then resolve.
+    proc.on('exit', (code) => {
+      if (resolved || exitFallbackTimer) return;
+      exitFallbackTimer = setTimeout(() => finalizeAndResolve(code), EXIT_DRAIN_FALLBACK_MS);
     });
+    proc.on('close', (code) => { finalizeAndResolve(code); });
 
     proc.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
       clearTaskCompleteTimer();
+      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM-stream spawn error (${label}): ${err.message}`);
       resolve({
