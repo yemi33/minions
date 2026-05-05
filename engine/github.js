@@ -372,6 +372,10 @@ async function pollPrStatus(config) {
       pr.lastPushedAt = ts();
       updated = true;
     }
+    if (prData.base?.sha && pr.baseSha !== prData.base.sha) {
+      pr.baseSha = prData.base.sha;
+      updated = true;
+    }
 
     if (pr.status !== newStatus) {
       log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
@@ -389,6 +393,7 @@ async function pollPrStatus(config) {
           delete pr.buildStatus;
           delete pr.buildFailReason;
           delete pr.buildErrorLog;
+          delete pr.buildFailureSignature;
           delete pr._buildFailNotified;
           delete pr.buildFixAttempts;
           delete pr.buildFixEscalated;
@@ -471,6 +476,7 @@ async function pollPrStatus(config) {
         const runs = checksData.check_runs;
         let buildStatus = 'none';
         let buildFailReason = '';
+        let buildFailureSignature = '';
 
         if (runs.length > 0) {
           const hasFailed = runs.some(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
@@ -481,6 +487,13 @@ async function pollPrStatus(config) {
             buildStatus = 'failing';
             const failed = runs.find(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
             buildFailReason = failed?.name || 'Check failed';
+            buildFailureSignature = shared.safeSlugComponent([
+              failed?.name,
+              failed?.conclusion,
+              failed?.output?.title,
+              failed?.output?.summary,
+              failed?.output?.text,
+            ].filter(Boolean).join('\n') || buildFailReason, 80);
           } else if (allDone && allPassed) {
             buildStatus = 'passing';
           } else {
@@ -493,6 +506,8 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
+          if (buildFailureSignature) pr.buildFailureSignature = buildFailureSignature;
+          else delete pr.buildFailureSignature;
           // Build transitioned — clear grace period and auto-complete flag
           delete pr._buildFixPushedAt;
           if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
@@ -504,6 +519,7 @@ async function pollPrStatus(config) {
             // while a queued build was still running.
             if (buildStatus === 'passing') {
               delete pr.buildErrorLog;
+              delete pr.buildFailureSignature;
               // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
               if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
             }
@@ -517,6 +533,16 @@ async function pollPrStatus(config) {
               const prFilePath = shared.projectPrPath(project);
               teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
             } catch {}
+          }
+        }
+        if (buildStatus === 'failing') {
+          if (buildFailReason && pr.buildFailReason !== buildFailReason) {
+            pr.buildFailReason = buildFailReason;
+            updated = true;
+          }
+          if (buildFailureSignature && pr.buildFailureSignature !== buildFailureSignature) {
+            pr.buildFailureSignature = buildFailureSignature;
+            updated = true;
           }
         }
       }
@@ -636,6 +662,8 @@ async function pollPrHumanComments(config) {
 
     pr.humanFeedback = {
       lastProcessedCommentDate: latestDate,
+      lastProcessedCommentId: String(newComments[newComments.length - 1].commentId),
+      lastProcessedCommentKey: String(newComments[newComments.length - 1].commentId),
       pendingFix: true,
       feedbackContent
     };

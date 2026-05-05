@@ -2532,6 +2532,40 @@ function safeSlugComponent(text, maxLen = 80) {
   return `${base}-${hash}`.slice(0, maxLen);
 }
 
+const PR_AUTOMATION_CAUSE_LIMIT = 50;
+
+function getPrAutomationCauses(pr) {
+  const causes = pr?._automationFixCauses;
+  return causes && typeof causes === 'object' && !Array.isArray(causes) ? causes : {};
+}
+
+function hasPrAutomationCause(pr, causeKey) {
+  return !!(causeKey && getPrAutomationCauses(pr)[causeKey]);
+}
+
+function markPrAutomationCause(pr, causeKey, details = {}) {
+  if (!pr || !causeKey) return false;
+  const now = ts();
+  const causes = { ...getPrAutomationCauses(pr) };
+  causes[causeKey] = {
+    ...(causes[causeKey] || {}),
+    ...details,
+    status: details.status || causes[causeKey]?.status || 'handled',
+    updatedAt: now,
+  };
+  if (!causes[causeKey].firstSeenAt) causes[causeKey].firstSeenAt = now;
+
+  const entries = Object.entries(causes);
+  if (entries.length > PR_AUTOMATION_CAUSE_LIMIT) {
+    entries
+      .sort((a, b) => String(b[1]?.updatedAt || b[1]?.firstSeenAt || '').localeCompare(String(a[1]?.updatedAt || a[1]?.firstSeenAt || '')))
+      .slice(PR_AUTOMATION_CAUSE_LIMIT)
+      .forEach(([key]) => delete causes[key]);
+  }
+  pr._automationFixCauses = causes;
+  return true;
+}
+
 function formatTranscriptEntry(t) {
   return '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '');
 }
@@ -2716,6 +2750,9 @@ module.exports = {
   redactSecrets,
   slugify,
   safeSlugComponent,
+  getPrAutomationCauses,
+  hasPrAutomationCause,
+  markPrAutomationCause,
   formatTranscriptEntry,
   getPinnedItems,
   _logBuffer, // exported for testing
