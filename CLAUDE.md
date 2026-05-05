@@ -351,7 +351,7 @@ Assembled from fragments at startup: `dashboard/styles.css`, `layout.html`, `das
 
 Both share `ccCall()` in dashboard.js → `llm.callLLM({ direct: true })` → spawn the runtime CLI directly via the adapter's cached binary. `trackEngineUsage()` records calls/tokens/cost/duration per category.
 
-**CC** (`POST /api/command-center` or SSE `/stream`): primary user→agents interface. System prompt loaded from `prompts/cc-system.md` (~11KB) with `{{minions_dir}}` substituted; hashed into `_ccPromptHash` for session invalidation on prompt changes. State preamble (`buildCCStatePreamble()`, 10s TTL) injected into fresh sessions. Single global session in `engine/cc-session.json`, bounded by `ENGINE_DEFAULTS.ccMaxTurns` (50) and `ccSessionTtlMs` (2h).
+**CC** (`POST /api/command-center` or SSE `/stream`): primary user→agents interface. System prompt loaded from `prompts/cc-system.md` (~11KB) with `{{minions_dir}}` substituted; hashed into `_ccPromptHash` for session invalidation on prompt changes. State preamble (`buildCCStatePreamble()`, 10s TTL) injected into fresh sessions. Single global session in `engine/cc-session.json`, bounded by `ENGINE_DEFAULTS.ccMaxTurns` (50) and `ccSessionTtlMs` (7d).
 
 **Doc-Chat** (`POST /api/doc-chat`): per-document inline Q&A and editing. Sessions keyed by `filePath || title`, persisted in `engine/doc-sessions.json` (backend) and localStorage `_qaSessions` Map (frontend). Backend re-reads file from disk on each call to get freshest content. When the LLM edits, it returns `---DOCUMENT---` followed by the full updated file. **`parseCCActions` runs only on the answer portion before `---DOCUMENT---`** — prevents docs containing literal `===ACTIONS===` from being mangled.
 

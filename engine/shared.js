@@ -836,7 +836,7 @@ const ENGINE_DEFAULTS = {
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
   maxStateFileBytes: 100 * 1024 * 1024, // 100 MB — fail startup with a clear error when dispatch.json / cooldowns.json exceed this, rather than silently OOMing on JSON.parse (#1167)
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
-  ccSessionTtlMs: 2 * 60 * 60 * 1000, // 2h — expire stale resumed CC sessions to cap context growth
+  ccSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — keep chats resumable after breaks, still bounded by turn cap
   docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
   maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
   maxLlmStderrBytes: 64 * 1024, // keep only a bounded stderr tail from direct Claude calls

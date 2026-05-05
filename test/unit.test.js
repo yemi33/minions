@@ -38618,6 +38618,12 @@ async function testCCMultiTab() {
       'CC session TTL should come from shared ENGINE_DEFAULTS');
   });
 
+  await test('CC session TTL is long enough for users to resume chats after breaks', () => {
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    assert.ok(shared.ENGINE_DEFAULTS.ccSessionTtlMs >= weekMs,
+      'CC sessions should remain resumable for at least 7 days');
+  });
+
   await test('ccSessionValid checks TTL before resuming', () => {
     // Extract ccSessionValid function body
     const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
