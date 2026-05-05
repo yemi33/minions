@@ -888,6 +888,7 @@ let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCoun
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const ccLiveStreams = new Map(); // tabId → buffered live stream state for reconnect-after-disconnect
+const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long-running CC orchestration can span many tool calls
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
@@ -2070,7 +2071,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2159,7 +2160,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -5242,7 +5243,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   function _invokeCcStream({ prompt, sessionId, liveState, toolUses, model, effort, maxTurns, engineConfig }) {
     const { callLLMStreaming } = require('./engine/llm');
     return callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-      timeout: 900000, label: 'command-center', model, maxTurns,
+      timeout: CC_CALL_TIMEOUT_MS, label: 'command-center', model, maxTurns,
       allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       sessionId, effort, direct: true,
       engineConfig,

@@ -4,6 +4,7 @@
 var CC_MAX_TABS = 20;
 var CC_MAX_MESSAGES_PER_TAB = 30;
 var CC_TITLE_MAX_LENGTH = 40;
+var CC_STREAM_FETCH_TIMEOUT_MS = (60 * 60 * 1000) + 60000; // backend CC timeout plus 1-minute delivery buffer
 
 var _ccTabs = [];         // [{id, title, sessionId, messages: [{role, html}]}]
 var _ccActiveTabId = null;
@@ -711,7 +712,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     var res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
-      signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(960000)
+      signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(CC_STREAM_FETCH_TIMEOUT_MS)
     });
 
     if (!res.ok) {

@@ -34307,6 +34307,17 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('doc-chat uses a shorter timeout than command center', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Command Center should define a 1-hour backend call timeout');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    const invokeFn = src.slice(src.indexOf('function _invokeCcStream'), src.indexOf('function finishMissingRuntime'));
+    assert.ok(ccCallFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Non-streaming CC should default to the 1-hour call timeout');
+    assert.ok(ccStreamFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Streaming CC should default to the 1-hour call timeout');
+    assert.ok(invokeFn.includes('timeout: CC_CALL_TIMEOUT_MS'),
+      'SSE Command Center path should use the 1-hour call timeout');
     assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
       'Doc-chat should define a dedicated 6-minute timeout');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
@@ -34315,6 +34326,14 @@ async function testAutoRecoveryAndAtomicity() {
       'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Streaming doc-chat should use the dedicated doc-chat timeout');
+  });
+
+  await test('CC frontend stream timeout buffers the 1-hour backend timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('var CC_STREAM_FETCH_TIMEOUT_MS = (60 * 60 * 1000) + 60000'),
+      'CC frontend stream timeout should be backend hour plus delivery buffer');
+    assert.ok(src.includes('AbortSignal.timeout(CC_STREAM_FETCH_TIMEOUT_MS)'),
+      'CC stream fetch should use the named timeout constant');
   });
 
   await test('doc-chat skips state preamble', () => {
