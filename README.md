@@ -4,7 +4,7 @@ A multi-project AI dev team that runs from `~/.minions/`. Five autonomous agents
 
 Zero dependencies — uses only Node.js built-in modules.
 
-Inspired by and initially scaffolded from [Brady Gaster's Minions](https://bradygaster.github.io/minions/).
+Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradygaster.github.io/squad/).
 
 ## Prerequisites
 
