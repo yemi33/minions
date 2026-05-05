@@ -46,7 +46,7 @@ function renderMeetings(meetings) {
     }).join(' ');
 
     const dt = m.completedAt || m.createdAt;
-    const timeStr = dt ? new Date(dt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    const timeStr = dt ? formatLocalDateTime(dt) : '';
 
     return '<div data-file="meetings/' + escHtml(m.id) + '.json" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer;position:relative" onclick="if(shouldIgnoreSelectionClick(event))return;openMeetingDetail(\'' + escHtml(m.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +

@@ -32127,6 +32127,27 @@ async function testEngineAuditCritical() {
       'openPipelineDetail must render per-stage monitoredResources');
   });
 
+  await test('render-pipelines.js shows clear empty run copy for cron pipelines', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _getPipelineEmptyRunCopy'),
+      'pipeline renderer should centralize empty run copy');
+    assert.ok(src.includes('pipeline-empty-runs'),
+      'pipeline detail should render a styled empty run state');
+    assert.ok(src.includes('Scheduled for'),
+      'cron-triggered pipelines should explain their schedule before first run');
+  });
+
+  await test('dashboard date rendering uses shared local format helpers', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const scheduleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function formatLocalDateTime'), 'utils should expose formatLocalDateTime');
+    assert.ok(utilsSrc.includes('function formatLocalTime'), 'utils should expose formatLocalTime');
+    assert.ok(utilsSrc.includes('function formatLocalClock'), 'utils should expose formatLocalClock for cron display');
+    assert.ok(pipelineSrc.includes('formatLocalDateTime(r.startedAt)'), 'pipeline run timestamps should use shared local date formatting');
+    assert.ok(scheduleSrc.includes('formatLocalClock(h, m)'), 'cron labels should use local clock formatting');
+  });
+
   await test('pipeline abort button shows Aborting then refreshes detail', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
@@ -41608,8 +41629,8 @@ async function testAdoThrottleDashboard() {
     const src = fnMatch[0];
     assert.ok(src.includes('retryAfter'),
       'renderAdoThrottleAlert must reference retryAfter to show resume time');
-    // Should format time (HH:MM)
-    assert.ok(src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
+    // Should format time via shared local formatter or direct local-time formatting.
+    assert.ok(src.includes('formatLocalTime') || src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
       'renderAdoThrottleAlert must format retryAfter as a local time');
   });
 
@@ -51159,7 +51180,7 @@ async function testDashboardPureHelpers() {
     if (config) fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
     fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
     fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
-    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
     const isolatedDashboard = require('../dashboard');
@@ -51170,12 +51191,89 @@ async function testDashboardPureHelpers() {
       dir: testDir,
       cleanup() {
         restore();
-        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
           try { delete require.cache[require.resolve(mod)]; } catch {}
         }
       },
     };
   }
+
+  await test('executeCCActions: create-pipeline reports success only after persistence', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-persisted',
+        title: 'CC Pipeline Persisted',
+        trigger: { cron: '0 9 1-5' },
+        stages: [
+          { id: 'audit', type: 'task', title: 'Audit reliability', taskType: 'explore' },
+          { id: 'plan', type: 'plan', title: 'Plan fixes', dependsOn: ['audit'] },
+        ],
+      };
+
+      const results = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true, results[0].error || 'create-pipeline should succeed');
+      assert.strictEqual(results[0].created, true);
+      assert.strictEqual(results[0].id, action.id);
+      const saved = isolated.shared.safeJson(path.join(isolated.dir, 'pipelines', action.id + '.json'));
+      assert.ok(saved, 'pipeline must exist on disk before reporting success');
+      assert.strictEqual(saved.title, action.title);
+      assert.deepStrictEqual(saved.trigger, action.trigger);
+      assert.strictEqual(saved.stages.length, 2);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: duplicate create-pipeline replay returns clear ok duplicate', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-duplicate',
+        title: 'CC Pipeline Duplicate',
+        trigger: { cron: '30 8 *' },
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+
+      const first = await isolated.dashboard.executeCCActions([action]);
+      const second = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.strictEqual(first[0].created, true);
+      assert.strictEqual(second[0].ok, true);
+      assert.strictEqual(second[0].duplicate, true, 'replayed action should be duplicate, not failure');
+      assert.strictEqual(second[0].duplicateOf, action.id);
+      assert.ok(/already exists/i.test(second[0].warning || ''), 'duplicate response should explain already-created state');
+      const files = fs.readdirSync(path.join(isolated.dir, 'pipelines')).filter(f => f === action.id + '.json');
+      assert.strictEqual(files.length, 1, 'duplicate replay must leave one pipeline file');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: create-pipeline existing different definition returns error', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const base = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-conflict',
+        title: 'CC Pipeline Conflict',
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+      const first = await isolated.dashboard.executeCCActions([base]);
+      const second = await isolated.dashboard.executeCCActions([{ ...base, title: 'Different Definition' }]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.ok(second[0].error, 'different existing pipeline should require edit-pipeline instead of silent success');
+      assert.ok(/different definition/i.test(second[0].error));
+    } finally {
+      isolated.cleanup();
+    }
+  });
 
   await test('work-item create dedup: CC action returns API fallback duplicate instead of creating another item', async () => {
     const isolated = loadIsolatedDashboardForDedup();

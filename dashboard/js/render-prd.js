@@ -589,7 +589,7 @@ function openArchivedPrdModal() {
     html += groups.map((g, i) => {
       const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
-      const completed = g.completedAt ? new Date(g.completedAt).toLocaleDateString() : '';
+      const completed = g.completedAt ? formatLocalDate(g.completedAt) : '';
       return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="if(shouldIgnoreSelectionClick(event))return;showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
         '<div class="plan-card-meta">' +

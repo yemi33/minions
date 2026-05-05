@@ -1581,6 +1581,70 @@ function meetingParticipantsFromAction(action) {
   );
 }
 
+function normalizePipelineForCompare(pipeline) {
+  if (!pipeline || typeof pipeline !== 'object') return null;
+  return {
+    title: pipeline.title || '',
+    stages: Array.isArray(pipeline.stages) ? pipeline.stages : [],
+    trigger: pipeline.trigger && typeof pipeline.trigger === 'object' ? pipeline.trigger : {},
+    enabled: pipeline.enabled !== false,
+    stopWhen: pipeline.stopWhen || null,
+    monitoredResources: Array.isArray(pipeline.monitoredResources) ? pipeline.monitoredResources : [],
+  };
+}
+
+function buildPipelineFromAction(action) {
+  const pipeline = {
+    id: String(action.id || '').trim(),
+    title: String(action.title || '').trim(),
+    stages: action.stages,
+    trigger: action.trigger && typeof action.trigger === 'object' ? action.trigger : {},
+    enabled: action.enabled !== false,
+  };
+  if (action.stopWhen) pipeline.stopWhen = action.stopWhen;
+  if (Array.isArray(action.monitoredResources) && action.monitoredResources.length > 0) {
+    pipeline.monitoredResources = action.monitoredResources;
+  }
+  return pipeline;
+}
+
+function pipelineDefinitionsEqual(a, b) {
+  return JSON.stringify(normalizePipelineForCompare(a)) === JSON.stringify(normalizePipelineForCompare(b));
+}
+
+function createPipelineFromAction(action) {
+  const { savePipeline, getPipeline } = require('./engine/pipeline');
+  const pipeline = buildPipelineFromAction(action);
+  const existing = getPipeline(pipeline.id);
+  if (existing) {
+    if (pipelineDefinitionsEqual(existing, pipeline)) {
+      return {
+        type: 'create-pipeline',
+        id: pipeline.id,
+        ok: true,
+        duplicate: true,
+        duplicateOf: pipeline.id,
+        warning: `Pipeline "${pipeline.id}" already exists; no changes made.`,
+      };
+    }
+    return {
+      type: 'create-pipeline',
+      id: pipeline.id,
+      error: `Pipeline "${pipeline.id}" already exists with a different definition. Use edit-pipeline to update it.`,
+    };
+  }
+  savePipeline(pipeline);
+  const persisted = getPipeline(pipeline.id);
+  if (!persisted) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" was not persisted.` };
+  }
+  if (!pipelineDefinitionsEqual(persisted, pipeline)) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" persisted with unexpected contents.` };
+  }
+  invalidateStatusCache();
+  return { type: 'create-pipeline', id: pipeline.id, ok: true, created: true };
+}
+
 // Required-field validator for CC actions. Returns null when valid, an error string when not.
 // Centralises field-required checks so the model can't quietly emit a malformed action and have
 // the server silently fall back to placeholder values (e.g. "Untitled"). The handler invokes this
@@ -1615,6 +1679,11 @@ function _ccValidateAction(action) {
       if (meetingParticipantsFromAction(action).length < 2) return 'create-meeting action requires at least 2 participants';
       return null;
     }
+    case 'create-pipeline':
+      if (!action.id || typeof action.id !== 'string' || !action.id.trim()) return 'create-pipeline action missing required field: id';
+      if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return 'create-pipeline action missing required field: title';
+      if (!Array.isArray(action.stages) || action.stages.length === 0) return 'create-pipeline action requires non-empty stages array';
+      return null;
     default:
       return null; // unknown types fall through to existing handler / generic fallback
   }
@@ -1851,6 +1920,10 @@ async function executeCCActions(actions) {
           });
           invalidateStatusCache();
           results.push({ type: 'create-meeting', id: meeting.id, ok: true });
+          break;
+        }
+        case 'create-pipeline': {
+          results.push(createPipelineFromAction(action));
           break;
         }
         case 'delete-watch': {
@@ -6942,6 +7015,7 @@ module.exports = {
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
+  _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
 };
 

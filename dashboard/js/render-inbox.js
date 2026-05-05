@@ -81,8 +81,7 @@ function renderNotes(notes) {
   // Show last updated timestamp
   const updatedEl = document.getElementById('notes-updated');
   if (updatedEl && updatedAt) {
-    const d = new Date(updatedAt);
-    updatedEl.textContent = 'updated ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    updatedEl.textContent = 'updated ' + formatLocalDateTime(updatedAt);
   }
 
   if (!content || !content.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }

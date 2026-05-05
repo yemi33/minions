@@ -151,6 +151,40 @@ function timeAgo(isoStr) {
   return d + 'd ago';
 }
 
+const _LOCAL_DATE_TIME_OPTS = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+const _LOCAL_DATE_OPTS = { month: 'short', day: 'numeric', year: 'numeric' };
+const _LOCAL_TIME_OPTS = { hour: 'numeric', minute: '2-digit' };
+
+function _coerceDashboardDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatLocalDateTime(value) {
+  const date = _coerceDashboardDate(value);
+  if (!date) return value ? String(value) : '';
+  return date.toLocaleString(undefined, _LOCAL_DATE_TIME_OPTS);
+}
+
+function formatLocalDate(value) {
+  const date = _coerceDashboardDate(value);
+  if (!date) return value ? String(value) : '';
+  return date.toLocaleDateString(undefined, _LOCAL_DATE_OPTS);
+}
+
+function formatLocalTime(value) {
+  const date = _coerceDashboardDate(value);
+  if (!date) return value ? String(value) : '';
+  return date.toLocaleTimeString(undefined, _LOCAL_TIME_OPTS);
+}
+
+function formatLocalClock(hour, minute) {
+  const date = new Date();
+  date.setHours(Number(hour) || 0, Number(minute) || 0, 0, 0);
+  return formatLocalTime(date);
+}
+
 function statusColor(s) {
   return s === 'working' ? 'working' : s === 'done' ? 'done' : s === 'error' ? 'error' : '';
 }

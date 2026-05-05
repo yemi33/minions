@@ -458,9 +458,9 @@ function openWorkItemDetail(id) {
   html += field('Description', '<div style="font-size:12px;max-height:320px;overflow-y:auto;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm)">' + renderMd(item.description || item.title || '—') + '</div>');
   html += field('Agent', escapeHtml(item.dispatched_to || item.agent || 'Auto'));
   html += field('Source', escapeHtml(item._source || 'central'));
-  if (item.created) html += field('Created', escapeHtml(new Date(item.created).toLocaleString()));
-  if (item.dispatched_at) html += field('Dispatched', escapeHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escapeHtml(item.dispatched_to || '?'));
-  if (item.completedAt) html += field('Completed', escapeHtml(new Date(item.completedAt).toLocaleString()));
+  if (item.created) html += field('Created', escapeHtml(formatLocalDateTime(item.created)));
+  if (item.dispatched_at) html += field('Dispatched', escapeHtml(formatLocalDateTime(item.dispatched_at)) + ' to ' + escapeHtml(item.dispatched_to || '?'));
+  if (item.completedAt) html += field('Completed', escapeHtml(formatLocalDateTime(item.completedAt)));
   if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escapeHtml(item.failReason) + '</span>');
   if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', item._pendingReason === 'already_dispatched' ? 'Queued — waiting for available agent slot' : escapeHtml(item._pendingReason.replace(/_/g, ' ')));
   if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escapeHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escapeHtml(item._blockedBy) + '</strong>' : ''));
