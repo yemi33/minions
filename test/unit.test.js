@@ -4324,6 +4324,50 @@ async function testProjectHelpers() {
       'ADO discovery should prefer az repos show after parsing the remote');
   });
 
+  await test('discoverProjectMetadata refreshes origin HEAD before using mainBranch when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let originHeadReads = 0;
+    const calls = [];
+    const execFileSync = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') {
+        originHeadReads++;
+        if (originHeadReads === 1) throw new Error('origin/HEAD unset');
+        return 'refs/remotes/origin/main\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') return 'origin/HEAD set to main\n';
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, 'main');
+    assert.ok(detected._found.includes('main branch'), 'main branch should be marked as discovered after refreshing origin/HEAD');
+    assert.ok(calls.some(([cmd, args]) => cmd === 'git' && args.join(' ') === 'remote set-head origin -a'),
+      'discovery should ask git to refresh origin/HEAD before defaulting');
+  });
+
+  await test('discoverProjectMetadata does not derive mainBranch from checked-out HEAD when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let localHeadAsked = false;
+    const execFileSync = (cmd, args) => {
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') throw new Error('origin/HEAD unset');
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') throw new Error('remote HEAD unavailable');
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref HEAD') {
+        localHeadAsked = true;
+        return 'refs/heads/feature/transient-checkout\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, undefined);
+    assert.strictEqual(localHeadAsked, false, 'project discovery must not use local HEAD as a mainBranch fallback');
+  });
+
   await test('dashboard and CLI project add use shared project discovery helpers', () => {
     const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');

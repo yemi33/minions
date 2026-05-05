@@ -245,23 +245,33 @@ function execGit(execFileSync, targetDir, args, timeout = 5000) {
   })).trim();
 }
 
+function parseOriginHeadBranch(headRef) {
+  const branch = String(headRef || '').trim().replace(/^refs\/remotes\/origin\//, '');
+  return branch && branch !== 'HEAD' ? branch : '';
+}
+
+function discoverMainBranch(execFileSync, targetDir) {
+  try {
+    return parseOriginHeadBranch(execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']));
+  } catch {}
+
+  try {
+    execGit(execFileSync, targetDir, ['remote', 'set-head', 'origin', '-a'], 10000);
+    return parseOriginHeadBranch(execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']));
+  } catch {}
+
+  return '';
+}
+
 function discoverProjectMetadata(targetDir, options = {}) {
   const execFileSync = options.execFileSync || defaultExecFileSync;
   const result = { _found: [] };
 
-  try {
-    let head = '';
-    try {
-      head = execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']);
-    } catch {
-      head = execGit(execFileSync, targetDir, ['symbolic-ref', 'HEAD']);
-    }
-    const branch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
-    if (branch) {
-      result.mainBranch = branch;
-      result._found.push('main branch');
-    }
-  } catch {}
+  const branch = discoverMainBranch(execFileSync, targetDir);
+  if (branch) {
+    result.mainBranch = branch;
+    result._found.push('main branch');
+  }
 
   try {
     const remoteUrl = execGit(execFileSync, targetDir, ['remote', 'get-url', 'origin']);
