@@ -33939,7 +33939,7 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('streaming doc-chat reuses the same doc-chat session/tool limits', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('function _prepareDocChatRequest'));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     assert.ok(docStreamFn.includes("'Read,Glob,Grep'"), 'Streaming read-only doc-chat should only allow Read,Glob,Grep');
     assert.ok(docStreamFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Streaming editable doc-chat should allow Read,Write,Edit,Glob,Grep');
     assert.ok(docStreamFn.includes('maxTurns: canEdit ? 25 : 10'), 'Streaming doc-chat should keep the lower doc maxTurns limits');
@@ -34176,6 +34176,96 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(sanitizeIdx > 0, 'Streaming doc-chat should sanitize editable paths');
     assert.ok(writeHeadIdx > 0, 'Streaming doc-chat should open an SSE response');
     assert.ok(sanitizeIdx < writeHeadIdx, 'Editable path validation must happen before opening the SSE stream');
+  });
+
+  // ── Doc-chat error class surfacing (W-mot9v0et0006b327) ──────────────────────
+  await test('ccDocCall surfaces actionable errorClass messages instead of generic failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function _docChatErrorMessage'), 'Should define _docChatErrorMessage helper');
+    const helperFn = src.slice(src.indexOf('function _docChatErrorMessage'), src.indexOf('function _docChatErrorMessage') + 600);
+    assert.ok(helperFn.includes('auth-failure'), '_docChatErrorMessage should handle auth-failure');
+    assert.ok(helperFn.includes('context-limit'), '_docChatErrorMessage should handle context-limit');
+    assert.ok(helperFn.includes('budget-exceeded'), '_docChatErrorMessage should handle budget-exceeded');
+    assert.ok(helperFn.includes('crash'), '_docChatErrorMessage should handle crash');
+    assert.ok(helperFn.includes('sessionPreserved'), '_docChatErrorMessage should differentiate preserved-session failures');
+  });
+
+  await test('ccDocCall passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    assert.ok(docCallFn.includes('result.errorClass'), 'ccDocCall should reference result.errorClass');
+    assert.ok(docCallFn.includes('_docChatErrorMessage'), 'ccDocCall should use _docChatErrorMessage helper');
+    assert.ok(docCallFn.includes('resolveSession('), 'ccDocCall should check session state for preserved-session detection');
+    assert.ok(!docCallFn.includes("'Failed to process request. Try again.'"), 'ccDocCall should not return generic failure string directly');
+  });
+
+  await test('ccDocCallStreaming passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docStreamFn.includes('result.errorClass'), 'ccDocCallStreaming should reference result.errorClass');
+    assert.ok(docStreamFn.includes('_docChatErrorMessage'), 'ccDocCallStreaming should use _docChatErrorMessage helper');
+    assert.ok(!docStreamFn.includes("'Failed to process request. Try again.'"), 'ccDocCallStreaming should not return generic failure string directly');
+  });
+
+  // ── Doc-chat stall timer / retry progress events (W-mot9v0et0006b327) ──────
+  await test('ccCallStreaming supports onRetry callback for retry signaling', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnSig = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('async function ccCallStreaming(') + 300);
+    assert.ok(fnSig.includes('onRetry'), 'ccCallStreaming should accept onRetry callback');
+    const fnBody = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('async function ccDocCall('));
+    assert.ok(fnBody.includes('if (onRetry) onRetry(2)'), 'ccCallStreaming should invoke onRetry before attempt 2');
+    assert.ok(fnBody.includes('if (onRetry) onRetry(3)'), 'ccCallStreaming should invoke onRetry before attempt 3');
+  });
+
+  await test('ccDocCallStreaming threads onRetry through to ccCallStreaming', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnSig = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('async function ccDocCallStreaming(') + 200);
+    assert.ok(fnSig.includes('onRetry'), 'ccDocCallStreaming should accept onRetry param');
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docStreamFn.includes('onRetry,'), 'ccDocCallStreaming should pass onRetry to ccCallStreaming');
+  });
+
+  await test('handleDocChatStream emits progress SSE events on retry and resets frontend stall timer', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleDocChatStream');
+    const fnEnd = src.indexOf('async function handleInboxPersist', fnStart);
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes("type: 'progress'"), 'handleDocChatStream should emit progress SSE events on retry');
+    assert.ok(fnBody.includes('onRetry:'), 'handleDocChatStream should pass onRetry callback to ccDocCallStreaming');
+    const mqa = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const processFn = mqa.slice(mqa.indexOf('async function _processQaMessage'), mqa.indexOf('\nfunction qaAbort'));
+    assert.ok(processFn.includes("evt.type === 'progress'"), 'Frontend should handle progress SSE events');
+    assert.ok(processFn.indexOf("evt.type === 'progress'") < processFn.indexOf("evt.type === 'chunk'"), 'progress case should be handled before chunk in the event dispatcher');
+  });
+
+  // ── Duplicate timeout key removal (W-mot9v0et0006b327) ──────────────────────
+  await test('ccDocCall has no duplicate timeout key', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const timeoutMatches = [...docCallFn.matchAll(/\btimeout:/g)];
+    assert.ok(timeoutMatches.length === 1, `ccDocCall should have exactly one timeout key (found ${timeoutMatches.length})`);
+  });
+
+  await test('ccDocCallStreaming has no duplicate timeout key', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    const timeoutMatches = [...docStreamFn.matchAll(/\btimeout:/g)];
+    assert.ok(timeoutMatches.length === 1, `ccDocCallStreaming should have exactly one timeout key (found ${timeoutMatches.length})`);
+  });
+
+  // ── Strengthened contentFingerprint (W-mot9v0et0006b327) ────────────────────
+  await test('contentFingerprint includes middle character for stronger collision resistance', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function contentFingerprint'), src.indexOf('function contentFingerprint') + 400);
+    assert.ok(fn.includes('Math.floor'), 'contentFingerprint should compute middle index');
+    assert.ok((fn.match(/charCodeAt/g) || []).length >= 3, 'contentFingerprint should sample at least 3 positions (first, mid, last)');
+  });
+
+  await test('frontend contentHash includes middle-char sampling matching server fingerprint', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat/stream'"), src.indexOf("fetch('/api/doc-chat/stream'") + 700);
+    assert.ok(fetchBlock.includes('Math.floor'), 'Frontend contentHash should compute middle index');
+    assert.ok((fetchBlock.match(/charCodeAt/g) || []).length >= 3, 'Frontend contentHash should sample at least 3 char positions');
   });
 
   await test('CC system prompt discourages excessive tool use', () => {

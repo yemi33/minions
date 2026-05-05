@@ -499,7 +499,7 @@ async function _processQaMessage(message, selection, opts) {
         selection: selection,
         filePath: capturedFilePath || null,
         model: window._lastStatus?.autoMode?.ccModel || undefined,
-        contentHash: capturedDocContext.content ? capturedDocContext.content.length + ':' + capturedDocContext.content.charCodeAt(0) + ':' + capturedDocContext.content.charCodeAt(capturedDocContext.content.length - 1) : undefined,
+        contentHash: capturedDocContext.content ? (function(s) { const m = Math.floor(s.length / 2); return s.length + ':' + s.charCodeAt(0) + ':' + s.charCodeAt(m) + ':' + s.charCodeAt(s.length - 1); })(capturedDocContext.content) : undefined,
       }),
     });
     let sessionDocContext = { ...capturedDocContext };
@@ -521,6 +521,12 @@ async function _processQaMessage(message, selection, opts) {
     async function _qaHandleStreamEvent(evt) {
       if (!evt || !evt.type) return;
       if (evt.type === 'heartbeat') return;
+      if (evt.type === 'progress') {
+        // Backend is retrying (attempt 2 or 3) — reset stall watchdog so the next
+        // attempt gets its own full stall window instead of sharing the first attempt's.
+        _resetQaStreamWatchdog();
+        return;
+      }
       if (evt.type === 'chunk') {
         _resetQaStreamWatchdog();
         streamedText = evt.text || '';
