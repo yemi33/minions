@@ -268,6 +268,13 @@ function _buildNodeChain(stages, run, options) {
   return html;
 }
 
+function _renderPipelineTriggerLabel(cron) {
+  if (!cron) return 'Manual trigger';
+  var human = _cronToHuman(cron);
+  var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return escHtml(human) + ' <span style="opacity:0.6">(' + escHtml(tz) + ')</span>';
+}
+
 function renderPipelines(pipelines) {
   pipelines = (pipelines || []).filter(function(p) { return !isDeleted('pipeline:' + p.id); });
   _pipelinesData = pipelines;
@@ -331,7 +338,7 @@ function openPipelineDetail(id) {
   // Status + actions
   var activeRun = _getPipelineActiveRun(p);
   html += '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span style="font-size:10px;color:var(--muted)">' + (p.trigger?.cron ? escHtml(_cronToHuman(p.trigger.cron)) + ' <span style="opacity:0.6">(' + escHtml(p.trigger.cron) + ', ' + escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone) + ')</span>' : 'Manual trigger') + ' · ' + escHtml(_getPipelineStageLabel(p)) + '</span>' +
+    '<span style="font-size:10px;color:var(--muted)">' + _renderPipelineTriggerLabel(p.trigger?.cron) + ' · ' + escHtml(_getPipelineStageLabel(p)) + '</span>' +
     '<div style="display:flex;gap:6px">' +
       (activeRun
         ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_abortPipeline(\'' + escHtml(id) + '\',this)">Abort</button>' +
