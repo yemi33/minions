@@ -1480,9 +1480,22 @@ function projectRoot(project) {
 
 // All project state files live centrally in .minions/projects/{name}/
 // No state files in project repos — avoids worktree/git interference.
+//
+// projectStateDir is path-only (no fs side effects) — safe to call with stale
+// project references after `removeProject` archived the data dir. Write paths
+// (safeWrite, withFileLock, mutateJsonFileLocked) already mkdir the parent dir
+// at write time, so the dir is created lazily only when something is actually
+// written. Use projectStateDirEnsure() when a caller specifically needs the
+// directory to exist before doing its own fs ops.
 function projectStateDir(project) {
   const name = project.name || path.basename(project.localPath);
-  const dir = path.join(MINIONS_DIR, 'projects', name);
+  return path.join(MINIONS_DIR, 'projects', name);
+}
+
+// Same as projectStateDir() but mkdirs the directory. Use when the caller does
+// raw fs ops (writeFileSync etc.) that don't already create the parent dir.
+function projectStateDirEnsure(project) {
+  const dir = projectStateDir(project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -2841,6 +2854,7 @@ module.exports = {
   getProjects,
   projectRoot,
   projectStateDir,
+  projectStateDirEnsure,
   projectWorkItemsPath,
   projectPrPath,
   resolveProjectForPrPath, // exported for testing
