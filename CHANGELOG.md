@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1751 (2026-05-06)
+
+### Features
+- install unhandledRejection / uncaughtException crash handlers (P-h1crash-4e21) (#2122)
+
+### Fixes
+- lock doc-chat into plain-response mode (no tool calls) (#2127)
+
 ## 0.1.1748 (2026-05-06)
 
 ### Fixes
