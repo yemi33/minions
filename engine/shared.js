@@ -861,7 +861,8 @@ const ENGINE_DEFAULTS = {
   prNoOpFixPauseAttempts: 2, // pause one PR automation cause after repeated no-op fixes for unchanged evidence
   completionReportRetentionDays: 90, // retain completion report sidecars beyond capped dispatch history
   completionReportMaxFiles: 5000, // hard cap for completion report sidecars during cleanup
-  meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
+  meetingRoundTimeout: 900000, // 15min per meeting round — soft signal; logs a "still waiting" warning each tick
+  meetingRoundHardTimeout: 3600000, // 60min hard backstop — non-terminal participants are marked failed and the round advances. Prevents permanent stalls if an agent's dispatch never spawns or its completion gets dropped.
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // legacy UI/config field; engine discovery no longer enforces review→fix cycle caps
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
