@@ -7389,6 +7389,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 });
 
+// Crash handlers — install before listen() so a rogue Promise rejection or
+// thrown error in any request handler is logged via shared.log instead of
+// silently killing the dashboard with no audit trail.
+//
+// Mirrors the pattern in engine/cli.js, but tuned for a long-running HTTP
+// server: unhandledRejection is logged-and-recovered (transient bugs in
+// individual requests should not take down the whole process), while
+// uncaughtException sets process.exitCode = 1 and lets pending writes flush
+// (per Node docs, the process state is undefined after an uncaught exception,
+// so the safe move is to log, mark exit-non-zero, and let the runtime tear
+// down naturally rather than calling process.exit() synchronously).
+function _installCrashHandlers() {
+  process.on('unhandledRejection', (reason) => {
+    const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+    console.error(`[dashboard] Unhandled promise rejection: ${msg}`);
+    try { shared.log('error', `dashboard unhandledRejection: ${msg}`); } catch { /* best effort */ }
+  });
+
+  process.on('uncaughtException', (err) => {
+    const msg = err instanceof Error ? err.stack || err.message : String(err);
+    console.error(`[dashboard] Uncaught exception: ${msg}`);
+    try { shared.log('error', `dashboard uncaughtException: ${msg}`); } catch { /* best effort */ }
+    try { shared.flushLogs(); } catch { /* best effort */ }
+    process.exitCode = 1;
+  });
+}
+
 // Exported for testing — pure helpers with no hidden side effects.
 // Production entry points use the closures directly; tests import via require('./dashboard').
 module.exports = {
@@ -7418,12 +7445,17 @@ module.exports = {
   _formatCcApiRoutesIndex,
   _formatCcCliCommandsIndex,
   _resetPreambleCache,
+  _installCrashHandlers,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).
 // When required as a module (e.g. by unit tests), skip the listen/watchdog/signal
 // handlers so tests can import exported helpers without binding to port 7331.
 if (require.main === module) {
+  // Install crash handlers FIRST so any error during bootstrap (HTML assembly,
+  // engine reads, port binding) is captured rather than dying silently.
+  _installCrashHandlers();
+
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`\n  Minions Mission Control`);
     console.log(`  -----------------------------------`);
