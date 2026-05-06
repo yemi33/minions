@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1745 (2026-05-06)
+
+### Features
+- fix doc-chat failure bugs from Ripley investigation (#2103)
+
 ## 0.1.1743 (2026-05-06)
 
 ### Fixes
