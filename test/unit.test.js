@@ -32405,6 +32405,94 @@ async function testAuxModuleBugFixes() {
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
   });
 
+  // P-h1crash-4e21: dashboard.js — unhandledRejection / uncaughtException handlers
+  // A rogue Promise rejection in any HTTP handler should be logged via
+  // shared.log('error', ...) instead of silently crashing the dashboard.
+  await test('dashboard.js: registers unhandledRejection handler', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("process.on('unhandledRejection'"),
+      'dashboard.js should register an unhandledRejection handler');
+  });
+
+  await test('dashboard.js: registers uncaughtException handler', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("process.on('uncaughtException'"),
+      'dashboard.js should register an uncaughtException handler');
+  });
+
+  await test('dashboard.js: unhandledRejection handler logs via shared.log and does NOT exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const idx = src.indexOf("process.on('unhandledRejection'");
+    assert.ok(idx > 0, 'Must have unhandledRejection handler');
+    const block = src.slice(idx, idx + 500);
+    assert.ok(block.includes("shared.log('error'"),
+      'unhandledRejection must log via shared.log("error", ...) for parity with engine/cli.js');
+    assert.ok(!block.includes('process.exit('),
+      'unhandledRejection must NOT call process.exit() — transient request bugs should not kill the dashboard');
+  });
+
+  await test('dashboard.js: uncaughtException handler logs, sets exitCode=1, and lets process drain', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const idx = src.indexOf("process.on('uncaughtException'");
+    assert.ok(idx > 0, 'Must have uncaughtException handler');
+    const block = src.slice(idx, idx + 600);
+    assert.ok(block.includes("shared.log('error'"),
+      'uncaughtException must log via shared.log("error", ...)');
+    assert.ok(block.includes('process.exitCode = 1'),
+      'uncaughtException must set process.exitCode = 1 (not synchronous process.exit)');
+    assert.ok(!/process\.exit\(\s*1\s*\)/.test(block),
+      'uncaughtException must NOT call process.exit(1) synchronously — pending writes need to flush');
+    assert.ok(block.includes('flushLogs'),
+      'uncaughtException should flush buffered logs before the process tears down');
+  });
+
+  await test('dashboard.js: crash handlers installed before server.listen()', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const installIdx = src.indexOf('_installCrashHandlers()');
+    const listenIdx = src.indexOf('server.listen(');
+    assert.ok(installIdx > 0, 'dashboard.js should call _installCrashHandlers() in bootstrap');
+    assert.ok(listenIdx > 0, 'dashboard.js should still call server.listen()');
+    assert.ok(installIdx < listenIdx,
+      'Crash handlers must be installed BEFORE server.listen() so bootstrap errors are captured');
+  });
+
+  await test('dashboard.js: _installCrashHandlers handles an unhandled rejection in a child process', async () => {
+    const { spawnSync } = require('child_process');
+    // Spawn a sandboxed child that requires dashboard.js (no listen — guarded
+    // behind require.main === module), calls _installCrashHandlers manually,
+    // then triggers an unhandled rejection. We assert the handler logged the
+    // rejection to stderr (console.error) and the process did NOT exit non-zero.
+    //
+    // Note: dashboard.js reads dashboard/layout.html at module-load time
+    // relative to MINIONS_DIR, so the child must run against the real repo
+    // root (no MINIONS_TEST_DIR override here).
+    const childCode = `
+      const path = require('path');
+      const dashboard = require(${JSON.stringify(path.join(MINIONS_DIR, 'dashboard.js'))});
+      dashboard._installCrashHandlers();
+      // Trigger an unhandled rejection. Node fires the handler asynchronously,
+      // so wait a tick before exiting so the listener actually runs.
+      Promise.reject(new Error('SIMULATED_DASHBOARD_REJECTION'));
+      setTimeout(() => process.exit(0), 100);
+    `;
+    const childEnv = { ...process.env };
+    delete childEnv.MINIONS_TEST_DIR; // ensure dashboard.js loads against real repo root
+    const result = spawnSync(process.execPath, ['-e', childCode], {
+      cwd: MINIONS_DIR,
+      env: childEnv,
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+    });
+    const combined = `${result.stdout || ''}\n${result.stderr || ''}`;
+    assert.strictEqual(result.status, 0,
+      `child should exit 0 after unhandledRejection (handler must NOT exit); got status=${result.status}, output=${combined.slice(0, 800)}`);
+    assert.ok(combined.includes('SIMULATED_DASHBOARD_REJECTION'),
+      `unhandledRejection handler must surface the original error message; output=${combined.slice(0, 800)}`);
+    assert.ok(combined.includes('Unhandled promise rejection') || combined.includes('unhandledRejection'),
+      `unhandledRejection handler must log a recognizable label; output=${combined.slice(0, 800)}`);
+  });
+
   await test('cli.js: drainBuffers helper drains both metrics and logs in a single shutdown step', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
     const idx = src.indexOf('function drainBuffers');
