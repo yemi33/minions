@@ -687,21 +687,21 @@ async function runCleanup(config, verbose = false) {
   // silently invalidate live chat tabs the user expects to keep.
   cleaned.ccSessions = 0;
 
-  // 10b. Prune doc-chat sessions — cap at 100 entries, remove oldest beyond cap
+  // 10b. Prune doc-chat sessions — cap at 100 entries, remove oldest beyond cap.
+  // P-c2sess-1d8e: read+sort+write must run atomically under the file lock so a
+  // concurrent dashboard persistDocSessions can't race the cap-trim.
   cleaned.docSessions = 0;
   try {
     const docSessionsPath = path.join(ENGINE_DIR, 'doc-sessions.json');
-    const docSessions = safeJson(docSessionsPath);
-    if (docSessions && typeof docSessions === 'object') {
+    const DOC_SESSIONS_CAP = 100;
+    mutateJsonFileLocked(docSessionsPath, (docSessions) => {
+      if (!docSessions || typeof docSessions !== 'object' || Array.isArray(docSessions)) return docSessions;
       const entries = Object.entries(docSessions);
-      const DOC_SESSIONS_CAP = 100;
-      if (entries.length > DOC_SESSIONS_CAP) {
-        entries.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
-        const keep = Object.fromEntries(entries.slice(0, DOC_SESSIONS_CAP));
-        cleaned.docSessions = entries.length - DOC_SESSIONS_CAP;
-        safeWrite(docSessionsPath, keep);
-      }
-    }
+      if (entries.length <= DOC_SESSIONS_CAP) return docSessions;
+      entries.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
+      cleaned.docSessions = entries.length - DOC_SESSIONS_CAP;
+      return Object.fromEntries(entries.slice(0, DOC_SESSIONS_CAP));
+    }, { defaultValue: {}, skipWriteIfUnchanged: true });
   } catch (e) { log('warn', 'prune doc-sessions: ' + e.message); }
 
   // 11. Cap cooldowns.json — keep at most 500 entries (on top of 24h TTL in cooldown.js)

@@ -29904,6 +29904,9 @@ async function main() {
     // CC Multi-Tab Conversations
     await testCCMultiTab();
 
+    // P-c2sess-1d8e: CC/doc session writes routed through mutateJsonFileLocked
+    await testCcDocSessionLocking();
+
     // PR review→fix, poll→fix, merge conflict, auto-complete flows
     await testPrReviewFixFlows();
 
@@ -41694,9 +41697,13 @@ async function testCCMultiTab() {
     assert.ok(dashSrc.includes('cc-sessions'), 'Should have DELETE /api/cc-sessions route');
   });
 
-  await test('cc-sessions persisted via safeWrite', () => {
+  await test('cc-sessions persisted via mutateJsonFileLocked (P-c2sess-1d8e)', () => {
     assert.ok(dashSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
     assert.ok(dashSrc.includes('CC_SESSIONS_PATH'), 'Should use CC_SESSIONS_PATH constant');
+    // Multi-tab/concurrent dispatch races: every cc-sessions.json write must
+    // route through the file lock, never bare safeWrite.
+    assert.ok(!/safeWrite\s*\(\s*CC_SESSIONS_PATH/.test(dashSrc),
+      'CC_SESSIONS_PATH writes must go through mutateJsonFileLocked, not bare safeWrite');
   });
 
   await test('stream handler accepts tabId', () => {
@@ -42030,6 +42037,166 @@ async function testCCMultiTab() {
     assert.ok(cleanupSrc.includes('Cleanup (resources)'), 'Should log resource cleanup summary');
     assert.ok(cleanupSrc.includes('cc-sessions') && cleanupSrc.includes('doc-sessions') && cleanupSrc.includes('cooldowns') && cleanupSrc.includes('PID files'),
       'Summary should cover all resource types');
+  });
+}
+
+async function testCcDocSessionLocking() {
+  console.log('\n── CC/doc session locked writes (P-c2sess-1d8e) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+
+  // ── Source-string regressions: no bare safeWrite for any CC/doc session path ──
+
+  await test('dashboard.js has no bare safeWrite(CC_SESSIONS_PATH', () => {
+    assert.ok(!/safeWrite\s*\(\s*CC_SESSIONS_PATH/.test(dashSrc),
+      'CC_SESSIONS_PATH writes must use mutateJsonFileLocked (concurrent multi-tab dispatch races)');
+  });
+
+  await test('dashboard.js has no bare safeWrite(DOC_SESSIONS_PATH', () => {
+    assert.ok(!/safeWrite\s*\(\s*DOC_SESSIONS_PATH/.test(dashSrc),
+      'DOC_SESSIONS_PATH writes must use mutateJsonFileLocked (cleanup.js cap-trim runs concurrently)');
+  });
+
+  await test('dashboard.js has no bare safeWrite of cc-session.json (single-session path)', () => {
+    assert.ok(!/safeWrite\s*\(\s*path\.join\s*\(\s*ENGINE_DIR\s*,\s*['"]cc-session\.json['"]\s*\)/.test(dashSrc),
+      'cc-session.json writes (single-session legacy) must use mutateJsonFileLocked');
+  });
+
+  await test('engine/cleanup.js doc-sessions cap-trim uses mutateJsonFileLocked (RMW atomic)', () => {
+    const idx = cleanupSrc.indexOf('DOC_SESSIONS_CAP');
+    assert.ok(idx > -1, 'DOC_SESSIONS_CAP must still exist in cleanup.js');
+    // Look at the surrounding ~600-char block — read+write must be atomic under the lock.
+    const slice = cleanupSrc.slice(Math.max(0, idx - 200), idx + 800);
+    assert.ok(slice.includes('mutateJsonFileLocked'),
+      'doc-sessions cap-trim block must call mutateJsonFileLocked, not safeJson + safeWrite');
+    assert.ok(!/safeWrite\s*\(\s*docSessionsPath/.test(slice),
+      'doc-sessions cap-trim must not call safeWrite(docSessionsPath, ...) — read+write must be atomic');
+  });
+
+  // ── Behavioural test — N parallel child-process locked writes preserve every key ──
+  // Mirrors the testMutateMeetingHelper 5-process pattern: simulates the cleanup-vs-
+  // dashboard race where each process does an RMW (read file → set its key → write).
+  // Without the lock, last-write-wins drops keys; with the lock, every write survives.
+
+  await test('5 parallel locked RMW writes to doc-sessions.json each adding a unique key all survive', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedPath = path.resolve(__dirname, '..', 'engine', 'shared').replace(/\\/g, '/');
+      const docPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'doc-sessions.json');
+      fs.writeFileSync(docPath, '{}');
+
+      // Each child-process does a true RMW: read → mutate → write under the file lock.
+      // Without the lock, concurrent RMWs lose writes (read-then-write is non-atomic).
+      const helperScript =
+        "const sh = require('" + sharedPath + "');" +
+        "const p = process.argv[1];" +
+        "const k = process.argv[2];" +
+        "sh.mutateJsonFileLocked(p, (d) => {" +
+        "  if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};" +
+        "  d['s' + k] = { sessionId: 'sid-' + k, lastActiveAt: new Date().toISOString() };" +
+        "  return d;" +
+        "}, { defaultValue: {} });";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, docPath, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: process.env.MINIONS_TEST_DIR }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+      const keys = Object.keys(final).sort();
+      assert.deepStrictEqual(keys, ['s1', 's2', 's3', 's4', 's5'],
+        'every parallel locked RMW must persist its unique key — none lost to last-write-wins races');
+    } finally {
+      restore();
+    }
+  });
+
+  // Also exercise CC_SESSIONS_PATH (array shape): concurrent processes upserting tab
+  // sessions must not lose entries.
+  await test('5 parallel locked upserts to cc-sessions.json each appending a unique tab all survive', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedPath = path.resolve(__dirname, '..', 'engine', 'shared').replace(/\\/g, '/');
+      const ccPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'cc-sessions.json');
+      fs.writeFileSync(ccPath, '[]');
+
+      const helperScript =
+        "const sh = require('" + sharedPath + "');" +
+        "const p = process.argv[1];" +
+        "const k = process.argv[2];" +
+        "sh.mutateJsonFileLocked(p, (arr) => {" +
+        "  if (!Array.isArray(arr)) arr = [];" +
+        "  arr.push({ id: 'tab-' + k, sessionId: 'sid-' + k, lastActiveAt: new Date().toISOString() });" +
+        "  return arr;" +
+        "}, { defaultValue: [] });";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, ccPath, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: process.env.MINIONS_TEST_DIR }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = JSON.parse(fs.readFileSync(ccPath, 'utf8'));
+      const ids = final.map(s => s.id).sort();
+      assert.deepStrictEqual(ids, ['tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5'],
+        'every parallel locked upsert must persist its unique tab — none lost to last-write-wins races');
+    } finally {
+      restore();
+    }
+  });
+
+  // ── Targeted source-string sanity: every cited call site routes through the lock ──
+
+  await test('flushPendingDocSessions delegates to persistDocSessions (lock-routed)', () => {
+    // flushPendingDocSessions must also go through the locked write path —
+    // otherwise the on-shutdown debounce flush bypasses the lock.
+    const flushMatch = dashSrc.match(/function flushPendingDocSessions\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(flushMatch, 'flushPendingDocSessions must exist');
+    const body = flushMatch[0];
+    assert.ok(body.includes('persistDocSessions()'),
+      'flushPendingDocSessions must delegate to persistDocSessions (which holds the lock)');
+    assert.ok(!/safeWrite\s*\(\s*DOC_SESSIONS_PATH/.test(body),
+      'flushPendingDocSessions must not bare safeWrite the doc sessions file');
+  });
+
+  await test('persistDocSessions writes through the file lock', () => {
+    const persistMatch = dashSrc.match(/function persistDocSessions\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(persistMatch, 'persistDocSessions must exist');
+    const body = persistMatch[0];
+    assert.ok(body.includes('mutateJsonFileLocked'),
+      'persistDocSessions must call mutateJsonFileLocked');
+    assert.ok(!/safeWrite\s*\(/.test(body),
+      'persistDocSessions must not call bare safeWrite');
   });
 }
 
