@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1741 (2026-05-06)
+
+### Features
+- hard-timeout backstop prevents permanent round stalls
+- auto-index API + CLI catalog into preamble; threshold-based delegation gate
+
+### Other
+- chore(gitignore): ignore .vscode/, engine/completions/, pull-requests.json.backup
+
 ## 0.1.1739 (2026-05-06)
 
 ### Features
