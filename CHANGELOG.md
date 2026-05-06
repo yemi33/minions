@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1753 (2026-05-06)
+
+### Other
+- refactor(doc-chat): drop brittle regex action gate in favour of sysprompt
+
 ## 0.1.1752 (2026-05-06)
 
 ### Features
