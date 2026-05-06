@@ -2713,12 +2713,31 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    // P-c1read-7b3c: aborted closure flag prevents OOM from a misbehaving local
+    // client streaming forever after rejection. The data handler MUST early-return
+    // when aborted is true so no further chunks are appended.
+    let aborted = false;
     const timeout = setTimeout(() => {
+      // Set aborted FIRST so any late-arriving chunk (already in flight) is
+      // dropped by the data handler instead of growing body unbounded.
+      aborted = true;
       req.destroy();
       reject(new Error('Request body timeout after 30s'));
     }, 30000);
-    req.on('data', chunk => { body += chunk; if (body.length > 1e6) { clearTimeout(timeout); reject(new Error('Too large')); } });
+    req.on('data', chunk => {
+      if (aborted) return;
+      body += chunk;
+      if (body.length > 1e6) {
+        // Order matters: set aborted first so any in-flight chunk early-returns,
+        // then clear the timer, tear down the socket, and surface the failure.
+        aborted = true;
+        clearTimeout(timeout);
+        req.destroy();
+        reject(new Error('Too large'));
+      }
+    });
     req.on('end', () => {
+      if (aborted) return;
       clearTimeout(timeout);
       let parsed;
       try { parsed = JSON.parse(body); } catch(e) { reject(e); return; }
@@ -2732,7 +2751,11 @@ function readBody(req) {
       }
       resolve(parsed);
     });
-    req.on('error', (e) => { clearTimeout(timeout); reject(e); });
+    req.on('error', (e) => {
+      if (aborted) return;
+      clearTimeout(timeout);
+      reject(e);
+    });
   });
 }
 
@@ -7329,6 +7352,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 // Production entry points use the closures directly; tests import via require('./dashboard').
 module.exports = {
   getMcpServers,
+  readBody,
   _filterCcTabSessions,
   _getVersionCheckInterval,
   _parseWatchInterval,
