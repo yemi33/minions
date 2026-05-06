@@ -19857,6 +19857,51 @@ async function testCheckPlanCompletionIdempotency() {
     }
   }, cleanup);
 
+  // ── Test 7: null/undefined work item title doesn't crash summary builders ──
+  // Regression: engine/lifecycle.js had unguarded w.title.replace('Implement: ', '')
+  // calls at lines 137, 138, 173, 258. A WI with null/undefined title would crash
+  // the entire verify-summary / done-summary build pipeline.
+  await test('checkPlanCompletion does not throw when work item title is null/undefined', () => {
+    cleanup();
+    // Use shared-branch strategy so the line-173 itemSummary path is also exercised.
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd({
+      branch_strategy: 'shared-branch',
+      feature_branch: 'feat/null-title-test',
+    }));
+    // One done item with title=null  → exercises lines 137 and 173 and 258
+    // One failed item with title=undefined → exercises line 138
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+      { id: 'TI-001', title: null, type: 'implement', status: 'done',
+        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
+      { id: 'TI-002', title: undefined, type: 'implement', status: 'failed',
+        sourcePlan: testPlanFile, failReason: 'test failure', dispatched_at: '2026-01-01T00:00:00Z' },
+    ]);
+
+    // Should not throw — the unguarded .replace() would TypeError on null/undefined
+    assert.doesNotThrow(() => lifecycle.checkPlanCompletion(meta, config),
+      'checkPlanCompletion must not crash on null/undefined work item title');
+
+    // Confirm the summary was written with the 'Untitled' fallback
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxFiles.length, 1, 'Inbox summary should still be written');
+    const summaryContent = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
+    assert.ok(summaryContent.includes('Untitled'),
+      'Summary should contain "Untitled" fallback for null/undefined title');
+
+    // Confirm verify WI was created and its description used the fallback (line 258 reached)
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI should be created (line 258 reached)');
+    assert.ok(verifyItems[0].description.includes('Untitled'),
+      'Verify WI description should contain "Untitled" fallback');
+
+    // Confirm shared-branch PR WI was created and its itemSummary used the fallback (line 173 reached)
+    const prItems = workItems.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(prItems.length, 1, 'Shared-branch PR WI should be created (line 173 reached)');
+    assert.ok(prItems[0].description.includes('Untitled'),
+      'Shared-branch PR WI description should contain "Untitled" fallback');
+  }, cleanup);
+
   restore();
 }
 
