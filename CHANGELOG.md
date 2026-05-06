@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1744 (2026-05-06)
+
+### Fixes
+- isolate meeting tests off live MEETINGS_DIR (#2111)
+
+### Other
+- test(github): add unit tests for slug-backoff and verdict helpers (#2092)
+
 ## 0.1.1742 (2026-05-06)
 
 ### Fixes
