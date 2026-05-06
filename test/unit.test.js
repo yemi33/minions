@@ -20943,6 +20943,103 @@ async function testSpawnAgentScript() {
     assert.strictEqual(countAddDir(fresh.args), 2, 'non-resume path must include both --add-dir flags');
     assert.strictEqual(countAddDir(resumed.args), 2, 'resume path must include both --add-dir flags');
   });
+
+  // Regression for W-motay65e000g39b5: a 5s setTimeout used to nuke the
+  // sysprompt .tmp before Claude could finish its lazy `--system-prompt-file`
+  // read on cold starts (MCP boot, --add-dir traversal, Windows process
+  // startup overhead). Two layers:
+  //   (a) source-level guard — no `setTimeout(...unlinkSync(sysTmpPath)...)`,
+  //   (b) behavioral — file persists while the spawned child is alive and is
+  //       cleaned up only when spawn-agent.js itself exits.
+
+  await test('spawn-agent.js: no setTimeout-based deletion of sysprompt .tmp (regression W-motay65e000g39b5)', () => {
+    // Bug shape: `setTimeout(() => { ...fs.unlinkSync(sysTmpPath)...; }, 5000)` —
+    // both halves on the same line. Look for any `setTimeout` callback that
+    // unlinks sysTmpPath within its own body (bounded by `}` so we never span
+    // across to the unrelated process.on('exit') cleanup function below).
+    const badPattern = /setTimeout\s*\([^}]*?unlinkSync\s*\(\s*sysTmpPath\s*\)/;
+    assert.ok(!badPattern.test(src),
+      'spawn-agent.js must NOT setTimeout-delete sysTmpPath — Claude reads --system-prompt-file lazily and cold starts can land after a short timer');
+  });
+
+  await test('spawn-agent.js: sysprompt .tmp persists during child lifetime and unlinks on spawn-agent exit', async () => {
+    const dir = createTmpDir();
+    const promptPath = path.join(dir, 'prompt-test.md');
+    const sysPath = path.join(dir, 'sysprompt-test.md');
+    const tmpSysPath = sysPath + '.tmp';
+    fs.writeFileSync(promptPath, 'user prompt');
+    fs.writeFileSync(sysPath, 'system prompt');
+
+    // Stub-loader script preloaded via `node --require`. Registers a runtime
+    // adapter that points the spawned binary at `node -e <sleeper>` so we can
+    // observe spawn-agent's .tmp lifecycle without a real Claude/Copilot
+    // install. Module-singleton caching means the registry our preload mutates
+    // is the same one spawn-agent.js's `resolveRuntime()` consults.
+    const stubPath = path.join(dir, 'stub-loader.js');
+    const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+    fs.writeFileSync(stubPath, [
+      `const runtimes = require(${JSON.stringify(runtimesPath)});`,
+      `runtimes.registerRuntime('test-stub', {`,
+      `  name: 'test-stub',`,
+      `  capabilities: { systemPromptFile: true, streaming: false },`,
+      `  resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),`,
+      `  buildArgs: () => ['-e', 'setTimeout(() => {}, 1500)'],`,
+      `  buildPrompt: (p) => p,`,
+      `  installHint: 'test-stub (in-memory)',`,
+      `});`,
+    ].join('\n'));
+
+    const { spawn } = require('child_process');
+    // Strip MINIONS_REPO_HOST so spawn-agent doesn't try to acquire an ADO
+    // token (which would shell out to azureauth and add latency / flakiness).
+    const childEnv = { ...process.env };
+    delete childEnv.MINIONS_REPO_HOST;
+
+    const child = spawn(
+      process.execPath,
+      [
+        '--require', stubPath,
+        path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'),
+        promptPath, sysPath,
+        '--runtime', 'test-stub',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv },
+    );
+
+    let stderrBuf = '';
+    child.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
+    child.stdout.on('data', () => {}); // drain
+
+    try {
+      // Mid-flight check: poll briefly for the .tmp file. Windows process
+      // startup can take a couple hundred ms, so we wait up to ~1.5s.
+      let observedDuringChild = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (fs.existsSync(tmpSysPath) && child.exitCode === null) {
+          observedDuringChild = true;
+          break;
+        }
+      }
+      assert.ok(observedDuringChild,
+        `.tmp sysprompt file should exist on disk while spawn-agent's child process is alive (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      // Wait for spawn-agent.js to finish (child sleeper exits at ~1.5s).
+      const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+
+      // process.on('exit') cleanup must have unlinked the .tmp.
+      assert.ok(!fs.existsSync(tmpSysPath),
+        `.tmp sysprompt file should be unlinked once spawn-agent.js exits (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      assert.strictEqual(exitCode, 0,
+        `spawn-agent.js should exit cleanly when the spawned child exits 0 (got ${exitCode}; stderr: ${stderrBuf.slice(0, 400)})`);
+    } finally {
+      if (child.exitCode === null) {
+        try { child.kill(); } catch { /* best effort */ }
+      }
+      try { fs.unlinkSync(tmpSysPath); } catch { /* may already be cleaned */ }
+    }
+  });
 }
 
 // ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
