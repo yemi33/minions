@@ -24869,62 +24869,65 @@ async function testMeetingsBehavioral() {
   });
 
   await test('getMeetings returns empty array when meetings dir is missing', () => {
-    // Temporarily rename meetings dir if it exists
-    const backupDir = meetingsDir + '-test-backup-' + Date.now();
-    let renamed = false;
-    if (fs.existsSync(meetingsDir)) {
-      fs.renameSync(meetingsDir, backupDir);
-      renamed = true;
-    }
+    // Use isolated minions dir — never rename live MEETINGS_DIR (caused real
+    // data loss on 2026-05-06 when a sibling test crashed mid-rename).
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      // seedTestMinionsDir does not create meetings/, so the dir is missing.
+      assert.ok(!fs.existsSync(isolated.MEETINGS_DIR), 'precondition: meetings dir must be missing');
+      const result = isolated.getMeetings();
       assert.deepStrictEqual(result, [], 'Should return empty array when dir missing');
     } finally {
-      if (renamed) fs.renameSync(backupDir, meetingsDir);
+      restore();
     }
   });
 
   await test('getMeetings filters out corrupt JSON files', () => {
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    const corruptId = 'TEST-corrupt-' + Date.now();
-    const corruptPath = path.join(meetingsDir, corruptId + '.json');
-    fs.writeFileSync(corruptPath, 'NOT VALID JSON {{{');
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      const corruptId = 'TEST-corrupt';
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, corruptId + '.json'), 'NOT VALID JSON {{{');
+      const result = isolated.getMeetings();
       assert.ok(Array.isArray(result), 'Should return array');
       const corruptEntry = result.find(m => m && m.id === corruptId);
       assert.strictEqual(corruptEntry, undefined, 'Corrupt JSON should be filtered out');
     } finally {
-      cleanupMeeting(corruptId);
+      restore();
     }
   });
 
   await test('getMeetings returns valid JSON meetings', () => {
-    const testId = 'TEST-valid-' + Date.now();
-    const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(testMeeting));
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      const testId = 'TEST-valid';
+      const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, testId + '.json'), JSON.stringify(testMeeting));
+      const result = isolated.getMeetings();
       const found = result.find(m => m.id === testId);
       assert.ok(found, 'Should include the test meeting');
       assert.strictEqual(found.title, 'Test Meeting');
       assert.strictEqual(found.status, 'investigating');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('getMeetings only returns .json files', () => {
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    const txtPath = path.join(meetingsDir, 'TEST-not-json-' + Date.now() + '.txt');
-    fs.writeFileSync(txtPath, 'not a json file');
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, 'TEST-not-json.txt'), 'not a json file');
+      const result = isolated.getMeetings();
       // No .txt entry should appear
       assert.ok(Array.isArray(result), 'Should return array');
     } finally {
-      try { fs.unlinkSync(txtPath); } catch {}
+      restore();
     }
   });
 
@@ -26039,136 +26042,149 @@ async function testMeetingsExtendedBehavioral() {
     assert.strictEqual(result, false, 'Should return false for missing meeting');
   });
 
-  // ── checkMeetingTimeouts (safe tests — no side effects on real meetings) ──
+  // ── checkMeetingTimeouts (isolated — never iterates real MEETINGS_DIR) ──
+  // Each test routes the checkMeetingTimeouts call through createTestMinionsDir(),
+  // so even tiny meetingRoundTimeout values cannot force-advance live meetings
+  // (real incident on 2026-05-06 — see W-motcfcil000w5c75).
 
   await test('checkMeetingTimeouts does not advance meeting within timeout window', () => {
-    const testId = 'TEST-EXT-tout-safe-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [],
-      roundStartedAt: new Date().toISOString(), // just now — well within timeout
-    });
+    const restore = createTestMinionsDir();
     try {
-      // Use a large timeout to ensure no real meetings are affected
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-safe';
+      isolated.saveMeeting({
+        id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [],
+        roundStartedAt: new Date().toISOString(), // just now — well within timeout
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating', 'Should NOT advance — within timeout');
       assert.strictEqual(m.round, 1, 'Round should remain 1');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts skips completed meetings', () => {
-    const testId = 'TEST-EXT-tout-skip-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: { content: 'Done' }, transcript: [],
-      completedAt: new Date().toISOString(),
-      roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-skip';
+      isolated.saveMeeting({
+        id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: { content: 'Done' }, transcript: [],
+        completedAt: new Date().toISOString(),
+        roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts skips archived meetings', () => {
-    const testId = 'TEST-EXT-tout-archived-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Archived Timeout', status: 'archived', round: 3,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: { content: 'Done' }, transcript: [],
-      archivedAt: new Date().toISOString(),
-      roundStartedAt: new Date(Date.now() - 9999999).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-archived';
+      isolated.saveMeeting({
+        id: testId, title: 'Archived Timeout', status: 'archived', round: 3,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: { content: 'Done' }, transcript: [],
+        archivedAt: new Date().toISOString(),
+        roundStartedAt: new Date(Date.now() - 9999999).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'archived', 'Archived meeting should remain archived');
       assert.strictEqual(m.archivedAt !== undefined, true, 'archivedAt should be preserved');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not advance investigating with unfinished participants', () => {
-    const testId = 'TEST-EXT-tout-inv-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
-      participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
-      debate: {}, humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(), // 16.7 min ago
-    });
+    const restore = createTestMinionsDir();
     try {
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-inv';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
+        participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
+        debate: {}, humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(), // 16.7 min ago
+      });
       // Default ENGINE_DEFAULTS.meetingRoundTimeout is 900000 (15 min)
-      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating', 'Should not advance until every participant succeeds or fails');
       assert.strictEqual(m.round, 1);
       const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
       assert.strictEqual(timeoutEntry, undefined, 'Should not record timeout transcript unless advancing an already-terminal round');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not advance debating with unfinished participants', () => {
-    const testId = 'TEST-EXT-tout-deb-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
-      participants: ['alice', 'bob'],
-      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
-      debate: { alice: { content: 'Alice debate' } }, // only alice submitted
-      humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-deb';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
+        participants: ['alice', 'bob'],
+        findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+        debate: { alice: { content: 'Alice debate' } }, // only alice submitted
+        humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'debating', 'Should not advance until every participant succeeds or fails');
       assert.strictEqual(m.round, 2);
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not auto-complete concluding while conclusion agent is unfinished', () => {
-    const testId = 'TEST-EXT-tout-con-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
-      participants: ['alice', 'bob'],
-      findings: {
-        alice: { content: 'Module X has an auth bug that breaks the save path.' },
-        bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
-      },
-      debate: {
-        alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
-        bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
-      },
-      humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-con';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
+        participants: ['alice', 'bob'],
+        findings: {
+          alice: { content: 'Module X has an auth bug that breaks the save path.' },
+          bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
+        },
+        debate: {
+          alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
+          bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
+        },
+        humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({
         engine: {},
         agents: {
           alice: { name: 'Alice' },
           bob: { name: 'Bob' },
         },
       });
-      const m = meetingMod.getMeeting(testId);
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'concluding', 'Should wait for conclusion agent terminal outcome');
       assert.strictEqual(m.conclusion, null, 'Should not synthesize conclusion purely from timeout');
       assert.strictEqual(m.completedAt, undefined, 'Should not complete while conclusion is unfinished');
     } finally {
-      cleanupMeeting(testId);
-      cleanupInboxForMeeting(testId);
+      restore();
     }
   });
 
@@ -26744,24 +26760,29 @@ async function testMeetingsIsolatedGaps() {
   // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
 
   await test('checkMeetingTimeouts skips meeting with no roundStartedAt', () => {
-    const testId = 'TEST-GAP-tout-noStart-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [],
-      // no roundStartedAt intentionally
-    });
+    // Isolated: any non-trivial timeout value passed to the real module
+    // would iterate every live meeting in MEETINGS_DIR and could force-advance
+    // them (real incident on 2026-05-06 — see W-motcfcil000w5c75).
+    const restore = createTestMinionsDir();
     try {
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-GAP-tout-noStart';
+      isolated.saveMeeting({
+        id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [],
+        // no roundStartedAt intentionally
+      });
       // Tiny timeout — would fire immediately if roundStartedAt existed.
-      meetingModReal.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
-      const m = meetingModReal.getMeeting(testId);
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating',
         'meeting without roundStartedAt must not be auto-advanced');
       assert.strictEqual(m.round, 1, 'round must not be bumped');
       assert.strictEqual((m.transcript || []).length, 0,
         'no transcript entry should be written for a no-op check');
     } finally {
-      cleanupReal(testId);
+      restore();
     }
   });
 
