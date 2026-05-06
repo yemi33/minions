@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1742 (2026-05-06)
+
+### Fixes
+- pending-reassignment double-books agent with own pending dispatch (#2108)
+
 ## 0.1.1741 (2026-05-06)
 
 ### Features
