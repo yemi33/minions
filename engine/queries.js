@@ -312,7 +312,9 @@ function getNotesWithMeta() {
 }
 
 function getEngineLog() {
-  const logJson = safeRead(LOG_PATH);
+  // Use the lazy log-path resolver so test isolation (MINIONS_TEST_DIR) is
+  // honored even when this module's require cache wasn't busted.
+  const logJson = safeRead(shared.currentLogPath());
   if (!logJson) return [];
   try {
     const entries = JSON.parse(logJson);

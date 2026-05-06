@@ -145,13 +145,33 @@ function log(level, msg, meta = {}) {
   }
 }
 
+/**
+ * Resolve the log file path at write time, not at module load time.
+ *
+ * `LOG_PATH` is captured eagerly when shared.js first loads. In production this
+ * is fine — there's a single shared.js instance per process. In tests the
+ * require cache is busted to swap MINIONS_DIR, but modules NOT in
+ * ISOLATED_MODULES (engine/github.js, engine/ado.js, etc.) keep a reference to
+ * the OLD shared.js whose `LOG_PATH` still points at `D:/squad/engine/log.json`.
+ * That leaked test pollution into the live engine log (e.g. `_test/backoff-*`,
+ * `this-playbook-does-not-exist-xyz`, `TEST-EXT-*` meeting IDs).
+ *
+ * Lazy resolution honors the *current* `MINIONS_TEST_DIR` at flush time, so
+ * even unbussed dependents write to the test dir while the test owns it.
+ */
+function _currentLogPath() {
+  const root = process.env.MINIONS_TEST_DIR
+    || (process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : path.resolve(__dirname, '..'));
+  return path.join(root, 'engine', 'log.json');
+}
+
 function _flushLogBuffer() {
   if (_logBuffer.length === 0) return;
   // SEC-09 defense-in-depth: redact again at flush time so any direct
   // `_logBuffer.push(entry)` callers (tests, future paths) can't leak secrets.
   const entries = _logBuffer.splice(0).map(redactSecrets);
   try {
-    mutateJsonFileLocked(LOG_PATH, (logData) => {
+    mutateJsonFileLocked(_currentLogPath(), (logData) => {
       if (!Array.isArray(logData)) logData = logData?.entries || [];
       logData.push(...entries);
       if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
@@ -2905,6 +2925,7 @@ module.exports = {
   PR_LINKS_PATH,
   PINNED_ITEMS_PATH,
   LOG_PATH,
+  currentLogPath: _currentLogPath,
   ts,
   logTs,
   dateStamp,

@@ -81,7 +81,7 @@ git commit -m "{{commit_message}}"
 git push -u origin {{branch_name}}
 ```
 
-{{pr_section}}
+{{pr_create_instructions}}
 
 PR creation is MANDATORY for implement tasks because the engine tracks review and completion from the PR.
 

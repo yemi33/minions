@@ -769,10 +769,6 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         updateStreamDiv();
       } else if (evt.type === 'heartbeat') {
         return;
-      } else if (evt.type === 'thinking') {
-        streamStatusNote = evt.text || 'Thinking...';
-        if (activeTab) activeTab._streamStatusNote = streamStatusNote;
-        updateStreamDiv();
       } else if (evt.type === 'tool') {
         toolsUsed.push({ name: evt.name, input: evt.input || {} });
         if (activeTab) activeTab._toolsUsed = toolsUsed.slice();

@@ -264,6 +264,23 @@ const PLAYBOOK_OPTIONAL_VARS = new Set([
   'references',           // only set when item.references has entries
   'acceptance_criteria',  // only set when item.acceptanceCriteria has entries
   'checkpoint_context',   // only set when resuming from a prior timeout
+  // Host-specific identifiers — always one of {ado_*, github_*} is empty
+  // (project is either ADO or GitHub, never both). Keeping them as warns
+  // produces ~96 noise lines per day on a single-host project.
+  'ado_org',              // empty for GitHub projects
+  'ado_project',          // empty for GitHub projects
+  'github_org',           // empty for ADO projects
+  // Meeting / context vars that legitimately render empty
+  'human_notes',          // meetings without human notes have an empty list
+  'notes_content',        // empty when team notes are injected via the appendix instead
+  'all_findings',         // only set in debate/conclude rounds, not investigate
+  'all_debate',           // only set in conclude round
+  'existing_prd_json',    // only set when re-running plan-to-prd over an existing PRD
+  'branch_strategy_hint', // only set for shared-branch plans
+  'review_note',          // only set on fix/review tasks tied to a comment
+  // PR-context vars on non-PR tasks (implement/explore/etc.)
+  'pr_id', 'pr_number', 'pr_title', 'pr_branch', 'pr_author', 'pr_url',
+  'reviewer',
 ]);
 
 const PLAYBOOK_REQUIRED_VARS = {
@@ -432,6 +449,15 @@ function renderPlaybook(type, vars) {
     repo_host_label: getRepoHostLabel(renderProject),
   };
   const allVars = { ...projectVars, ...vars };
+
+  // Default optional vars to empty string when caller omitted them entirely.
+  // Without this, an unset optional var leaves `{{varname}}` in the content and
+  // trips the "unresolved template variables" warning at the end of render.
+  // The empty-string filter (line below) already silences the empty-vars warn
+  // for PLAYBOOK_OPTIONAL_VARS.
+  for (const key of PLAYBOOK_OPTIONAL_VARS) {
+    if (allVars[key] === undefined) allVars[key] = '';
+  }
 
   // Validate required template variables before substitution
   const validation = validatePlaybookVars(type, allVars);
