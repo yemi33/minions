@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1749 (2026-05-06)
+
+### Features
+- lock CC/doc session writes via mutateJsonFileLocked (#2126)
+- lock meeting state RMW via mutateMeeting helper (#2125)
+- bounds-validate parseCronField min/max (#2124)
+- replace JSON.parse(safeRead) swallow with safeJsonArr in archiveList (#2123)
+
+### Fixes
+- readBody aborts on >1MB and stops accumulating (P-c1read-7b3c) (#2121)
+- guard w.title.replace against null/undefined titles (#2120)
+
 ## 0.1.1746 (2026-05-06)
 
 ### Fixes
