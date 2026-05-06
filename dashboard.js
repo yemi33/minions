@@ -268,6 +268,30 @@ function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
     wiPath: targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json'),
   };
 }
+
+/**
+ * Aggregate archived work items from the central archive plus every project
+ * archive. Each item is tagged with `_source` (`'central'` or the project name)
+ * so the UI can group/filter. Reads via `safeJsonArr` — a corrupt archive
+ * surfaces a logged parse failure and contributes zero items, instead of
+ * throwing 500 or silently dropping the file.
+ *
+ * Exported for testing (P-h3arch-8c19).
+ */
+function collectArchivedWorkItems(minionsDir = MINIONS_DIR, projects = PROJECTS) {
+  const archived = [];
+  const centralPath = path.join(minionsDir, 'work-items-archive.json');
+  for (const item of safeJsonArr(centralPath)) {
+    archived.push({ ...item, _source: 'central' });
+  }
+  for (const project of projects) {
+    const archPath = shared.projectWorkItemsPath(project).replace('.json', '-archive.json');
+    for (const item of safeJsonArr(archPath)) {
+      archived.push({ ...item, _source: project.name });
+    }
+  }
+  return archived;
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -3319,18 +3343,10 @@ const server = http.createServer(async (req, res) => {
 
   async function handleWorkItemsArchiveList(req, res) {
     try {
-      let allArchived = [];
-      // Central archive
-      const centralPath = path.join(MINIONS_DIR, 'work-items-archive.json');
-      const central = safeRead(centralPath);
-      if (central) { try { allArchived.push(...JSON.parse(central).map(i => ({ ...i, _source: 'central' }))); } catch {} }
-      // Project archives
-      for (const project of PROJECTS) {
-        const archPath = shared.projectWorkItemsPath(project).replace('.json', '-archive.json');
-        const content = safeRead(archPath);
-        if (content) { try { allArchived.push(...JSON.parse(content).map(i => ({ ...i, _source: project.name }))); } catch {} }
-      }
-      return jsonReply(res, 200, allArchived);
+      // collectArchivedWorkItems uses safeJsonArr (typed default + logged parse
+      // failure), so a corrupt archive file is surfaced via console.error and
+      // contributes zero items instead of taking down the whole listing.
+      return jsonReply(res, 200, collectArchivedWorkItems(MINIONS_DIR, PROJECTS));
     } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
@@ -7369,6 +7385,7 @@ module.exports = {
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
+  _collectArchivedWorkItems: collectArchivedWorkItems,
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
   buildCCStatePreamble,
