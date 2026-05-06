@@ -1510,34 +1510,6 @@ function stripCCActionSyntax(text) {
   return displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
 }
 
-function _messageRequestsOrchestration(message) {
-  const text = String(message || '').toLowerCase();
-  if (!text.trim()) return false;
-
-  const docTarget = '\\b(document|doc|text|selection|selected text|selected paragraph|selected section|paragraph|section|wording|copy|markdown|plan)\\b';
-  const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
-  const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
-    || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
-  const actionTerm = '\\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\\b';
-  const untrustedActionMention = new RegExp(
-    `${docTarget}[\\s\\S]{0,120}\\b(says|contains|mentions|includes|reads|states|instructs|asks|tells|literal|literally)\\b[\\s\\S]{0,160}${actionTerm}`
-  ).test(text)
-    || new RegExp(`\\b(summarize|explain|quote|describe|analyze|extract)\\b[\\s\\S]{0,160}${docTarget}[\\s\\S]{0,160}${actionTerm}`).test(text);
-  const explicitFollowupAction = /\b(and|then|also)\b[\s\S]{0,80}\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\b/.test(text);
-  if (untrustedActionMention && !explicitFollowupAction) return false;
-
-  const dispatchAction = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify|build)\b/.test(text);
-  const workItemAction = /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
-  const stateAction = /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
-    || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
-  const agentEngineeringAction = /\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b[\s\S]{0,120}\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b/.test(text)
-    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b/.test(text);
-  const explicitActionIntent = dispatchAction || workItemAction || stateAction || agentEngineeringAction;
-  if (explicitDocEdit && !explicitActionIntent) return false;
-  return explicitActionIntent;
-}
-
 function _escapeRegExp(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -2517,13 +2489,11 @@ function contentFingerprint(str) {
   return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(mid) + ':' + str.charCodeAt(str.length - 1);
 }
 
-function _parseDocChatResultText(text, { allowActions = false } = {}) {
+function _parseDocChatResultText(text) {
   const docDelimiter = findDocChatDocumentDelimiter(text);
   if (docDelimiter) {
     const answerPart = text.slice(0, docDelimiter.index).trim();
-    const parsedActions = allowActions
-      ? parseCCActions(answerPart)
-      : { text: stripCCActionSyntax(answerPart), actions: [] };
+    const parsedActions = parseCCActions(answerPart);
     const { text: answer, actions } = parsedActions;
     let content = text.slice(docDelimiter.index + docDelimiter.length).trim();
     content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
@@ -2534,9 +2504,7 @@ function _parseDocChatResultText(text, { allowActions = false } = {}) {
       ...(parsedActions._actionParseError ? { actionParseError: parsedActions._actionParseError } : {}),
     };
   }
-  const parsedActions = allowActions
-    ? parseCCActions(text)
-    : { text: stripCCActionSyntax(text), actions: [] };
+  const parsedActions = parseCCActions(text);
   const { text: stripped, actions } = parsedActions;
   return {
     answer: stripped,
@@ -2546,8 +2514,8 @@ function _parseDocChatResultText(text, { allowActions = false } = {}) {
   };
 }
 
-function _docChatDisplayText(text, opts) {
-  return _parseDocChatResultText(text, opts).answer;
+function _docChatDisplayText(text) {
+  return _parseDocChatResultText(text).answer;
 }
 
 function _formatDocChatContext({ document, title, filePath, selection, canEdit, isJson, docUnchanged }) {
@@ -2643,8 +2611,6 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
   }
 
-  const allowActions = _messageRequestsOrchestration(message);
-
   const runOnce = async () => {
     const { extraContext } = _buildDocChatPass({
       docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
@@ -2691,7 +2657,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     return _docChatFailureResponse('doc-chat', filePath, result, sessionPreserved);
   }
 
-  return _parseDocChatResultText(result.text, { allowActions });
+  return _parseDocChatResultText(result.text);
 }
 
 async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse, onRetry }) {
@@ -2701,8 +2667,6 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
   }
-
-  const allowActions = _messageRequestsOrchestration(message);
 
   const runOnce = async () => {
     const { extraContext } = _buildDocChatPass({
@@ -2720,7 +2684,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),
       onAbortReady,
-      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
+      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); },
       onToolUse,
       onRetry,
     });
@@ -2749,7 +2713,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     return _docChatFailureResponse('doc-chat-stream', filePath, result, sessionPreserved);
   }
 
-  return _parseDocChatResultText(result.text, { allowActions });
+  return _parseDocChatResultText(result.text);
 }
 
 // -- POST helpers --
@@ -7435,7 +7399,6 @@ module.exports = {
   _meetingParticipantsFromAction: meetingParticipantsFromAction,
   parsePinnedEntries,
   _parseDocChatResultText,
-  _messageRequestsOrchestration,
   _formatDocChatContext,
   _linkPullRequestForTracking: linkPullRequestForTracking,
   _resolveSkillReadPath,
