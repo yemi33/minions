@@ -191,11 +191,13 @@ function resolveMinionsHome(forInit = false) {
 
   if (forInit) return path.join(process.cwd(), '.minions');
 
-  const localRoot = findNearestLocalMinionsRoot(process.cwd());
-  if (localRoot) return localRoot;
-
   const pointerRoot = readRootPointer();
   if (isInstalledRoot(pointerRoot)) return pointerRoot;
+
+  if (isInstalledRoot(DEFAULT_MINIONS_HOME)) return DEFAULT_MINIONS_HOME;
+
+  const localRoot = findNearestLocalMinionsRoot(process.cwd());
+  if (localRoot) return localRoot;
 
   return DEFAULT_MINIONS_HOME;
 }
@@ -205,6 +207,7 @@ let force = rest.includes('--force');
 const skipScan = rest.includes('--skip-scan');
 const skipStart = rest.includes('--skip-start') || rest.includes('--no-start');
 const MINIONS_HOME = resolveMinionsHome(cmd === 'init');
+process.env.MINIONS_HOME = MINIONS_HOME;
 const POST_UPDATE_INIT_TIMEOUT_MS = 120000;
 const POST_UPDATE_RESTART_TIMEOUT_MS = 60000;
 
@@ -542,6 +545,7 @@ function delegate(script, args) {
   const child = spawn(process.execPath, [path.join(MINIONS_HOME, script), ...args], {
     stdio: 'inherit',
     cwd: MINIONS_HOME,
+    env: { ...process.env, MINIONS_HOME },
   });
   child.on('exit', code => process.exit(code || 0));
 }

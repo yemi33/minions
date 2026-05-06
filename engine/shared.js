@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
+const MINIONS_DIR = process.env.MINIONS_TEST_DIR || (process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : path.resolve(__dirname, '..'));
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const CONTROL_PATH = path.join(ENGINE_DIR, 'control.json');
 const COOLDOWNS_PATH = path.join(ENGINE_DIR, 'cooldowns.json');

@@ -19,7 +19,7 @@ const { execSync } = require('child_process');
 const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = require('./engine/shared');
 const projectDiscovery = require('./engine/project-discovery');
 
-const MINIONS_HOME = __dirname;
+const MINIONS_HOME = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : __dirname;
 const CONFIG_PATH = path.join(MINIONS_HOME, 'config.json');
 
 function loadConfig() {
