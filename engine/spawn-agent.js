@@ -355,11 +355,14 @@ function main() {
 
   // Clean up sys tmp (only created for non-resume sessions on adapters that
   // use --system-prompt-file).
-  if (wantsSystemPromptFile) {
-    setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch { /* cleanup */ } }, 5000);
-  }
-
-  // Register exit handler to clean up orphaned temp files
+  //
+  // We deliberately DO NOT use a fixed-delay setTimeout here. Claude CLI reads
+  // `--system-prompt-file` lazily during init; on cold starts (MCP boot,
+  // `--add-dir` traversal, Windows process startup) the read can land well
+  // after any short timer fires, leaving Claude to bail with
+  // "System prompt file not found". The exit/SIGTERM handler below — plus the
+  // matching unlinks in engine/dispatch.js and engine/meeting.js on dispatch
+  // completion — are sufficient to keep tmp files from leaking.
   function _cleanupSpawnTempFiles() {
     if (wantsSystemPromptFile) {
       try { fs.unlinkSync(sysTmpPath); } catch { /* may already be cleaned */ }
