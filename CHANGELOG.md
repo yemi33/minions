@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1754 (2026-05-06)
+
+### Fixes
+- canonical .minions home wins over nearest copied tree
+- recover partial responses instead of always returning "Failed"
+- surface adapter-supplied error messages instead of hardcoding Claude
+
+### Other
+- refactor(doc-chat): dedupe error envelope shape into _buildDocChatErrorEnvelope
+
 ## 0.1.1753 (2026-05-06)
 
 ### Other
