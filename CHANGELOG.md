@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1757 (2026-05-06)
+
+### Other
+- chore: salvage in-flight working-tree fixes with simplify-pass cleanups
+- refactor(doc-chat): simplify-pass cleanups on the perf series
+- Centralize project state storage
+- perf(doc-chat): debounce client-side persistence during streaming
+- perf(doc-chat): add surgical-edit path via runtime Edit tool
+
 ## 0.1.1756 (2026-05-06)
 
 ### Other
