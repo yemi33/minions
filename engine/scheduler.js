@@ -51,26 +51,51 @@ function resolveScheduleTemplateVars(str) {
 // Parse a single cron field into a matcher function.
 // field: e.g., "*", "5", "1,3,5", "*/15"
 // min/max: valid range (0-59 for minute, 0-23 for hour, 0-6 for dow)
+//
+// Bounds policy (P-h4cron-2ab8): out-of-range fields produce a matcher that
+// never fires (`() => false`), rather than null. This keeps the function's
+// contract (always returns a function) and matches existing behavior for
+// other invalid forms (`*/0`, `*/abc`, unparseable syntax). parseCronExpr
+// still returns its wrapper object — but its `.matches()` returns false for
+// every Date when any field is out of range, so the schedule never fires.
+// This catches typos like minute=99, hour=24, dow=9 that today are accepted
+// as exact-value matchers and silently never trigger.
 function parseCronField(field, min, max) {
   field = field.trim();
   if (field === '*') return () => true;
 
-  // Step: */N
+  const hasMin = typeof min === 'number';
+  const hasMax = typeof max === 'number';
+
+  // Step: */N — step must be > 0 AND not exceed the field's max.
+  // A step larger than max either matches only val=0 (e.g., */60 for minute)
+  // or nothing meaningful — treat as never-fires for predictability.
   if (field.startsWith('*/')) {
     const step = parseInt(field.slice(2), 10);
     if (isNaN(step) || step <= 0) return () => false;
+    if (hasMax && step > max) return () => false;
     return (val) => val % step === 0;
   }
 
-  // List: N,M,O
+  // List: N,M,O — drop NaN entries AND entries outside [min, max] before
+  // building the Set. A list with no surviving entries falls through to the
+  // empty-Set matcher, which never matches anything.
   if (field.includes(',')) {
-    const values = new Set(field.split(',').map(v => parseInt(v.trim(), 10)).filter(v => !isNaN(v)));
+    const values = new Set(
+      field
+        .split(',')
+        .map(v => parseInt(v.trim(), 10))
+        .filter(v => !isNaN(v) && (!hasMin || v >= min) && (!hasMax || v <= max))
+    );
     return (val) => values.has(val);
   }
 
-  // Single value: N
+  // Single value: N — out-of-range exact values never fire.
   const exact = parseInt(field, 10);
-  if (!isNaN(exact)) return (val) => val === exact;
+  if (!isNaN(exact)) {
+    if ((hasMin && exact < min) || (hasMax && exact > max)) return () => false;
+    return (val) => val === exact;
+  }
 
   return () => false;
 }
