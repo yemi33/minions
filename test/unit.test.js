@@ -35379,7 +35379,7 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
-  await test('doc-chat uses a shorter timeout than command center', () => {
+  await test('doc-chat uses the 1-hour backend timeout (W-mot62ant)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000'),
       'Command Center should define a 1-hour backend call timeout');
@@ -35392,14 +35392,70 @@ async function testAutoRecoveryAndAtomicity() {
       'Streaming CC should default to the 1-hour call timeout');
     assert.ok(invokeFn.includes('timeout: CC_CALL_TIMEOUT_MS'),
       'SSE Command Center path should use the 1-hour call timeout');
-    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
-      'Doc-chat should define a dedicated 6-minute timeout');
+    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Doc-chat should also use a 1-hour backend timeout (long edit/Read+Write tool runs)');
+    assert.ok(!src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
+      'The legacy 6-minute doc-chat timeout must be gone');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     assert.ok(docCallFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Streaming doc-chat should use the dedicated doc-chat timeout');
+  });
+
+  await test('doc-chat retries fresh once when a resumed session returns empty/non-zero (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The retry/invalidate logic now lives in a shared helper used by both
+    // wrappers. Check the helper for the actual logic and the wrappers for the
+    // delegation.
+    const retryHelper = src.slice(src.indexOf('async function _retryDocChatAfterResumeFailure'),
+      src.indexOf('function _docChatFailureResponse'));
+    assert.ok(/Resumed session call failed/.test(retryHelper),
+      'retry helper should log when a resumed session fails before retrying fresh');
+    assert.ok(/docSessions\.delete\(sessionKey\)/.test(retryHelper),
+      'retry helper should invalidate the persisted session before retrying fresh');
+    assert.ok(/schedulePersistDocSessions\(\)/.test(retryHelper),
+      'retry helper should persist the invalidated session map');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    for (const [label, fnSrc] of [['ccDocCall', docCallFn], ['ccDocCallStreaming', docStreamFn]]) {
+      assert.ok(fnSrc.includes('_retryDocChatAfterResumeFailure'),
+        `${label} should delegate to the shared retry helper`);
+    }
+  });
+
+  await test('doc-chat failure response surfaces stderr / code / errorClass instead of swallowing them (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Failure-response shape lives in the shared _docChatFailureResponse helper —
+    // slice from its definition through ccDocCallStreaming so the structured
+    // payload is visible to source-level assertions.
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('async function ccDocCallStreaming('));
+    assert.ok(/error:\s*\{/.test(failureFn),
+      'doc-chat failure response should attach a structured error object');
+    assert.ok(/slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should clip stderr to the last 2KB');
+    assert.ok(/stderr:\s*stderrTail/.test(failureFn) || /stderr:[^\n,]*slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should include the truncated stderr');
+    assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn),
+      'doc-chat failure response should include the runtime errorClass');
+    assert.ok(/code:\s*result\.code/.test(failureFn),
+      'doc-chat failure response should include the runtime exit code');
+    // And both wrappers must actually delegate to the helper on the failure branch.
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docCallFn.includes("_docChatFailureResponse('doc-chat'"),
+      'ccDocCall should delegate to _docChatFailureResponse on failure');
+    assert.ok(docStreamFn.includes("_docChatFailureResponse('doc-chat-stream'"),
+      'ccDocCallStreaming should delegate to _docChatFailureResponse on failure');
+    // Doc-chat handlers must forward the structured error to the response so
+    // the dashboard can render it.
+    const handleDocChatFn = src.slice(src.indexOf('async function handleDocChat('), src.indexOf('async function handleDocChatStream('));
+    const handleDocChatStreamFn = src.slice(src.indexOf('async function handleDocChatStream('), src.indexOf('async function handleInboxPersist'));
+    assert.ok(handleDocChatFn.includes('error: ccError'),
+      'handleDocChat should forward the cc error to the JSON response');
+    assert.ok(handleDocChatStreamFn.includes('error: ccError'),
+      'handleDocChatStream should forward the cc error to the SSE done event');
   });
 
   await test('CC frontend stream timeout buffers the 1-hour backend timeout', () => {
@@ -35433,7 +35489,9 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
+    // freshSession plumbing now spans _buildDocChatPass + ccDocCall — slice
+    // through both so the source-level assertions still see the literal pattern.
+    const docCallFn = src.slice(src.indexOf('function _buildDocChatPass'), src.indexOf('async function ccDocCallStreaming('));
     // ccDocCall must accept freshSession param
     assert.ok(docCallFn.includes('freshSession'), 'ccDocCall should accept freshSession parameter');
     // When freshSession is true, existing session must be skipped

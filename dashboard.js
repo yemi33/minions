@@ -952,9 +952,10 @@ const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after di
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
 const CC_LIVE_STREAM_MAX_AGE_MS = shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs;
 // Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
-// 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
-// edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
-const DOC_CHAT_TIMEOUT_MS = 360000;
+// well past 5 min on `canEdit:true` paths. Bumped to 1 hour (matching CC) so legitimate
+// edits aren't killed mid-stream and the backend timeout never beats the user's reading
+// time. The doc-chat handlers still abort on client disconnect.
+const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
@@ -2466,6 +2467,56 @@ function _formatDocChatContext({ document, title, filePath, selection, canEdit, 
   return context;
 }
 
+// Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
+// so a fresh-session retry includes the full document instead of relying on the
+// dead session's prior turn for context.
+function _buildDocChatPass({ docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession }) {
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
+  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
+  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
+  const extraContext = _formatDocChatContext({
+    document: docSlice, title, filePath, selection, canEdit, isJson, docUnchanged,
+  });
+  return { extraContext, docHash, hadSession: !!existing?.sessionId };
+}
+
+// One-shot recovery from a stuck resumed session: if the initial call rode an
+// existing session and came back empty / non-zero, invalidate the persisted
+// session and re-run via the supplied closure. ccCall already retries fresh
+// when the runtime can't extract a sessionId, but on adapter-still-alive
+// failures it preserves the session — and from doc-chat's perspective that's
+// the failure mode the user actually sees ("Failed to process request").
+async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce }) {
+  if (!initialPass.hadSession || freshSession || result.missingRuntime) return result;
+  if (result.code === 0 && result.text) return result;
+  console.log(`[doc-chat] Resumed session call failed (code=${result.code}, empty=${!result.text}) — invalidating session and retrying fresh for ${sessionKey || 'untitled'}`);
+  if (sessionKey) {
+    docSessions.delete(sessionKey);
+    schedulePersistDocSessions();
+  }
+  return runOnce();
+}
+
+// Build the {error} envelope returned to the dashboard when doc-chat ultimately
+// fails. Keeps the polite user-facing message but exposes the runtime's real
+// stderr / exit code / errorClass so the UI can render the cause and so future
+// failures are debuggable from logs.
+function _docChatFailureResponse(label, filePath, result) {
+  const stderrTail = (result.stderr || '').slice(-2048);
+  console.error(`[${label}] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, errorClass=${result.errorClass || 'null'}, stderr=${stderrTail.slice(0, 200)}`);
+  return {
+    answer: 'Failed to process request. Try again.',
+    content: null,
+    actions: [],
+    error: {
+      code: result.code ?? null,
+      stderr: stderrTail,
+      errorClass: result.errorClass || null,
+      runtime: result.runtime || null,
+    },
+  };
+}
+
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
@@ -2479,34 +2530,30 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
   }
 
-  // Skip re-sending full document on session resume if content unchanged
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCall(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCall(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     // One-shot call — discard the session ccCall just stored so it cannot
@@ -2516,7 +2563,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2524,8 +2571,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   }
 
   if (result.code !== 0 || !result.text) {
-    console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat', filePath, result);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -2539,42 +2585,39 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     docSessions.delete(sessionKey);
   }
 
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCallStreaming(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
-    onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
-    onToolUse,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCallStreaming(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
+      onToolUse,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
     schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2582,8 +2625,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   }
 
   if (result.code !== 0 || !result.text) {
-    console.error(`[doc-chat-stream] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat-stream', filePath, result);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -4680,7 +4722,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions, actionParseError } = await ccDocCall({
+      const { answer, content, actions, actionParseError, error: ccError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
@@ -4689,11 +4731,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
       const actionResults = await executeDocChatActions(actions);
       const baseReply = (extra = {}) => ({
-        ok: true,
+        ok: !ccError,
         answer,
         actions,
         ...(actionResults ? { actionResults } : {}),
         ...(actionParseError ? { actionParseError } : {}),
+        ...(ccError ? { error: ccError } : {}),
         ...extra,
       });
 
@@ -4795,7 +4838,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions, actionParseError } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError, error: ccError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4811,6 +4854,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           actions,
           ...(actionResults ? { actionResults } : {}),
           ...(actionParseError ? { actionParseError } : {}),
+          ...(ccError ? { error: ccError } : {}),
           ...extra,
         });
 
