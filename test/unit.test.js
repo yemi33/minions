@@ -160,7 +160,60 @@ async function testSharedUtilities() {
     const dir = createTmpDir();
     const fp = path.join(dir, 'bad.json');
     fs.writeFileSync(fp, 'not json at all');
-    assert.strictEqual(shared.safeJson(fp), null);
+    const origErr = console.error;
+    try { console.error = () => {}; assert.strictEqual(shared.safeJson(fp), null); }
+    finally { console.error = origErr; }
+  });
+
+  // P-h3arch-8c19: surface JSON corruption instead of silently returning null.
+  // Missing files remain silent (normal pre-create state); corrupt files must log.
+  await test('safeJson logs parse failure when file exists but is corrupt (P-h3arch-8c19)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt.json');
+    fs.writeFileSync(fp, '{ this: is not [ valid json');
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    try {
+      const result = shared.safeJson(fp);
+      assert.strictEqual(result, null, 'corrupt file with no backup must still return null');
+    } finally {
+      console.error = origErr;
+    }
+    assert.ok(errs.some(line => /parse failure|parse error/i.test(line) && line.includes('corrupt.json')),
+      'parse failure must be logged with the file basename — got: ' + JSON.stringify(errs));
+  });
+
+  await test('safeJson stays silent for missing file (no log noise on pre-create state)', () => {
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    try {
+      const result = shared.safeJson('/nonexistent/totally-absent.json');
+      assert.strictEqual(result, null);
+    } finally {
+      console.error = origErr;
+    }
+    assert.deepStrictEqual(errs, [],
+      'missing file is normal pre-create state — must not log');
+  });
+
+  await test('safeJsonArr returns [] and logs on corrupt JSON (P-h3arch-8c19)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt-arr.json');
+    fs.writeFileSync(fp, 'not-json-at-all');
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    let result;
+    try {
+      result = shared.safeJsonArr(fp);
+    } finally {
+      console.error = origErr;
+    }
+    assert.deepStrictEqual(result, [], 'safeJsonArr must default to [] on corrupt JSON');
+    assert.ok(errs.some(line => /parse failure|parse error/i.test(line)),
+      'safeJsonArr must surface parse failure via log — got: ' + JSON.stringify(errs));
   });
 
   await test('safeWrite + safeJson roundtrip (object)', () => {
@@ -53955,6 +54008,129 @@ async function testDashboardPureHelpers() {
       'must name the SoT identifiers so CC understands where the index comes from');
     assert.ok(md.includes('"endpoint":"/api/...",'),
       'must remind CC of the generic-fallback shape for un-named endpoints');
+  });
+
+  // ── P-h3arch-8c19: archive list must surface JSON corruption (not 500, not silent) ─
+  // Bug: dashboard.js used `JSON.parse(safeRead(...))` inside `try {} catch {}` which
+  // silently dropped corrupt archive files. A corrupt central archive should NOT
+  // cause /api/work-items/archive to return 500 OR to silently hide the corruption —
+  // it must log the parse failure (via safeJsonArr) and still return any valid
+  // project archives so the operator can see partial data.
+
+  await test('handleWorkItemsArchiveList source: uses safeJsonArr (no JSON.parse-swallow) (P-h3arch-8c19)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleWorkItemsArchiveList');
+    assert.ok(fnStart > 0, 'handleWorkItemsArchiveList must exist');
+    const fnEnd = src.indexOf('async function handleWorkItemsReopen', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
+    assert.ok(!/JSON\.parse\s*\(\s*safeRead\s*\(/.test(fn),
+      'must not use JSON.parse(safeRead(...)) — that swallows parse errors (use safeJsonArr instead)');
+    assert.ok(!/JSON\.parse\s*\(\s*content\s*\)/.test(fn),
+      'must not use JSON.parse(content) inside try/catch swallow — use safeJsonArr');
+    assert.ok(/safeJsonArr\s*\(/.test(fn),
+      'must call safeJsonArr to read archive files (typed default + logged parse failure)');
+    // The archive helper must NOT keep an inner try { allArchived.push... } catch {} swallow
+    // around each file read — safeJsonArr never throws, so the swallow is dead code that
+    // hides real errors. (Outer try/catch is allowed to catch unexpected runtime errors.)
+    assert.ok(!/try\s*\{\s*allArchived\.push/.test(fn),
+      'must not wrap individual archive reads in a try/catch swallow (safeJsonArr handles failures)');
+  });
+
+  await test('archive list collector: corrupt central archive logs parse failure and returns project archives only (P-h3arch-8c19)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Re-require dashboard against the test MINIONS_DIR so PROJECTS / paths
+      // re-resolve from the seeded config. dashboard.js loads layout.html /
+      // dashboard/ pages at require time, so we copy those in too.
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+
+      // Configure one project so the loop has something to iterate.
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: projDir }],
+        agents: {}, engine: {},
+      }));
+
+      // Corrupt the CENTRAL archive — primary failure path.
+      fs.writeFileSync(path.join(testDir, 'work-items-archive.json'), '{ this is :: not json [');
+
+      // Valid project archive — must still come through.
+      const projectArchivePath = path.join(projDir, 'work-items-archive.json');
+      testShared.safeWrite(projectArchivePath, [
+        { id: 'W-demo-1', title: 'demo archived item', status: 'done', archivedAt: '2026-05-06T00:00:00Z' },
+      ]);
+
+      // Capture stderr while invoking the collector.
+      const errs = [];
+      const origErr = console.error;
+      console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+      let collected;
+      try {
+        const dashboard = require('../dashboard');
+        assert.strictEqual(typeof dashboard._collectArchivedWorkItems, 'function',
+          'dashboard must export _collectArchivedWorkItems for testability');
+        collected = dashboard._collectArchivedWorkItems();
+      } finally {
+        console.error = origErr;
+      }
+
+      // Project archive survives despite central being corrupt.
+      assert.ok(Array.isArray(collected),
+        'collector must return an array (typed default), not throw');
+      const demoEntry = collected.find(i => i.id === 'W-demo-1');
+      assert.ok(demoEntry, 'project archive items must be returned even when central is corrupt');
+      assert.strictEqual(demoEntry._source, 'demo', '_source must reflect the project name');
+
+      // Central corruption surfaced via safeJsonArr → console.error.
+      assert.ok(errs.some(line => /parse failure|parse error/i.test(line) && line.includes('work-items-archive')),
+        'corrupt central archive must trigger a parse-failure log — got: ' + JSON.stringify(errs));
+
+      // No central items leaked through (typed default returned []).
+      assert.ok(!collected.some(i => i._source === 'central'),
+        'corrupt central archive must contribute zero items (not crash, not 500)');
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard')]; } catch {}
+      restore();
+    }
+  });
+
+  await test('archive list collector: aggregates valid central + project archives (P-h3arch-8c19)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: projDir }],
+        agents: {}, engine: {},
+      }));
+
+      testShared.safeWrite(path.join(testDir, 'work-items-archive.json'),
+        [{ id: 'W-central-1', title: 'central archived' }]);
+      testShared.safeWrite(path.join(projDir, 'work-items-archive.json'),
+        [{ id: 'W-demo-1', title: 'project archived' }]);
+
+      const dashboard = require('../dashboard');
+      const result = dashboard._collectArchivedWorkItems();
+      const sources = result.map(r => `${r._source}:${r.id}`).sort();
+      assert.deepStrictEqual(sources, ['central:W-central-1', 'demo:W-demo-1'],
+        'collector must tag every item with _source and aggregate across central + projects');
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard')]; } catch {}
+      restore();
+    }
   });
 }
 

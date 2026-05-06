@@ -180,33 +180,52 @@ function safeReadDir(dir) {
 }
 
 function safeJson(p) {
+  // Split the read from the parse so we can distinguish "file missing" (normal
+  // pre-create state — silent) from "file present but corrupt JSON" (real
+  // integrity failure — must log). Without this split a `JSON.parse(read)` in
+  // a single try/catch silently hides corruption (P-h3arch-8c19).
+  let primaryRaw = null;
+  let primaryRead = false;
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
+    primaryRaw = fs.readFileSync(p, 'utf8');
+    primaryRead = true;
   } catch {
-    // Primary file missing or corrupted — try restoring from .backup sidecar
-    const backupPath = p + '.backup';
+    // ENOENT / EACCES / etc — fall through to backup attempt without logging.
+  }
+  if (primaryRead) {
     try {
-      const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-      // Backup is valid — restore it to the primary file (atomic via safeWrite)
-      console.log(`[safeJson] restored ${path.basename(p)} from .backup sidecar`);
-      try {
-        safeWrite(p, backupData);
-        // Verify the restored file matches expected content
-        const verifyData = JSON.parse(fs.readFileSync(p, 'utf8'));
-        if (JSON.stringify(verifyData) !== JSON.stringify(backupData)) {
-          console.error(`[safeJson] CRITICAL: backup restore verification failed for ${p} — written data does not match backup`);
-        }
-      } catch (restoreErr) {
-        // Restore-to-primary is best-effort — backupData is already parsed and valid.
-        // Don't throw: disk-full / permission errors should not discard valid data.
-        console.error(`[safeJson] restore write failed for ${p}: ${restoreErr.message}`);
-      }
-      return backupData;
-    } catch (outerErr) {
-      // Let CRITICAL errors propagate — callers must know about data integrity failures
-      if (outerErr.message && outerErr.message.includes('CRITICAL')) throw outerErr;
-      return null;
+      return JSON.parse(primaryRaw);
+    } catch (parseErr) {
+      // File existed but JSON was unparseable — surface so silent corruption
+      // doesn't accumulate. Callers (incl. safeJsonArr / safeJsonObj wrappers)
+      // rely on this log to satisfy the "typed default + logged parse failure"
+      // contract documented in CLAUDE.md.
+      console.error(`[safeJson] parse failure for ${path.basename(p)}: ${parseErr.message}`);
     }
+  }
+  // Primary missing or corrupted — try restoring from .backup sidecar.
+  const backupPath = p + '.backup';
+  try {
+    const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+    // Backup is valid — restore it to the primary file (atomic via safeWrite)
+    console.log(`[safeJson] restored ${path.basename(p)} from .backup sidecar`);
+    try {
+      safeWrite(p, backupData);
+      // Verify the restored file matches expected content
+      const verifyData = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (JSON.stringify(verifyData) !== JSON.stringify(backupData)) {
+        console.error(`[safeJson] CRITICAL: backup restore verification failed for ${p} — written data does not match backup`);
+      }
+    } catch (restoreErr) {
+      // Restore-to-primary is best-effort — backupData is already parsed and valid.
+      // Don't throw: disk-full / permission errors should not discard valid data.
+      console.error(`[safeJson] restore write failed for ${p}: ${restoreErr.message}`);
+    }
+    return backupData;
+  } catch (outerErr) {
+    // Let CRITICAL errors propagate — callers must know about data integrity failures
+    if (outerErr.message && outerErr.message.includes('CRITICAL')) throw outerErr;
+    return null;
   }
 }
 
