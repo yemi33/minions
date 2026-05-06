@@ -23,4 +23,18 @@ If orchestration is requested, put the human-facing answer first, then `===ACTIO
 
 ## Editing Documents
 
-When editing a document, explain the change briefly, then put the document delimiter requested in the user prompt on its own line, then the complete updated file content. Do not place action JSON after the updated file content.
+You have two ways to edit the document. Pick the right one for the change.
+
+### Surgical edits (preferred for localized changes)
+
+For typo fixes, single-line tweaks, replacing a paragraph, inserting a section, or any change touching less than ~30% of the file, use the runtime `Edit` tool against the file path supplied in the user prompt's document context. After the tool succeeds, briefly explain what you changed in the answer text. Do not also emit the document delimiter — the server detects edits by re-reading the file on disk after the call. This is dramatically faster than echoing the whole file.
+
+### Whole-file rewrite (fallback)
+
+For wholesale rewrites, format conversions, or changes touching most of the file, explain the change briefly, then put the document delimiter requested in the user prompt on its own line, then the complete updated file content. Do not place action JSON after the updated file content. Use this path only when a surgical edit would be impractical.
+
+### Rules for both paths
+
+- Never edit any file other than the one named in the document context.
+- If the user is asking a question rather than requesting an edit, do not edit. Answer in plain text.
+- If a JSON file's edit would invalidate it, prefer the whole-file rewrite path so the server can validate the result before persisting.
