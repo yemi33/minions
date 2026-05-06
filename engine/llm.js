@@ -23,6 +23,7 @@ const { resolveRuntime } = require('./runtimes');
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
+const LLM_EXIT_SETTLE_GRACE_MS = 1000;
 const MISSING_RUNTIME_EXIT_CODE = 78;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
@@ -609,6 +610,8 @@ function callLLM(promptText, sysPromptText, opts = {}) {
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
     });
+    let settled = false;
+    let exitSettleTimer = null;
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {
       if (taskCompleteTimer) return;
@@ -635,11 +638,16 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    function finish(code) {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
+      try { proc.stdout?.destroy(); } catch {}
+      try { proc.stderr?.destroy(); } catch {}
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
       // parseError lets the adapter classify obvious failure modes (auth /
@@ -659,10 +667,19 @@ function callLLM(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    }
+
+    proc.on('close', finish);
+    proc.on('exit', (code) => {
+      if (settled) return;
+      exitSettleTimer = setTimeout(() => finish(code), LLM_EXIT_SETTLE_GRACE_MS);
     });
 
     proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM spawn error (${label}): ${err.message}`);
@@ -709,6 +726,8 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
     });
+    let settled = false;
+    let exitSettleTimer = null;
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {
       if (taskCompleteTimer) return;
@@ -738,11 +757,16 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    function finish(code) {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
+      try { proc.stdout?.destroy(); } catch {}
+      try { proc.stderr?.destroy(); } catch {}
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
       const errInfo = code !== 0
@@ -759,10 +783,19 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    }
+
+    proc.on('close', finish);
+    proc.on('exit', (code) => {
+      if (settled) return;
+      exitSettleTimer = setTimeout(() => finish(code), LLM_EXIT_SETTLE_GRACE_MS);
     });
 
     proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM-stream spawn error (${label}): ${err.message}`);
