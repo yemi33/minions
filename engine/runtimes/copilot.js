@@ -207,18 +207,29 @@ function buildArgs(opts = {}) {
     disableBuiltinMcps,
     suppressAgentsMd,
     reasoningSummaries,
+    // Plain-response mode — disable Copilot's autopilot loop entirely so the
+    // session ends after a single assistant message. Without --autopilot the
+    // model can still emit text but Copilot won't try to execute any
+    // tool_use blocks (and won't require task_complete to terminate). Used
+    // by doc-chat where the model has the full document inlined and never
+    // legitimately needs a tool call. See docs/copilot-cli-schema.md §3 —
+    // "Without it the session ends after one assistant response."
+    disableTools,
   } = opts;
 
-  const args = [
+  const baseArgs = [
     '--output-format', 'json',
     '-s',
     '--no-color',
     '--plain-diff',
-    '--autopilot',
     '--allow-all',
     '--no-ask-user',
     '--log-level', 'error',
   ];
+  // --autopilot enables the task_complete-driven multi-turn agentic loop.
+  // For plain-response mode we omit it so Copilot stops after the first
+  // assistant message and never executes tool calls.
+  const args = disableTools === true ? baseArgs : [...baseArgs, '--autopilot'];
 
   if (Array.isArray(addDirs)) {
     for (const d of addDirs) {
@@ -226,7 +237,8 @@ function buildArgs(opts = {}) {
     }
   }
 
-  if (maxTurns != null && maxTurns !== '') {
+  // --max-autopilot-continues only applies when autopilot is enabled.
+  if (disableTools !== true && maxTurns != null && maxTurns !== '') {
     args.push('--max-autopilot-continues', String(maxTurns));
   }
 

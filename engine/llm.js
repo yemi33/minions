@@ -295,6 +295,7 @@ function _buildSpawnAgentFlags(runtime, opts = {}) {
   if (opts.disableBuiltinMcps === true) flags.push('--disable-builtin-mcps');
   if (opts.suppressAgentsMd === true) flags.push('--no-custom-instructions');
   if (opts.reasoningSummaries === true) flags.push('--enable-reasoning-summaries');
+  if (opts.disableTools === true) flags.push('--disable-tools');
 
   return flags;
 }
@@ -316,6 +317,7 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
     direct, label, runtime, model, maxTurns, allowedTools, effort, sessionId,
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+    disableTools,
   } = callOpts;
 
   const id = uid();
@@ -328,6 +330,7 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
     model, maxTurns, allowedTools, effort, sessionId,
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+    disableTools,
   };
   // Capability-gate per-flag opts before prompt construction so adapters can
   // make resume-aware prompt decisions from the same opts used for argv.
@@ -396,6 +399,7 @@ function _spawnProcess(promptText, sysPromptText, callOpts) {
     model, maxTurns, allowedTools, effort, sessionId,
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+    disableTools,
   });
   const args = [spawnScript, promptPath, sysPath, ...adapterFlags];
 
@@ -607,6 +611,11 @@ function callLLM(promptText, sysPromptText, opts = {}) {
     // Cross-runtime + Copilot opts:
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+    // Plain-response mode — when true, the runtime adapter must lock the
+    // session into single-response, no-tools mode. Used by doc-chat to avoid
+    // Copilot's autopilot loop emitting tool_use blocks (which crash with a
+    // runtime error after generating text).
+    disableTools = false,
   } = opts;
 
   const unavailable = _runtimeUnavailableResult({ cli: cliOverride, engineConfig });
@@ -625,6 +634,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
       direct, label, runtime, model, maxTurns, allowedTools, effort, sessionId,
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
+      disableTools,
     });
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {
@@ -732,6 +742,8 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
     model: modelOverride, cli: cliOverride, engineConfig,
     maxBudget, bare, fallbackModel,
     stream, disableBuiltinMcps, suppressAgentsMd, reasoningSummaries,
+    // Plain-response mode — see callLLM for rationale.
+    disableTools = false,
   } = opts;
 
   const unavailable = _runtimeUnavailableResult({ cli: cliOverride, engineConfig });
@@ -750,6 +762,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       direct, label, runtime, model, maxTurns, allowedTools, effort, sessionId,
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
+      disableTools,
     });
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {

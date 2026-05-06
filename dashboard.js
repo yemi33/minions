@@ -2288,7 +2288,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', disableTools = false, skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2307,7 +2307,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
-      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      timeout, label, model, maxTurns, allowedTools, disableTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
     });
     if (onAbortReady) onAbortReady(p1.abort);
@@ -2345,7 +2345,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 2: fresh session (include preamble for full context)
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLM(freshPrompt, systemPrompt, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    timeout, label, model, maxTurns, allowedTools, disableTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p2.abort);
@@ -2363,7 +2363,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
   const p3 = llm.callLLM(freshPrompt, systemPrompt, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    timeout, label, model, maxTurns, allowedTools, disableTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
   });
   if (onAbortReady) onAbortReady(p3.abort);
@@ -2377,7 +2377,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, disableTools = false, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2395,7 +2395,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
 
   if (sessionId && maxTurns > 1) {
     const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
-      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
+      timeout, label, model, maxTurns, allowedTools, disableTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
       onChunk,
       onToolUse,
@@ -2433,7 +2433,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (onRetry) onRetry(2);
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    timeout, label, model, maxTurns, allowedTools, disableTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
@@ -2453,7 +2453,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   await new Promise(r => setTimeout(r, 2000));
   if (onRetry) onRetry(3);
   const p3 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
+    timeout, label, model, maxTurns, allowedTools, disableTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
     onChunk,
     onToolUse,
@@ -2614,8 +2614,14 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
       store: 'doc', sessionKey,
       extraContext, label: 'doc-chat',
       timeout: DOC_CHAT_TIMEOUT_MS,
-      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-      maxTurns: canEdit ? 25 : 10,
+      // Plain-response mode: no tool calls allowed at all. The full document
+      // is already inlined into extraContext (re-read from disk on each call),
+      // so tools are unnecessary, and Copilot's autopilot loop crashes when
+      // the model emits a tool_use after generating text. Edits go through
+      // the ---DOCUMENT--- delimiter convention, parsed from the answer text.
+      allowedTools: '',
+      maxTurns: 1,
+      disableTools: true,
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),
@@ -2670,8 +2676,12 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       store: 'doc', sessionKey,
       extraContext, label: 'doc-chat',
       timeout: DOC_CHAT_TIMEOUT_MS,
-      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-      maxTurns: canEdit ? 25 : 10,
+      // Plain-response mode — see ccDocCall for rationale. Both wrappers must
+      // share the same lockdown so the streaming variant doesn't get a
+      // looser policy than the non-streaming one.
+      allowedTools: '',
+      maxTurns: 1,
+      disableTools: true,
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),

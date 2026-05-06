@@ -1428,6 +1428,18 @@ async function testRuntimeAdapters() {
       `Copilot-only flags leaked into Claude args: ${args.join(' ')}`);
   });
 
+  await test('claude.buildArgs tolerates disableTools opt without crashing (W-mouc2ho5)', () => {
+    // disableTools is the new plain-response opt for doc-chat. The Claude
+    // adapter relies on the doc-chat sysprompt + maxTurns:1 to enforce
+    // single-response, no-tools behavior — there is no Claude CLI flag that
+    // disables every tool unconditionally. The adapter MUST tolerate the opt
+    // without leaking an unknown flag, the same way it tolerates Copilot-only
+    // opts.
+    const args = claude.buildArgs({ model: 'sonnet', disableTools: true });
+    assert.ok(!args.some(a => /^--disable-tools$|^--no-tools$/.test(a)),
+      `Claude must not emit a fictional --disable-tools flag, got: ${args.join(' ')}`);
+  });
+
   await test('claude.buildArgs verbose=false suppresses --verbose', () => {
     const args = claude.buildArgs({ model: 'sonnet', verbose: false });
     assert.ok(!args.includes('--verbose'));
@@ -1960,6 +1972,39 @@ async function testCopilotAdapter() {
     assert.ok(copilot.buildArgs({ reasoningSummaries: true }).includes('--enable-reasoning-summaries'));
     assert.ok(!copilot.buildArgs({ reasoningSummaries: false }).includes('--enable-reasoning-summaries'));
     assert.ok(!copilot.buildArgs({}).includes('--enable-reasoning-summaries'));
+  });
+
+  await test('copilot.buildArgs disableTools=true strips --autopilot (plain-response mode, W-mouc2ho5)', () => {
+    // Doc-chat sets disableTools:true so Copilot ends after a single
+    // assistant message instead of running the autopilot loop. Without
+    // --autopilot the model can still emit text but Copilot won't try to
+    // execute tool_use blocks (which crashed with a runtime error after
+    // generating text — the bug this flag fixes).
+    const baseline = copilot.buildArgs({});
+    assert.ok(baseline.includes('--autopilot'),
+      'baseline (disableTools omitted) must keep --autopilot for the agentic dispatch path');
+
+    const plain = copilot.buildArgs({ disableTools: true });
+    assert.ok(!plain.includes('--autopilot'),
+      `disableTools:true must strip --autopilot, got: ${plain.join(' ')}`);
+    assert.ok(!plain.includes('--max-autopilot-continues'),
+      'disableTools:true must NOT emit --max-autopilot-continues (no autopilot loop to bound)');
+
+    // Strict-true gating — only literal true strips autopilot.
+    assert.ok(copilot.buildArgs({ disableTools: false }).includes('--autopilot'));
+    assert.ok(copilot.buildArgs({ disableTools: 'truthy' }).includes('--autopilot'),
+      'strict-true gating prevents accidental opt-in from truthy strings');
+  });
+
+  await test('copilot.buildArgs disableTools=true preserves --allow-all and --no-ask-user (plain-response baseline)', () => {
+    // Even in plain-response mode we still need --allow-all and
+    // --no-ask-user — without them the CLI may prompt or deadlock if the
+    // model unexpectedly emits any tool/path probe.
+    const args = copilot.buildArgs({ disableTools: true });
+    assert.ok(args.includes('--allow-all'), 'plain-response mode must keep --allow-all');
+    assert.ok(args.includes('--no-ask-user'), 'plain-response mode must keep --no-ask-user');
+    assert.ok(args.includes('--output-format') && args[args.indexOf('--output-format') + 1] === 'json',
+      'plain-response mode must keep JSONL output format');
   });
 
   await test('copilot.buildArgs --stream emitted only for "on" or "off"', () => {
@@ -35844,19 +35889,34 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('set-teams-tenantId'), 'settings should have tenantId field');
   });
 
-  await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
+  await test('doc-chat locks into plain-response mode — no tools, single-turn (W-mouc2ho5)', () => {
+    // Doc-chat must never request tool calls. The full document is already
+    // inlined into extraContext on every call (re-read from disk), so tools
+    // are unnecessary AND emitting tool_use blocks crashes Copilot's autopilot
+    // loop with a runtime error after generating text. Edits go through the
+    // ---DOCUMENT--- delimiter convention parsed from the answer text.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes("'Read,Glob,Grep'"), 'Read-only doc-chat should only allow Read,Glob,Grep');
-    assert.ok(docCallFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Editable doc-chat should allow Read,Write,Edit,Glob,Grep');
-    assert.ok(!docCallFn.slice(0, 500).includes('Bash'), 'Doc-chat should not allow Bash');
-    assert.ok(!docCallFn.slice(0, 500).includes('WebSearch'), 'Doc-chat should not allow WebSearch');
-  });
-
-  await test('doc-chat uses lower maxTurns than CC', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    for (const [label, fnSrc] of [['ccDocCall', docCallFn], ['ccDocCallStreaming', docStreamFn]]) {
+      assert.ok(/allowedTools:\s*''/.test(fnSrc),
+        `${label} should pass an empty allowedTools list (plain-response mode)`);
+      assert.ok(/maxTurns:\s*1\b/.test(fnSrc),
+        `${label} should pin maxTurns to 1 (no agentic loop)`);
+      assert.ok(/disableTools:\s*true/.test(fnSrc),
+        `${label} should pass disableTools: true so the runtime adapter strips tool-execution flags`);
+      // No agentic toolset names should leak into the doc-chat call.
+      for (const banned of ['Bash', 'WebSearch', 'WebFetch']) {
+        assert.ok(!fnSrc.slice(0, 600).includes(banned),
+          `${label} must not list ${banned} (plain-response mode forbids all tools)`);
+      }
+      // The legacy "canEdit ? ... : ..." gating must be gone from both the
+      // tool list and maxTurns — both branches collapse to no-tools/single-turn.
+      assert.ok(!/allowedTools:\s*canEdit\s*\?/.test(fnSrc),
+        `${label} should no longer differentiate canEdit at the tool list level`);
+      assert.ok(!/maxTurns:\s*canEdit\s*\?/.test(fnSrc),
+        `${label} should no longer differentiate canEdit at the maxTurns level`);
+    }
   });
 
   await test('doc-chat uses the 1-hour backend timeout (W-mot62ant)', () => {
@@ -35955,9 +36015,16 @@ async function testAutoRecoveryAndAtomicity() {
   await test('streaming doc-chat reuses the same doc-chat session/tool limits', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
-    assert.ok(docStreamFn.includes("'Read,Glob,Grep'"), 'Streaming read-only doc-chat should only allow Read,Glob,Grep');
-    assert.ok(docStreamFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Streaming editable doc-chat should allow Read,Write,Edit,Glob,Grep');
-    assert.ok(docStreamFn.includes('maxTurns: canEdit ? 25 : 10'), 'Streaming doc-chat should keep the lower doc maxTurns limits');
+    // Plain-response mode: no tools, single-turn (asserted in detail by the
+    // "doc-chat locks into plain-response mode" test). Here we just confirm
+    // the streaming variant carries the same lockdown so the SSE path can't
+    // diverge from the non-streaming one.
+    assert.ok(/allowedTools:\s*''/.test(docStreamFn),
+      'Streaming doc-chat should pass an empty allowedTools list');
+    assert.ok(/maxTurns:\s*1\b/.test(docStreamFn),
+      'Streaming doc-chat should pin maxTurns to 1');
+    assert.ok(/disableTools:\s*true/.test(docStreamFn),
+      'Streaming doc-chat should pass disableTools: true');
     assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
     assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); }'),
       'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
@@ -37192,6 +37259,25 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(ccCallFn.includes('direct: true'), 'ccCall should pass direct: true to callLLM');
   });
 
+  await test('ccCall / ccCallStreaming forward disableTools to callLLM/callLLMStreaming (W-mouc2ho5)', () => {
+    // Doc-chat passes disableTools:true via the ccCall opts bag. The wrapper
+    // must accept the param and plumb it into every llm.callLLM* invocation
+    // (resume, fresh, retry) so the runtime adapter sees it on every attempt.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    for (const [label, fnSrc] of [['ccCall', ccCallFn], ['ccCallStreaming', ccStreamFn]]) {
+      assert.ok(/disableTools\s*=\s*false/.test(fnSrc),
+        `${label} should accept disableTools (default false) so the existing CC paths are unchanged`);
+      // Every callLLM/callLLMStreaming invocation must include disableTools.
+      const invocations = (fnSrc.match(/callLLM(?:Streaming)?\(/g) || []);
+      const passthroughs = (fnSrc.match(/disableTools[,\s}]/g) || []).length;
+      assert.ok(invocations.length > 0, `${label} should invoke the LLM at least once`);
+      assert.ok(passthroughs >= invocations.length,
+        `${label} should pass disableTools to every llm.callLLM* invocation (saw ${passthroughs} forwards for ${invocations.length} call sites)`);
+    }
+  });
+
   await test('_spawnProcess indirect path includes PID file in cleanupFiles', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     const indirectBlock = src.slice(src.indexOf('// Indirect: use spawn-agent.js'));
@@ -37278,6 +37364,34 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(!flags.includes('--disable-builtin-mcps'));
     assert.ok(!flags.includes('--no-custom-instructions'));
     assert.ok(!flags.includes('--enable-reasoning-summaries'));
+  });
+
+  await test('_buildSpawnAgentFlags emits --disable-tools only on strict-true (W-mouc2ho5)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    for (const runtime of [copilot, claude]) {
+      assert.ok(llm._buildSpawnAgentFlags(runtime, { disableTools: true }).includes('--disable-tools'),
+        `${runtime.name}: disableTools:true must surface --disable-tools in spawn-agent flags`);
+      assert.ok(!llm._buildSpawnAgentFlags(runtime, { disableTools: false }).includes('--disable-tools'),
+        `${runtime.name}: disableTools:false must NOT emit --disable-tools`);
+      assert.ok(!llm._buildSpawnAgentFlags(runtime, { disableTools: 'yes' }).includes('--disable-tools'),
+        `${runtime.name}: strict-true gating prevents accidental opt-in from truthy strings`);
+      assert.ok(!llm._buildSpawnAgentFlags(runtime, {}).includes('--disable-tools'),
+        `${runtime.name}: omitted disableTools must NOT emit --disable-tools`);
+    }
+  });
+
+  await test('spawn-agent.parseSpawnArgs maps --disable-tools to opts.disableTools (W-mouc2ho5)', () => {
+    const spawnAgent = require(path.join(MINIONS_DIR, 'engine', 'spawn-agent'));
+    const parsed = spawnAgent.parseSpawnArgs([
+      'node', 'spawn-agent.js', '/tmp/p.md', '/tmp/s.md',
+      '--runtime', 'copilot',
+      '--disable-tools',
+    ]);
+    assert.strictEqual(parsed.opts.disableTools, true,
+      '--disable-tools must round-trip into opts.disableTools so the indirect path forwards plain-response mode to the adapter');
+    assert.deepStrictEqual(parsed.passthrough, [],
+      '--disable-tools must be a recognized flag, not passthrough — the runtime CLI would reject the unknown arg otherwise');
   });
 
   await test('_buildSpawnAgentFlags drops stream flag for empty and non-on/off stream values', () => {
@@ -52708,6 +52822,29 @@ async function testDashboardPureHelpers() {
       'doc-chat prompt should show the Command Center dispatch action shape');
     assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
       'doc-chat prompt should map engineering task classes to workType values');
+  });
+
+  await test('doc-chat system prompt forbids all tool calls (plain-response mode, W-mouc2ho5)', () => {
+    // The sysprompt is the universal defense — adapter capabilities can vary
+    // (Copilot strips --autopilot, Claude has no equivalent), but the prompt
+    // applies to every runtime. A model that follows the sysprompt won't try
+    // to call tools, so Copilot's autopilot loop never sees a tool_use after
+    // the model produces text.
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
+    assert.ok(/Tool Use Policy/i.test(prompt),
+      'doc-chat sysprompt should declare a Tool Use Policy section');
+    assert.ok(/Do not call any tools|do not use any tools|no tool calls/i.test(prompt),
+      'doc-chat sysprompt should forbid tool calls explicitly');
+    assert.ok(/plain[- ]response mode|plain text only/i.test(prompt),
+      'doc-chat sysprompt should label the mode as plain-response / plain-text only');
+    // The literal delimiter is injected per-call from the user prompt; the
+    // sysprompt only references the convention. The "Editing Documents"
+    // section is the existing channel, and the Tool Use Policy must point
+    // back to it as the only legitimate edit path.
+    assert.ok(/Editing Documents/i.test(prompt),
+      'doc-chat sysprompt must keep the Editing Documents section that defines the edit channel');
+    assert.ok(/document delimiter|edit channel/i.test(prompt),
+      'doc-chat sysprompt should reference the document-delimiter convention as the edit channel');
   });
 
   await test('doc-chat handlers execute parsed actions and surface parse errors', () => {

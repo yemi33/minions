@@ -24,6 +24,7 @@
  *   --disable-builtin-mcps      → opts.disableBuiltinMcps    (Copilot)
  *   --no-custom-instructions    → opts.suppressAgentsMd      (Copilot)
  *   --enable-reasoning-summaries→ opts.reasoningSummaries    (Copilot)
+ *   --disable-tools             → opts.disableTools          (plain-response mode)
  *
  * Legacy --permission-mode <X> is dropped: the new Claude adapter emits
  * `--dangerously-skip-permissions` itself, so passing the legacy flag from a
@@ -76,6 +77,7 @@ function parseSpawnArgs(argv) {
       case '--disable-builtin-mcps':       opts.disableBuiltinMcps = true; break;
       case '--no-custom-instructions':     opts.suppressAgentsMd = true; break;
       case '--enable-reasoning-summaries': opts.reasoningSummaries = true; break;
+      case '--disable-tools':              opts.disableTools = true; break;
       // LEGACY: dropped — the runtime adapter emits its own permission flag.
       // Pre-P-2a6d9c4f engine.js still passes `--permission-mode bypassPermissions`;
       // letting it through would duplicate the permission flag for Claude.
