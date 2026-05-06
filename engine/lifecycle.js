@@ -542,6 +542,16 @@ function updateWorkItemStatus(meta, status, reason) {
         target.completedAt = ts();
         // Restore agent info from dispatch metadata (cleared on retry reset)
         if (meta._agentId && !target.dispatched_to) target.dispatched_to = meta._agentId;
+        // No-op marker (set by runPostCompletionHooks when the agent honored a
+        // verify-already-shipped / no-op-fix-review skill). Surfaces the
+        // rationale on the dashboard instead of marking the WI as failed.
+        if (meta._noopReason) {
+          target._noop = true;
+          target._noopReason = meta._noopReason;
+        } else {
+          delete target._noop;
+          delete target._noopReason;
+        }
       } else if (status === WI_STATUS.FAILED) {
         if (reason) target.failReason = reason;
         target.failedAt = ts();
@@ -2510,6 +2520,38 @@ function parseCompletionBoolean(value) {
   return undefined;
 }
 
+// Detect a deliberate no-op completion — the agent correctly declined to make
+// changes (work was already shipped, dispatch premise was wrong, self-authored
+// review with no actionable feedback, etc.) and should NOT be flagged as a
+// silent failure for missing a PR. Honored signals:
+//   - completion.noop === true (canonical, primary)
+//   - completion.result === 'noop'  OR  completion.result.type === 'noop'
+// Returns the no-op rationale string (for surfacing in WI metadata) when
+// detected, or null otherwise. The status must be a successful terminal state
+// — a failed/partial/in-progress completion that also claims `noop` is a
+// contradiction and falls through to the normal contract.
+function parseCompletionNoop(completion) {
+  if (!completion || typeof completion !== 'object') return null;
+  const explicit = parseCompletionBoolean(completion.noop);
+  let resultIsNoop = false;
+  if (typeof completion.result === 'string') {
+    resultIsNoop = completion.result.trim().toLowerCase() === 'noop';
+  } else if (completion.result && typeof completion.result === 'object') {
+    resultIsNoop = String(completion.result.type || '').trim().toLowerCase() === 'noop';
+  }
+  if (explicit !== true && !resultIsNoop) return null;
+  const status = normalizeCompletionStatus(completion.status);
+  if (status && status !== 'success' && status !== 'done' && status !== 'complete') return null;
+  const reason = String(
+    completion.noopReason
+      || completion.noop_reason
+      || completion.summary
+      || completion.reason
+      || ''
+  ).trim();
+  return reason || 'no-op completion';
+}
+
 function normalizeReviewVerdict(verdict) {
   const value = String(verdict || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   if (value === 'approve' || value === 'approved') return 'approved';
@@ -2867,7 +2909,17 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
+  // No-op signal: agent declared the work was correctly NOT done (already
+  // shipped, dispatch premise wrong, self-authored review, etc.). Skip the PR
+  // attachment contract — a missing PR is intentional, not a silent failure.
+  const noopRationale = (effectiveSuccess && meta?.item?.id && !skipDoneStatus)
+    ? parseCompletionNoop(structuredCompletion)
+    : null;
+  if (noopRationale) {
+    log('info', `No-op completion for ${meta.item.id}: ${noopRationale.slice(0, 200)}`);
+  }
+
+  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus && !noopRationale) {
     completionContractFailure = await enforcePrAttachmentContract(type, meta, agentId, config, resultSummary, stdout);
     if (completionContractFailure?.severity === 'hard' || completionContractFailure?.nonTerminal) {
       skipDoneStatus = true;
@@ -2876,6 +2928,9 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
+    if (noopRationale) {
+      meta._noopReason = noopRationale.slice(0, 500);
+    }
     updateWorkItemStatus(meta, WI_STATUS.DONE, '');
   }
   // Failure retry is handled by completeDispatch in dispatch.js — not duplicated here.
@@ -3238,6 +3293,7 @@ module.exports = {
   isReviewBailout,
   parseStructuredCompletion,
   parseCompletionFieldSummary,
+  parseCompletionNoop,
   detectNonTerminalResultSummary,
   parseCompletionReportFile,
   persistCompletionReport,

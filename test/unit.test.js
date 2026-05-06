@@ -6284,6 +6284,194 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  await test('no-op completion (noop:true) marks WI done with _noopReason — no _missingPrAttachment', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-noop-already-shipped',
+        title: 'Already shipped on master',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+      };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      // Agent emits an explicit no-op completion report (status=success, noop=true,
+      // pr=N/A) — the work was already shipped on master, so no PR was needed.
+      const dispatchItem = {
+        id: 'D-noop-already-shipped',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Already shipped on master',
+        meta: { source: 'work-item', item, branch: 'work/W-noop-already-shipped', project: { name: 'minions', localPath: testDir } },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'No-op: fix already shipped on origin/master in commit abc1234. Verified with git merge-base --is-ancestor.',
+        noop: true,
+        pr: 'N/A',
+        failure_class: 'N/A',
+        retryable: false,
+        needs_rerun: false,
+        artifacts: [],
+      });
+
+      const result = await lifecycle.runPostCompletionHooks(
+        dispatchItem,
+        'dallas',
+        0,
+        '',
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.strictEqual(result.completionContractFailure, null,
+        'no-op completion must NOT trigger a contract failure');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.DONE,
+        'no-op completion should mark WI done');
+      assert.strictEqual(updated._noop, true, 'no-op should set the _noop marker');
+      assert.ok(updated._noopReason && /already shipped/.test(updated._noopReason),
+        'no-op rationale should be surfaced in _noopReason for dashboard visibility');
+      assert.ok(!updated._missingPrAttachment,
+        'no-op completion must NOT set _missingPrAttachment');
+      assert.ok(!updated.failReason, 'no-op completion must NOT set failReason');
+      assert.ok(!updated.failedAt, 'no-op completion must NOT set failedAt');
+      const inboxFiles = fs.existsSync(path.join(testDir, 'notes', 'inbox'))
+        ? fs.readdirSync(path.join(testDir, 'notes', 'inbox'))
+        : [];
+      assert.ok(!inboxFiles.some(f => f.includes('missing-pr-attachment-W-noop-already-shipped')),
+        'no-op completion must NOT leave a missing-pr-attachment inbox note');
+    } finally { restore(); }
+  });
+
+  await test('no-op completion via result:"noop" alias is also honored', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-noop-result-alias',
+        title: 'Self-authored review no-op',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+      };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      const dispatchItem = {
+        id: 'D-noop-result-alias',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Self-authored review no-op',
+        meta: { source: 'work-item', item, branch: 'work/W-noop-result-alias', project: { name: 'minions', localPath: testDir } },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Comment was self-authored author-notes, not a review request. Posted rationale comment.',
+        result: 'noop',
+        pr: 'N/A',
+      });
+
+      const result = await lifecycle.runPostCompletionHooks(
+        dispatchItem,
+        'dallas',
+        0,
+        '',
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.strictEqual(result.completionContractFailure, null,
+        'result:"noop" alias must skip the contract');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.DONE);
+      assert.strictEqual(updated._noop, true);
+      assert.ok(updated._noopReason);
+    } finally { restore(); }
+  });
+
+  await test('silent failure (no completion report, no PR) still triggers _missingPrAttachment', async () => {
+    // Regression guard for the noop fix: an agent that exits successfully but
+    // wrote no completion report and produced no PR must still be flagged as
+    // a hard contract failure. The noop signal must be opt-in.
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'minions', repoHost: 'unsupported', localPath: testDir };
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-silent-failure-guard',
+        title: 'Silent failure guard',
+        type: 'implement',
+        status: testShared.WI_STATUS.DISPATCHED,
+      };
+      fs.writeFileSync(wiPath, JSON.stringify([item], null, 2));
+      const prPath = testShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPath), { recursive: true });
+      fs.writeFileSync(prPath, '[]');
+
+      // No completion report sidecar — agent didn't write one. Output is benign
+      // prose without a PR URL or any noop signal.
+      const result = await lifecycle.runPostCompletionHooks(
+        { id: 'D-silent-failure-guard', type: 'implement', task: 'Silent failure guard', meta: { source: 'work-item', item, branch: 'work/W-silent-failure-guard', project: { name: 'minions', localPath: testDir } } },
+        'dallas',
+        0,
+        'Looked at the codebase and decided everything was fine.\n'.repeat(5),
+        { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} },
+      );
+
+      const updated = JSON.parse(fs.readFileSync(wiPath, 'utf8'))[0];
+      assert.ok(result.completionContractFailure, 'silent failure must still trigger a contract failure');
+      assert.strictEqual(result.completionContractFailure.severity, 'hard');
+      assert.strictEqual(updated.status, testShared.WI_STATUS.FAILED);
+      assert.ok(updated._missingPrAttachment, 'silent failure must keep the _missingPrAttachment flag');
+      assert.ok(!updated._noop, 'silent failure must NOT be mislabeled as no-op');
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionNoop unit cases', () => {
+    const lifecycle = require('../engine/lifecycle');
+    // Positive cases
+    assert.ok(lifecycle.parseCompletionNoop({ status: 'success', noop: true, summary: 'already shipped' }));
+    assert.ok(lifecycle.parseCompletionNoop({ status: 'success', noop: 'true', summary: 'string boolean' }));
+    assert.ok(lifecycle.parseCompletionNoop({ status: 'success', result: 'noop', summary: 'result string alias' }));
+    assert.ok(lifecycle.parseCompletionNoop({ status: 'success', result: { type: 'noop' }, summary: 'result object alias' }));
+    // Reason fallback
+    assert.strictEqual(
+      lifecycle.parseCompletionNoop({ status: 'success', noop: true, summary: 'rationale text' }),
+      'rationale text');
+    assert.strictEqual(
+      lifecycle.parseCompletionNoop({ status: 'success', noop: true }),
+      'no-op completion');
+    // Negative cases
+    assert.strictEqual(lifecycle.parseCompletionNoop(null), null);
+    assert.strictEqual(lifecycle.parseCompletionNoop({}), null);
+    assert.strictEqual(lifecycle.parseCompletionNoop({ status: 'success' }), null,
+      'success without noop signal must not be treated as no-op');
+    assert.strictEqual(lifecycle.parseCompletionNoop({ status: 'failed', noop: true }), null,
+      'failed status with noop:true is contradictory and must not be honored');
+    assert.strictEqual(lifecycle.parseCompletionNoop({ status: 'partial', noop: true }), null,
+      'partial status with noop:true must not be honored');
+    assert.strictEqual(lifecycle.parseCompletionNoop({ noop: false }), null,
+      'noop:false explicitly disables the signal');
+  });
+
   await test('isPrAttachmentRequired returns false for FIX with meta.pr set', () => {
     const lifecycle = require('../engine/lifecycle');
     const required = lifecycle.isPrAttachmentRequired(

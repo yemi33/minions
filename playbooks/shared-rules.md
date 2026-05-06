@@ -72,6 +72,8 @@ The engine provides a completion report path in the prompt and in `MINIONS_COMPL
 
 Use `status: "failed"` plus an accurate `failure_class`, `retryable`, and `needs_rerun` when the task could not be completed. For PR reviews, set `verdict` to `approved` or `changes-requested`. Include every durable artifact you created or updated in `artifacts` (PRs, notes, plans, PRDs, important files) so the dashboard can display them. Fenced `completion` blocks are still accepted as a fallback, but the JSON report is the primary signal.
 
+**No-op completions:** when you correctly decline to do the work — the change was already shipped on master, the dispatch premise is wrong, the flagged review comment is your own author-notes, etc. — write `status: "success"`, `pr: "N/A"`, AND add `"noop": true`. The engine treats `noop: true` as the canonical signal that no PR was expected, marks the work item done with the rationale surfaced in `_noopReason` for the dashboard, and skips the missing-PR-attachment failure. Without `noop: true`, an empty PR will still be flagged as a silent failure and auto-retried up to `maxRetries` times.
+
 ## Long-Running Commands
 
 Builds, dependency installs, tests, and local servers can be quiet for long periods. Run the repo's normal CLI commands and let them finish; do not add artificial progress output, heartbeat loops, or command-specific workarounds just to keep Minions active.
