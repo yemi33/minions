@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1738 (2026-05-06)
+
+### Features
+- add feature-flag registry for experimental UX gates
+- graceful runtime-switch reset with transcript carryover
+
+### Fixes
+- prevent hung callLLM Promises when child stdio doesn't drain
+
+### Other
+- chore(gitignore): ignore root-level config.json.backup sidecar
+
 ## 0.1.1737 (2026-05-05)
 
 ### Other

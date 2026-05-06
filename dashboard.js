@@ -30,6 +30,7 @@ const playbook = require('./engine/playbook');
 const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
 const projectDiscovery = require('./engine/project-discovery');
+const features = require('./engine/features');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
@@ -448,7 +449,7 @@ function buildDashboardHtml() {
 
   // Assemble JS modules (order matters: utils → state → renderers → commands → refresh)
   const jsFiles = [
-    'utils', 'state', 'render-utils', 'detail-panel', 'live-stream',
+    'utils', 'state', 'features-client', 'render-utils', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
     'render-other', 'render-schedules', 'render-watches', 'render-pipelines', 'render-meetings', 'render-pinned',
@@ -461,10 +462,23 @@ function buildDashboardHtml() {
     jsHtml += `\n// ─── ${f}.js ────────────────────────────────────────\n${content}\n`;
   }
 
+  // Snapshot feature-flag state at build time so the client renders synchronously
+  // without an extra /api/features round-trip. Helper itself lives in
+  // dashboard/js/features-client.js (auto-concatenated below).
+  let featuresBoot = { flags: {}, defaults: {} };
+  try {
+    for (const f of features.listFeatures(queries.getConfig())) {
+      featuresBoot.flags[f.id] = f.enabled;
+      featuresBoot.defaults[f.id] = f.default;
+    }
+  } catch { /* registry empty or config unreadable — ship empty boot state */ }
+
+  const featuresBootstrap = `window.MINIONS_FEATURES = ${JSON.stringify(featuresBoot)};\n`;
+
   return layout
     .replace('/* __CSS__ */', () => css)
     .replace('<!-- __PAGES__ -->', () => pageHtml)
-    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${jsHtml}`);
+    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${featuresBootstrap}${jsHtml}`);
 }
 
 let HTML_RAW = buildDashboardHtml();
@@ -6335,6 +6349,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
+  async function handleFeaturesList(req, res) {
+    try {
+      return jsonReply(res, 200, { features: features.listFeatures(CONFIG) });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
+  async function handleFeaturesToggle(req, res) {
+    try {
+      const body = await readBody(req);
+      const id = body && typeof body.id === 'string' ? body.id.trim() : '';
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+      if (!features.hasFeature(id)) {
+        return jsonReply(res, 404, { error: `Unknown feature flag: "${id}". Register it in engine/features.js.` });
+      }
+      const enabled = body.enabled === true;
+      const configPath = path.join(MINIONS_DIR, 'config.json');
+      mutateJsonFileLocked(configPath, (cfg) => {
+        if (!cfg.features || typeof cfg.features !== 'object') cfg.features = {};
+        cfg.features[id] = enabled;
+        return cfg;
+      });
+      reloadConfig();
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, enabled });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
   async function handleHealth(req, res) {
     const engine = getEngineState();
     const agents = getAgents();
@@ -7124,6 +7165,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent + teams + projects config', params: 'engine?, claude?, agents?, teams?, projects?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
+
+    // Feature flags (experimental / in-progress UX gates — see engine/features.js)
+    { method: 'GET', path: '/api/features', desc: 'List registered feature flags with current enabled state', handler: handleFeaturesList },
+    { method: 'POST', path: '/api/features/toggle', desc: 'Enable/disable a registered feature flag', params: 'id, enabled', handler: handleFeaturesToggle },
 
     // Teams Bot Framework webhook
     { method: 'POST', path: '/api/bot', desc: 'Bot Framework webhook for Teams integration', handler: handleTeamsBot },
