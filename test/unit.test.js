@@ -5663,6 +5663,239 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  // ─── #2096: branchChange.changed === null must not mark cause handled ─────
+  // Regression guard for issue #2096: detectPrFixBranchChange returns three
+  // states (true | false | null). updatePrAfterFix must treat them distinctly:
+  //   true  → clear no-op record + mark automation cause handled (success)
+  //   false → record no-op attempt, do NOT mark cause handled (no-op)
+  //   null  → record no-op attempt, do NOT mark cause handled (indeterminate)
+  // The bug was that null fell through to the "success" path, marking the
+  // build:<check>:<head>:<signature> cause handled and blocking all further
+  // fix dispatches for that (head, signature) pair.
+
+  await test('updatePrAfterFix #2096: branchChange.changed === true marks cause handled and clears no-op', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-true',
+        prNumber: 209601,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-true',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+        _noOpFixes: {
+          [testShared.PR_FIX_CAUSE.BUILD_FAILURE]: { count: 1, paused: false, evidenceFingerprint: 'stale-fp' },
+        },
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-true', prNumber: 209601 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-true-1',
+            task: 'Fix build failure on PR-2096-true',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-true' },
+          },
+          branchChange: { changed: true, beforeHead: 'a'.repeat(40), afterHead: 'b'.repeat(40) },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: false, cause: testShared.PR_FIX_CAUSE.BUILD_FAILURE });
+      assert.ok(!updatedPr._noOpFixes, 'changed=true must clear stale _noOpFixes (clearPrNoOpFixAttempt)');
+      assert.strictEqual(
+        updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig']?.status,
+        'handled',
+        'changed=true must mark automation cause handled');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: branchChange.changed === false records no-op without marking cause handled', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-false',
+        prNumber: 209602,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-false',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-false', prNumber: 209602 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-false-1',
+            task: 'Fix build failure on PR-2096-false',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-false' },
+          },
+          branchChange: {
+            changed: false,
+            beforeHead: 'c'.repeat(40),
+            afterHead: 'c'.repeat(40),
+            evidence: 'remote-head',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(result.noOp, true);
+      assert.strictEqual(result.cause, testShared.PR_FIX_CAUSE.BUILD_FAILURE);
+      assert.ok(updatedPr._noOpFixes?.[testShared.PR_FIX_CAUSE.BUILD_FAILURE],
+        'changed=false must call recordPrNoOpFixAttempt');
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+      assert.ok(
+        !updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig'],
+        'changed=false must NOT mark automation cause handled (otherwise re-dispatch is blocked)');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: branchChange.changed === null records no-op without marking cause handled', () => {
+    // Reproduces issue #2096: detectPrFixBranchChange returned `null` (e.g.
+    // missing baseline, fetch failed, worktree gone). The old code fell
+    // through to the success path and marked the build:<check>:<head>:<sig>
+    // cause handled, which permanently blocked re-dispatch via
+    // isPrAutomationCauseHandledOrPending.
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-null',
+        prNumber: 209603,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-null',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-null', prNumber: 209603 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-null-1',
+            task: 'Fix build failure on PR-2096-null',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-null' },
+          },
+          branchChange: {
+            changed: null,
+            beforeHead: '',
+            afterHead: '',
+            reason: 'unable to prove branch head after fix',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(result.noOp, true,
+        'indeterminate branch-change must report noOp so the engine does not assume success');
+      assert.strictEqual(result.cause, testShared.PR_FIX_CAUSE.BUILD_FAILURE);
+      assert.ok(updatedPr._noOpFixes?.[testShared.PR_FIX_CAUSE.BUILD_FAILURE],
+        'changed=null must call recordPrNoOpFixAttempt so the pause-after-N counter eventually engages');
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].reason,
+        'unable to prove branch head after fix',
+        'no-op record should preserve the indeterminate reason from detection');
+      assert.ok(
+        !updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig'],
+        'changed=null must NOT mark automation cause handled — a future tick with working detection must be free to re-dispatch (issue #2096)');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: changed=null counter resets when failure signature changes', () => {
+    // Keep the no-op-attempt fingerprint logic intact: a new build signature
+    // must reset the count so a real change in the underlying failure can
+    // re-dispatch even after multiple indeterminate detections.
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], engine: { prNoOpFixPauseAttempts: 3 } };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-fp',
+        prNumber: 209604,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-fp',
+        buildStatus: 'failing',
+        buildFailReason: 'CheckA',
+        buildErrorLog: 'first-error',
+      }]);
+
+      const indeterminate = {
+        changed: null, beforeHead: '', afterHead: '',
+        reason: 'unable to prove branch head after fix',
+      };
+
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig1',
+          dispatchItem: { id: 'D-fp-1', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      let [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+
+      // Same signature → counter increments
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig1',
+          dispatchItem: { id: 'D-fp-2', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 2);
+
+      // Change build signature → counter resets to 1
+      updatedPr.buildErrorLog = 'second-error-different';
+      testShared.safeWrite(prPath, [updatedPr]);
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig2',
+          dispatchItem: { id: 'D-fp-3', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1,
+        'changed signature must reset the no-op counter even on indeterminate detections');
+    } finally { restore(); }
+  });
+
   await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
     // Regression guard: the old regex-based prose scanner produced false
     // positives on phrases like "I checked the pending PRs", "build is in
