@@ -4326,6 +4326,17 @@ async function tickInner() {
 
   // Build set of agents currently active (one task per agent at a time).
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  // W-motc4y1n000t1a5f: Track agents that already have a pending dispatch in
+  // the queue. Reassignment routes (busy / unspawned-temp) must not move a
+  // dispatch onto an agent who already has their own pending entry — order-
+  // dependent iteration would otherwise double-book that agent. Seeded once
+  // from the snapshot of pending and updated on successful reassignment.
+  const pendingAgents = new Set();
+  for (const p of (dispatch.pending || [])) {
+    if (typeof p.agent === 'string' && p.agent && p.agent !== routing.ANY_AGENT) {
+      pendingAgents.add(p.agent);
+    }
+  }
   // Branch mutex: track branches locked by active dispatches to prevent concurrent writes
   const lockedBranches = new Set();
   for (const d of (dispatch.active || [])) {
@@ -4409,9 +4420,12 @@ async function tickInner() {
     const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
     if (isUnspawnedTemp) {
       const altAgent = resolvePendingDispatchAgent(item, config);
-      if (altAgent && altAgent !== item.agent) {
+      // W-motc4y1n000t1a5f: don't reassign onto an agent who already has
+      // their own pending dispatch — that would double-book the alt.
+      if (altAgent && altAgent !== item.agent && !pendingAgents.has(altAgent)) {
         const prevAgent = item.agent;
         assignPendingDispatchAgent(item, altAgent, config);
+        pendingAgents.add(altAgent);
         log('info', `Reassigning ${item.id} from unspawned temp ${prevAgent} to ${altAgent} — temp agent never spawned`);
         // Persist reassignment to dispatch.json so it survives restarts/ticks
         persistPendingDispatchAgent(item);
@@ -4427,10 +4441,14 @@ async function tickInner() {
         continue; // Valid hard pin — keep waiting for pinned agent
       }
       // agent busy and idle alternative available — reroute immediately (no threshold)
+      // W-motc4y1n000t1a5f: pendingAgents check prevents reassigning onto an
+      // agent who already has their own pending dispatch (order-dependent
+      // double-book in the meeting fan-out scenario).
       const altAgent = resolvePendingDispatchAgent(item, config);
-      if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
+      if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent) && !pendingAgents.has(altAgent)) {
         log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy and idle alternative available`);
         assignPendingDispatchAgent(item, altAgent, config);
+        pendingAgents.add(altAgent);
         persistPendingDispatchAgent(item);
         // Fall through to branch mutex / concurrency checks below
       } else if (isSoftFixDispatch(item)) {
