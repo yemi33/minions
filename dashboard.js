@@ -61,10 +61,24 @@ const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);
 
+function ensureConfiguredProjectStateFiles() {
+  for (const p of PROJECTS) {
+    const root = p.localPath ? path.resolve(p.localPath) : null;
+    if (!root || !fs.existsSync(root)) continue;
+    try {
+      shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+    } catch (e) {
+      console.warn(`[dashboard] project state migration failed for "${p.name}": ${e.message}`);
+    }
+  }
+}
+
 function reloadConfig() {
   CONFIG = queries.getConfig();
   PROJECTS = _getProjects(CONFIG);
+  ensureConfiguredProjectStateFiles();
 }
+ensureConfiguredProjectStateFiles();
 
 function getWorkItemIdFromPrLinkContext(context, workItemId) {
   if (typeof workItemId === 'string' && workItemId.trim()) return workItemId.trim();
@@ -778,7 +792,7 @@ const _mtimeTrackedFiles = () => {
   ];
   // Add per-project work-items.json
   for (const p of PROJECTS) {
-    if (p.localPath) files.push(path.join(p.localPath, '.minions', 'work-items.json'));
+    files.push(shared.projectWorkItemsPath(p));
   }
   // Central work-items.json
   files.push(path.join(MINIONS_DIR, 'work-items.json'));
@@ -5434,19 +5448,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         prUrlBase: detected.prUrlBase,
       });
 
+      // Create centralized project state and migrate any legacy project-local
+      // .minions state without leaving repo-local state files behind.
+      shared.ensureProjectStateFiles(project, { migrateLegacy: true, removeLegacy: true });
+
       config.projects.push(project);
       safeWrite(configPath, config);
       reloadConfig(); // Update in-memory project list immediately
       invalidateStatusCache();
-
-      // Create project-local state files
-      const minionsDir = path.join(target, '.minions');
-      if (!fs.existsSync(minionsDir)) fs.mkdirSync(minionsDir, { recursive: true });
-      const stateFiles = { 'pull-requests.json': '[]', 'work-items.json': '[]' };
-      for (const [f, content] of Object.entries(stateFiles)) {
-        const fp = path.join(minionsDir, f);
-        if (!fs.existsSync(fp)) safeWrite(fp, content);
-      }
 
       return jsonReply(res, 200, { ok: true, name, path: target, detected });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }

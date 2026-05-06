@@ -9,14 +9,15 @@
  *
  * This adds the project to ~/.minions/config.json's projects array.
  * The minions engine and dashboard run centrally from ~/.minions/.
- * Each project just needs its own work-items.json and pull-requests.json.
+ * Project runtime state is kept centrally under ~/.minions/projects/<name>/.
  */
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
-const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = require('./engine/shared');
+const shared = require('./engine/shared');
+const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = shared;
 const projectDiscovery = require('./engine/project-discovery');
 
 const MINIONS_HOME = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : __dirname;
@@ -130,13 +131,18 @@ async function addProject(targetDir) {
 
   rl.close();
 
-  config.projects.push(buildProjectEntry({
+  const projectEntry = buildProjectEntry({
     name, description, localPath: target, repoHost, repositoryId, org, project, repoName, mainBranch,
     prUrlBase: detected.prUrlBase,
-  }));
+  });
+  const state = shared.ensureProjectStateFiles(projectEntry, { migrateLegacy: true, removeLegacy: true });
+  config.projects.push(projectEntry);
   saveConfig(config);
 
   console.log(`\n  Linked "${name}" (${target})`);
+  if (state.migrated.length > 0 || state.removedLegacy.length > 0) {
+    console.log(`  Migrated project state to ${shared.projectStateDir(projectEntry)}`);
+  }
   console.log(`  Total projects: ${config.projects.length}`);
   console.log(`\n  Start the minions from anywhere:`);
   console.log(`    node ${MINIONS_HOME}/engine.js         # Engine`);
@@ -348,11 +354,13 @@ async function scanAndAdd({ root, depth } = {}) {
       name = name + '-' + i;
     }
     existingNames.add(name);
-    config.projects.push(buildProjectEntry({
+    const projectEntry = buildProjectEntry({
       name, description: repo.description, localPath: repo.path,
       repoHost: repo.host, repositoryId: repo.repositoryId, org: repo.org, project: repo.project,
       repoName: repo.repoName, mainBranch: repo.mainBranch, prUrlBase: repo.prUrlBase,
-    }));
+    });
+    shared.ensureProjectStateFiles(projectEntry, { migrateLegacy: true, removeLegacy: true });
+    config.projects.push(projectEntry);
     console.log(`  + ${name} (${repo.path})`);
   }
 

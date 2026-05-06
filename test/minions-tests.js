@@ -467,7 +467,7 @@ async function testDispatchIntegrity() {
     const config = readJson(path.join(MINIONS_DIR, 'config.json'));
     for (const proj of (config.projects || [])) {
       try {
-        const items = readJson(path.join(proj.localPath, '.minions', 'work-items.json')) || [];
+        const items = readJson(path.join(MINIONS_DIR, 'projects', proj.name, 'work-items.json')) || [];
         items.forEach(i => allIds.add(i.id));
       } catch {}
     }
@@ -534,7 +534,7 @@ async function testDataIntegrity() {
     const config = readJson(path.join(MINIONS_DIR, 'config.json'));
     for (const proj of (config.projects || [])) {
       try {
-        const items = readJson(path.join(proj.localPath, '.minions', 'work-items.json')) || [];
+        const items = readJson(path.join(MINIONS_DIR, 'projects', proj.name, 'work-items.json')) || [];
         projectWi.push(...items);
       } catch {}
     }

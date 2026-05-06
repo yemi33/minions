@@ -1527,6 +1527,97 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+function legacyProjectStateDir(project) {
+  if (!project?.localPath) return null;
+  return path.join(path.resolve(project.localPath), '.minions');
+}
+
+function legacyProjectStatePath(project, fileName) {
+  const dir = legacyProjectStateDir(project);
+  return dir ? path.join(dir, fileName) : null;
+}
+
+function projectStateRecordKey(record) {
+  if (record && typeof record === 'object') {
+    const id = record.id ?? record.prId ?? record.workItemId ?? record.url ?? record.number;
+    if (id !== undefined && id !== null && String(id).trim()) return String(id);
+  }
+  try { return JSON.stringify(record); } catch { return String(record); }
+}
+
+function mergeProjectStateArrays(current, legacy) {
+  const merged = Array.isArray(current) ? current.slice() : [];
+  const seen = new Set(merged.map(projectStateRecordKey));
+  for (const entry of Array.isArray(legacy) ? legacy : []) {
+    const key = projectStateRecordKey(entry);
+    if (seen.has(key)) continue;
+    merged.push(entry);
+    seen.add(key);
+  }
+  return merged;
+}
+
+function sameResolvedPath(a, b) {
+  if (!a || !b) return false;
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function removeLegacyProjectStateDir(project) {
+  const dir = legacyProjectStateDir(project);
+  if (!dir) return false;
+  if (sameResolvedPath(dir, MINIONS_DIR)) return false;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch { return false; }
+}
+
+function ensureProjectStateFiles(project, options = {}) {
+  const migrateLegacy = options.migrateLegacy !== false;
+  const removeLegacy = options.removeLegacy === true;
+  const files = [
+    { name: 'pull-requests.json', centralPath: projectPrPath(project) },
+    { name: 'work-items.json', centralPath: projectWorkItemsPath(project) },
+  ];
+  const result = { created: [], migrated: [], removedLegacy: [], legacyDirRemoved: false };
+
+  projectStateDirEnsure(project);
+  for (const file of files) {
+    const legacyPath = legacyProjectStatePath(project, file.name);
+    const hasLegacyState = legacyPath && (fs.existsSync(legacyPath) || fs.existsSync(legacyPath + '.backup'));
+    const legacyData = migrateLegacy && hasLegacyState ? safeJson(legacyPath) : null;
+
+    if (Array.isArray(legacyData)) {
+      let changed = false;
+      mutateJsonFileLocked(file.centralPath, current => {
+        const merged = mergeProjectStateArrays(Array.isArray(current) ? current : [], legacyData);
+        changed = JSON.stringify(merged) !== JSON.stringify(current);
+        return merged;
+      }, { defaultValue: [], skipWriteIfUnchanged: true });
+      if (changed && legacyData.length > 0) result.migrated.push(file.name);
+      if (removeLegacy) {
+        try {
+          fs.unlinkSync(legacyPath);
+          result.removedLegacy.push(file.name);
+        } catch (err) {
+          if (!err || err.code !== 'ENOENT') throw err;
+        }
+        safeUnlink(legacyPath + '.backup');
+      }
+    }
+
+    if (!fs.existsSync(file.centralPath)) {
+      mutateJsonFileLocked(file.centralPath, data => Array.isArray(data) ? data : [], { defaultValue: [] });
+      result.created.push(file.name);
+    }
+  }
+
+  if (removeLegacy) result.legacyDirRemoved = removeLegacyProjectStateDir(project);
+  return result;
+}
+
 function realPathForComparison(filePath) {
   const resolved = path.resolve(filePath);
   const realpathSync = fs.realpathSync.native || fs.realpathSync;
@@ -2876,6 +2967,9 @@ module.exports = {
   projectStateDirEnsure,
   projectWorkItemsPath,
   projectPrPath,
+  legacyProjectStateDir,
+  legacyProjectStatePath,
+  ensureProjectStateFiles,
   resolveProjectForPrPath, // exported for testing
   getPrLinks,
   addPrLink,

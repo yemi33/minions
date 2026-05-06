@@ -91,18 +91,6 @@ function isLegacyInstalledRoot(dir) {
     fs.existsSync(path.join(dir, 'squad.js'));
 }
 
-function findNearestLocalMinionsRoot(startDir) {
-  let cur = path.resolve(startDir || process.cwd());
-  while (true) {
-    const candidate = path.join(cur, '.minions');
-    if (isInstalledRoot(candidate)) return candidate;
-    const parent = path.dirname(cur);
-    if (parent === cur) break;
-    cur = parent;
-  }
-  return null;
-}
-
 function readRootPointer() {
   try {
     const p = fs.readFileSync(ROOT_POINTER_PATH, 'utf8').trim();
@@ -189,15 +177,12 @@ function resolveMinionsHome(forInit = false) {
   const envHome = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : null;
   if (envHome) return envHome;
 
-  if (forInit) return path.join(process.cwd(), '.minions');
+  if (forInit) return DEFAULT_MINIONS_HOME;
 
   const pointerRoot = readRootPointer();
   if (isInstalledRoot(pointerRoot)) return pointerRoot;
 
   if (isInstalledRoot(DEFAULT_MINIONS_HOME)) return DEFAULT_MINIONS_HOME;
-
-  const localRoot = findNearestLocalMinionsRoot(process.cwd());
-  if (localRoot) return localRoot;
 
   return DEFAULT_MINIONS_HOME;
 }

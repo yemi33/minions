@@ -1294,7 +1294,7 @@ function reviewPrRefMatchesDispatchTarget(reportedPr, dispatchPr, project) {
 }
 
 function centralPrPath() {
-  return path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+  return path.join(MINIONS_DIR, 'pull-requests.json');
 }
 
 function resolveReviewPrContext(pr, project, config, structuredCompletion = null) {
@@ -1605,7 +1605,7 @@ function updatePrAfterFix(pr, project, source, options = {}, legacyDispatchId = 
     options = { automationCauseKey: options, dispatchId: legacyDispatchId };
   }
   const explicitlyChangedBranch = options.branchChanged !== false;
-  const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+  const prPath = project ? shared.projectPrPath(project) : centralPrPath();
   const automationCauseKey = options.automationCauseKey || options.dispatchItem?.meta?.automationCauseKey || '';
   const fixDispatchId = options.dispatchItem?.id || options.dispatchId || legacyDispatchId || '';
   const cause = shared.getPrFixAutomationCause({

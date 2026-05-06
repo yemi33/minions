@@ -11019,16 +11019,16 @@ async function testConfigAndPlaybooks() {
     assert.ok(tail.includes('minions init'), 'should chain init so repos can be re-linked');
   });
 
-  await test('bin/minions resolves runtime root from init location and pointer', () => {
+  await test('bin/minions resolves runtime root from user home and pointer', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     assert.ok(src.includes('resolveMinionsHome('),
       'bin/minions.js should resolve runtime root dynamically');
-    assert.ok(src.includes("return path.join(process.cwd(), '.minions')"),
-      'init should default runtime root to <cwd>/.minions');
+    assert.ok(src.includes('if (forInit) return DEFAULT_MINIONS_HOME'),
+      'init should default runtime root to user-scoped ~/.minions');
     assert.ok(src.includes(".minions-root"),
       'bin/minions.js should persist/read runtime root pointer');
-    assert.ok(src.includes('findNearestLocalMinionsRoot('),
-      'bin/minions.js should detect nearest local .minions root');
+    assert.ok(!src.includes('if (localRoot) return localRoot'),
+      'nearby project-local .minions installs must not become the runtime root');
   });
 
   await test('bin/minions honors explicit MINIONS_HOME before canonical roots', () => {
@@ -11082,7 +11082,7 @@ async function testConfigAndPlaybooks() {
       'nearby copied .minions tree must not become authoritative');
   });
 
-  await test('bin/minions falls back to local install when no canonical home exists', () => {
+  await test('bin/minions uses user home even when a local project install exists', () => {
     const { spawnSync } = require('child_process');
     const base = createTmpDir();
     const home = path.join(base, 'home');
@@ -11103,8 +11103,11 @@ async function testConfigAndPlaybooks() {
       windowsHide: true,
     });
     assert.strictEqual(result.status, 0, result.stderr || result.stdout);
-    assert.ok(result.stdout.includes(`Runtime root: ${localRoot}`),
-      'local install remains the fallback when no canonical root exists');
+    const expectedHome = path.join(home, '.minions');
+    assert.ok(result.stdout.includes(`Runtime root: ${expectedHome}`),
+      'user-scoped ~/.minions should remain the runtime root even before it exists');
+    assert.ok(!result.stdout.includes(`Runtime root: ${localRoot}`),
+      'local project .minions must not become authoritative');
   });
 
   await test('shared runtime root honors MINIONS_HOME for direct entrypoints', () => {
@@ -14060,7 +14063,7 @@ async function testProjectPathHelpers() {
     } finally { restore(); }
   });
 
-  await test('ensureProjectStateFiles migrates legacy project-local state and removes known files', () => {
+  await test('ensureProjectStateFiles migrates legacy project-local state and removes .minions dir', () => {
     const restore = createTestMinionsDir();
     try {
       const dir = process.env.MINIONS_TEST_DIR;
@@ -14076,6 +14079,7 @@ async function testProjectPathHelpers() {
       ]);
       freshShared.safeWrite(path.join(legacyDir, 'pull-requests.json'), [{ id: 'PR-1', title: 'legacy pr' }]);
       freshShared.safeWrite(path.join(legacyDir, 'pull-requests.json.backup'), [{ id: 'PR-backup', title: 'old backup' }]);
+      fs.writeFileSync(path.join(legacyDir, 'old-engine-file.txt'), 'legacy install residue');
 
       const result = freshShared.ensureProjectStateFiles(project, { migrateLegacy: true, removeLegacy: true });
 

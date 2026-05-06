@@ -30,5 +30,13 @@
     "reason": "Claude and Copilot require different non-interactive bypass flags, so a shared Claude config field was misleading and no longer controls spawns.",
     "locations": ["dashboard.js settings update strips config.claude.permissionMode", "dashboard/js/settings.js no longer renders a Permission Mode selector"],
     "cleanup": "After old configs have been rewritten through settings, remove the deprecated-field preflight warning entry for permissionMode."
+  },
+  {
+    "id": "project-local-minions-state",
+    "summary": "Project-local .minions directories are migrated to central projects/<name>/ state and removed",
+    "deprecated": "2026-05-06",
+    "reason": "Project repos should not receive Minions runtime state because .minions can leak into source repositories.",
+    "locations": ["engine/shared.js ensureProjectStateFiles legacy migration", "dashboard.js handleProjectsAdd/dashboard startup", "minions.js addProject/scanAndAdd", "engine/cli.js start migration", "bin/minions.js user-scoped init root"],
+    "cleanup": "Remove legacyProjectStateDir/legacyProjectStatePath migration/deletion after existing project-local .minions directories have been migrated."
   }
 ]

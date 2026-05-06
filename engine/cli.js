@@ -429,6 +429,14 @@ const commands = {
         e.log('warn', `Project "${p.name}" path not found: ${p.localPath} — skipping`);
         console.log(`  WARNING: ${p.name} path not found: ${p.localPath}`);
       } else {
+        try {
+          const state = shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+          if (state.migrated.length > 0 || state.removedLegacy.length > 0) {
+            e.log('info', `Migrated project state for "${p.name}" to projects/${p.name}`);
+          }
+        } catch (err) {
+          e.log('warn', `Project state migration failed for "${p.name}": ${err.message}`);
+        }
         console.log(`  Project: ${p.name} (${root})`);
       }
     }
