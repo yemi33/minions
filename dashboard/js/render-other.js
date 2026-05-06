@@ -85,17 +85,18 @@ function renderMcpServers(servers) {
   const countEl = document.getElementById('mcp-count');
   countEl.textContent = servers.length;
   if (!servers.length) {
-    el.innerHTML = '<p class="empty">No MCP servers found. Add them to <code>~/.claude.json</code> and they\'ll appear here automatically.</p>';
+    el.innerHTML = '<p class="empty">No MCP servers found. Add them to <code>~/.claude.json</code> or <code>~/.copilot/mcp-config.json</code> and they\'ll appear here automatically.</p>';
     return;
   }
   el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">' +
     servers.map(s =>
-      '<div style="font-size:11px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)" title="' + escHtml(s.args || s.command) + '">' +
+      '<div style="font-size:11px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)" title="' + escHtml([s.source, s.args || s.command].filter(Boolean).join(': ')) + '">' +
         escHtml(s.name) +
+        (s.source ? ' <span style="color:var(--muted)">(' + escHtml(s.source) + ')</span>' : '') +
       '</div>'
     ).join('') +
   '</div>' +
-  '<p style="font-size:10px;color:var(--muted);margin:0">Synced from <code style="color:var(--blue)">~/.claude.json</code> — add MCP servers there to make them available to all agents.</p>';
+  '<p style="font-size:10px;color:var(--muted);margin:0">Synced from <code style="color:var(--blue)">~/.claude.json</code> and <code style="color:var(--blue)">~/.copilot/mcp-config.json</code>.</p>';
 }
 
 function renderMetrics(metrics) {

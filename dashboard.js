@@ -721,17 +721,24 @@ function getDiskVersion() {
   return _diskVersionCache;
 }
 
+function readMcpServersFromConfig(configPath, source) {
+  const data = safeJsonObj(configPath);
+  const servers = data.mcpServers || {};
+  return Object.entries(servers).map(([name, cfg]) => ({
+    name,
+    source,
+    command: cfg.command || cfg.url || '',
+    args: (cfg.args || []).slice(-1)[0] || '',
+  }));
+}
+
 function getMcpServers() {
   try {
     const home = os.homedir();
-    const claudeJsonPath = path.join(home, '.claude.json');
-    const data = safeJsonObj(claudeJsonPath);
-    const servers = data.mcpServers || {};
-    return Object.entries(servers).map(([name, cfg]) => ({
-      name,
-      command: cfg.command || '',
-      args: (cfg.args || []).slice(-1)[0] || '',
-    }));
+    return [
+      ...readMcpServersFromConfig(path.join(home, '.claude.json'), 'Claude'),
+      ...readMcpServersFromConfig(path.join(home, '.copilot', 'mcp-config.json'), 'Copilot'),
+    ];
   } catch { return []; }
 }
 

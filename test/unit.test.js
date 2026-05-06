@@ -38205,6 +38205,22 @@ async function testAutoRecoveryAndAtomicity() {
       'Graph view canRetry should handle missing work item case');
   });
 
+  await test('PRD graph view shows re-open button for done items (parity with list view)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'), src.indexOf('// View toggle state'));
+    assert.ok(graphFn.includes('prdItemReopen'),
+      'Graph view should expose prdItemReopen handler for done items');
+    assert.ok(graphFn.includes('isDoneCard'),
+      'Graph view should compute isDoneCard from PRD item or work item status');
+  });
+
+  await test('PRD graph view shows remove (x) button per item (parity with list view)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'), src.indexOf('// View toggle state'));
+    assert.ok(graphFn.includes('prdItemRemove'),
+      'Graph view should expose prdItemRemove handler so users can delete items without switching views');
+  });
+
   await test('prdItemRequeue sends prdFile parameter for re-materialization', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     const fn = src.slice(src.indexOf('async function prdItemRequeue'));
@@ -54578,9 +54594,9 @@ async function testDashboardPureHelpers() {
 
   // ── getMcpServers (patches os.homedir) ────────────────────────────────
 
-  await test('getMcpServers returns [] when ~/.claude.json is missing', () => {
+  await test('getMcpServers returns [] when MCP configs are missing', () => {
     const origHome = osMod.homedir;
-    const tmp = createTmpDir(); // empty dir, no .claude.json
+    const tmp = createTmpDir(); // empty dir, no MCP configs
     osMod.homedir = () => tmp;
     try {
       assert.deepStrictEqual(getMcpServers(), []);
@@ -54613,7 +54629,7 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('getMcpServers maps mcpServers entries to {name, command, args}', () => {
+  await test('getMcpServers maps Claude mcpServers entries to {name, source, command, args}', () => {
     const origHome = osMod.homedir;
     const tmp = createTmpDir();
     fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({
@@ -54628,10 +54644,57 @@ async function testDashboardPureHelpers() {
       assert.strictEqual(servers.length, 2);
       const byName = Object.fromEntries(servers.map(s => [s.name, s]));
       assert.strictEqual(byName.playwright.command, 'npx');
+      assert.strictEqual(byName.playwright.source, 'Claude');
       // slice(-1)[0] returns the LAST arg (documents current behavior)
       assert.strictEqual(byName.playwright.args, '@playwright/mcp@latest');
       assert.strictEqual(byName.azure.command, 'azmcp');
       assert.strictEqual(byName.azure.args, 'start');
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers includes Copilot CLI user MCP config', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, '.copilot'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.copilot', 'mcp-config.json'), JSON.stringify({
+      mcpServers: {
+        context7: { type: 'local', command: 'npx', args: ['-y', '@upstash/context7-mcp'], tools: ['*'] },
+        notion: { type: 'http', url: 'https://mcp.notion.com/mcp', tools: ['*'] },
+      },
+    }));
+    osMod.homedir = () => tmp;
+    try {
+      const servers = getMcpServers();
+      assert.strictEqual(servers.length, 2);
+      const byName = Object.fromEntries(servers.map(s => [s.name, s]));
+      assert.strictEqual(byName.context7.source, 'Copilot');
+      assert.strictEqual(byName.context7.command, 'npx');
+      assert.strictEqual(byName.context7.args, '@upstash/context7-mcp');
+      assert.strictEqual(byName.notion.source, 'Copilot');
+      assert.strictEqual(byName.notion.command, 'https://mcp.notion.com/mcp');
+      assert.strictEqual(byName.notion.args, '');
+    } finally {
+      osMod.homedir = origHome;
+    }
+  });
+
+  await test('getMcpServers combines Claude and Copilot MCP configs', () => {
+    const origHome = osMod.homedir;
+    const tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({
+      mcpServers: { playwright: { command: 'npx', args: ['-y', '@playwright/mcp@latest'] } },
+    }));
+    fs.mkdirSync(path.join(tmp, '.copilot'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.copilot', 'mcp-config.json'), JSON.stringify({
+      mcpServers: { context7: { type: 'local', command: 'npx', args: ['-y', '@upstash/context7-mcp'] } },
+    }));
+    osMod.homedir = () => tmp;
+    try {
+      const servers = getMcpServers();
+      assert.strictEqual(servers.length, 2);
+      assert.deepStrictEqual(servers.map(s => `${s.name}:${s.source}`), ['playwright:Claude', 'context7:Copilot']);
     } finally {
       osMod.homedir = origHome;
     }
