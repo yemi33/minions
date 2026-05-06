@@ -626,30 +626,32 @@ function getPullRequests(config) {
   const projectByName = new Map(projects.map(p => [p.name, p]));
   const allPrs = [];
   const seenIds = new Set();
-  // Single pass over projects/* — configured projects use their full config
-  // (prUrlBase fill-in, _project name); unconfigured subdirs are tagged _ghost
-  // so engine code can filter them out. Mirrors what shared.getPrLinks scans,
-  // so PRD links and PR records stay in sync after a project is removed.
+  // Single pass over projects/* intersected with the configured project list.
+  // Filesystem dirs not in CONFIG.projects (e.g. a leftover .minions/projects/
+  // <removedName>/ recreated by a stale code path between archive and reload)
+  // are skipped so removed projects can't resurrect themselves through the
+  // status payload. Hidden dirs (.archived sidecar) are also skipped defensively
+  // — they live as siblings under projects/ and would otherwise be enumerated.
   let projectDirs = [];
   try {
     projectDirs = fs.readdirSync(path.join(MINIONS_DIR, 'projects'), { withFileTypes: true })
-      .filter(d => d.isDirectory()).map(d => d.name);
+      .filter(d => d.isDirectory() && !d.name.startsWith('.')).map(d => d.name);
   } catch { /* projects dir missing */ }
   for (const dirName of projectDirs) {
-    const project = projectByName.get(dirName) || null;
-    const prPath = project ? projectPrPath(project) : path.join(MINIONS_DIR, 'projects', dirName, 'pull-requests.json');
+    const project = projectByName.get(dirName);
+    if (!project) continue; // unconfigured/removed — don't surface
+    const prPath = projectPrPath(project);
     const prs = readJsonNoRestore(prPath);
     if (!Array.isArray(prs)) continue;
     shared.normalizePrRecords(prs, project);
-    const base = project?.prUrlBase || '';
+    const base = project.prUrlBase || '';
     for (const pr of prs) {
       if (!pr?.id || seenIds.has(pr.id)) continue;
-      if (project && !pr.url && base) {
+      if (!pr.url && base) {
         const prNumber = shared.getPrNumber(pr);
         if (prNumber != null) pr.url = base + prNumber;
       }
-      pr._project = project ? (project.name || 'Project') : dirName;
-      if (!project) pr._ghost = true;
+      pr._project = project.name || 'Project';
       allPrs.push(pr);
       seenIds.add(pr.id);
     }

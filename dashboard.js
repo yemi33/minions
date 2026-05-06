@@ -5367,7 +5367,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const result = removeProject(target, { keepData: body.keepData === true, purge: body.purge === true });
       if (!result.ok) return jsonReply(res, result.error?.includes('No project') ? 404 : 400, result);
       reloadConfig();
-      invalidateStatusCache();
+      // includeSlow: getStatus() caches the projects[] field in slow state (60s
+      // TTL) — without flushing it, the removed project keeps appearing under
+      // status.projects for up to a minute even though PROJECTS in memory is
+      // already up to date.
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, result);
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }

@@ -6689,6 +6689,76 @@ async function testQueriesPullRequests() {
     const prs = queries.getPrs();
     assert.ok(Array.isArray(prs));
   });
+
+  // Regression: removed projects used to reappear in /api/status because
+  // getPullRequests enumerated every projects/<name>/ filesystem dir, including
+  // names not in CONFIG.projects. Once removeProject archived the data dir, any
+  // stale code path that still held a reference to the project name and called
+  // projectStateDir/projectPrPath would silently recreate projects/<removed>/.
+  // The next status refresh then surfaced it as a ghost.
+  await test('getPullRequests filters out unconfigured (removed) project dirs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      // Two configured projects + one orphan filesystem dir (simulates removed project)
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'alpha', localPath: dir }],
+        agents: {}, engine: {},
+      }));
+      const alphaDir = path.join(dir, 'projects', 'alpha');
+      const orphanDir = path.join(dir, 'projects', 'removed-project');
+      fs.mkdirSync(alphaDir, { recursive: true });
+      fs.mkdirSync(orphanDir, { recursive: true });
+      fs.writeFileSync(path.join(alphaDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-alpha-1', title: 'alpha pr', created: '2025-01-01' }]));
+      fs.writeFileSync(path.join(orphanDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-orphan-1', title: 'should not appear', created: '2025-01-02' }]));
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      const projects = new Set(prs.map(pr => pr._project));
+      assert.ok(projects.has('alpha'), 'configured project should appear');
+      assert.ok(!projects.has('removed-project'), 'unconfigured filesystem dir must NOT surface');
+      assert.ok(!prs.some(pr => pr.id === 'PR-orphan-1'), 'PRs from unconfigured dir must NOT surface');
+    } finally { restore(); }
+  });
+
+  await test('getPullRequests skips .archived sidecar directory', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      // Empty config — no configured projects, only the .archived sibling
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [], agents: {}, engine: {},
+      }));
+      const archivedDir = path.join(dir, 'projects', '.archived', 'demo-20250101');
+      fs.mkdirSync(archivedDir, { recursive: true });
+      fs.writeFileSync(path.join(archivedDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-archived-1', title: 'archived pr' }]));
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(!prs.some(pr => pr.id === 'PR-archived-1'),
+        'PRs under .archived/ must NOT surface');
+    } finally { restore(); }
+  });
+
+  await test('getPullRequests on projects/ containing only .archived returns empty list', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [], agents: {}, engine: {},
+      }));
+      // Only the .archived sidecar exists — no configured projects, no other dirs
+      fs.mkdirSync(path.join(dir, 'projects', '.archived'), { recursive: true });
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(Array.isArray(prs));
+      assert.strictEqual(prs.length, 0, 'should return [] when projects/ has only .archived/');
+    } finally { restore(); }
+  });
 }
 
 async function testQueriesSkills() {
@@ -13811,6 +13881,63 @@ async function testProjectPathHelpers() {
     assert.ok(stateDir.includes('myproject'), `Expected path containing project name: ${stateDir}`);
   });
 
+  // Regression: projectStateDir used to mkdir on every call, which silently
+  // resurrected projects/<removedName>/ whenever any code path (poller, lifecycle,
+  // dashboard read) used a stale project reference after removeProject archived
+  // the data dir. The next getPullRequests enumeration then picked the recreated
+  // dir back up and the project reappeared in /api/status.
+  await test('projectStateDir does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'never-created');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/never-created should not exist');
+      const result = freshShared.projectStateDir({ name: 'never-created' });
+      assert.strictEqual(result, projectDir, 'should return the computed path');
+      assert.ok(!fs.existsSync(projectDir), 'projectStateDir must NOT create the directory');
+    } finally { restore(); }
+  });
+
+  await test('projectWorkItemsPath does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'phantom');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/phantom should not exist');
+      const wiPath = freshShared.projectWorkItemsPath({ name: 'phantom' });
+      assert.ok(wiPath.endsWith('work-items.json'));
+      assert.ok(!fs.existsSync(projectDir), 'projectWorkItemsPath must NOT create projects/<name>/');
+    } finally { restore(); }
+  });
+
+  await test('projectPrPath does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'phantom');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/phantom should not exist');
+      const prPath = freshShared.projectPrPath({ name: 'phantom' });
+      assert.ok(prPath.endsWith('pull-requests.json'));
+      assert.ok(!fs.existsSync(projectDir), 'projectPrPath must NOT create projects/<name>/');
+    } finally { restore(); }
+  });
+
+  await test('projectStateDirEnsure creates the directory on demand', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'ensure-me');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/ensure-me should not exist');
+      const result = freshShared.projectStateDirEnsure({ name: 'ensure-me' });
+      assert.strictEqual(result, projectDir, 'should return the computed path');
+      assert.ok(fs.existsSync(projectDir), 'projectStateDirEnsure must mkdir the directory');
+    } finally { restore(); }
+  });
+
   await test('projectWorkItemsPath ends with work-items.json', () => {
     const p = shared.projectWorkItemsPath({ name: 'myproject' });
     assert.ok(p.endsWith('work-items.json'), `Expected path ending with work-items.json: ${p}`);
@@ -16121,7 +16248,9 @@ async function testBuildAgentContext() {
       fs.mkdirSync(project.localPath, { recursive: true });
       const config = { projects: [project], agents: {}, engine: {} };
       fs.writeFileSync(path.join(minionsDir, 'config.json'), JSON.stringify(config));
-      fs.writeFileSync(freshShared.projectPrPath(project), JSON.stringify([
+      const prPathFor1886 = freshShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPathFor1886), { recursive: true });
+      fs.writeFileSync(prPathFor1886, JSON.stringify([
         { id: 'github:yemi33/minions#1886', status: freshShared.PR_STATUS.ACTIVE, title: 'Object context', _context: { issue: 1886 }, branch: 'work/object-context' },
         { id: 'github:yemi33/minions#1887', status: freshShared.PR_STATUS.ACTIVE, title: 'Array context', _context: ['unexpected'], branch: 'work/array-context' },
         { id: 'github:yemi33/minions#1888', status: freshShared.PR_STATUS.ACTIVE, title: 'Number context', _context: 42, branch: 'work/number-context' },
@@ -22151,6 +22280,7 @@ async function testDispatchPromptSidecar() {
       const testDispatch = require('../engine/dispatch');
       const testQueries = require('../engine/queries');
       const wiPath = freshShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
       const completedAt = '2026-04-29T18:04:03.000Z';
       fs.writeFileSync(wiPath, JSON.stringify([{
         id: 'W-exit-stderr',
@@ -56338,6 +56468,54 @@ async function testEngineHelperCoverage() {
       assert.ok(r.archivedTo.startsWith('projects/.archived/demo-'), 'expected projects/.archived/demo-*: ' + r.archivedTo);
       assert.ok(!fs.existsSync(projectDir), 'original data dir should be moved');
       assert.ok(fs.existsSync(path.join(dir, r.archivedTo, 'work-items.json')));
+    } finally { restore(); }
+  });
+
+  // Regression: end-to-end resurrection bug. After removeProject archives the
+  // data dir, subsequent reads via projectStateDir/projectWorkItemsPath/
+  // projectPrPath must NOT recreate projects/<removedName>/, and getPullRequests
+  // must not surface the removed name through any field.
+  await test('removeProject + read helpers do not recreate projects/<name>/ (resurrection bug)', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.ok, true);
+      assert.ok(!fs.existsSync(projectDir), 'data dir should be archived');
+
+      // Simulate stale code paths reading helpers with the now-removed project.
+      const freshShared = require('../engine/shared');
+      const staleProject = { name: 'demo', localPath: dir };
+      freshShared.projectStateDir(staleProject);
+      freshShared.projectWorkItemsPath(staleProject);
+      freshShared.projectPrPath(staleProject);
+      // safeJson is the canonical read for state files — it must tolerate missing.
+      assert.strictEqual(freshShared.safeJson(freshShared.projectWorkItemsPath(staleProject)), null);
+      assert.strictEqual(freshShared.safeJson(freshShared.projectPrPath(staleProject)), null);
+
+      assert.ok(!fs.existsSync(projectDir),
+        'projects/demo/ must NOT be recreated by read-only helpers after removal');
+    } finally { restore(); }
+  });
+
+  await test('removeProject + getPullRequests does not surface the removed project', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      // Pre-seed a PR record so we'd notice if the removed project leaked.
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-leak-1', title: 'must not appear', created: '2025-01-01' }]));
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.ok, true);
+
+      // Simulate what /api/status does: read the fresh queries module.
+      delete require.cache[require.resolve('../engine/queries')];
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(!prs.some(p => p._project === 'demo'),
+        '_project field must not surface removed project name');
+      assert.ok(!prs.some(p => p.id === 'PR-leak-1'),
+        'archived PR records must not be surfaced');
     } finally { restore(); }
   });
 
