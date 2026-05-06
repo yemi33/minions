@@ -2683,8 +2683,12 @@ function _isCompletedMeetingJson(filePath, fullPath, isJson) {
   if (!filePath || !isJson || !/^meetings\//.test(filePath)) return false;
   try {
     const mtg = safeJson(fullPath);
-    return !!(mtg && (mtg.status === 'completed' || mtg.status === 'archived'));
+    return !!(mtg && (mtg.status === shared.MEETING_STATUS.COMPLETED || mtg.status === shared.MEETING_STATUS.ARCHIVED));
   } catch { return false; }
+}
+
+function _rollbackDocChatEdit(fullPath, originalContent) {
+  try { safeWrite(fullPath, originalContent); } catch { /* best effort rollback */ }
 }
 
 // Reconciles a doc-chat call's effect on disk into a single decision. Two
@@ -2726,14 +2730,14 @@ function _finalizeDocChatEdit({ filePath, fullPath, isJson, canEdit, originalCon
   }
 
   if (_isCompletedMeetingJson(filePath, fullPath, isJson)) {
-    try { safeWrite(fullPath, originalContent); } catch { /* best effort rollback */ }
+    _rollbackDocChatEdit(fullPath, originalContent);
     return { edited: false, content: null, answerSuffix: '\n\n(Edit rejected — meeting is completed/archived; restored from snapshot.)' };
   }
 
   if (isJson) {
     try { JSON.parse(diskContent); }
     catch (e) {
-      try { safeWrite(fullPath, originalContent); } catch { /* best effort rollback */ }
+      _rollbackDocChatEdit(fullPath, originalContent);
       return { edited: false, content: null, answerSuffix: `\n\n(JSON invalid after surgical edit — rolled back: ${e.message})` };
     }
   }
@@ -2760,6 +2764,13 @@ function _makeDocChatStreamStripper(onChunk) {
     let answer;
     if (lockedAnswer !== null) {
       answer = lockedAnswer;
+    } else if (text.indexOf('---') < 0) {
+      // Fast path for typical Q&A: the doc delimiter starts with "---", so
+      // when the chunk doesn't contain that substring it can't possibly
+      // contain ---MINIONS-DOC-CHAT-DOCUMENT-…--- or ---DOCUMENT---. Skip the
+      // regex-heavy delimiter scan; we still need the actions stripper to
+      // hide partial ===ACTIONS=== while the model is mid-emission.
+      answer = stripCCActionsForStream(text);
     } else {
       const parsed = _parseDocChatResultText(text);
       if (parsed.content !== null) lockedAnswer = parsed.answer;

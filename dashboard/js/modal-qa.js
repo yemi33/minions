@@ -138,28 +138,35 @@ function _qaPersistSession(key, { threadHtml, docContext, filePath, history, que
 // queue advance) keep using _qaPersistSession directly so the final state
 // always lands; they call _qaFlushPersistDebounce first to drop any pending
 // stale chunk-period write.
+//
+// State is kept per-session on the runtime so two simultaneously-streaming
+// sessions don't share a timer (the second session's pending payload would
+// otherwise overwrite the first's, dropping a write).
 const _QA_PERSIST_DEBOUNCE_MS = 250;
-let _qaPersistDebounceTimer = null;
-let _qaPersistPending = null;
 
 function _qaPersistSessionDebounced(key, payload) {
   if (!key) return;
-  _qaPersistPending = { key, payload };
-  if (_qaPersistDebounceTimer) return;
-  _qaPersistDebounceTimer = setTimeout(() => {
-    _qaPersistDebounceTimer = null;
-    const next = _qaPersistPending;
-    _qaPersistPending = null;
-    if (next) _qaPersistSession(next.key, next.payload);
+  const runtime = _qaGetRuntime(key);
+  if (!runtime) return;
+  runtime._persistPending = payload;
+  if (runtime._persistTimer) return;
+  runtime._persistTimer = setTimeout(() => {
+    runtime._persistTimer = null;
+    const pending = runtime._persistPending;
+    runtime._persistPending = null;
+    if (pending) _qaPersistSession(key, pending);
   }, _QA_PERSIST_DEBOUNCE_MS);
 }
 
-function _qaFlushPersistDebounce() {
-  if (_qaPersistDebounceTimer) {
-    clearTimeout(_qaPersistDebounceTimer);
-    _qaPersistDebounceTimer = null;
+function _qaFlushPersistDebounce(key) {
+  if (!key) return;
+  const runtime = _qaGetRuntime(key);
+  if (!runtime) return;
+  if (runtime._persistTimer) {
+    clearTimeout(runtime._persistTimer);
+    runtime._persistTimer = null;
   }
-  _qaPersistPending = null;
+  runtime._persistPending = null;
 }
 
 function _qaSaveActiveSessionState() {
@@ -685,7 +692,7 @@ async function _processQaMessage(message, selection, opts) {
           }
         }
 
-        _qaFlushPersistDebounce();
+        _qaFlushPersistDebounce(sessionKey);
         _qaPersistSession(sessionKey, {
           threadHtml: updatedThreadHtml,
           docContext: sessionDocContext,
@@ -743,7 +750,7 @@ async function _processQaMessage(message, selection, opts) {
       if (loadingEl) loadingEl.remove();
       _qaInsertBeforeQueued(tmp, messageHtml);
     });
-    _qaFlushPersistDebounce();
+    _qaFlushPersistDebounce(sessionKey);
     _qaPersistSession(sessionKey, {
       threadHtml: updatedThreadHtml,
       docContext: capturedDocContext,
@@ -779,7 +786,7 @@ async function _processQaMessage(message, selection, opts) {
       if (queuedEl) queuedEl.remove();
       _qaInsertBeforeQueued(tmp, _qaBuildUserMessageHtml(next.message, next.selection));
     });
-    _qaFlushPersistDebounce();
+    _qaFlushPersistDebounce(sessionKey);
     _qaPersistSession(sessionKey, {
       threadHtml: nextThreadHtml,
       docContext: (_qaSessions.get(sessionKey) || {}).docContext || capturedDocContext,

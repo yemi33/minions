@@ -14089,7 +14089,8 @@ async function testProjectPathHelpers() {
       assert.deepStrictEqual(prs.map(pr => pr.id), ['PR-1'], 'legacy PRs should move to central state');
       assert.ok(result.migrated.includes('work-items.json'));
       assert.ok(result.migrated.includes('pull-requests.json'));
-      assert.ok(!fs.existsSync(legacyDir), 'empty legacy .minions dir should be removed after known files move');
+      assert.strictEqual(result.legacyDirRemoved, true, 'legacy project-local .minions dir should be removed');
+      assert.ok(!fs.existsSync(legacyDir), 'legacy project-local .minions dir should be removed after known files move');
     } finally { restore(); }
   });
 
@@ -16203,6 +16204,12 @@ async function testRenderPlaybook() {
     return;
   }
 
+  // Isolate log writes — these tests intentionally trigger "Playbook not found"
+  // and "missing required vars" warnings that previously polluted live
+  // engine/log.json. Lazy LOG_PATH resolution in shared._flushLogBuffer routes
+  // them to the test dir while MINIONS_TEST_DIR is set.
+  const restoreRP = createTestMinionsDir();
+
   await test('renderPlaybook returns null for nonexistent playbook type', () => {
     const result = renderPlaybook('this-playbook-does-not-exist-xyz', {});
     assert.strictEqual(result, null);
@@ -16383,6 +16390,8 @@ async function testRenderPlaybook() {
       _restoreFileState(notesSnapshot);
     }
   });
+
+  restoreRP();
 }
 
 // ─── engine/playbook.js — buildAgentContext Tests ───────────────────────────
@@ -39943,9 +39952,9 @@ async function testDashboardResilience() {
     assert.ok(!renderFn.includes('_qaPersistSession(sessionKey'),
       '_qaRenderProgress must not call _qaPersistSession directly (would defeat debounce)');
     const sendFn = modalQaSrc.slice(modalQaSrc.indexOf('async function _processQaMessage'), modalQaSrc.indexOf('\nfunction qaAbort'));
-    const flushCalls = (sendFn.match(/_qaFlushPersistDebounce\(\)/g) || []).length;
+    const flushCalls = (sendFn.match(/_qaFlushPersistDebounce\(sessionKey\)/g) || []).length;
     assert.ok(flushCalls >= 3,
-      `_processQaMessage should flush before each terminal persist (got ${flushCalls} calls, want >=3 for done/error/queue-advance)`);
+      `_processQaMessage should flush per-session before each terminal persist (got ${flushCalls} sessionKey-scoped calls, want >=3 for done/error/queue-advance)`);
   });
 
   await test('doc-chat restores queued work and strips stale loading UI on reopen', () => {
