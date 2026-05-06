@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1739 (2026-05-06)
+
+### Features
+- make Command Center chat sessions non-expiring (#2100)
+
 ## 0.1.1738 (2026-05-06)
 
 ### Features
