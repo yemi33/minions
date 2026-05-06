@@ -30,13 +30,23 @@ const QA_QUEUE_CAP = 10; // max queued messages
 const QA_STREAM_STALL_MS = 6 * 60 * 1000; // allow the full doc-chat timeout before treating heartbeat-only streams as stalled
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 
+// Insert html at the bottom of the thread but above any pending "Queued: ..."
+// strips, so queued messages always remain visually below the active progress
+// UX / answer / errors.
+function _qaInsertBeforeQueued(container, html) {
+  if (!container) return;
+  const firstQueued = container.querySelector && container.querySelector('.qa-queued-item');
+  if (firstQueued) firstQueued.insertAdjacentHTML('beforebegin', html);
+  else container.insertAdjacentHTML('beforeend', html);
+}
+
 function _renderQaUserMessage(thread, message, selection) {
   let qHtml = '<div class="modal-qa-q">' + escHtml(message);
   if (selection) {
     qHtml += '<span class="selection-ref">Re: "' + escHtml(selection.slice(0, 100)) + ((selection.length > 100) ? '...' : '') + '"</span>';
   }
   qHtml += '</div>';
-  thread.insertAdjacentHTML('beforeend', qHtml);
+  _qaInsertBeforeQueued(thread, qHtml);
   thread.scrollTop = thread.scrollHeight;
   _showThreadWrap();
 }
@@ -442,7 +452,7 @@ async function _processQaMessage(message, selection, opts) {
   const loadingId = 'chat-loading-' + Date.now();
   const loadingHtml = _qaBuildLoadingHtml(loadingId, runtime.queue.length);
   const startThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
-    tmp.insertAdjacentHTML('beforeend', loadingHtml);
+    _qaInsertBeforeQueued(tmp, loadingHtml);
   });
   _qaPersistSession(sessionKey, {
     threadHtml: startThreadHtml,
@@ -606,8 +616,8 @@ async function _processQaMessage(message, selection, opts) {
         let updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
           const loadingEl = tmp.querySelector('#' + loadingId);
           if (loadingEl) loadingEl.remove();
-          tmp.insertAdjacentHTML('beforeend', answerHtml);
-          if (rawErrorHtml) tmp.insertAdjacentHTML('beforeend', rawErrorHtml);
+          _qaInsertBeforeQueued(tmp, answerHtml);
+          if (rawErrorHtml) _qaInsertBeforeQueued(tmp, rawErrorHtml);
         });
 
         runtime.history.push({ role: 'user', text: message });
@@ -621,7 +631,7 @@ async function _processQaMessage(message, selection, opts) {
         } else if (evt.actionParseError) {
           const warning = '<div class="modal-qa-a" style="color:var(--red)">Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>';
           updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
-            tmp.insertAdjacentHTML('beforeend', warning);
+            _qaInsertBeforeQueued(tmp, warning);
           });
         }
 
@@ -698,7 +708,7 @@ async function _processQaMessage(message, selection, opts) {
     const updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
       const loadingEl = tmp.querySelector('#' + loadingId);
       if (loadingEl) loadingEl.remove();
-      tmp.insertAdjacentHTML('beforeend', messageHtml);
+      _qaInsertBeforeQueued(tmp, messageHtml);
     });
     _qaPersistSession(sessionKey, {
       threadHtml: updatedThreadHtml,
@@ -733,7 +743,7 @@ async function _processQaMessage(message, selection, opts) {
     const nextThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
       const queuedEl = tmp.querySelector('.qa-queued-item');
       if (queuedEl) queuedEl.remove();
-      tmp.insertAdjacentHTML('beforeend', _qaBuildUserMessageHtml(next.message, next.selection));
+      _qaInsertBeforeQueued(tmp, _qaBuildUserMessageHtml(next.message, next.selection));
     });
     _qaPersistSession(sessionKey, {
       threadHtml: nextThreadHtml,
