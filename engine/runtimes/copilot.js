@@ -306,12 +306,33 @@ function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
   };
 }
 
+// Stamped into every session.json this adapter writes so the pre-spawn resume
+// path can detect "session was produced by a different runtime" — Copilot
+// rejects Claude session IDs (and vice versa) with "No conversation found",
+// which would otherwise burn a retry slot before the post-failure cleanup at
+// engine.js:1195 fires. See W-mot9fwya000d09cb.
+const RUNTIME_NAME = 'copilot';
+
 function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
   if (!agentId || agentId.startsWith('temp-') || !agentsDir) return null;
+  const sessionPath = path.join(agentsDir, agentId, 'session.json');
   try {
-    const sessionPath = path.join(agentsDir, agentId, 'session.json');
     const sessionFile = _safeJson(sessionPath);
     if (!sessionFile?.sessionId || !sessionFile.savedAt) return null;
+
+    // Runtime-mismatch invalidation. Distinct from stale-by-age: the session is
+    // structurally unusable on this runtime, so drop it AND clear session.json
+    // so the next dispatch starts fresh instead of failing with --resume.
+    // Legacy sessions (no `runtime` field) are treated as compatible — opt-in
+    // check, no false invalidations on first deploy.
+    if (sessionFile.runtime && sessionFile.runtime !== RUNTIME_NAME) {
+      if (logger && typeof logger.info === 'function') {
+        logger.info(`Skipping resume for ${agentId}: runtime mismatch (session: ${sessionFile.runtime}, current: ${RUNTIME_NAME}) — clearing session.json`);
+      }
+      try { fs.unlinkSync(sessionPath); } catch {}
+      return null;
+    }
+
     const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
     const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
     if (sessionAge < maxAgeMs && sameBranch) {
@@ -334,6 +355,7 @@ function saveSession({ agentId, dispatchId, branch, sessionId, agentsDir, now = 
       dispatchId,
       savedAt: typeof now === 'function' ? now() : new Date().toISOString(),
       branch: branch || null,
+      runtime: RUNTIME_NAME,
     });
     return true;
   } catch (err) {

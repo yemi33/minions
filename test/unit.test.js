@@ -3598,6 +3598,183 @@ async function testEngineDefaults() {
   });
 }
 
+// ─── engine/features.js — Feature Flag Registry ─────────────────────────────
+
+async function testFeatureFlags() {
+  console.log('\n── engine/features.js — Feature Flag Registry ──');
+
+  const features = require(path.join(MINIONS_DIR, 'engine', 'features'));
+  const ENV_KEY = 'MINIONS_FEATURE_TEST_FLAG_A';
+  function clearEnv() { delete process.env[ENV_KEY]; }
+
+  const TEST_REGISTRY = {
+    'test-flag-a': { description: 'test', default: false, addedIn: '0.0.0' },
+    'test-flag-b': { description: 'test', default: true, addedIn: '0.0.0' },
+  };
+
+  await test('exports isFeatureOn, listFeatures, hasFeature, FEATURES', () => {
+    assert.strictEqual(typeof features.isFeatureOn, 'function');
+    assert.strictEqual(typeof features.listFeatures, 'function');
+    assert.strictEqual(typeof features.hasFeature, 'function');
+    assert.strictEqual(typeof features.FEATURES, 'object');
+  });
+
+  await test('isFeatureOn throws on unknown id (typo protection)', () => {
+    assert.throws(() => features.isFeatureOn('definitely-not-registered', {}),
+      /Unknown feature flag.*definitely-not-registered/);
+  });
+
+  await test('hasFeature returns false for unknown id', () => {
+    assert.strictEqual(features.hasFeature('does-not-exist'), false);
+  });
+
+  await test('isFeatureOn returns registry default when neither env nor config sets it', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', {}, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', {}, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', null, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', undefined, TEST_REGISTRY), true);
+  });
+
+  await test('config.features overrides registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', { features: { 'test-flag-b': false } }, TEST_REGISTRY), false);
+  });
+
+  await test('non-boolean config values fall through to registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 'yes' } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 1 } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': null } }, TEST_REGISTRY), false);
+  });
+
+  await test('env var override beats config and default — truthy', () => {
+    try {
+      for (const v of ['1', 'true', 'TRUE', 'on', 'yes']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': false } }, TEST_REGISTRY), true,
+          `env="${v}" should force on`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('env var override beats config and default — falsy', () => {
+    const reg = { 'test-flag-a': { description: 'test', default: true, addedIn: '0.0.0' } };
+    try {
+      for (const v of ['0', 'false', 'FALSE', 'off', 'no', '']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, reg), false,
+          `env="${v}" should force off`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('listFeatures returns shape {id, description, default, enabled, addedIn, expires, expired}', () => {
+    clearEnv();
+    const reg = { 'test-flag-a': { description: 'A flag', default: false, addedIn: '0.1.0', expires: '2099-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-a');
+    assert.ok(entry, 'test-flag-a missing from listFeatures');
+    assert.strictEqual(entry.description, 'A flag');
+    assert.strictEqual(entry.default, false);
+    assert.strictEqual(entry.enabled, false);
+    assert.strictEqual(entry.addedIn, '0.1.0');
+    assert.strictEqual(entry.expires, '2099-01-01');
+    assert.strictEqual(entry.expired, false);
+  });
+
+  await test('listFeatures marks past-expires entries as expired', () => {
+    clearEnv();
+    const reg = { 'test-flag-old': { description: 'old', default: false, addedIn: '0.0.0', expires: '2000-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-old');
+    assert.strictEqual(entry.expired, true, 'past-dated expires should set expired=true');
+  });
+
+  await test('module live registry stays empty (no test pollution leaked into FEATURES)', () => {
+    assert.deepStrictEqual(Object.keys(features.FEATURES), [],
+      'live FEATURES registry must remain empty — tests pass an explicit registry instead of mutating the module');
+  });
+
+  await test('dashboard.js requires engine/features and wires /api/features routes', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes("require('./engine/features')"), 'dashboard.js must require engine/features');
+    assert.ok(dashSrc.includes("'/api/features'"), 'dashboard.js must register GET /api/features route');
+    assert.ok(dashSrc.includes("'/api/features/toggle'"), 'dashboard.js must register POST /api/features/toggle route');
+    assert.ok(/handleFeaturesList\b/.test(dashSrc), 'handleFeaturesList must be defined');
+    assert.ok(/handleFeaturesToggle\b/.test(dashSrc), 'handleFeaturesToggle must be defined');
+  });
+
+  await test('dashboard bootstrap injects window.MINIONS_FEATURES data only', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('window.MINIONS_FEATURES'), 'bootstrap must seed window.MINIONS_FEATURES');
+    assert.ok(!/window\.MinionsFeatures\s*=/.test(dashSrc),
+      'helper body should live in dashboard/js/features-client.js, not inlined in dashboard.js');
+  });
+
+  await test('features-client.js defines window.MinionsFeatures.isOn helper', () => {
+    const clientSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'features-client.js'), 'utf8');
+    assert.ok(/window\.MinionsFeatures\s*=/.test(clientSrc),
+      'features-client.js must define window.MinionsFeatures');
+    assert.ok(/isOn:\s*function/.test(clientSrc),
+      'features-client.js must expose isOn');
+  });
+
+  await test('features-client.js is loaded before settings.js in jsFiles', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fcIdx = dashSrc.indexOf("'features-client'");
+    const settingsIdx = dashSrc.indexOf("'settings'");
+    assert.ok(fcIdx > 0 && settingsIdx > 0 && fcIdx < settingsIdx,
+      "'features-client' must be listed before 'settings' in jsFiles so MinionsFeatures.isOn is defined when settings.js loads");
+  });
+
+  await test('handleFeaturesToggle uses mutateJsonFileLocked for atomic config write', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    assert.ok(start >= 0, 'handleFeaturesToggle must exist');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/mutateJsonFileLocked\s*\(/.test(slice),
+      'handleFeaturesToggle must use mutateJsonFileLocked for atomic config.json RMW');
+  });
+
+  await test('handleFeaturesToggle 404s on unknown feature id', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/features\.hasFeature\s*\(\s*id\s*\)/.test(slice),
+      'handleFeaturesToggle must validate id against features.hasFeature');
+    assert.ok(/jsonReply\(\s*res\s*,\s*404/.test(slice),
+      'handleFeaturesToggle must reply 404 on unknown id');
+  });
+
+  await test('settings.js renders Show experimental flags collapsible', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('Show experimental flags'),
+      'settings.js must render the "Show experimental flags" disclosure');
+    assert.ok(settingsSrc.includes('/api/features'),
+      'settings.js must fetch /api/features');
+    assert.ok(settingsSrc.includes('/api/features/toggle'),
+      'settings.js must POST to /api/features/toggle');
+    assert.ok(settingsSrc.includes('data-feature-toggle'),
+      'settings.js must expose data-feature-toggle hooks for change listeners');
+  });
+
+  await test('settings.js attaches change listener on each feature toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(/querySelectorAll\(\s*['"]input\[data-feature-toggle\]['"]/.test(settingsSrc),
+      'settings.js must wire change listeners via querySelectorAll on data-feature-toggle inputs');
+  });
+
+  await test('CLAUDE.md documents Feature Flags recipe', () => {
+    const claudeMd = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    assert.ok(/##\s+Feature Flags/.test(claudeMd),
+      'CLAUDE.md must include "## Feature Flags" section');
+    assert.ok(claudeMd.includes('engine/features.js'),
+      'CLAUDE.md feature flags section must reference engine/features.js');
+    assert.ok(/MINIONS_FEATURE_/.test(claudeMd),
+      'CLAUDE.md must document the env-var override pattern');
+  });
+}
+
 // ─── shared.js — Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────
 
 async function testRuntimeFleetHelpers() {
@@ -20879,6 +21056,103 @@ async function testSpawnAgentScript() {
     assert.strictEqual(countAddDir(fresh.args), 2, 'non-resume path must include both --add-dir flags');
     assert.strictEqual(countAddDir(resumed.args), 2, 'resume path must include both --add-dir flags');
   });
+
+  // Regression for W-motay65e000g39b5: a 5s setTimeout used to nuke the
+  // sysprompt .tmp before Claude could finish its lazy `--system-prompt-file`
+  // read on cold starts (MCP boot, --add-dir traversal, Windows process
+  // startup overhead). Two layers:
+  //   (a) source-level guard — no `setTimeout(...unlinkSync(sysTmpPath)...)`,
+  //   (b) behavioral — file persists while the spawned child is alive and is
+  //       cleaned up only when spawn-agent.js itself exits.
+
+  await test('spawn-agent.js: no setTimeout-based deletion of sysprompt .tmp (regression W-motay65e000g39b5)', () => {
+    // Bug shape: `setTimeout(() => { ...fs.unlinkSync(sysTmpPath)...; }, 5000)` —
+    // both halves on the same line. Look for any `setTimeout` callback that
+    // unlinks sysTmpPath within its own body (bounded by `}` so we never span
+    // across to the unrelated process.on('exit') cleanup function below).
+    const badPattern = /setTimeout\s*\([^}]*?unlinkSync\s*\(\s*sysTmpPath\s*\)/;
+    assert.ok(!badPattern.test(src),
+      'spawn-agent.js must NOT setTimeout-delete sysTmpPath — Claude reads --system-prompt-file lazily and cold starts can land after a short timer');
+  });
+
+  await test('spawn-agent.js: sysprompt .tmp persists during child lifetime and unlinks on spawn-agent exit', async () => {
+    const dir = createTmpDir();
+    const promptPath = path.join(dir, 'prompt-test.md');
+    const sysPath = path.join(dir, 'sysprompt-test.md');
+    const tmpSysPath = sysPath + '.tmp';
+    fs.writeFileSync(promptPath, 'user prompt');
+    fs.writeFileSync(sysPath, 'system prompt');
+
+    // Stub-loader script preloaded via `node --require`. Registers a runtime
+    // adapter that points the spawned binary at `node -e <sleeper>` so we can
+    // observe spawn-agent's .tmp lifecycle without a real Claude/Copilot
+    // install. Module-singleton caching means the registry our preload mutates
+    // is the same one spawn-agent.js's `resolveRuntime()` consults.
+    const stubPath = path.join(dir, 'stub-loader.js');
+    const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+    fs.writeFileSync(stubPath, [
+      `const runtimes = require(${JSON.stringify(runtimesPath)});`,
+      `runtimes.registerRuntime('test-stub', {`,
+      `  name: 'test-stub',`,
+      `  capabilities: { systemPromptFile: true, streaming: false },`,
+      `  resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),`,
+      `  buildArgs: () => ['-e', 'setTimeout(() => {}, 1500)'],`,
+      `  buildPrompt: (p) => p,`,
+      `  installHint: 'test-stub (in-memory)',`,
+      `});`,
+    ].join('\n'));
+
+    const { spawn } = require('child_process');
+    // Strip MINIONS_REPO_HOST so spawn-agent doesn't try to acquire an ADO
+    // token (which would shell out to azureauth and add latency / flakiness).
+    const childEnv = { ...process.env };
+    delete childEnv.MINIONS_REPO_HOST;
+
+    const child = spawn(
+      process.execPath,
+      [
+        '--require', stubPath,
+        path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'),
+        promptPath, sysPath,
+        '--runtime', 'test-stub',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv },
+    );
+
+    let stderrBuf = '';
+    child.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
+    child.stdout.on('data', () => {}); // drain
+
+    try {
+      // Mid-flight check: poll briefly for the .tmp file. Windows process
+      // startup can take a couple hundred ms, so we wait up to ~1.5s.
+      let observedDuringChild = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (fs.existsSync(tmpSysPath) && child.exitCode === null) {
+          observedDuringChild = true;
+          break;
+        }
+      }
+      assert.ok(observedDuringChild,
+        `.tmp sysprompt file should exist on disk while spawn-agent's child process is alive (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      // Wait for spawn-agent.js to finish (child sleeper exits at ~1.5s).
+      const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+
+      // process.on('exit') cleanup must have unlinked the .tmp.
+      assert.ok(!fs.existsSync(tmpSysPath),
+        `.tmp sysprompt file should be unlinked once spawn-agent.js exits (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      assert.strictEqual(exitCode, 0,
+        `spawn-agent.js should exit cleanly when the spawned child exits 0 (got ${exitCode}; stderr: ${stderrBuf.slice(0, 400)})`);
+    } finally {
+      if (child.exitCode === null) {
+        try { child.kill(); } catch { /* best effort */ }
+      }
+      try { fs.unlinkSync(tmpSysPath); } catch { /* may already be cleaned */ }
+    }
+  });
 }
 
 // ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
@@ -20966,6 +21240,192 @@ async function testSessionResume() {
   await test('session.json stores dispatchId for traceability', () => {
     assert.ok(claudeRuntimeSrc.includes('dispatchId') && claudeRuntimeSrc.includes('session.json'),
       'session.json should include dispatchId');
+  });
+
+  // Runtime mismatch invalidation: a session ID produced by one runtime cannot
+  // be resumed under a different runtime. The pre-spawn resume path must drop
+  // the session ID AND clear session.json on mismatch — otherwise the new
+  // runtime spawns with --resume <wrong-runtime-id>, fails with "No
+  // conversation found", and burns a retry slot before the post-failure
+  // cleanup at engine.js fires.
+  await test('saveSession records the producing runtime name (claude)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    claude.saveSession({
+      agentId,
+      dispatchId: 'd-1',
+      branch: 'work/W-test',
+      sessionId: 'sess-claude-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'claude',
+      'claude.saveSession should stamp runtime: "claude" into session.json');
+    assert.strictEqual(saved.sessionId, 'sess-claude-1');
+  });
+
+  await test('saveSession records the producing runtime name (copilot)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'dallas';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    copilot.saveSession({
+      agentId,
+      dispatchId: 'd-2',
+      branch: 'work/W-test',
+      sessionId: 'sess-copilot-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'copilot',
+      'copilot.saveSession should stamp runtime: "copilot" into session.json');
+  });
+
+  await test('claude.getResumeSessionId skips resume + clears session.json when stored runtime is copilot', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    const branch = 'work/W-mot62ant0003022d';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Simulate the bug scenario: a copilot-produced session ID is on disk and
+    // the engine has switched the resolved runtime to claude.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: '1b418f2e-aaaa-bbbb-cccc-deadbeefcafe',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),  // fresh — only runtime mismatch should invalidate
+      branch,
+      runtime: 'copilot',
+    }));
+
+    const logs = [];
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]) },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'claude.getResumeSessionId must return null when stored runtime is copilot');
+    assert.strictEqual(fs.existsSync(sessionPath), false,
+      'session.json must be cleared on runtime mismatch so the next dispatch is fresh');
+    const mismatchLog = logs.find(([, m]) => /runtime mismatch/i.test(m));
+    assert.ok(mismatchLog,
+      'a log line must explain the runtime-switch reason (so it is distinguishable from stale-by-age)');
+  });
+
+  await test('copilot.getResumeSessionId skips resume + clears session.json when stored runtime is claude', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-orphan',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = copilot.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null);
+    assert.strictEqual(fs.existsSync(sessionPath), false);
+  });
+
+  await test('getResumeSessionId resumes when stored runtime matches current runtime', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-match',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-claude-match',
+      'matching runtime must resume normally');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'matching runtime must NOT clear session.json');
+  });
+
+  await test('getResumeSessionId resumes legacy session.json without runtime field (back-compat)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Pre-fix sessions on disk have no `runtime` field.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-legacy',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-legacy',
+      'legacy session without runtime field should still resume — runtime check is opt-in');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'legacy session must not be cleared on runtime check');
+  });
+
+  await test('getResumeSessionId still invalidates by age even when runtime matches', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-old',
+      dispatchId: 'd-old',
+      // 3 hours ago — well beyond the 2h TTL
+      savedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'stale-by-age path must keep working alongside runtime-mismatch path');
   });
 }
 
@@ -26074,6 +26534,78 @@ async function testMeetingsExtendedBehavioral() {
     }
   });
 
+  await test('checkMeetingTimeouts hard backstop marks non-responders failed and advances investigating', () => {
+    // Isolated tmp meetings dir — checkMeetingTimeouts iterates ALL meetings in
+    // MEETINGS_DIR, so we must not run with the live dir. Bust the require cache
+    // so the meeting module re-resolves MEETINGS_DIR against MINIONS_TEST_DIR.
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-inv';
+    isolated.saveMeeting({
+      id: testId, title: 'Hard Timeout Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob', 'carol'],
+      findings: { alice: { content: 'A finding' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 4000000).toISOString(), // ~67 min ago, past 60min hard
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: { alice: {}, bob: {}, carol: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Hard backstop should advance the round');
+      assert.strictEqual(m.round, 2);
+      assert.ok(m.roundFailures?.['1']?.bob, 'bob should be marked failed');
+      assert.ok(m.roundFailures['1'].carol, 'carol should be marked failed');
+      assert.strictEqual(m.roundFailures['1'].alice, undefined, 'alice succeeded — no failure record');
+      const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
+      assert.ok(timeoutEntry && /hard timeout/i.test(timeoutEntry.content), 'transcript should record hard-timeout reason');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop does not fire below hardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-soft';
+    isolated.saveMeeting({
+      id: testId, title: 'Soft Window', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'],
+      findings: {}, debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 1200000).toISOString(), // 20 min — past soft 15min, below hard 60min
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'should not advance below hardTimeout');
+      assert.deepStrictEqual(m.roundFailures, {}, 'no participants marked failed');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop honours configured meetingRoundHardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-cfg';
+    isolated.saveMeeting({
+      id: testId, title: 'Custom Hard', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'a' }, bob: { content: 'b' } },
+      debate: { alice: { content: 'a debate' } },
+      humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 60000).toISOString(), // 1 min ago
+    });
+    try {
+      // Tiny soft + hard timeouts to force both gates open
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1, meetingRoundHardTimeout: 1 }, agents: { alice: {}, bob: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'should advance debate → conclude under tight hard cap');
+      assert.ok(m.roundFailures?.['2']?.bob, 'bob should be marked failed');
+    } finally {
+      restore();
+    }
+  });
+
   await test('checkMeetingTimeouts does not auto-complete concluding while conclusion agent is unfinished', () => {
     const testId = 'TEST-EXT-tout-con-' + Date.now();
     meetingMod.saveMeeting({
@@ -28071,6 +28603,7 @@ async function main() {
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
+    await testFeatureFlags();
     await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
@@ -30455,9 +30988,97 @@ async function testAutoModeStatus() {
 }
 
 async function testApiRoutesInCcPreamble() {
-  await test('CC preamble references API routes endpoint', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('/api/routes'), 'preamble should reference /api/routes for endpoint discovery');
+  // CC's preamble should auto-index the live API surface (from dashboard.js
+  // ROUTES) and the engine CLI surface (from engine/cli.js CLI_COMMAND_DOCS).
+  // Single source of truth: adding a new endpoint or CLI command lands in
+  // CC's prompt automatically without editing prompts/cc-system.md.
+
+  const dashboard = require(path.join(__dirname, '..', 'dashboard.js'));
+  const cliMod = require(path.join(__dirname, '..', 'engine', 'cli'));
+  const dashSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+  const seedRoute = { method: 'GET', path: '/api/status', desc: 'Full status snapshot', params: null };
+  const seedRoutes = (extra = []) => dashboard._captureApiRoutesMeta([seedRoute, ...extra]);
+
+  await test('CLI_COMMAND_DOCS exported from engine/cli.js', () => {
+    assert.ok(cliMod.CLI_COMMAND_DOCS, 'CLI_COMMAND_DOCS must be exported');
+    assert.ok(typeof cliMod.CLI_COMMAND_DOCS === 'object');
+    assert.ok(Object.keys(cliMod.CLI_COMMAND_DOCS).length >= 10,
+      'docs should cover the engine subcommand fleet');
+  });
+
+  await test('CLI_COMMAND_DOCS covers every command (no drift either direction)', () => {
+    const docKeys = new Set(Object.keys(cliMod.CLI_COMMAND_DOCS));
+    const cmdKeys = new Set(cliMod._listCommandKeys());
+    const missingDoc = [...cmdKeys].filter(k => !docKeys.has(k));
+    const orphanDoc = [...docKeys].filter(k => !cmdKeys.has(k));
+    assert.deepStrictEqual(missingDoc, [],
+      'every command must have a CLI_COMMAND_DOCS entry — add docs when you add a command');
+    assert.deepStrictEqual(orphanDoc, [],
+      'every CLI_COMMAND_DOCS entry must correspond to a real command — remove the doc if the command was deleted');
+  });
+
+  await test('handleCommand help text renders from CLI_COMMAND_DOCS (single source of truth)', () => {
+    const cliSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('formatCliCommandHelpLines'),
+      'help text must be rendered, not hard-coded line-by-line');
+    assert.ok(!cliSrc.includes("'  start [--cli R] [--model M]   Start engine daemon"),
+      'help text must no longer be a hardcoded console.log per command');
+  });
+
+  await test('dashboard captures ROUTES into _ccApiRoutesMeta inside the request handler', () => {
+    assert.ok(dashSrc.includes('_captureApiRoutesMeta(ROUTES)'),
+      'route dispatcher must invoke the metadata capture before iterating');
+    assert.ok(dashSrc.includes('let _ccApiRoutesMeta = null'),
+      'module-level snapshot variable must be declared');
+  });
+
+  await test('dashboard exposes preamble + index helpers for testing', () => {
+    assert.ok(typeof dashboard.buildCCStatePreamble === 'function');
+    assert.ok(typeof dashboard._captureApiRoutesMeta === 'function');
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex === 'function');
+    assert.ok(typeof dashboard._formatCcCliCommandsIndex === 'function');
+    assert.ok(typeof dashboard._resetPreambleCache === 'function');
+  });
+
+  await test('_formatCcApiRoutesIndex returns a string regardless of capture state', () => {
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex() === 'string');
+  });
+
+  await test('_formatCcApiRoutesIndex includes a sample API path after capture', () => {
+    seedRoutes([{ method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title' }]);
+    const out = dashboard._formatCcApiRoutesIndex();
+    assert.ok(out.includes('/api/status'),
+      'rendered API index must include /api/status');
+    assert.ok(out.includes('Create a new work item'),
+      'rendered API index must include endpoint description');
+    assert.ok(out.includes('params: title'),
+      'rendered API index must surface params hint');
+  });
+
+  await test('_formatCcCliCommandsIndex renders the CLI fleet from CLI_COMMAND_DOCS', () => {
+    const out = dashboard._formatCcCliCommandsIndex();
+    assert.ok(out.includes('minions start'),
+      'CLI index must include the start command');
+    assert.ok(out.includes('minions doctor'),
+      'CLI index must include the doctor command');
+    assert.ok(out.includes('Stop engine'),
+      'CLI index must include command summaries');
+  });
+
+  await test('buildCCStatePreamble embeds both auto-indexes', () => {
+    seedRoutes();
+    dashboard._resetPreambleCache();
+    const text = dashboard.buildCCStatePreamble();
+    assert.ok(text.includes('### API Index'),
+      'preamble must include the API Index section');
+    assert.ok(text.includes('### CLI Index'),
+      'preamble must include the CLI Index section');
+    assert.ok(text.includes('/api/status'),
+      'preamble must surface a real route from the captured snapshot');
+    assert.ok(text.includes('minions start'),
+      'preamble must surface a real CLI command');
+    assert.ok(text.includes('single source of truth'),
+      'preamble must declare the SoT discipline so CC trusts the index');
   });
 }
 
@@ -35217,7 +35838,7 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
-  await test('doc-chat uses a shorter timeout than command center', () => {
+  await test('doc-chat uses the 1-hour backend timeout (W-mot62ant)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000'),
       'Command Center should define a 1-hour backend call timeout');
@@ -35230,14 +35851,70 @@ async function testAutoRecoveryAndAtomicity() {
       'Streaming CC should default to the 1-hour call timeout');
     assert.ok(invokeFn.includes('timeout: CC_CALL_TIMEOUT_MS'),
       'SSE Command Center path should use the 1-hour call timeout');
-    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
-      'Doc-chat should define a dedicated 6-minute timeout');
+    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Doc-chat should also use a 1-hour backend timeout (long edit/Read+Write tool runs)');
+    assert.ok(!src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
+      'The legacy 6-minute doc-chat timeout must be gone');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     assert.ok(docCallFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Streaming doc-chat should use the dedicated doc-chat timeout');
+  });
+
+  await test('doc-chat retries fresh once when a resumed session returns empty/non-zero (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The retry/invalidate logic now lives in a shared helper used by both
+    // wrappers. Check the helper for the actual logic and the wrappers for the
+    // delegation.
+    const retryHelper = src.slice(src.indexOf('async function _retryDocChatAfterResumeFailure'),
+      src.indexOf('function _docChatFailureResponse'));
+    assert.ok(/Resumed session call failed/.test(retryHelper),
+      'retry helper should log when a resumed session fails before retrying fresh');
+    assert.ok(/docSessions\.delete\(sessionKey\)/.test(retryHelper),
+      'retry helper should invalidate the persisted session before retrying fresh');
+    assert.ok(/schedulePersistDocSessions\(\)/.test(retryHelper),
+      'retry helper should persist the invalidated session map');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    for (const [label, fnSrc] of [['ccDocCall', docCallFn], ['ccDocCallStreaming', docStreamFn]]) {
+      assert.ok(fnSrc.includes('_retryDocChatAfterResumeFailure'),
+        `${label} should delegate to the shared retry helper`);
+    }
+  });
+
+  await test('doc-chat failure response surfaces stderr / code / errorClass instead of swallowing them (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Failure-response shape lives in the shared _docChatFailureResponse helper —
+    // slice from its definition through ccDocCallStreaming so the structured
+    // payload is visible to source-level assertions.
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('async function ccDocCallStreaming('));
+    assert.ok(/error:\s*\{/.test(failureFn),
+      'doc-chat failure response should attach a structured error object');
+    assert.ok(/slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should clip stderr to the last 2KB');
+    assert.ok(/stderr:\s*stderrTail/.test(failureFn) || /stderr:[^\n,]*slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should include the truncated stderr');
+    assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn),
+      'doc-chat failure response should include the runtime errorClass');
+    assert.ok(/code:\s*result\.code/.test(failureFn),
+      'doc-chat failure response should include the runtime exit code');
+    // And both wrappers must actually delegate to the helper on the failure branch.
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docCallFn.includes("_docChatFailureResponse('doc-chat'"),
+      'ccDocCall should delegate to _docChatFailureResponse on failure');
+    assert.ok(docStreamFn.includes("_docChatFailureResponse('doc-chat-stream'"),
+      'ccDocCallStreaming should delegate to _docChatFailureResponse on failure');
+    // Doc-chat handlers must forward the structured error to the response so
+    // the dashboard can render it.
+    const handleDocChatFn = src.slice(src.indexOf('async function handleDocChat('), src.indexOf('async function handleDocChatStream('));
+    const handleDocChatStreamFn = src.slice(src.indexOf('async function handleDocChatStream('), src.indexOf('async function handleInboxPersist'));
+    assert.ok(handleDocChatFn.includes('error: ccError'),
+      'handleDocChat should forward the cc error to the JSON response');
+    assert.ok(handleDocChatStreamFn.includes('error: ccError'),
+      'handleDocChatStream should forward the cc error to the SSE done event');
   });
 
   await test('CC frontend stream timeout buffers the 1-hour backend timeout', () => {
@@ -35271,7 +35948,9 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
+    // freshSession plumbing now spans _buildDocChatPass + ccDocCall — slice
+    // through both so the source-level assertions still see the literal pattern.
+    const docCallFn = src.slice(src.indexOf('function _buildDocChatPass'), src.indexOf('async function ccDocCallStreaming('));
     // ccDocCall must accept freshSession param
     assert.ok(docCallFn.includes('freshSession'), 'ccDocCall should accept freshSession parameter');
     // When freshSession is true, existing session must be skipped
@@ -35510,25 +36189,36 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+    // Threshold rule caps small tasks at "≤3 tool calls, 1-2 files" — that's the
+    // tool-use ceiling for self-handling. Anything bigger must delegate.
+    assert.ok(/≤?3 tool calls/.test(src) || /more than 3 tool calls/.test(src),
+      'CC prompt should bound tool use at ~3 calls before requiring delegation');
   });
 
   await test('CC system prompt has size estimation rule for delegation', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
-    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
-    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
-    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+    assert.ok(/Estimate difficulty before responding|size estimation|Estimate first/i.test(src),
+      'CC prompt should have difficulty/size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'),
+      'Should define small/medium/large thresholds');
+    assert.ok(/MUST delegate|DELEGATE/.test(src) && /MAY do it yourself|do it yourself/i.test(src),
+      'Should clearly separate delegate (must, ≥ medium) vs self-do (may, small)');
+    assert.ok(/in doubt.*delegate/i.test(src),
+      'Should default to delegation when uncertain about size');
   });
 
   await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
-    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
-    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
-    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
+    assert.ok(/Delegate when.*Medium|When to delegate/i.test(src),
+      'Should describe when to delegate (medium threshold)');
+    assert.ok(/Small tasks.*do them yourself|When to do it yourself/i.test(src),
+      'Should describe when CC may do small tasks itself');
+    assert.ok(/code changes/i.test(src) && src.includes('implement'),
+      'Delegate list should include code changes');
+    assert.ok(/status lookups|quick file reads/i.test(src),
+      'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -39795,6 +40485,19 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
   });
 
+  await test('ccCloseTab fires DELETE /api/cc-sessions/:id so server entry is removed on explicit close', () => {
+    // CC sessions are non-expiring on the server. The user closing a tab must
+    // fan out to a server-side delete so cc-sessions.json stays in sync.
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccCloseTab'),
+      ccSrc.indexOf('\nfunction', ccSrc.indexOf('function ccCloseTab') + 1));
+    assert.ok(/fetch\([^)]*\/api\/cc-sessions\//.test(fn),
+      'ccCloseTab must call fetch on /api/cc-sessions/:id');
+    assert.ok(/method:\s*['"]DELETE['"]/.test(fn),
+      'ccCloseTab must use the DELETE method');
+    assert.ok(fn.includes('encodeURIComponent'),
+      'ccCloseTab should encode the tab id when constructing the URL');
+  });
+
   await test('tab bar rendered in layout.html', () => {
     assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
   });
@@ -39898,43 +40601,48 @@ async function testCCMultiTab() {
       'ccSwitchTab should call ccRenderTabBar');
   });
 
-  // ── Session TTL tests ──────────────────────────────────────────────────────
+  // ── Session lifecycle tests (CC sessions are non-expiring) ────────────────
 
-  await test('CC sessions use ENGINE_DEFAULTS TTL', () => {
-    assert.ok(dashSrc.includes('CC_SESSION_TTL_MS'), 'CC_SESSION_TTL_MS constant should exist');
-    assert.ok(dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
-      'CC session TTL should come from shared ENGINE_DEFAULTS');
+  await test('CC sessions do not auto-expire via TTL', () => {
+    // CC chat sessions are removed only when the user explicitly closes the
+    // tab (DELETE /api/cc-sessions/:id). The TTL knob was removed.
+    assert.ok(!dashSrc.includes('CC_SESSION_TTL_MS'),
+      'CC_SESSION_TTL_MS constant must not exist — CC sessions are non-expiring');
+    assert.ok(!dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
+      'CC session code must not consume ccSessionTtlMs');
+    assert.ok(!('ccSessionTtlMs' in shared.ENGINE_DEFAULTS),
+      'ENGINE_DEFAULTS.ccSessionTtlMs should be removed');
   });
 
-  await test('CC session TTL is long enough for users to resume chats after breaks', () => {
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
-    assert.ok(shared.ENGINE_DEFAULTS.ccSessionTtlMs >= weekMs,
-      'CC sessions should remain resumable for at least 7 days');
-  });
-
-  await test('ccSessionValid checks TTL before resuming', () => {
+  await test('ccSessionValid only checks sessionId presence and prompt hash (no TTL, no turnCount cap)', () => {
     // Extract ccSessionValid function body
     const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
     assert.ok(match, 'ccSessionValid should exist');
     const body = match[0];
-    assert.ok(body.includes('_sessionExpired'), 'ccSessionValid should use shared expiry helper');
-    assert.ok(body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid should apply CC session TTL');
-    assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
-    assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
+    assert.ok(body.includes('_promptHash'), 'ccSessionValid must still check prompt hash (correctness)');
+    assert.ok(body.includes('sessionId'), 'ccSessionValid must guard on sessionId presence');
+    assert.ok(!body.includes('_sessionExpired'), 'ccSessionValid must NOT call _sessionExpired (no TTL)');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid must NOT reference a TTL constant');
+    assert.ok(!body.includes('CC_SESSION_MAX_TURNS'),
+      'ccSessionValid must NOT cap by turnCount — sessions live until user closes the tab');
   });
 
-  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC sessions', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
     assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'resolveSession must not reference CC TTL constant');
     assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
-  await test('CC session restored on startup with TTL filtering', () => {
+  await test('CC session restored on startup without TTL filtering', () => {
     const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
     assert.ok(startupMatch, 'Should have CC session startup loader');
-    assert.ok(startupMatch[0].includes('_sessionExpired'), 'Startup loader should filter expired sessions');
+    assert.ok(!startupMatch[0].includes('_sessionExpired'),
+      'CC startup loader must NOT filter by TTL — sessions are non-expiring');
+    assert.ok(!startupMatch[0].includes('CC_SESSION_TTL_MS'),
+      'CC startup loader must NOT reference a TTL constant');
   });
 
   await test('doc sessions restored on startup with TTL filtering', () => {
@@ -40015,10 +40723,14 @@ async function testCCMultiTab() {
   const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
   const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
 
-  await test('cleanup.js prunes cc-sessions.json with cap', () => {
-    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
-    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
-    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  await test('cleanup.js does NOT auto-prune cc-sessions.json (sessions are non-expiring)', () => {
+    // CC chat sessions only disappear when the user explicitly closes a tab
+    // (DELETE /api/cc-sessions/:id). Auto-pruning would silently invalidate
+    // long-lived chat tabs the user expects to keep.
+    assert.ok(!cleanupSrc.includes('CC_SESSIONS_CAP'),
+      'cleanup.js must not define a CC_SESSIONS_CAP — sessions are non-expiring');
+    assert.ok(!/sessions\.sort\(\(a, b\)\s*=>\s*new Date\(b\.lastActiveAt[\s\S]*safeWrite\(ccSessionsPath/.test(cleanupSrc),
+      'cleanup.js must not sort+slice cc-sessions.json — that auto-expires tabs');
   });
 
   await test('cleanup.js prunes doc-sessions.json with cap', () => {
@@ -42947,6 +43659,134 @@ async function testAgentBusyReassignment() {
     // Must be set when reason === 'agent_busy' and cleared otherwise
     assert.ok(engineSrc.includes("agent_busy") && engineSrc.includes('_agentBusySince'),
       'Both agent_busy and _agentBusySince should be present in the annotation logic');
+  });
+
+  // 13. W-motc4y1n000t1a5f: busy reassignment must not double-book an agent that
+  //     already has its own pending dispatch in the queue.
+  //
+  // Reproduces meeting MTG-motbc29r000j18d9 bug: dallas (busy elsewhere) was
+  // reassigned to rebecca, but rebecca already had her own pending dispatch
+  // right behind it. Result: rebecca got two dispatches, dallas zero.
+  await test('busy reassignment does not double-book agent with pending dispatch (behavioral)', () => {
+    // Active dispatch occupies dallas (he is busy elsewhere on a real task)
+    const active = [
+      { id: 'dallas-other-task', agent: 'dallas', meta: { branch: 'work/P-other' } },
+    ];
+    // Two pending items: dallas's would-be meeting + rebecca's own meeting
+    const pending = [
+      { id: 'd-meeting', agent: 'dallas', type: 'meeting', meta: { item: {} } },
+      { id: 'r-meeting', agent: 'rebecca', type: 'meeting', meta: { item: {} } },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    // FIX: seed pendingAgents from current pending queue so reassignment
+    // exclusion accounts for items not yet iterated.
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative pick for dallas's busy item is rebecca (idle).
+    const resolveAlt = () => 'rebecca';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        // Hard-pin check: neither item is hard-pinned in this scenario.
+        const altAgent = resolveAlt();
+        if (
+          altAgent &&
+          altAgent !== item.agent &&
+          !busyAgents.has(altAgent) &&
+          !pendingAgents.has(altAgent)
+        ) {
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+          toDispatch.push(item);
+          busyAgents.add(altAgent);
+        }
+        continue;
+      }
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    // d-meeting must NOT be reassigned to rebecca; she already has r-meeting.
+    const dOut = toDispatch.find(i => i.id === 'd-meeting');
+    if (dOut) {
+      assert.notStrictEqual(dOut.agent, 'rebecca',
+        'd-meeting must not be reassigned to rebecca who already has r-meeting pending — would double-book');
+    }
+    // r-meeting must still dispatch to rebecca normally.
+    const rOut = toDispatch.find(i => i.id === 'r-meeting');
+    assert.strictEqual(rOut?.agent, 'rebecca',
+      'r-meeting should still dispatch to rebecca (her own pending task)');
+    // Net result: rebecca should appear at most once across dispatched items.
+    const rebeccaCount = toDispatch.filter(i => i.agent === 'rebecca').length;
+    assert.ok(rebeccaCount <= 1,
+      `rebecca should not be double-booked; got ${rebeccaCount} dispatches assigned to her`);
+  });
+
+  // 14. Source-level guarantee: dispatch loop seeds pendingAgents and gates
+  //     reassignment with it, so the order-dependent double-book can't reappear.
+  await test('dispatch loop seeds pendingAgents and gates busy reassignment (source check)', () => {
+    assert.ok(engineSrc.includes('pendingAgents'),
+      'Dispatch loop must build a pendingAgents set to prevent reassignment double-booking');
+    // Anchor on the actual log() invocation (unique enough to avoid a comment
+    // line with the same phrase), then look back to find the if-condition.
+    const guardIdx = engineSrc.indexOf('— agent busy and idle alternative available`)');
+    assert.ok(guardIdx > 0, 'Busy reassignment log call should be present');
+    const guardRegion = engineSrc.slice(Math.max(0, guardIdx - 400), guardIdx + 100);
+    assert.ok(guardRegion.includes('pendingAgents'),
+      'Busy reassignment guard must check !pendingAgents.has(altAgent) to avoid double-booking');
+  });
+
+  // 15. Existing unspawned-temp reassignment still works AND is also gated by
+  //     pendingAgents so a temp's item can't double-book a named agent that
+  //     already has a pending dispatch.
+  await test('unspawned-temp reassignment skipped when alternative already pending-claimed (behavioral)', () => {
+    const pending = [
+      { id: 'temp-task', agent: 'temp-abc', type: 'fix', meta: { item: {} } },
+      { id: 'ralph-task', agent: 'ralph', type: 'fix', meta: { item: {} } },
+    ];
+    const busyAgents = new Set(); // no active dispatches
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative for the unspawned temp is ralph (the only named agent).
+    const resolveAlt = () => 'ralph';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      // Unspawned temp path
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) {
+        const altAgent = resolveAlt();
+        if (altAgent && altAgent !== item.agent && !pendingAgents.has(altAgent)) {
+          // Reassign — but in this scenario ralph is already pending, so we should NOT.
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+        }
+      }
+      // Busy block doesn't fire here.
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    const tempOut = toDispatch.find(i => i.id === 'temp-task');
+    assert.strictEqual(tempOut.agent, 'temp-abc',
+      'Temp item must NOT be reassigned to ralph (ralph already has his own pending dispatch)');
+    const ralphCount = toDispatch.filter(i => i.agent === 'ralph').length;
+    assert.strictEqual(ralphCount, 1, 'ralph should appear exactly once in dispatch — no double-book');
+  });
+
+  // 16. Source-level: temp-agent reassignment block also consults pendingAgents.
+  await test('unspawned-temp reassignment guard consults pendingAgents (source check)', () => {
+    const tempIdx = engineSrc.indexOf('temp agent never spawned');
+    assert.ok(tempIdx > 0, 'Unspawned-temp reassignment log line should be present');
+    const tempRegion = engineSrc.slice(Math.max(0, tempIdx - 600), tempIdx + 200);
+    assert.ok(tempRegion.includes('pendingAgents'),
+      'Unspawned-temp reassignment guard must check pendingAgents to avoid double-booking');
   });
 }
 
@@ -51921,72 +52761,75 @@ async function testDashboardPureHelpers() {
     assert.deepStrictEqual(_filterCcTabSessions([s1, s2, s3]), []);
   });
 
-  await test('_filterCcTabSessions drops sessions with turnCount >= CC_SESSION_MAX_TURNS', () => {
+  await test('_filterCcTabSessions keeps sessions with very high turnCount (no turn cap)', () => {
+    // CC chat sessions are non-expiring — turnCount is no longer a kill switch.
+    // A user with a long-running tab should be able to send hundreds of turns
+    // without the session disappearing from the list.
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const overTurns = { ...freshSession(), turnCount: max };
-    const wayOver = { ...freshSession(), turnCount: max + 10 };
-    assert.deepStrictEqual(_filterCcTabSessions([overTurns, wayOver]), []);
+    const wayOver = { ...freshSession(), id: 'tab-way-over', sessionId: 'sess-way-over', turnCount: max * 10 };
+    const kept = _filterCcTabSessions([overTurns, wayOver]);
+    assert.strictEqual(kept.length, 2,
+      'CC tab sessions must NOT be filtered by turnCount — sessions live until the user closes the tab');
   });
 
-  await test('_filterCcTabSessions keeps sessions with turnCount < CC_SESSION_MAX_TURNS', () => {
-    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
-    const underTurns = { ...freshSession(), turnCount: max - 1 };
-    const kept = _filterCcTabSessions([underTurns]);
-    assert.strictEqual(kept.length, 1);
-    assert.strictEqual(kept[0].turnCount, max - 1);
-  });
-
-  await test('_filterCcTabSessions drops sessions whose lastActiveAt is past TTL', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expired = {
+  await test('_filterCcTabSessions keeps sessions whose lastActiveAt is well past the old 7d TTL', () => {
+    // Old 7d TTL is gone — sessions older than a week (or month, or year)
+    // must still be kept until the user explicitly closes the tab.
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancient = {
       ...freshSession(),
-      lastActiveAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString(), // 70 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expired]), []);
+    const kept = _filterCcTabSessions([ancient]);
+    assert.strictEqual(kept.length, 1,
+      'CC tab sessions must NOT be filtered by lastActiveAt age — they are non-expiring');
+    assert.strictEqual(kept[0].id, 'tab-1');
   });
 
-  await test('_filterCcTabSessions falls back to createdAt when lastActiveAt missing', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expiredByCreatedAt = {
+  await test('_filterCcTabSessions keeps sessions with stale createdAt and no lastActiveAt', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancientByCreatedAt = {
       id: 'tab-2',
       sessionId: 'sess-2',
       turnCount: 0,
-      createdAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      createdAt: new Date(Date.now() - sevenDaysMs * 5).toISOString(), // 35 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expiredByCreatedAt]), []);
-
-    const freshByCreatedAt = {
-      id: 'tab-3',
-      sessionId: 'sess-3',
-      turnCount: 0,
-      createdAt: new Date().toISOString(),
-    };
-    assert.strictEqual(_filterCcTabSessions([freshByCreatedAt]).length, 1);
+    assert.strictEqual(_filterCcTabSessions([ancientByCreatedAt]).length, 1,
+      'Old sessions without lastActiveAt must still be kept — no TTL applies');
   });
 
   await test('_filterCcTabSessions drops sessions whose _promptHash does not match current hash', () => {
-    // A _promptHash that is definitely not the current 8-char md5 slice.
+    // Prompt-hash invalidation is correctness-driven and must remain.
     const mismatched = { ...freshSession(), _promptHash: 'deadbeef-impossible-hash' };
     assert.deepStrictEqual(_filterCcTabSessions([mismatched]), []);
   });
 
-  await test('_filterCcTabSessions filters a mixed list, keeping only valid sessions', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+  await test('_filterCcTabSessions filters mixed list — drops only invalid records and prompt-hash mismatches', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const sessions = [
-      freshSession(),                                                            // keep
-      { ...freshSession(), id: null },                                           // drop (no id)
-      { ...freshSession(), turnCount: max },                                     // drop (turns)
-      { ...freshSession(), lastActiveAt: new Date(Date.now() - ttl - 1).toISOString() }, // drop (expired)
-      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                    // drop (hash mismatch)
-      freshSession(),                                                            // keep
+      freshSession(),                                                                         // keep
+      { ...freshSession(), id: null },                                                        // drop (no id)
+      { ...freshSession(), id: 'tab-no-sess', sessionId: null },                              // drop (no sessionId)
+      { ...freshSession(), id: 'tab-many-turns', sessionId: 'sess-mt', turnCount: max * 5 },   // KEEP (no turn cap)
+      { ...freshSession(), id: 'tab-old', sessionId: 'sess-old',
+        lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString() },                // KEEP (no TTL)
+      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                                 // drop (hash mismatch)
+      { ...freshSession(), id: 'tab-fresh-2', sessionId: 'sess-fresh-2' },                    // keep
     ];
     const kept = _filterCcTabSessions(sessions);
-    assert.strictEqual(kept.length, 2);
+    assert.strictEqual(kept.length, 4,
+      'Should keep fresh, very-old, many-turns, and a second fresh — drop only invalid + hash mismatch');
     for (const s of kept) {
       assert.ok(s.id && s.sessionId, 'kept sessions must have id and sessionId');
-      assert.ok(s.turnCount < max, 'kept sessions must be under the turn cap');
+      assert.notStrictEqual(s._promptHash, 'wrong-hash-12345',
+        'kept sessions must not be the prompt-hash mismatch fixture');
     }
+    const keptIds = kept.map(s => s.id).sort();
+    assert.deepStrictEqual(keptIds,
+      ['tab-1', 'tab-fresh-2', 'tab-many-turns', 'tab-old'].sort(),
+      'kept records should be the four valid fixtures');
   });
 
   // ── _getVersionCheckInterval (patches queries.getConfig) ───────────────
@@ -52965,6 +53808,34 @@ async function testDashboardPureHelpers() {
       'must mark build-and-test pr as REQUIRED');
     assert.ok(md.includes('Unknown agent names error'),
       'must warn that unknown agents error');
+  });
+
+  // Delegation rule was rewritten from a closed whitelist ("ONLY these") to a
+  // difficulty-threshold rule (small → MAY do yourself, medium+ → MUST delegate).
+  await test('prompts/cc-system.md: delegation gate is threshold-based, not a closed whitelist', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(!md.includes('When to do it yourself (ONLY these)'),
+      'must drop the "ONLY these" closed-whitelist framing');
+    assert.ok(!md.includes('Your tools are for quick lookups, not for doing the work'),
+      'must drop the categorical "tools are only for lookups" hard-stop');
+    assert.ok(/Estimate difficulty before responding/i.test(md) || /Estimate first, then act/i.test(md),
+      'must instruct CC to assess difficulty before acting');
+    assert.ok(/Small.*MAY do it yourself/i.test(md),
+      'must explicitly permit self-handling small tasks');
+    assert.ok(/Medium.*MUST delegate/i.test(md),
+      'must require delegation at medium difficulty');
+    assert.ok(/not an exhaustive whitelist/i.test(md),
+      'must clarify that the small-task list is illustrative, not closed');
+  });
+
+  await test('prompts/cc-system.md: references the auto-injected API & CLI index', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(/API\s*&\s*CLI Index/i.test(md),
+      'must include an "API & CLI Index" section pointing CC at the preamble');
+    assert.ok(md.includes('CLI_COMMAND_DOCS') && md.includes('ROUTES'),
+      'must name the SoT identifiers so CC understands where the index comes from');
+    assert.ok(md.includes('"endpoint":"/api/...",'),
+      'must remind CC of the generic-fallback shape for un-named endpoints');
   });
 }
 

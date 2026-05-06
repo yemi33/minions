@@ -392,6 +392,12 @@ function ccCloseTab(id) {
     closingTab._queue = [];
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
   }
+  // Tabs are non-expiring on the server — explicit close is the only path that
+  // removes the persisted session. Fire-and-forget DELETE so closing a tab
+  // also evicts the server-side cc-sessions.json entry.
+  try {
+    fetch('/api/cc-sessions/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function() {});
+  } catch {}
   _ccTabs.splice(idx, 1);
   if (_ccActiveTabId === id) {
     // Switch to adjacent tab or create new

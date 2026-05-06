@@ -209,6 +209,24 @@ Templates in `playbooks/` with `{{template_variables}}` filled at dispatch time:
 
 **Project-local overrides:** `projects/<name>/playbooks/<type>.md` wins over the global default. `resolvePlaybookPath(projectName, type)` does the lookup. Project-local playbooks are user data and gitignored.
 
+## Feature Flags
+
+Registry in `engine/features.js` for **temporary** UX/experimental gates — distinct from `ENGINE_DEFAULTS` (permanent automation knobs). Use this when shipping a UX refresh dark, gating an in-progress flow, or running an A/B variant.
+
+**To add a flag:**
+
+1. Register an entry in `FEATURES` (`engine/features.js`):
+   ```js
+   'ux-sidebar-v2': { description: '...', default: false, addedIn: '0.1.1738', expires: '2026-06-01' }
+   ```
+2. Gate code:
+   - Engine: `const features = require('./engine/features'); if (features.isFeatureOn('ux-sidebar-v2', config)) { ... }`
+   - Dashboard JS: `if (MinionsFeatures.isOn('ux-sidebar-v2')) { ... }`
+3. Toggle via Dashboard → Settings → "Show experimental flags" (collapsed by default), `config.features.ux-sidebar-v2: true` in `config.json`, or `MINIONS_FEATURE_UX_SIDEBAR_V2=1` env override.
+4. When the feature ships unconditionally, **delete the registry entry** and the gate. Stale entries past `expires` surface in preflight.
+
+**Resolution order:** env var → `config.features[id]` → registry default. `isFeatureOn` throws on unknown id (typo protection).
+
 ## Skills
 
 `.claude/skills/<name>/SKILL.md` with YAML frontmatter. `scope: minions` → installed to `~/.claude/skills/`; `scope: project` → PR'd into `<project>/.claude/skills/`. Agents auto-extract from output via ` ```skill ` fenced blocks.
@@ -351,7 +369,7 @@ Assembled from fragments at startup: `dashboard/styles.css`, `layout.html`, `das
 
 Both share `ccCall()` in dashboard.js → `llm.callLLM({ direct: true })` → spawn the runtime CLI directly via the adapter's cached binary. `trackEngineUsage()` records calls/tokens/cost/duration per category.
 
-**CC** (`POST /api/command-center` or SSE `/stream`): primary user→agents interface. System prompt loaded from `prompts/cc-system.md` (~11KB) with `{{minions_dir}}` substituted; hashed into `_ccPromptHash` for session invalidation on prompt changes. State preamble (`buildCCStatePreamble()`, 10s TTL) injected into fresh sessions. Single global session in `engine/cc-session.json`, bounded by `ENGINE_DEFAULTS.ccMaxTurns` (50) and `ccSessionTtlMs` (7d).
+**CC** (`POST /api/command-center` or SSE `/stream`): primary user→agents interface. System prompt loaded from `prompts/cc-system.md` (~11KB) with `{{minions_dir}}` substituted; hashed into `_ccPromptHash` for session invalidation on prompt changes. State preamble (`buildCCStatePreamble()`, 10s TTL) injected into fresh sessions. Per-tab sessions persist in `engine/cc-sessions.json` (legacy single-session in `engine/cc-session.json`). CC chat sessions are **non-expiring**: cleanup never auto-prunes them, no TTL or turn-count cap is applied, and a tab is removed only when the user explicitly closes it (which fires `DELETE /api/cc-sessions/:id`). Prompt-hash mismatch is the sole automatic invalidation path (correctness — a resumed session must use the same system prompt). Per-call CLI tool-use turns are still capped via `ENGINE_DEFAULTS.ccMaxTurns` (50); that cap is per response, not per session.
 
 **Doc-Chat** (`POST /api/doc-chat`): per-document inline Q&A and editing. Sessions keyed by `filePath || title`, persisted in `engine/doc-sessions.json` (backend) and localStorage `_qaSessions` Map (frontend). Backend re-reads file from disk on each call to get freshest content. When the LLM edits, it returns `---DOCUMENT---` followed by the full updated file. **`parseCCActions` runs only on the answer portion before `---DOCUMENT---`** — prevents docs containing literal `===ACTIONS===` from being mangled.
 

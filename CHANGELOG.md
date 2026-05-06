@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.1742 (2026-05-06)
+
+### Fixes
+- pending-reassignment double-books agent with own pending dispatch (#2108)
+
+## 0.1.1741 (2026-05-06)
+
+### Features
+- hard-timeout backstop prevents permanent round stalls
+- auto-index API + CLI catalog into preamble; threshold-based delegation gate
+
+### Other
+- chore(gitignore): ignore .vscode/, engine/completions/, pull-requests.json.backup
+
+## 0.1.1739 (2026-05-06)
+
+### Features
+- make Command Center chat sessions non-expiring (#2100)
+
+## 0.1.1738 (2026-05-06)
+
+### Features
+- add feature-flag registry for experimental UX gates
+- graceful runtime-switch reset with transcript carryover
+
+### Fixes
+- prevent hung callLLM Promises when child stdio doesn't drain
+
+### Other
+- chore(gitignore): ignore root-level config.json.backup sidecar
+
 ## 0.1.1737 (2026-05-05)
 
 ### Other

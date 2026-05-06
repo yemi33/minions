@@ -730,6 +730,8 @@ function checkMeetingTimeouts(config) {
   const meetings = getMeetings();
   const timeout = (config.engine || {}).meetingRoundTimeout
     || ENGINE_DEFAULTS.meetingRoundTimeout;
+  const hardTimeout = (config.engine || {}).meetingRoundHardTimeout
+    || ENGINE_DEFAULTS.meetingRoundHardTimeout;
 
   for (const meeting of meetings) {
     if (isTerminalMeetingStatus(meeting.status)) continue;
@@ -760,11 +762,34 @@ function checkMeetingTimeouts(config) {
         meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} timed out after all participants finished`, at: ts() });
         advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
         saveMeeting(meeting);
+      } else if (elapsed >= hardTimeout) {
+        const failures = getRoundFailures(meeting, roundName, meeting.round, true);
+        const stalled = (meeting.participants || []).filter(p => !hasRoundTerminalOutcome(meeting, roundName, p, meeting.round));
+        const reason = `Hard meeting timeout after ${Math.round(elapsed / 60000)}min — agent did not produce ${roundName} output`;
+        for (const agentId of stalled) {
+          failures[agentId] = { reason, content: '', submittedAt: ts() };
+          meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'failure', content: reason, at: ts() });
+        }
+        log('warn', `Meeting ${meeting.id}: round ${meeting.round} hit hard timeout after ${Math.round(elapsed / 60000)}min — marking ${stalled.length}/${totalCount} non-responders as failed and advancing`);
+        meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} hard timeout — ${stalled.length} non-responder(s) marked failed`, at: ts() });
+        advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
+        saveMeeting(meeting);
       } else {
         log('warn', `Meeting ${meeting.id}: round ${meeting.round} timed out after ${Math.round(elapsed / 60000)}min — waiting for all participants to finish (${respondedCount}/${totalCount} succeeded)`);
       }
     } else if (meeting.status === 'concluding') {
-      log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — waiting for the conclusion agent to finish`);
+      if (elapsed >= hardTimeout) {
+        const reason = `Hard meeting timeout after ${Math.round(elapsed / 60000)}min — conclusion agent did not produce output`;
+        const failures = getRoundFailures(meeting, 'conclude', meeting.round, true);
+        const conclusionAgent = (meeting.participants || []).find(p => !hasRoundTerminalOutcome(meeting, 'conclude', p, meeting.round)) || meeting.participants?.[0] || 'system';
+        failures[conclusionAgent] = { reason, content: '', submittedAt: ts() };
+        meeting.transcript.push({ round: meeting.round, agent: conclusionAgent, type: 'failure', content: reason, at: ts() });
+        log('warn', `Meeting ${meeting.id}: conclusion round hit hard timeout after ${Math.round(elapsed / 60000)}min — synthesising fallback conclusion`);
+        advanceMeetingIfRoundComplete(meeting, 'conclude', meeting.id, config);
+        saveMeeting(meeting);
+      } else {
+        log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — waiting for the conclusion agent to finish`);
+      }
     }
   }
 }

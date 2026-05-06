@@ -30,6 +30,7 @@ const playbook = require('./engine/playbook');
 const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
 const projectDiscovery = require('./engine/project-discovery');
+const features = require('./engine/features');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
@@ -448,7 +449,7 @@ function buildDashboardHtml() {
 
   // Assemble JS modules (order matters: utils → state → renderers → commands → refresh)
   const jsFiles = [
-    'utils', 'state', 'render-utils', 'detail-panel', 'live-stream',
+    'utils', 'state', 'features-client', 'render-utils', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
     'render-other', 'render-schedules', 'render-watches', 'render-pipelines', 'render-meetings', 'render-pinned',
@@ -461,10 +462,23 @@ function buildDashboardHtml() {
     jsHtml += `\n// ─── ${f}.js ────────────────────────────────────────\n${content}\n`;
   }
 
+  // Snapshot feature-flag state at build time so the client renders synchronously
+  // without an extra /api/features round-trip. Helper itself lives in
+  // dashboard/js/features-client.js (auto-concatenated below).
+  let featuresBoot = { flags: {}, defaults: {} };
+  try {
+    for (const f of features.listFeatures(queries.getConfig())) {
+      featuresBoot.flags[f.id] = f.enabled;
+      featuresBoot.defaults[f.id] = f.default;
+    }
+  } catch { /* registry empty or config unreadable — ship empty boot state */ }
+
+  const featuresBootstrap = `window.MINIONS_FEATURES = ${JSON.stringify(featuresBoot)};\n`;
+
   return layout
     .replace('/* __CSS__ */', () => css)
     .replace('<!-- __PAGES__ -->', () => pageHtml)
-    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${jsHtml}`);
+    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${featuresBootstrap}${jsHtml}`);
 }
 
 let HTML_RAW = buildDashboardHtml();
@@ -918,9 +932,14 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-// Bound resumed session growth so stale conversations do not accumulate unbounded context.
+// CC chat sessions do NOT auto-expire. A tab is removed only via explicit user
+// deletion (DELETE /api/cc-sessions/:id, wired from ccCloseTab). Doc-chat
+// sessions keep their own TTL (DOC_SESSION_TTL_MS) — that's a separate store.
+//
+// CC_SESSION_MAX_TURNS is reused by the doc-chat session pruner to cap
+// per-session turn growth there; CC chat sessions are not capped because
+// users are expected to keep long-running tabs alive indefinitely.
 const CC_SESSION_MAX_TURNS = shared.ENGINE_DEFAULTS.ccMaxTurns;
-const CC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
@@ -933,9 +952,10 @@ const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after di
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
 const CC_LIVE_STREAM_MAX_AGE_MS = shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs;
 // Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
-// 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
-// edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
-const DOC_CHAT_TIMEOUT_MS = 360000;
+// well past 5 min on `canEdit:true` paths. Bumped to 1 hour (matching CC) so legitimate
+// edits aren't killed mid-stream and the backend timeout never beats the user's reading
+// time. The doc-chat handlers still abort on client disconnect.
+const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
@@ -1056,18 +1076,17 @@ function _ccTabIsInFlight(tabId) {
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
-  // Invalidate session if system prompt changed (e.g. after code update + restart)
+  // Invalidate session if system prompt changed (e.g. after code update + restart).
+  // This is correctness-driven, not expiration-driven: a session created against
+  // a stale system prompt would carry the old persona/rules into resume turns.
   if (ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
     console.log('[CC] System prompt changed — invalidating stale session');
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  if (_sessionExpired(ccSession.lastActiveAt || ccSession.createdAt, CC_SESSION_TTL_MS)) {
-    console.log('[CC] Session expired by TTL — starting fresh');
-    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-    return false;
-  }
-  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  // No TTL or turn-count cap — CC chat sessions live until the user explicitly
+  // closes the tab (which calls DELETE /api/cc-sessions/:id).
+  return true;
 }
 
 // Static system prompt — baked into session on creation, never changes
@@ -1106,11 +1125,13 @@ function _sessionExpired(lastActiveAt, ttlMs) {
   return Date.now() - at > ttlMs;
 }
 
+// CC tab sessions never auto-expire — only invalid records (missing id /
+// sessionId) and prompt-hash mismatches are filtered out. Tabs are removed
+// from disk only when the user explicitly closes them via DELETE
+// /api/cc-sessions/:id.
 function _filterCcTabSessions(sessions) {
   return (Array.isArray(sessions) ? sessions : []).filter(s =>
     s && s.id && s.sessionId &&
-    (s.turnCount || 0) < CC_SESSION_MAX_TURNS &&
-    !_sessionExpired(s.lastActiveAt || s.createdAt, CC_SESSION_TTL_MS) &&
     (!s._promptHash || s._promptHash === _ccPromptHash)
   );
 }
@@ -1143,15 +1164,61 @@ function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
   return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
 }
 
-// Load persisted CC session on startup
+// Load persisted CC session on startup. CC chat sessions are non-expiring;
+// only restore-time validity checks here are sessionId presence (anything
+// else would auto-expire the user's chat without their consent).
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId && !_sessionExpired(saved.lastActiveAt || saved.createdAt, CC_SESSION_TTL_MS)) ccSession = saved;
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 let _preambleCache = null;
 let _preambleCacheTs = 0;
 const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight orientation, not real-time data
+
+// SoT for CC's runtime API index. Captured lazily on the first HTTP request
+// because ROUTES is closed over inside the request handler. Subsequent
+// captures no-op via the truthy guard.
+let _ccApiRoutesMeta = null;
+
+function _routesAsMeta(routes) {
+  return routes.map(r => ({
+    method: r.method,
+    path: typeof r.path === 'string' ? r.path : String(r.path),
+    desc: r.desc || '',
+    params: r.params || null,
+  }));
+}
+
+function _captureApiRoutesMeta(routes) {
+  if (_ccApiRoutesMeta || !Array.isArray(routes)) return;
+  _ccApiRoutesMeta = _routesAsMeta(routes);
+}
+
+function _formatCcApiRoutesIndex() {
+  if (!Array.isArray(_ccApiRoutesMeta) || _ccApiRoutesMeta.length === 0) return '';
+  return _ccApiRoutesMeta
+    .filter(r => r.path.startsWith('/api/'))
+    .map(r => {
+      const params = r.params ? ` — params: ${r.params}` : '';
+      return `- \`${r.method} ${r.path}\` — ${r.desc}${params}`;
+    })
+    .join('\n');
+}
+
+const { CLI_COMMAND_DOCS: _CC_CLI_DOCS } = require('./engine/cli');
+
+function _formatCcCliCommandsIndex() {
+  if (!_CC_CLI_DOCS) return '';
+  return Object.entries(_CC_CLI_DOCS)
+    .map(([name, { args, summary }]) => `- \`minions ${name}${args ? ' ' + args : ''}\` — ${summary}`)
+    .join('\n');
+}
+
+function _resetPreambleCache() {
+  _preambleCache = null;
+  _preambleCacheTs = 0;
+}
 
 function buildCCStatePreamble() {
   const now = Date.now();
@@ -1175,6 +1242,19 @@ function buildCCStatePreamble() {
   let pipelineCount = 0;
   try { pipelineCount = require('./engine/pipeline').getPipelines().length; } catch {}
 
+  const apiIndex = _formatCcApiRoutesIndex();
+  const cliIndex = _formatCcCliCommandsIndex();
+  const indexSection = (apiIndex || cliIndex) ? `
+
+### API Index (auto-generated from dashboard.js ROUTES — single source of truth)
+${apiIndex || '(routes not yet captured — first request still pending)'}
+
+### CLI Index (auto-generated from engine/cli.js CLI_COMMAND_DOCS — single source of truth)
+${cliIndex || '(unavailable)'}
+
+For any \`/api/...\` endpoint not covered by a named CC action, use the generic fallback:
+\`{"type":"<descriptive>","endpoint":"/api/...","params":{...}}\`.` : '';
+
   const result = `### Agents
 ${agents}
 
@@ -1188,8 +1268,8 @@ PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs: ${planFiles.length} | Sch
 ### Projects
 ${projects}
 
-Use tools to read \`config.json\` (schedules), \`pipelines/\` dir, or \`curl http://localhost:7331/api/routes\` for details.
-For all state files, look under \`${MINIONS_DIR}\`.`;
+Use tools to read \`config.json\` (schedules), \`pipelines/\` dir for details.
+For all state files, look under \`${MINIONS_DIR}\`.${indexSection}`;
   _preambleCache = result;
   _preambleCacheTs = now;
   return result;
@@ -2444,6 +2524,56 @@ function _formatDocChatContext({ document, title, filePath, selection, canEdit, 
   return context;
 }
 
+// Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
+// so a fresh-session retry includes the full document instead of relying on the
+// dead session's prior turn for context.
+function _buildDocChatPass({ docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession }) {
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
+  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
+  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
+  const extraContext = _formatDocChatContext({
+    document: docSlice, title, filePath, selection, canEdit, isJson, docUnchanged,
+  });
+  return { extraContext, docHash, hadSession: !!existing?.sessionId };
+}
+
+// One-shot recovery from a stuck resumed session: if the initial call rode an
+// existing session and came back empty / non-zero, invalidate the persisted
+// session and re-run via the supplied closure. ccCall already retries fresh
+// when the runtime can't extract a sessionId, but on adapter-still-alive
+// failures it preserves the session — and from doc-chat's perspective that's
+// the failure mode the user actually sees ("Failed to process request").
+async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce }) {
+  if (!initialPass.hadSession || freshSession || result.missingRuntime) return result;
+  if (result.code === 0 && result.text) return result;
+  console.log(`[doc-chat] Resumed session call failed (code=${result.code}, empty=${!result.text}) — invalidating session and retrying fresh for ${sessionKey || 'untitled'}`);
+  if (sessionKey) {
+    docSessions.delete(sessionKey);
+    schedulePersistDocSessions();
+  }
+  return runOnce();
+}
+
+// Build the {error} envelope returned to the dashboard when doc-chat ultimately
+// fails. Keeps the polite user-facing message but exposes the runtime's real
+// stderr / exit code / errorClass so the UI can render the cause and so future
+// failures are debuggable from logs.
+function _docChatFailureResponse(label, filePath, result) {
+  const stderrTail = (result.stderr || '').slice(-2048);
+  console.error(`[${label}] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, errorClass=${result.errorClass || 'null'}, stderr=${stderrTail.slice(0, 200)}`);
+  return {
+    answer: 'Failed to process request. Try again.',
+    content: null,
+    actions: [],
+    error: {
+      code: result.code ?? null,
+      stderr: stderrTail,
+      errorClass: result.errorClass || null,
+      runtime: result.runtime || null,
+    },
+  };
+}
+
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
@@ -2457,34 +2587,30 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
   }
 
-  // Skip re-sending full document on session resume if content unchanged
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCall(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCall(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     // One-shot call — discard the session ccCall just stored so it cannot
@@ -2494,7 +2620,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2502,8 +2628,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   }
 
   if (result.code !== 0 || !result.text) {
-    console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat', filePath, result);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -2517,42 +2642,39 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     docSessions.delete(sessionKey);
   }
 
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCallStreaming(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
-    onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
-    onToolUse,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCallStreaming(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
+      onToolUse,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
     schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2560,8 +2682,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   }
 
   if (result.code !== 0 || !result.text) {
-    console.error(`[doc-chat-stream] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat-stream', filePath, result);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -4658,7 +4779,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions, actionParseError } = await ccDocCall({
+      const { answer, content, actions, actionParseError, error: ccError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
@@ -4667,11 +4788,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
       const actionResults = await executeDocChatActions(actions);
       const baseReply = (extra = {}) => ({
-        ok: true,
+        ok: !ccError,
         answer,
         actions,
         ...(actionResults ? { actionResults } : {}),
         ...(actionParseError ? { actionParseError } : {}),
+        ...(ccError ? { error: ccError } : {}),
         ...extra,
       });
 
@@ -4773,7 +4895,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions, actionParseError } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError, error: ccError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4789,6 +4911,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           actions,
           ...(actionResults ? { actionResults } : {}),
           ...(actionParseError ? { actionParseError } : {}),
+          ...(ccError ? { error: ccError } : {}),
           ...extra,
         });
 
@@ -6291,6 +6414,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
+  async function handleFeaturesList(req, res) {
+    try {
+      return jsonReply(res, 200, { features: features.listFeatures(CONFIG) });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
+  async function handleFeaturesToggle(req, res) {
+    try {
+      const body = await readBody(req);
+      const id = body && typeof body.id === 'string' ? body.id.trim() : '';
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+      if (!features.hasFeature(id)) {
+        return jsonReply(res, 404, { error: `Unknown feature flag: "${id}". Register it in engine/features.js.` });
+      }
+      const enabled = body.enabled === true;
+      const configPath = path.join(MINIONS_DIR, 'config.json');
+      mutateJsonFileLocked(configPath, (cfg) => {
+        if (!cfg.features || typeof cfg.features !== 'object') cfg.features = {};
+        cfg.features[id] = enabled;
+        return cfg;
+      });
+      reloadConfig();
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, enabled });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
   async function handleHealth(req, res) {
     const engine = getEngineState();
     const agents = getAgents();
@@ -6453,12 +6603,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
     }},
     { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
-      const list = ROUTES.map(r => ({
-        method: r.method,
-        path: typeof r.path === 'string' ? r.path : r.path.toString(),
-        description: r.desc,
-        params: r.params || null
-      }));
+      const list = _routesAsMeta(ROUTES).map(({ desc, ...rest }) => ({ ...rest, description: desc }));
       return jsonReply(res, 200, { routes: list });
     }},
 
@@ -7081,11 +7226,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
 
+    // Feature flags (experimental / in-progress UX gates — see engine/features.js)
+    { method: 'GET', path: '/api/features', desc: 'List registered feature flags with current enabled state', handler: handleFeaturesList },
+    { method: 'POST', path: '/api/features/toggle', desc: 'Enable/disable a registered feature flag', params: 'id, enabled', handler: handleFeaturesToggle },
+
     // Teams Bot Framework webhook
     { method: 'POST', path: '/api/bot', desc: 'Bot Framework webhook for Teams integration', handler: handleTeamsBot },
   ];
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────
+
+  // Capture ROUTES metadata into the module-level snapshot so CC's preamble
+  // renders the live API surface (single source of truth — adding any new
+  // route to ROUTES above auto-surfaces it in CC's index).
+  _captureApiRoutesMeta(ROUTES);
 
   const pathname = req.url.split('?')[0];
   const _reqStart = Date.now();
@@ -7172,6 +7326,11 @@ module.exports = {
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
+  buildCCStatePreamble,
+  _captureApiRoutesMeta,
+  _formatCcApiRoutesIndex,
+  _formatCcCliCommandsIndex,
+  _resetPreambleCache,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).

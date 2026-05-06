@@ -29,7 +29,7 @@ function buildDashboardHtml() {
   }
 
   const jsFiles = [
-    'utils', 'state', 'detail-panel', 'live-stream',
+    'utils', 'state', 'features-client', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
     'render-other', 'render-schedules', 'render-watches', 'render-pipelines', 'render-meetings', 'render-pinned',
