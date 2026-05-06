@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1747 (2026-05-06)
+
+### Fixes
+- treat null branch-change as unconfirmed (#2096) (#2115)
+
+### Other
+- test(dashboard): add unit tests for meeting/pipeline/work-item helpers (#2117)
+- test(timeout): add unit tests for parse helpers and runtime capability check (#2116)
+
 ## 0.1.1745 (2026-05-06)
 
 ### Features
