@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1752 (2026-05-06)
+
+### Features
+- bring PRD graph view to parity with list view
+
+### Other
+- Show Copilot MCPs in dashboard
+
 ## 0.1.1750 (2026-05-06)
 
 ### Fixes
