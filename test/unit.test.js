@@ -28080,6 +28080,302 @@ async function testMeetingsIsolatedGaps() {
   });
 }
 
+// ─── mutateMeeting helper (P-c3meet-9af2) ───────────────────────────────────
+// engine/meeting.js exports `mutateMeeting(id, fn)` that wraps the meeting JSON
+// file with mutateJsonFileLocked, replacing the bare-safeWrite saveMeeting RMW
+// pattern. These tests cover:
+//   - Concurrency: 5 parallel child processes each appending a unique finding —
+//     all 5 writes survive (no lost-update under concurrent load).
+//   - Lock-release-before-spawn: advanceMeetingRound must release every file
+//     lock BEFORE side effects that could spawn agents (process kills, dispatch
+//     teardown). Verified by spying on shared.mutateJsonFileLocked and
+//     asserting the dispatch lock fully exits before the meeting lock is
+//     entered, and that no two locks are nested.
+//   - Source-string regression: meeting.js must not call safeWrite directly on
+//     MEETINGS_DIR — all writes must go through the lock helper.
+async function testMutateMeetingHelper() {
+  console.log('\n── meeting.js — mutateMeeting helper (P-c3meet-9af2) ──');
+
+  await test('mutateMeeting helper is exported and uses mutateJsonFileLocked', () => {
+    const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    assert.strictEqual(typeof meetingMod.mutateMeeting, 'function',
+      'meeting.js must export mutateMeeting(id, fn)');
+  });
+
+  await test('mutateMeeting source uses mutateJsonFileLocked (not bare safeWrite to MEETINGS_DIR)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'meeting.js'), 'utf8');
+    // mutateMeeting must exist and reference the locked helper.
+    assert.ok(/function\s+mutateMeeting\b/.test(src),
+      'meeting.js must define a mutateMeeting helper');
+    assert.ok(/mutateJsonFileLocked/.test(src),
+      'meeting.js must call mutateJsonFileLocked (under the hood of mutateMeeting)');
+    // No bare safeWrite into MEETINGS_DIR should remain — every meeting JSON
+    // write must go through the lock helper.
+    assert.ok(!/safeWrite\s*\(\s*path\.join\s*\(\s*MEETINGS_DIR/.test(src),
+      'meeting.js must not safeWrite directly to MEETINGS_DIR — use mutateMeeting');
+  });
+
+  await test('mutateMeeting reads + writes the meeting under a file lock', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-MUT-BASIC-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Basic', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+      const result = meetingMod.mutateMeeting(meetingId, (m) => {
+        assert.ok(m, 'fn should receive the parsed meeting');
+        assert.strictEqual(m.id, meetingId);
+        m.findings.alice = { content: 'mutated' };
+        return m;
+      });
+      assert.strictEqual(result.findings.alice.content, 'mutated');
+      const reread = meetingMod.getMeeting(meetingId);
+      assert.strictEqual(reread.findings.alice.content, 'mutated',
+        'mutation must be persisted to disk');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('mutateMeeting passes null when meeting file does not exist (no write)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-MUT-MISSING-' + Date.now();
+      let receivedArg;
+      const result = meetingMod.mutateMeeting(meetingId, (m) => {
+        receivedArg = m;
+        return null; // skip write
+      });
+      assert.strictEqual(receivedArg, null,
+        'fn should receive null when the meeting file is absent');
+      const fp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      // mutateJsonFileLocked may create an empty {} file, but the write should
+      // be skipped. Either way, getMeeting returns null because there's no id.
+      const m = meetingMod.getMeeting(meetingId);
+      assert.ok(!m || !m.id,
+        'getMeeting should not return a real meeting object for an unwritten ID');
+      // Result should be falsy or empty {} — definitely not a real meeting.
+      assert.ok(!result || !result.id,
+        'mutateMeeting should not synthesise a meeting when fn returns null');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('5 parallel child-process mutateMeeting calls all preserve their unique appends', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-PARALLEL-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Parallel', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+
+      const meetingPath = path.resolve(__dirname, '..', 'engine', 'meeting').replace(/\\/g, '/');
+      const helperScript =
+        "const meetingMod = require('" + meetingPath + "');" +
+        "const id = process.argv[1];" +
+        "const i = process.argv[2];" +
+        "meetingMod.mutateMeeting(id, (m) => {" +
+        "  if (!m) throw new Error('meeting missing');" +
+        "  if (!m.findings) m.findings = {};" +
+        "  m.findings['agent' + i] = { content: 'c-' + i };" +
+        "  return m;" +
+        "});";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, meetingId, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: testDir }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = meetingMod.getMeeting(meetingId);
+      assert.ok(final, 'meeting should still exist');
+      const keys = Object.keys(final.findings).sort();
+      assert.deepStrictEqual(keys, ['agent1', 'agent2', 'agent3', 'agent4', 'agent5'],
+        'every parallel mutateMeeting call must persist — none lost to RMW races');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('advanceMeetingRound releases all locks before spawn-ready side effects (no nested locks; dispatch kill outside meeting lock)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const sharedMod = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-LOCK-ORDER-' + Date.now();
+
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Lock Order', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+        roundStartedAt: new Date().toISOString(),
+      });
+
+      // Seed a matching active dispatch so _killMeetingDispatches has work
+      // to do and actually exercises the dispatch lock.
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [],
+        active: [{ id: 'a-this', agent: 'alice', meta: { meetingId } }],
+        completed: [],
+      }));
+
+      const events = [];
+      const origMutate = sharedMod.mutateJsonFileLocked;
+      sharedMod.mutateJsonFileLocked = function spy(filePath, fn, opts) {
+        const tag = String(filePath).includes('dispatch.json')
+          ? 'dispatch'
+          : (String(filePath).includes('meetings') ? 'meeting' : 'other');
+        return origMutate.call(this, filePath, (data) => {
+          events.push('enter:' + tag);
+          const result = fn(data);
+          events.push('exit:' + tag);
+          return result;
+        }, opts);
+      };
+
+      try {
+        const advanced = meetingMod.advanceMeetingRound(meetingId);
+        assert.ok(advanced, 'advanceMeetingRound should return the updated meeting');
+        assert.strictEqual(advanced.status, 'debating');
+      } finally {
+        sharedMod.mutateJsonFileLocked = origMutate;
+      }
+
+      // No two locks may be held at the same time — the helper acquires
+      // each lock, runs the callback, and releases before the next.
+      let depth = 0;
+      let maxDepth = 0;
+      for (const ev of events) {
+        if (ev.startsWith('enter:')) { depth += 1; if (depth > maxDepth) maxDepth = depth; }
+        else { depth -= 1; }
+      }
+      assert.strictEqual(maxDepth, 1,
+        'mutateMeeting/advanceMeetingRound must NEVER hold two locks simultaneously (would deadlock + dispatch under meeting lock blocks agent spawn)');
+
+      // The dispatch kill must happen BEFORE we open the meeting lock — no
+      // process kill / agent dispatch teardown is allowed under the meeting
+      // file lock (CLAUDE.md concurrency rule: keep callbacks fast).
+      const dispatchExit = events.indexOf('exit:dispatch');
+      const meetingEnter = events.indexOf('enter:meeting');
+      assert.ok(dispatchExit >= 0, 'dispatch lock should be entered+exited');
+      assert.ok(meetingEnter >= 0, 'meeting lock should be entered');
+      assert.ok(dispatchExit < meetingEnter,
+        'dispatch lock must be fully released before the meeting lock is acquired (kill outside the meeting lock)');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('5 sequential mutateMeeting calls each see prior writes (RMW atomicity)', () => {
+    // Even outside child-process concurrency, each call must re-read the
+    // file rather than caching a stale copy. This guards against a future
+    // refactor that snapshots data outside the lock.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-SEQ-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Seq', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+      for (let i = 1; i <= 5; i++) {
+        meetingMod.mutateMeeting(meetingId, (m) => {
+          assert.ok(m, 'fn should receive the parsed meeting');
+          // Prior iterations must be visible (proves re-read each call).
+          assert.strictEqual(Object.keys(m.findings).length, i - 1);
+          m.findings['agent' + i] = { content: 'c-' + i };
+          return m;
+        });
+      }
+      const final = meetingMod.getMeeting(meetingId);
+      assert.strictEqual(Object.keys(final.findings).length, 5);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('saveMeeting still works (back-compat) and writes through the lock', () => {
+    // saveMeeting is retained for the create-new-file path and existing tests;
+    // it must still persist meeting state, just under the new lock helper.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-SAVE-COMPAT-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Compat', status: 'investigating',
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [],
+      });
+      const reread = meetingMod.getMeeting(meetingId);
+      assert.ok(reread, 'saveMeeting must persist a meeting');
+      assert.strictEqual(reread.title, 'Compat');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('deleteMeeting also drops the .backup sidecar so safeJson cannot resurrect deleted meetings', () => {
+    // mutateJsonFileLocked writes a .backup before each mutation; safeJson
+    // auto-restores from .backup when the primary is missing/corrupt. Without
+    // dropping the sidecar in deleteMeeting, a later getMeeting on the same
+    // ID would silently bring the deleted meeting back from the dead.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-DELETE-BACKUP-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'A', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [], transcript: [],
+      });
+      // Trigger backup creation by mutating once (backup is created on the
+      // 2nd write, when the file already exists).
+      meetingMod.addMeetingNote(meetingId, 'first note');
+
+      const fp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      assert.ok(fs.existsSync(fp + '.backup'),
+        'precondition: a .backup sidecar should exist after the second write');
+
+      const ok = meetingMod.deleteMeeting(meetingId);
+      assert.strictEqual(ok, true);
+      assert.ok(!fs.existsSync(fp), 'primary .json should be gone');
+      assert.ok(!fs.existsSync(fp + '.backup'),
+        '.backup sidecar must also be removed — safeJson would otherwise resurrect the meeting');
+
+      // safeJson must NOT resurrect — getMeeting must return null.
+      assert.strictEqual(meetingMod.getMeeting(meetingId), null,
+        'getMeeting should return null after delete (no .backup resurrection)');
+    } finally {
+      restore();
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -29487,6 +29783,7 @@ async function main() {
     await testMeetingsExtendedBehavioral();
     await testMeetingInternalHelpers();
     await testMeetingsIsolatedGaps();
+    await testMutateMeetingHelper();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
