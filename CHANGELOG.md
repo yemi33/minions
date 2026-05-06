@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1743 (2026-05-06)
+
+### Fixes
+- isolate meeting tests off live MEETINGS_DIR (#2111)
+
 ## 0.1.1742 (2026-05-06)
 
 ### Fixes
