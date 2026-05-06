@@ -1629,6 +1629,18 @@ function updatePrAfterFix(pr, project, source, options = {}, legacyDispatchId = 
       log('warn', `Updated ${pr.id} → recorded no-op ${cause} fix attempt ${record.count}${record.paused ? ' (paused)' : ''}; PR branch was unchanged`);
       return prs;
     }
+    // Issue #2096: detectPrFixBranchChange returns three states; null means
+    // detection could not determine whether the branch advanced (missing
+    // baseline, fetch failed, worktree gone). Treat that as a no-op attempt
+    // so the pause-after-N counter eventually engages, but do NOT mark the
+    // automation cause handled — a future tick with working detection must
+    // be free to re-dispatch.
+    if (explicitlyChangedBranch && options.branchChange?.changed === null) {
+      const record = recordPrNoOpFixAttempt(target, cause, source, options.dispatchItem, options.branchChange, options.config);
+      result = { noOp: true, cause, paused: !!record.paused, count: record.count, indeterminate: true };
+      log('warn', `Updated ${pr.id} → recorded indeterminate ${cause} fix attempt ${record.count}${record.paused ? ' (paused)' : ''}; PR branch advance could not be verified${options.branchChange?.reason ? ` (${options.branchChange.reason})` : ''}`);
+      return prs;
+    }
     clearPrNoOpFixAttempt(target, cause);
     if (source === 'pr-human-feedback') {
       const clearPendingFix = shouldClearHumanFeedbackPendingFix(target, pr, automationCauseKey);
