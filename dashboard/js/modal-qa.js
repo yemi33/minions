@@ -184,6 +184,31 @@ function _qaBuildLoadingHtml(loadingId, queueCount) {
     qaQueueBadge + '</div>';
 }
 
+// Render the raw error envelope (stderr + metadata) returned by ccDocCallStreaming
+// when the runtime fails. Always shown — collapsed by default — so the user can
+// inspect the actual CLI output instead of relying on the friendly summary.
+function _qaBuildRawErrorHtml(err) {
+  if (!err) return '';
+  const meta = [];
+  if (err.runtime) meta.push('runtime: ' + escHtml(String(err.runtime)));
+  if (err.errorClass) meta.push('class: ' + escHtml(String(err.errorClass)));
+  if (err.code !== null && err.code !== undefined) meta.push('exit: ' + escHtml(String(err.code)));
+  const metaLine = meta.length
+    ? '<div style="font-size:10px;color:var(--muted);margin-bottom:4px">' + meta.join(' · ') + '</div>'
+    : '';
+  const adapterMessage = err.errorMessage
+    ? '<div style="font-size:11px;color:var(--text);margin-bottom:6px;white-space:pre-wrap">' + escHtml(String(err.errorMessage)) + '</div>'
+    : '';
+  const stderrText = err.stderr ? String(err.stderr) : '';
+  const stderrBlock = stderrText
+    ? '<pre style="margin:0;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto">' + escHtml(stderrText) + '</pre>'
+    : '<div style="font-size:11px;color:var(--muted)">(no stderr captured)</div>';
+  return '<details class="modal-qa-raw-error" style="margin:6px 0 12px;padding:6px 8px;border:1px solid var(--red);border-radius:4px;background:var(--surface)">' +
+    '<summary style="cursor:pointer;font-size:11px;color:var(--red)">Raw error output</summary>' +
+    '<div style="margin-top:6px">' + metaLine + adapterMessage + stderrBlock + '</div>' +
+    '</details>';
+}
+
 function _qaBuildAssistantHtml(text, opts) {
   const body = opts?.isError ? escHtml(text) : renderMd(text);
   const style = opts?.isError
@@ -231,12 +256,14 @@ function _qaMutateThreadHtml(key, mutate) {
   mutate(tmp);
   const html = tmp.innerHTML;
   if (_qaIsActiveSession(key)) {
+    const wasCollapsed = _qaIsThreadCollapsed();
     const thread = _qaThreadEl();
     if (thread) {
       thread.innerHTML = html;
       thread.scrollTop = thread.scrollHeight;
     }
-    _showThreadWrap();
+    if (wasCollapsed) _setQaThreadCollapsed(true);
+    else _showThreadWrap();
   }
   return html;
 }
@@ -544,17 +571,47 @@ async function _processQaMessage(message, selection, opts) {
         clearInterval(qaTimer);
         _clearQaStreamWatchdog();
         const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
-        const borderColor = evt.edited ? 'var(--green)' : 'var(--blue)';
+        // Pick the border that best reflects what actually happened:
+        //  - partial recovery (work landed despite a non-zero exit) \u2192 orange
+        //    (checked first because partial responses now also carry an error
+        //    envelope so the raw stderr can be surfaced)
+        //  - hard error (no recoverable answer) \u2192 red
+        //  - successful edit \u2192 green
+        //  - normal answer \u2192 blue
+        const borderColor = evt.partial
+          ? 'var(--orange)'
+          : evt.error
+            ? 'var(--red)'
+            : evt.edited ? 'var(--green)' : 'var(--blue)';
         const suffix = evt.edited ? '\n\n\u2713 Document saved.' : '';
-        const answerHtml = _qaBuildAssistantHtml((evt.text || '') + suffix, { borderColor, elapsed: qaElapsed });
+        // Fall back to the live-streamed text when the backend produced no final
+        // answer \u2014 covers the "stream had visible chunks then returned empty" case.
+        const finalText = (evt.text && evt.text.trim()) ? evt.text : (streamedText || '');
+        let bodyText = finalText + suffix;
+        if (evt.partial && evt.warning) {
+          bodyText += '\n\n_' + evt.warning + '_';
+        }
+        // On hard failures, surface tool side-effects so the user knows what
+        // landed before the runtime gave up \u2014 silent destruction was the worst
+        // class of "Failed to process request" UX.
+        if (evt.error && Array.isArray(evt.toolUses) && evt.toolUses.length > 0) {
+          const names = evt.toolUses.slice(0, 8).map(t => t.name).join(', ');
+          const more = evt.toolUses.length > 8 ? '\u2026' : '';
+          bodyText += '\n\n_Tools that ran before the failure: ' + names + more + ' \u2014 files or state may have been modified._';
+        }
+        const answerHtml = _qaBuildAssistantHtml(bodyText, { borderColor, elapsed: qaElapsed });
+        // On any runtime failure, surface the raw error so users can debug it
+        // directly instead of guessing what the friendly summary was hiding.
+        const rawErrorHtml = evt.error ? _qaBuildRawErrorHtml(evt.error) : '';
         let updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
           const loadingEl = tmp.querySelector('#' + loadingId);
           if (loadingEl) loadingEl.remove();
           tmp.insertAdjacentHTML('beforeend', answerHtml);
+          if (rawErrorHtml) tmp.insertAdjacentHTML('beforeend', rawErrorHtml);
         });
 
         runtime.history.push({ role: 'user', text: message });
-        runtime.history.push({ role: 'assistant', text: evt.text || '' });
+        runtime.history.push({ role: 'assistant', text: finalText || '' });
         if (_qaIsActiveSession(sessionKey)) _qaHistory = runtime.history.slice();
 
         _qaNotifySidebar(capturedFilePath);
@@ -710,18 +767,26 @@ function qaAbort() {
 
 function toggleDocChat() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
   var visible = wrap.style.display !== 'none';
-  wrap.style.display = visible ? 'none' : '';
-  if (expandBar) expandBar.style.display = visible ? '' : 'none';
+  _setQaThreadCollapsed(visible);
+}
+
+function _qaIsThreadCollapsed() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  return !!(wrap && wrap.style.display === 'none' && expandBar && expandBar.style.display !== 'none');
+}
+
+function _setQaThreadCollapsed(collapsed) {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = collapsed ? 'none' : '';
+  if (expandBar) expandBar.style.display = collapsed ? '' : 'none';
 }
 
 function _showThreadWrap() {
-  var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = '';
-  if (expandBar) expandBar.style.display = 'none';
+  _setQaThreadCollapsed(false);
 }
 
 // ── Drag-to-resize doc chat thread ──────────────────────────────────────────

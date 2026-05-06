@@ -2616,6 +2616,7 @@ function _docChatFailureResponse(label, filePath, result, sessionPreserved = fal
       code: result.code ?? null,
       stderr: stderrTail,
       errorClass: result.errorClass || null,
+      errorMessage: result.errorMessage || null,
       runtime: result.runtime || null,
     },
   };
@@ -2628,16 +2629,27 @@ function _docChatFailureResponse(label, filePath, result, sessionPreserved = fal
 // successful work and confuses users who watched tools run during streaming.
 // Returns null when there's nothing parseable; caller falls through to failure.
 function _recoverPartialDocChatResponse(result, sessionKey) {
-  if (!result || !result.text) return null;
+  if (!result || !result.text || !result.text.trim()) return null;
   const parsed = _parseDocChatResultText(result.text);
   const hasActions = Array.isArray(parsed.actions) && parsed.actions.length > 0;
-  const hasUseful = !!(parsed.answer || parsed.content || hasActions);
-  if (!hasUseful) return null;
+  const hasAnswer = typeof parsed.answer === 'string' && !!parsed.answer.trim();
+  const hasContent = typeof parsed.content === 'string' && !!parsed.content.trim();
+  if (!hasAnswer && !hasContent && !hasActions) return null;
+  const stderrTail = (result.stderr || '').slice(-2048);
   return {
     ...parsed,
     partial: true,
     warning: _docChatPartialWarning(result.errorClass),
     toolUses: Array.isArray(result.toolUses) ? result.toolUses : [],
+    // Surface the raw runtime failure even on the recovery path — the answer
+    // landed despite a non-zero exit; users still benefit from seeing why.
+    error: {
+      code: result.code ?? null,
+      stderr: stderrTail,
+      errorClass: result.errorClass || null,
+      errorMessage: result.errorMessage || null,
+      runtime: result.runtime || null,
+    },
   };
 }
 
@@ -7453,6 +7465,10 @@ module.exports = {
   parsePinnedEntries,
   _parseDocChatResultText,
   _formatDocChatContext,
+  _docChatErrorMessage,
+  _docChatPartialWarning,
+  _docChatFailureResponse,
+  _recoverPartialDocChatResponse,
   _linkPullRequestForTracking: linkPullRequestForTracking,
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,

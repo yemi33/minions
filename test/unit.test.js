@@ -11022,6 +11022,98 @@ async function testConfigAndPlaybooks() {
       'bin/minions.js should detect nearest local .minions root');
   });
 
+  await test('bin/minions honors explicit MINIONS_HOME before canonical roots', () => {
+    const { spawnSync } = require('child_process');
+    const home = createTmpDir();
+    const explicit = path.join(createTmpDir(), 'explicit-home');
+    const cwd = createTmpDir();
+    const env = { ...process.env, HOME: home, USERPROFILE: home, MINIONS_HOME: explicit };
+    delete env.MINIONS_TEST_DIR;
+    const result = spawnSync(process.execPath, [path.join(MINIONS_DIR, 'bin', 'minions.js'), 'help'], {
+      cwd,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.ok(result.stdout.includes(`Runtime root: ${explicit}`),
+      'explicit MINIONS_HOME should be the runtime root');
+  });
+
+  await test('bin/minions ignores copied local install when canonical home exists', () => {
+    const { spawnSync } = require('child_process');
+    const base = createTmpDir();
+    const home = path.join(base, 'home');
+    const canonical = path.join(home, '.minions');
+    const projectDir = path.join(base, 'project');
+    const copied = path.join(projectDir, '.minions');
+    fs.mkdirSync(projectDir, { recursive: true });
+    for (const root of [canonical, copied]) {
+      fs.mkdirSync(root, { recursive: true });
+      for (const file of ['engine.js', 'dashboard.js', 'minions.js']) {
+        fs.writeFileSync(path.join(root, file), '');
+      }
+    }
+    fs.writeFileSync(path.join(home, '.minions-root'), canonical);
+    const env = { ...process.env, HOME: home, USERPROFILE: home };
+    delete env.MINIONS_HOME;
+    delete env.MINIONS_TEST_DIR;
+    const result = spawnSync(process.execPath, [path.join(MINIONS_DIR, 'bin', 'minions.js'), 'help'], {
+      cwd: projectDir,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.ok(result.stdout.includes(`Runtime root: ${canonical}`),
+      'canonical home should win over a nearby copied .minions tree');
+    assert.ok(!result.stdout.includes(`Runtime root: ${copied}`),
+      'nearby copied .minions tree must not become authoritative');
+  });
+
+  await test('bin/minions falls back to local install when no canonical home exists', () => {
+    const { spawnSync } = require('child_process');
+    const base = createTmpDir();
+    const home = path.join(base, 'home');
+    const projectDir = path.join(base, 'project');
+    const localRoot = path.join(projectDir, '.minions');
+    fs.mkdirSync(localRoot, { recursive: true });
+    for (const file of ['engine.js', 'dashboard.js', 'minions.js']) {
+      fs.writeFileSync(path.join(localRoot, file), '');
+    }
+    const env = { ...process.env, HOME: home, USERPROFILE: home };
+    delete env.MINIONS_HOME;
+    delete env.MINIONS_TEST_DIR;
+    const result = spawnSync(process.execPath, [path.join(MINIONS_DIR, 'bin', 'minions.js'), 'help'], {
+      cwd: projectDir,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.ok(result.stdout.includes(`Runtime root: ${localRoot}`),
+      'local install remains the fallback when no canonical root exists');
+  });
+
+  await test('shared runtime root honors MINIONS_HOME for direct entrypoints', () => {
+    const { spawnSync } = require('child_process');
+    const home = createTmpDir();
+    const env = { ...process.env, MINIONS_HOME: home };
+    delete env.MINIONS_TEST_DIR;
+    const result = spawnSync(process.execPath, ['-e', "console.log(require('./engine/shared').MINIONS_DIR)"], {
+      cwd: MINIONS_DIR,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.strictEqual(path.resolve(result.stdout.trim()), path.resolve(home));
+  });
+
   await test('publish workflow uses admin bypass for chore publish PR auto-merge', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, '.github', 'workflows', 'publish.yml'), 'utf8');
     assert.ok(src.includes('GH_ADMIN_TOKEN: ${{ secrets.PUBLISH_ADMIN_TOKEN }}'),
@@ -37654,6 +37746,43 @@ async function testAutoRecoveryAndAtomicity() {
       `llm.js should set errorMessage from errInfo.message in both callLLM and callLLMStreaming (found ${matches.length})`);
   });
 
+  await test('_docChatFailureResponse error envelope includes raw stderr and adapter errorMessage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Try to salvage'));
+    assert.ok(/stderr:\s*stderrTail/.test(failureFn), 'failure envelope should include raw stderr (truncated)');
+    assert.ok(/errorMessage:\s*result\.errorMessage/.test(failureFn),
+      'failure envelope should include adapter-supplied errorMessage');
+    assert.ok(/runtime:\s*result\.runtime/.test(failureFn), 'failure envelope should include runtime name');
+    assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn), 'failure envelope should include errorClass');
+  });
+
+  await test('_recoverPartialDocChatResponse also surfaces raw error envelope so stderr is not hidden', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _recoverPartialDocChatResponse'), src.indexOf('// Doc-specific wrapper'));
+    assert.ok(/error:\s*\{/.test(fn), 'partial-recovery should attach an error envelope');
+    assert.ok(/stderr:\s*stderrTail/.test(fn), 'partial-recovery error envelope should include raw stderr');
+    assert.ok(/errorMessage:\s*result\.errorMessage/.test(fn),
+      'partial-recovery error envelope should include adapter errorMessage');
+  });
+
+  await test('modal-qa.js renders raw runtime stderr in a Raw error output details block', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes('function _qaBuildRawErrorHtml'),
+      'modal-qa.js should define _qaBuildRawErrorHtml helper');
+    const helperStart = src.indexOf('function _qaBuildRawErrorHtml');
+    const helperEnd = src.indexOf('\n}\n', helperStart) + 2;
+    const helper = src.slice(helperStart, helperEnd);
+    assert.ok(/err\.stderr/.test(helper), 'helper should read err.stderr');
+    assert.ok(/escHtml/.test(helper), 'helper should HTML-escape the stderr to prevent injection');
+    assert.ok(/<details/.test(helper), 'helper should render a <details> block (collapsible)');
+    assert.ok(/Raw error output/i.test(helper), 'helper should label the disclosure');
+    // Confirm the done-handler actually invokes the helper when evt.error is present.
+    const doneIdx = src.indexOf("evt.type === 'done'");
+    const doneBlock = src.slice(doneIdx, doneIdx + 4000);
+    assert.ok(/_qaBuildRawErrorHtml\(evt\.error\)/.test(doneBlock),
+      'done handler should call _qaBuildRawErrorHtml with evt.error');
+  });
+
   await test('runtime adapters return remediation strings in parseError', () => {
     // Load via require so we exercise the actual exported parseError.
     const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'));
@@ -54158,6 +54287,8 @@ async function testDashboardPureHelpers() {
   const { getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
           _parseWatchInterval, parsePinnedEntries, _parseDocChatResultText,
           _formatDocChatContext,
+          _docChatErrorMessage, _docChatPartialWarning,
+          _docChatFailureResponse, _recoverPartialDocChatResponse,
           _resolveSkillReadPath, DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
   const queriesMod = require(path.join(MINIONS_DIR, 'engine', 'queries'));
   const osMod = require('os');
@@ -54287,6 +54418,158 @@ async function testDashboardPureHelpers() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(!src.includes('_messageRequestsOrchestration'),
       'dashboard.js must not reintroduce the brittle orchestration regex gate');
+  });
+
+  // ── doc-chat partial-recovery audit fixes (A–E) ──────────────────────────
+
+  await test('_recoverPartialDocChatResponse returns null when result has no text', () => {
+    assert.strictEqual(_recoverPartialDocChatResponse({ text: '', code: 1 }), null);
+    assert.strictEqual(_recoverPartialDocChatResponse({ code: 1 }), null);
+    assert.strictEqual(_recoverPartialDocChatResponse(null), null);
+  });
+
+  await test('_recoverPartialDocChatResponse returns null when text has nothing parseable', () => {
+    // Whitespace-only or pure delimiter junk shouldn't trigger a partial response.
+    const result = { text: '   \n  \n', code: 1, errorClass: 'crash', toolUses: [] };
+    assert.strictEqual(_recoverPartialDocChatResponse(result), null);
+  });
+
+  await test('_recoverPartialDocChatResponse recovers an answer on non-zero exit (audit fix A)', () => {
+    const result = {
+      text: 'I read the file and here is the summary.',
+      code: 2, errorClass: 'crash', toolUses: [{ name: 'Read', input: {} }],
+    };
+    const recovered = _recoverPartialDocChatResponse(result);
+    assert.ok(recovered, 'partial recovery should succeed when text is present');
+    assert.strictEqual(recovered.partial, true, 'partial flag must be set so client renders the warning');
+    assert.ok(recovered.warning, 'partial recovery should carry a user-facing warning');
+    assert.strictEqual(recovered.answer, 'I read the file and here is the summary.');
+    assert.deepStrictEqual(recovered.toolUses, [{ name: 'Read', input: {} }],
+      'toolUses must be forwarded so the client can show what side-effects landed');
+  });
+
+  await test('_recoverPartialDocChatResponse recovers ===ACTIONS=== on non-zero exit (audit fix A)', () => {
+    const result = {
+      text: 'I will dispatch a fix.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug","workType":"fix"}]',
+      code: 1, errorClass: null, toolUses: [],
+    };
+    const recovered = _recoverPartialDocChatResponse(result);
+    assert.ok(recovered, 'partial recovery should succeed when actions parse');
+    assert.strictEqual(recovered.partial, true);
+    assert.strictEqual(recovered.actions.length, 1, 'parsed action must survive non-zero exit');
+    assert.strictEqual(recovered.actions[0].type, 'dispatch');
+  });
+
+  await test('_recoverPartialDocChatResponse recovers ---DOCUMENT--- content on non-zero exit (audit fix A)', () => {
+    const result = {
+      text: `Updated the doc.\n\n${DOC_CHAT_DOCUMENT_DELIMITER}\nNew document body.`,
+      code: 1, errorClass: 'crash', toolUses: [],
+    };
+    const recovered = _recoverPartialDocChatResponse(result);
+    assert.ok(recovered, 'partial recovery should succeed when document delimiter is present');
+    assert.strictEqual(recovered.partial, true);
+    assert.strictEqual(recovered.content, 'New document body.',
+      'content must survive non-zero exit so the doc edit gets saved');
+  });
+
+  await test('_docChatErrorMessage mentions tool side-effects when toolUses present (audit fix B)', () => {
+    const tools = [{ name: 'Bash' }, { name: 'Edit' }, { name: 'Write' }];
+    const msg = _docChatErrorMessage(null, false, tools);
+    assert.ok(/3 tools? ran/.test(msg),
+      'failure message should disclose the tool count to surface side-effects');
+    assert.ok(msg.includes('Bash') && msg.includes('Edit'),
+      'failure message should name the tools that ran');
+    assert.ok(/files or state may have been modified/i.test(msg),
+      'failure message should warn the user that side-effects landed');
+  });
+
+  await test('_docChatErrorMessage gives an informative default when tools ran but no errorClass (audit fix E)', () => {
+    const msg = _docChatErrorMessage(null, false, [{ name: 'Bash' }]);
+    assert.ok(!msg.includes('Failed to process request. Try again.'),
+      'when tools ran the message must NOT fall through to the bare "Failed to process request"');
+    assert.ok(/stopped responding/i.test(msg),
+      'the tools-ran fallback should explain that the agent stopped before producing a final answer');
+  });
+
+  await test('_docChatErrorMessage falls through to bare default only when no tools and no errorClass', () => {
+    // The bare "Failed to process request. Try again." is reserved for the
+    // worst-case path (no tools, no errorClass, no preserved session). All
+    // other paths now provide more context.
+    assert.strictEqual(_docChatErrorMessage(null, false, []), 'Failed to process request. Try again.');
+  });
+
+  await test('_docChatPartialWarning produces a distinct note for each errorClass', () => {
+    const w1 = _docChatPartialWarning('crash');
+    const w2 = _docChatPartialWarning('budget-exceeded');
+    const w3 = _docChatPartialWarning(null);
+    assert.notStrictEqual(w1, w2, 'partial-warning text should differ per errorClass');
+    assert.notStrictEqual(w2, w3, 'partial-warning text should differ for null vs known errorClass');
+    for (const w of [w1, w2, w3]) {
+      assert.ok(w.startsWith('Note:'), 'partial warnings should be framed as a "Note:" so the user knows the answer landed');
+      assert.ok(w.length > 20, 'partial warning must be substantive, not a placeholder');
+    }
+  });
+
+  await test('_docChatFailureResponse includes toolUses for client-side side-effect rendering (audit fix B)', () => {
+    const result = {
+      code: 1, errorClass: 'crash',
+      toolUses: [{ name: 'Bash', input: {} }, { name: 'Write', input: {} }],
+      stderr: 'segfault',
+      runtime: 'claude',
+    };
+    const fail = _docChatFailureResponse('test', 'plans/x.md', result, false);
+    assert.deepStrictEqual(fail.toolUses, result.toolUses,
+      'failure response must forward toolUses so the client can render side-effects');
+    assert.ok(fail.error, 'failure response must include the error envelope for debugging');
+    assert.strictEqual(fail.error.errorClass, 'crash');
+  });
+
+  await test('doc-chat handler forwards partial / warning / toolUses to the client (audit fix C+D)', () => {
+    // The handler used to discard everything but the bare "Failed" message.
+    // After the audit fix, both handleDocChat and handleDocChatStream forward
+    // the partial-recovery fields so the client can render a useful message.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handlerBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
+    assert.ok(/partial,\s*warning,\s*toolUses/.test(handlerBlock),
+      'doc-chat handlers must destructure partial/warning/toolUses from ccDocCall result');
+    assert.ok(handlerBlock.includes("partial: true, warning"),
+      'baseReply / donePayload must spread partial+warning when partial is set');
+    assert.ok(/toolUses\?\.length|toolUses\.length/.test(handlerBlock),
+      'handlers must conditionally include toolUses in the reply');
+  });
+
+  await test('ccDocCall and ccDocCallStreaming attempt partial recovery before returning failure (audit fix A)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Both wrappers must attempt _recoverPartialDocChatResponse before
+    // committing to _docChatFailureResponse — otherwise non-zero exits with
+    // recoverable text fall straight through to "Failed to process request".
+    // Count call sites only — exclude the function declaration itself.
+    const recoveryCount = (src.match(/const recovered = _recoverPartialDocChatResponse\(result/g) || []).length;
+    assert.strictEqual(recoveryCount, 2,
+      'both ccDocCall and ccDocCallStreaming must call _recoverPartialDocChatResponse before failing');
+    const ccDocCallBlock = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const ccDocStreamBlock = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    for (const [label, block] of [['ccDocCall', ccDocCallBlock], ['ccDocCallStreaming', ccDocStreamBlock]]) {
+      const recoverIdx = block.indexOf('_recoverPartialDocChatResponse');
+      const failIdx = block.indexOf('_docChatFailureResponse');
+      assert.ok(recoverIdx > 0 && failIdx > recoverIdx,
+        `${label} must call _recoverPartialDocChatResponse BEFORE _docChatFailureResponse`);
+    }
+  });
+
+  await test('modal-qa.js renders partial warning + tool side-effects on done event (audit fix C)', () => {
+    // Server tells the truth via partial/warning/toolUses; the client must
+    // actually render them instead of letting evt.text wipe streamedText.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const doneHandler = src.slice(src.indexOf("evt.type === 'done'"), src.indexOf("evt.type === 'error'"));
+    assert.ok(/evt\.partial/.test(doneHandler),
+      'client must branch on evt.partial to render the partial-recovery border + warning');
+    assert.ok(/evt\.warning/.test(doneHandler),
+      'client must surface evt.warning so the user sees the recovery note');
+    assert.ok(/evt\.toolUses/.test(doneHandler),
+      'client must render evt.toolUses on hard failures so destructive side-effects are not silent');
+    assert.ok(/streamedText/.test(doneHandler),
+      'client must fall back to streamedText when evt.text is empty (audit fix D)');
   });
 
   await test('doc-chat dispatch action creates a Command Center work item', async () => {
