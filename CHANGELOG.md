@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1746 (2026-05-06)
+
+### Fixes
+- treat null branch-change as unconfirmed (#2096) (#2115)
+
 ## 0.1.1745 (2026-05-06)
 
 ### Features
