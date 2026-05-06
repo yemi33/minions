@@ -2603,22 +2603,28 @@ async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSessi
 // plus the runtime's real stderr / exit code / errorClass so the UI can render
 // the cause and so future failures are debuggable from logs. toolUses lets the
 // client surface what side-effects already landed despite the failure.
+// Shape the per-failure debug envelope (raw stderr + classification metadata)
+// shared by hard failures and partial recoveries — keeps the wire shape in lockstep.
+function _buildDocChatErrorEnvelope(result) {
+  return {
+    code: result.code ?? null,
+    stderr: (result.stderr || '').slice(-2048),
+    errorClass: result.errorClass || null,
+    errorMessage: result.errorMessage || null,
+    runtime: result.runtime || null,
+  };
+}
+
 function _docChatFailureResponse(label, filePath, result, sessionPreserved = false) {
-  const stderrTail = (result.stderr || '').slice(-2048);
+  const envelope = _buildDocChatErrorEnvelope(result);
   const toolUses = Array.isArray(result.toolUses) ? result.toolUses : [];
-  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, tools=${toolUses.length}, filePath=${filePath}, stderr=${stderrTail.slice(0, 200)}`);
+  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, tools=${toolUses.length}, filePath=${filePath}, stderr=${envelope.stderr.slice(0, 200)}`);
   return {
     answer: _docChatErrorMessage(result.errorClass, sessionPreserved, toolUses, result.errorMessage || null),
     content: null,
     actions: [],
     toolUses,
-    error: {
-      code: result.code ?? null,
-      stderr: stderrTail,
-      errorClass: result.errorClass || null,
-      errorMessage: result.errorMessage || null,
-      runtime: result.runtime || null,
-    },
+    error: envelope,
   };
 }
 
@@ -2635,21 +2641,14 @@ function _recoverPartialDocChatResponse(result, sessionKey) {
   const hasAnswer = typeof parsed.answer === 'string' && !!parsed.answer.trim();
   const hasContent = typeof parsed.content === 'string' && !!parsed.content.trim();
   if (!hasAnswer && !hasContent && !hasActions) return null;
-  const stderrTail = (result.stderr || '').slice(-2048);
   return {
     ...parsed,
     partial: true,
     warning: _docChatPartialWarning(result.errorClass),
     toolUses: Array.isArray(result.toolUses) ? result.toolUses : [],
-    // Surface the raw runtime failure even on the recovery path — the answer
-    // landed despite a non-zero exit; users still benefit from seeing why.
-    error: {
-      code: result.code ?? null,
-      stderr: stderrTail,
-      errorClass: result.errorClass || null,
-      errorMessage: result.errorMessage || null,
-      runtime: result.runtime || null,
-    },
+    // Recovery path still attaches the raw runtime failure — the answer landed
+    // despite a non-zero exit; users still benefit from seeing why.
+    error: _buildDocChatErrorEnvelope(result),
   };
 }
 

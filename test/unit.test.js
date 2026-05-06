@@ -37372,20 +37372,21 @@ async function testAutoRecoveryAndAtomicity() {
 
   await test('doc-chat failure response surfaces stderr / code / errorClass instead of swallowing them (W-mot62ant)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Failure-response shape lives in the shared _docChatFailureResponse helper —
-    // slice from its definition through ccDocCallStreaming so the structured
-    // payload is visible to source-level assertions.
-    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('async function ccDocCallStreaming('));
-    assert.ok(/error:\s*\{/.test(failureFn),
-      'doc-chat failure response should attach a structured error object');
+    // Failure-response shape is built by _buildDocChatErrorEnvelope and consumed
+    // by _docChatFailureResponse — slice from the envelope helper through
+    // ccDocCallStreaming so the structured payload is visible to source-level
+    // assertions.
+    const failureFn = src.slice(src.indexOf('function _buildDocChatErrorEnvelope'), src.indexOf('async function ccDocCallStreaming('));
+    assert.ok(/error:\s*envelope|error:\s*_buildDocChatErrorEnvelope/.test(failureFn),
+      'doc-chat failure response should attach a structured error object built by the shared helper');
     assert.ok(/slice\(-2048\)/.test(failureFn),
-      'doc-chat failure response should clip stderr to the last 2KB');
-    assert.ok(/stderr:\s*stderrTail/.test(failureFn) || /stderr:[^\n,]*slice\(-2048\)/.test(failureFn),
-      'doc-chat failure response should include the truncated stderr');
+      'envelope helper should clip stderr to the last 2KB');
+    assert.ok(/stderr:[^\n,]*slice\(-2048\)/.test(failureFn),
+      'envelope helper should include the truncated stderr');
     assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn),
-      'doc-chat failure response should include the runtime errorClass');
+      'envelope helper should include the runtime errorClass');
     assert.ok(/code:\s*result\.code/.test(failureFn),
-      'doc-chat failure response should include the runtime exit code');
+      'envelope helper should include the runtime exit code');
     // And both wrappers must actually delegate to the helper on the failure branch.
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
@@ -37746,23 +37747,26 @@ async function testAutoRecoveryAndAtomicity() {
       `llm.js should set errorMessage from errInfo.message in both callLLM and callLLMStreaming (found ${matches.length})`);
   });
 
-  await test('_docChatFailureResponse error envelope includes raw stderr and adapter errorMessage', () => {
+  await test('_buildDocChatErrorEnvelope shape includes stderr, errorMessage, runtime, errorClass, and exit code', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Try to salvage'));
-    assert.ok(/stderr:\s*stderrTail/.test(failureFn), 'failure envelope should include raw stderr (truncated)');
-    assert.ok(/errorMessage:\s*result\.errorMessage/.test(failureFn),
-      'failure envelope should include adapter-supplied errorMessage');
-    assert.ok(/runtime:\s*result\.runtime/.test(failureFn), 'failure envelope should include runtime name');
-    assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn), 'failure envelope should include errorClass');
+    const helperStart = src.indexOf('function _buildDocChatErrorEnvelope');
+    const helperEnd = src.indexOf('\n}\n', helperStart) + 2;
+    const helper = src.slice(helperStart, helperEnd);
+    assert.ok(/stderr:[^\n,]*slice\(-2048\)/.test(helper), 'envelope should include raw stderr (truncated to 2KB)');
+    assert.ok(/errorMessage:\s*result\.errorMessage/.test(helper), 'envelope should include adapter-supplied errorMessage');
+    assert.ok(/runtime:\s*result\.runtime/.test(helper), 'envelope should include runtime name');
+    assert.ok(/errorClass:\s*result\.errorClass/.test(helper), 'envelope should include errorClass');
+    assert.ok(/code:\s*result\.code/.test(helper), 'envelope should include exit code');
   });
 
-  await test('_recoverPartialDocChatResponse also surfaces raw error envelope so stderr is not hidden', () => {
+  await test('both _docChatFailureResponse and _recoverPartialDocChatResponse delegate to _buildDocChatErrorEnvelope', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function _recoverPartialDocChatResponse'), src.indexOf('// Doc-specific wrapper'));
-    assert.ok(/error:\s*\{/.test(fn), 'partial-recovery should attach an error envelope');
-    assert.ok(/stderr:\s*stderrTail/.test(fn), 'partial-recovery error envelope should include raw stderr');
-    assert.ok(/errorMessage:\s*result\.errorMessage/.test(fn),
-      'partial-recovery error envelope should include adapter errorMessage');
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Try to salvage'));
+    const partialFn = src.slice(src.indexOf('function _recoverPartialDocChatResponse'), src.indexOf('// Doc-specific wrapper'));
+    assert.ok(/_buildDocChatErrorEnvelope\(result\)/.test(failureFn),
+      'failure response must build its envelope through the shared helper');
+    assert.ok(/_buildDocChatErrorEnvelope\(result\)/.test(partialFn),
+      'partial-recovery must build its envelope through the shared helper');
   });
 
   await test('modal-qa.js renders raw runtime stderr in a Raw error output details block', () => {
