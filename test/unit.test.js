@@ -5716,6 +5716,239 @@ async function testPrAttachmentContract() {
     } finally { restore(); }
   });
 
+  // ─── #2096: branchChange.changed === null must not mark cause handled ─────
+  // Regression guard for issue #2096: detectPrFixBranchChange returns three
+  // states (true | false | null). updatePrAfterFix must treat them distinctly:
+  //   true  → clear no-op record + mark automation cause handled (success)
+  //   false → record no-op attempt, do NOT mark cause handled (no-op)
+  //   null  → record no-op attempt, do NOT mark cause handled (indeterminate)
+  // The bug was that null fell through to the "success" path, marking the
+  // build:<check>:<head>:<signature> cause handled and blocking all further
+  // fix dispatches for that (head, signature) pair.
+
+  await test('updatePrAfterFix #2096: branchChange.changed === true marks cause handled and clears no-op', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-true',
+        prNumber: 209601,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-true',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+        _noOpFixes: {
+          [testShared.PR_FIX_CAUSE.BUILD_FAILURE]: { count: 1, paused: false, evidenceFingerprint: 'stale-fp' },
+        },
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-true', prNumber: 209601 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-true-1',
+            task: 'Fix build failure on PR-2096-true',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-true' },
+          },
+          branchChange: { changed: true, beforeHead: 'a'.repeat(40), afterHead: 'b'.repeat(40) },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: false, cause: testShared.PR_FIX_CAUSE.BUILD_FAILURE });
+      assert.ok(!updatedPr._noOpFixes, 'changed=true must clear stale _noOpFixes (clearPrNoOpFixAttempt)');
+      assert.strictEqual(
+        updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig']?.status,
+        'handled',
+        'changed=true must mark automation cause handled');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: branchChange.changed === false records no-op without marking cause handled', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-false',
+        prNumber: 209602,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-false',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-false', prNumber: 209602 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-false-1',
+            task: 'Fix build failure on PR-2096-false',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-false' },
+          },
+          branchChange: {
+            changed: false,
+            beforeHead: 'c'.repeat(40),
+            afterHead: 'c'.repeat(40),
+            evidence: 'remote-head',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(result.noOp, true);
+      assert.strictEqual(result.cause, testShared.PR_FIX_CAUSE.BUILD_FAILURE);
+      assert.ok(updatedPr._noOpFixes?.[testShared.PR_FIX_CAUSE.BUILD_FAILURE],
+        'changed=false must call recordPrNoOpFixAttempt');
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+      assert.ok(
+        !updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig'],
+        'changed=false must NOT mark automation cause handled (otherwise re-dispatch is blocked)');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: branchChange.changed === null records no-op without marking cause handled', () => {
+    // Reproduces issue #2096: detectPrFixBranchChange returned `null` (e.g.
+    // missing baseline, fetch failed, worktree gone). The old code fell
+    // through to the success path and marked the build:<check>:<head>:<sig>
+    // cause handled, which permanently blocked re-dispatch via
+    // isPrAutomationCauseHandledOrPending.
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-null',
+        prNumber: 209603,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-null',
+        buildStatus: 'failing',
+        buildFailReason: 'Office - PR (X64 Debug LKG)',
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-null', prNumber: 209603 },
+        project,
+        'pr',
+        {
+          automationCauseKey: 'build:Office - PR (X64 Debug LKG):abc:sig',
+          dispatchItem: {
+            id: 'D-2096-null-1',
+            task: 'Fix build failure on PR-2096-null',
+            meta: { dispatchKey: 'build-fix-demo-PR-2096-null' },
+          },
+          branchChange: {
+            changed: null,
+            beforeHead: '',
+            afterHead: '',
+            reason: 'unable to prove branch head after fix',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(result.noOp, true,
+        'indeterminate branch-change must report noOp so the engine does not assume success');
+      assert.strictEqual(result.cause, testShared.PR_FIX_CAUSE.BUILD_FAILURE);
+      assert.ok(updatedPr._noOpFixes?.[testShared.PR_FIX_CAUSE.BUILD_FAILURE],
+        'changed=null must call recordPrNoOpFixAttempt so the pause-after-N counter eventually engages');
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+      assert.strictEqual(
+        updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].reason,
+        'unable to prove branch head after fix',
+        'no-op record should preserve the indeterminate reason from detection');
+      assert.ok(
+        !updatedPr._automationFixCauses?.['build:Office - PR (X64 Debug LKG):abc:sig'],
+        'changed=null must NOT mark automation cause handled — a future tick with working detection must be free to re-dispatch (issue #2096)');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix #2096: changed=null counter resets when failure signature changes', () => {
+    // Keep the no-op-attempt fingerprint logic intact: a new build signature
+    // must reset the count so a real change in the underlying failure can
+    // re-dispatch even after multiple indeterminate detections.
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], engine: { prNoOpFixPauseAttempts: 3 } };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-2096-fp',
+        prNumber: 209604,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/2096-fp',
+        buildStatus: 'failing',
+        buildFailReason: 'CheckA',
+        buildErrorLog: 'first-error',
+      }]);
+
+      const indeterminate = {
+        changed: null, beforeHead: '', afterHead: '',
+        reason: 'unable to prove branch head after fix',
+      };
+
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig1',
+          dispatchItem: { id: 'D-fp-1', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      let [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1);
+
+      // Same signature → counter increments
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig1',
+          dispatchItem: { id: 'D-fp-2', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 2);
+
+      // Change build signature → counter resets to 1
+      updatedPr.buildErrorLog = 'second-error-different';
+      testShared.safeWrite(prPath, [updatedPr]);
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-2096-fp', prNumber: 209604 }, project, 'pr',
+        { config, automationCauseKey: 'build:CheckA:head:sig2',
+          dispatchItem: { id: 'D-fp-3', task: 'Fix build', meta: { dispatchKey: 'build-fix-PR-2096-fp' } },
+          branchChange: indeterminate,
+        },
+      );
+      [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.BUILD_FAILURE].count, 1,
+        'changed signature must reset the no-op counter even on indeterminate detections');
+    } finally { restore(); }
+  });
+
   await test('benign prose mentioning "pending"/"in progress"/"wake up" is NOT rejected when status is success', async () => {
     // Regression guard: the old regex-based prose scanner produced false
     // positives on phrases like "I checked the pending PRs", "build is in
@@ -24158,6 +24391,288 @@ async function testTimeoutBehavioral() {
   });
 }
 
+// ─── engine/timeout.js — Internal Helper Coverage ───────────────────────────
+// Direct unit tests for the pure helpers (parseProcessExitCode, etc.) that the
+// behavioral suite above exercises only indirectly via checkTimeouts.
+// W-mou4rpg00003a3d9: target the previously-untested internal helpers.
+
+async function testTimeoutInternalHelpers() {
+  console.log('\n── engine/timeout.js — Internal Helpers ──');
+
+  const timeout = require('../engine/timeout');
+
+  // ═══ parseProcessExitCode ════════════════════════════════════════════════
+
+  await test('parseProcessExitCode: empty/null/undefined input returns null', () => {
+    assert.strictEqual(timeout.parseProcessExitCode(''), null);
+    assert.strictEqual(timeout.parseProcessExitCode(null), null);
+    assert.strictEqual(timeout.parseProcessExitCode(undefined), null);
+  });
+
+  await test('parseProcessExitCode: garbage with no sentinel returns null', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('hello world\nno sentinel here\n'), null);
+    // Almost-but-not-quite — wrong prefix
+    assert.strictEqual(timeout.parseProcessExitCode('process-exit code=0\n'), null);
+  });
+
+  await test('parseProcessExitCode: single match returns its int', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=0\n'), 0);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=1\n'), 1);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=137\n'), 137);
+  });
+
+  await test('parseProcessExitCode: returns LAST match when multiple sentinels present', () => {
+    // Defends against logs that somehow accumulate stale sentinels (engine restart, etc.)
+    const log = 'noise\n[process-exit] code=0\nmore noise\n[process-exit] code=1\nfinal\n';
+    assert.strictEqual(timeout.parseProcessExitCode(log), 1);
+  });
+
+  await test('parseProcessExitCode: negative exit codes parse correctly', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=-1\n'), -1);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=-15\n'), -15);
+  });
+
+  await test('parseProcessExitCode: spawn-failed literal maps to -1', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] spawn-failed\n'), -1);
+  });
+
+  await test('parseProcessExitCode: sentinel at start of file (no leading newline) matches', () => {
+    // Pattern is (?:^|\n) — must accept first-line sentinel.
+    assert.strictEqual(timeout.parseProcessExitCode('[process-exit] code=42\n'), 42);
+    assert.strictEqual(timeout.parseProcessExitCode('[process-exit] spawn-failed'), -1);
+  });
+
+  await test('parseProcessExitCode: sentinel without "code=" prefix still parses', () => {
+    // Pattern accepts (?:code=)? — optional prefix
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] 7\n'), 7);
+  });
+
+  // ═══ terminalResultIndicatesError ════════════════════════════════════════
+
+  await test('terminalResultIndicatesError: is_error===true returns true', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: true }), true);
+  });
+
+  await test('terminalResultIndicatesError: is_error truthy-but-not-true does NOT count', () => {
+    // Strict === true required.
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: 1 }), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: 'yes' }), false);
+  });
+
+  await test('terminalResultIndicatesError: subtype starting with "error" is true (any case)', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'error' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'ERROR_max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'Error_failed' }), true);
+  });
+
+  await test('terminalResultIndicatesError: subtype "success" returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'success' }), false);
+  });
+
+  await test('terminalResultIndicatesError: terminal_reason matching error regex (snake_case field)', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'max-turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'maxturns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'fatal_error' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'failed' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'cancelled' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'timeout' }), true);
+  });
+
+  await test('terminalResultIndicatesError: terminalReason camelCase variant is honored', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminalReason: 'max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminalReason: 'timeout' }), true);
+  });
+
+  await test('terminalResultIndicatesError: benign terminal_reason returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'completed' }), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'end_turn' }), false);
+  });
+
+  await test('terminalResultIndicatesError: missing fields / non-object input does not throw and returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({}), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError(null), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError(undefined), false);
+  });
+
+  // ═══ parseTerminalResultFallbackExitCode ═════════════════════════════════
+
+  await test('parseTerminalResultFallbackExitCode: empty/null input returns null', () => {
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(''), null);
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(null), null);
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(undefined), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: clean success result returns null', () => {
+    const line = JSON.stringify({ type: 'result', subtype: 'success', terminal_reason: 'end_turn' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: result without terminal_reason or terminalReason is skipped', () => {
+    // Optimized prefilter requires the literal substring; a result line w/o either reason field is ignored.
+    const line = JSON.stringify({ type: 'result', subtype: 'error', is_error: true });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: max_turns terminal returns 1', () => {
+    const line = JSON.stringify({ type: 'result', subtype: 'error', terminal_reason: 'max_turns' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: camelCase terminalReason also detected', () => {
+    const line = JSON.stringify({ type: 'result', terminalReason: 'timeout' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: malformed JSON line still triggers regex fallback when shape matches', () => {
+    // Shape: a result line with garbled JSON (e.g. diagnostic prefix) but recognizable type+terminal_reason.
+    const line = `garbage-prefix {"type":"result","terminal_reason":"max_turns"`;
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: malformed JSON line without recognizable error reason returns null', () => {
+    // Has the prefilter substrings but the regex doesn't match an error reason.
+    const line = `garbage-prefix {"type":"result","terminal_reason":"end_turn"`;
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: multi-line input — last error wins (signals exitCode=1)', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', terminal_reason: 'end_turn' }),
+      'noise',
+      JSON.stringify({ type: 'result', terminal_reason: 'max_turns' }),
+    ].join('\n');
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(lines), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: non-result lines ignored', () => {
+    const lines = [
+      JSON.stringify({ type: 'system', terminal_reason: 'max_turns' }), // wrong type
+      JSON.stringify({ type: 'assistant', message: 'hi' }),              // no result substring
+    ].join('\n');
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(lines), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: blank lines handled cleanly', () => {
+    const input = '\n\n   \n';
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(input), null);
+  });
+
+  // ═══ readFileTail ════════════════════════════════════════════════════════
+
+  await test('readFileTail: returns full content when file is smaller than maxBytes', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'small.log');
+    fs.writeFileSync(fp, 'hello world');
+    assert.strictEqual(timeout.readFileTail(fp, 1024), 'hello world');
+  });
+
+  await test('readFileTail: returns last maxBytes when file exceeds maxBytes', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'big.log');
+    // 1000 bytes of 'a' + clear suffix; tail of 100 must exclude the head.
+    fs.writeFileSync(fp, 'a'.repeat(1000) + 'TAIL_MARKER_END');
+    const tail = timeout.readFileTail(fp, 50);
+    assert.strictEqual(Buffer.byteLength(tail, 'utf8'), 50, 'tail must equal maxBytes when file is larger');
+    assert.ok(tail.endsWith('TAIL_MARKER_END'), 'tail must include the file suffix');
+  });
+
+  await test('readFileTail: empty file returns empty string', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'empty.log');
+    fs.writeFileSync(fp, '');
+    assert.strictEqual(timeout.readFileTail(fp, 1024), '');
+  });
+
+  await test('readFileTail: maxBytes equals file size returns full content', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'exact.log');
+    fs.writeFileSync(fp, 'abcdef');
+    assert.strictEqual(timeout.readFileTail(fp, 6), 'abcdef');
+  });
+
+  await test('readFileTail: ENOENT throws (no implicit recovery)', () => {
+    let threw = false;
+    try { timeout.readFileTail('/path/that/does/not/exist.log', 100); }
+    catch { threw = true; }
+    assert.ok(threw, 'readFileTail must throw on missing file (caller wraps in try-catch)');
+  });
+
+  // ═══ runtimeSupportsMidRunSessionId ══════════════════════════════════════
+
+  await test('runtimeSupportsMidRunSessionId: explicit info.midRunSessionId=true takes priority', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: true }), true);
+    // Even when other lookups would say false, the explicit override wins.
+    assert.strictEqual(
+      timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: true, runtime: { capabilities: { midRunSessionId: false } } }),
+      true,
+    );
+  });
+
+  await test('runtimeSupportsMidRunSessionId: explicit info.midRunSessionId=false takes priority', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: false }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: non-boolean midRunSessionId is ignored, falls through to next lookup', () => {
+    // Only literal booleans short-circuit the priority check.
+    assert.strictEqual(
+      timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: 'yes', runtime: { capabilities: { midRunSessionId: false } } }),
+      false,
+    );
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtime.capabilities.midRunSessionId honored when no explicit override', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtime: { capabilities: { midRunSessionId: true } } }), true);
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtime: { capabilities: { midRunSessionId: false } } }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtimeName lookup via registry — claude=true', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'claude' }), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtimeName lookup via registry — copilot=false', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'copilot' }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: stub registered runtime is honored via resolveRuntime', () => {
+    const { registerRuntime, _registry } = require('../engine/runtimes');
+    const stubName = 'stub-mid-run-test-' + Date.now();
+    const saved = _registry.get(stubName); // should be undefined
+    registerRuntime(stubName, { capabilities: { midRunSessionId: false } });
+    try {
+      assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: stubName }), false);
+    } finally {
+      // Clean up the stub so subsequent tests are unaffected.
+      if (saved) _registry.set(stubName, saved); else _registry.delete(stubName);
+    }
+  });
+
+  await test('runtimeSupportsMidRunSessionId: unknown runtimeName falls back to true (catch branch)', () => {
+    // resolveRuntime throws on unknown name — catch swallows and returns true (line 69).
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'nope-does-not-exist-' + Date.now() }), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: known runtimeName but missing capability flag falls through to default true', () => {
+    const { registerRuntime, _registry } = require('../engine/runtimes');
+    const stubName = 'stub-no-caps-test-' + Date.now();
+    registerRuntime(stubName, { /* no capabilities at all */ });
+    try {
+      assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: stubName }), true);
+    } finally {
+      _registry.delete(stubName);
+    }
+  });
+
+  await test('runtimeSupportsMidRunSessionId: null/undefined input returns true (default)', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId(null), true);
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId(undefined), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: empty object returns true (default)', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({}), true);
+  });
+}
+
 // ─── Recent Features Tests ─────────────────────────────────────────────────
 
 async function testRecentFeatures() {
@@ -28805,6 +29320,8 @@ async function main() {
     await testAgentSteering();
     // W-mobjwnvz5sbl: behavioral coverage for engine/timeout.js
     await testTimeoutBehavioral();
+    // W-mou4rpg00003a3d9: direct unit coverage of internal parse helpers
+    await testTimeoutInternalHelpers();
     await testRecentFeatures();
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
@@ -54130,6 +54647,494 @@ async function testDashboardPureHelpers() {
     } finally {
       try { delete require.cache[require.resolve('../dashboard')]; } catch {}
       restore();
+    }
+  });
+
+  // ── W-mou4s7mj0004b9a3: dashboard helper coverage ─────────────────────────
+  // Covers previously-untested or thinly-tested dashboard exports:
+  // _normalizeMeetingParticipants, _meetingParticipantsFromAction, _findDuplicateWorkItemCreate,
+  // _resolveWorkItemsCreateTarget, _createPipelineFromAction.
+
+  // ── _normalizeMeetingParticipants ────────────────────────────────────────
+
+  await test('_normalizeMeetingParticipants returns [] for non-array input', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(_normalizeMeetingParticipants(null), []);
+    assert.deepStrictEqual(_normalizeMeetingParticipants(undefined), []);
+    assert.deepStrictEqual(_normalizeMeetingParticipants('dallas'), []);
+    assert.deepStrictEqual(_normalizeMeetingParticipants({ 0: 'dallas' }), []);
+    assert.deepStrictEqual(_normalizeMeetingParticipants(42), []);
+  });
+
+  await test('_normalizeMeetingParticipants returns [] for empty array', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(_normalizeMeetingParticipants([]), []);
+  });
+
+  await test('_normalizeMeetingParticipants dedupes preserving first occurrence order', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(
+      _normalizeMeetingParticipants(['dallas', 'ripley', 'dallas', 'lambert', 'ripley']),
+      ['dallas', 'ripley', 'lambert']
+    );
+  });
+
+  await test('_normalizeMeetingParticipants trims whitespace from entries', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(
+      _normalizeMeetingParticipants(['  dallas  ', 'ripley\t', '\nlambert']),
+      ['dallas', 'ripley', 'lambert']
+    );
+  });
+
+  await test('_normalizeMeetingParticipants drops null/undefined/empty/whitespace-only entries', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(
+      _normalizeMeetingParticipants([null, undefined, '', '   ', '\t\n', 'dallas']),
+      ['dallas']
+    );
+  });
+
+  await test('_normalizeMeetingParticipants dedupes after trimming so " dallas " collapses with "dallas"', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    assert.deepStrictEqual(
+      _normalizeMeetingParticipants(['dallas', '  dallas', 'dallas  ']),
+      ['dallas']
+    );
+  });
+
+  await test('_normalizeMeetingParticipants stringifies non-string entries before trim', () => {
+    const { _normalizeMeetingParticipants } = dashboard;
+    // Numbers and booleans coerce via String(); the function does not filter by type.
+    assert.deepStrictEqual(_normalizeMeetingParticipants([42, 'dallas']), ['42', 'dallas']);
+  });
+
+  // ── _meetingParticipantsFromAction ───────────────────────────────────────
+
+  await test('_meetingParticipantsFromAction returns normalized participants when populated', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ participants: ['dallas', 'ripley'], agents: ['lambert'] }),
+      ['dallas', 'ripley'],
+      'non-empty participants must take precedence over agents'
+    );
+  });
+
+  await test('_meetingParticipantsFromAction falls back to agents when participants is an empty array', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ participants: [], agents: ['lambert', 'ripley'] }),
+      ['lambert', 'ripley']
+    );
+  });
+
+  await test('_meetingParticipantsFromAction falls back to agents when participants is missing', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ agents: ['dallas'] }),
+      ['dallas']
+    );
+  });
+
+  await test('_meetingParticipantsFromAction returns [] when both participants and agents are missing', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(_meetingParticipantsFromAction({}), []);
+    assert.deepStrictEqual(_meetingParticipantsFromAction({ title: 'no agents' }), []);
+  });
+
+  await test('_meetingParticipantsFromAction ignores non-array participants and falls through to agents', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    // Non-array participants fail the `Array.isArray && length > 0` gate.
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ participants: 'dallas', agents: ['ripley'] }),
+      ['ripley']
+    );
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ participants: { 0: 'dallas' }, agents: ['ripley'] }),
+      ['ripley']
+    );
+  });
+
+  await test('_meetingParticipantsFromAction tolerates null/undefined action input', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(_meetingParticipantsFromAction(null), []);
+    assert.deepStrictEqual(_meetingParticipantsFromAction(undefined), []);
+  });
+
+  await test('_meetingParticipantsFromAction normalizes selected list (dedupe + trim)', () => {
+    const { _meetingParticipantsFromAction } = dashboard;
+    assert.deepStrictEqual(
+      _meetingParticipantsFromAction({ participants: ['  dallas  ', 'dallas', 'ripley'] }),
+      ['dallas', 'ripley'],
+      'normalization must apply to the chosen source list'
+    );
+  });
+
+  // ── _findDuplicateWorkItemCreate ────────────────────────────────────────
+  // Pure function; can be exercised without the isolated dashboard-loader.
+
+  await test('_findDuplicateWorkItemCreate returns null when items is not an array', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const candidate = { title: 'X', type: 'fix', description: '' };
+    assert.strictEqual(_findDuplicateWorkItemCreate(null, candidate), null);
+    assert.strictEqual(_findDuplicateWorkItemCreate(undefined, candidate), null);
+    assert.strictEqual(_findDuplicateWorkItemCreate('not-an-array', candidate), null);
+    assert.strictEqual(_findDuplicateWorkItemCreate({ 0: candidate }, candidate), null);
+  });
+
+  await test('_findDuplicateWorkItemCreate returns null on empty items array', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    assert.strictEqual(
+      _findDuplicateWorkItemCreate([], { title: 'X', type: 'fix' }),
+      null
+    );
+  });
+
+  await test('_findDuplicateWorkItemCreate matches by normalized title + type', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const items = [{
+      id: 'W-existing',
+      title: '  Refactor   queue dispatcher  ',
+      type: 'fix',
+      status: 'pending',
+      created: new Date(nowMs - 60000).toISOString(),
+    }];
+    const candidate = {
+      title: 'refactor queue dispatcher',
+      type: 'fix',
+      description: '',
+    };
+    const found = _findDuplicateWorkItemCreate(items, candidate, { nowMs });
+    assert.ok(found, 'whitespace + case differences must collapse');
+    assert.strictEqual(found.id, 'W-existing');
+  });
+
+  await test('_findDuplicateWorkItemCreate returns null when titles differ', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const items = [{
+      id: 'W-existing',
+      title: 'Refactor queue dispatcher',
+      type: 'fix',
+      status: 'pending',
+      created: new Date(nowMs).toISOString(),
+    }];
+    assert.strictEqual(
+      _findDuplicateWorkItemCreate(items, { title: 'Different title', type: 'fix' }, { nowMs }),
+      null
+    );
+  });
+
+  await test('_findDuplicateWorkItemCreate returns null when types differ', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const items = [{
+      id: 'W-fix',
+      title: 'Same Title',
+      type: 'fix',
+      status: 'pending',
+      created: new Date(nowMs).toISOString(),
+    }];
+    assert.strictEqual(
+      _findDuplicateWorkItemCreate(items, { title: 'Same Title', type: 'review' }, { nowMs }),
+      null,
+      'fix vs review must not collide despite identical title'
+    );
+  });
+
+  await test('_findDuplicateWorkItemCreate ignores items in non-active statuses (done/failed/cancelled)', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const candidate = { title: 'Same Title', type: 'fix', description: '' };
+    for (const status of ['done', 'failed', 'cancelled', 'decomposed', 'paused']) {
+      const items = [{
+        id: 'W-' + status,
+        title: 'Same Title',
+        type: 'fix',
+        status,
+        created: new Date(nowMs).toISOString(),
+      }];
+      assert.strictEqual(
+        _findDuplicateWorkItemCreate(items, candidate, { nowMs }),
+        null,
+        `status=${status} must not block new creation`
+      );
+    }
+  });
+
+  await test('_findDuplicateWorkItemCreate matches active statuses (pending/dispatched/queued)', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const candidate = { title: 'Same Title', type: 'fix' };
+    for (const status of ['pending', 'dispatched', 'queued']) {
+      const items = [{
+        id: 'W-' + status,
+        title: 'Same Title',
+        type: 'fix',
+        status,
+        created: new Date(nowMs).toISOString(),
+      }];
+      const found = _findDuplicateWorkItemCreate(items, candidate, { nowMs });
+      assert.ok(found, `status=${status} must be considered active`);
+      assert.strictEqual(found.id, 'W-' + status);
+    }
+  });
+
+  await test('_findDuplicateWorkItemCreate respects nowMs option for created-time window', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    const nowMs = Date.parse('2026-05-06T12:00:00.000Z');
+    const windowMs = 60 * 1000;
+    const item = {
+      id: 'W-old',
+      title: 'Same Title',
+      type: 'fix',
+      status: 'pending',
+      created: new Date(nowMs - windowMs - 1).toISOString(),
+    };
+    assert.strictEqual(
+      _findDuplicateWorkItemCreate([item], { title: 'Same Title', type: 'fix' }, { nowMs, windowMs }),
+      null,
+      'item created just outside the window must not match'
+    );
+    item.created = new Date(nowMs - windowMs + 1).toISOString();
+    assert.ok(
+      _findDuplicateWorkItemCreate([item], { title: 'Same Title', type: 'fix' }, { nowMs, windowMs }),
+      'item created just inside the window must match'
+    );
+  });
+
+  await test('_findDuplicateWorkItemCreate matches when item has unparseable/missing created (assumed in window)', () => {
+    const { _findDuplicateWorkItemCreate } = dashboard;
+    // isWithinWorkItemCreateDedupWindow returns true when Date.parse yields NaN.
+    const items = [{
+      id: 'W-no-created',
+      title: 'Same Title',
+      type: 'fix',
+      status: 'pending',
+    }];
+    const found = _findDuplicateWorkItemCreate(items, { title: 'Same Title', type: 'fix' });
+    assert.ok(found && found.id === 'W-no-created',
+      'missing created should not exclude the item from dedup');
+  });
+
+  // ── _resolveWorkItemsCreateTarget ────────────────────────────────────────
+
+  await test('_resolveWorkItemsCreateTarget: zero projects + no name returns root WI path with no project', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const result = _resolveWorkItemsCreateTarget('', []);
+    assert.strictEqual(result.project, null);
+    assert.ok(result.wiPath, 'wiPath must be set even when no project resolved');
+    assert.ok(!('error' in result), 'no project + no name is not an error');
+    assert.ok(result.wiPath.endsWith('work-items.json'),
+      'root fallback must point at work-items.json');
+  });
+
+  await test('_resolveWorkItemsCreateTarget: zero projects + explicit name returns "No projects configured" error', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const result = _resolveWorkItemsCreateTarget('ghost-project', []);
+    assert.ok(result.error, 'must surface error when name supplied but no projects exist');
+    assert.ok(/No projects configured/i.test(result.error));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: single project + matching name resolves to that project', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const project = { name: 'minions', localPath: '/tmp/minions' };
+    const result = _resolveWorkItemsCreateTarget('minions', [project]);
+    assert.strictEqual(result.project, project);
+    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(project));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: single project + empty name auto-targets the only project', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const project = { name: 'minions', localPath: '/tmp/minions' };
+    const result = _resolveWorkItemsCreateTarget('', [project]);
+    assert.strictEqual(result.project, project,
+      'with one project configured, empty name must auto-target it');
+    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(project));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: multi-project + matching name resolves the named project', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const projects = [
+      { name: 'alpha', localPath: '/tmp/alpha' },
+      { name: 'beta', localPath: '/tmp/beta' },
+    ];
+    const result = _resolveWorkItemsCreateTarget('beta', projects);
+    assert.strictEqual(result.project, projects[1]);
+    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(projects[1]));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: multi-project + empty name returns null project + root path', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const projects = [
+      { name: 'alpha', localPath: '/tmp/alpha' },
+      { name: 'beta', localPath: '/tmp/beta' },
+    ];
+    const result = _resolveWorkItemsCreateTarget('', projects);
+    // Empty name with multiple projects falls through: no project picked, root WI path.
+    // executeCCActions enforces stricter project-required validation upstream; this helper
+    // does not error on its own.
+    assert.strictEqual(result.project, null);
+    assert.ok(result.wiPath.endsWith('work-items.json'));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: unknown name with projects falls back to projects[0]', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    // Documents actual behavior: when a project name is supplied but doesn't match,
+    // the helper currently falls back to projects[0] rather than returning an error.
+    // executeCCActions performs strict unknown-project rejection upstream.
+    const projects = [
+      { name: 'alpha', localPath: '/tmp/alpha' },
+      { name: 'beta', localPath: '/tmp/beta' },
+    ];
+    const result = _resolveWorkItemsCreateTarget('does-not-exist', projects);
+    assert.strictEqual(result.project, projects[0],
+      'unknown name + non-empty projects falls back to projects[0]');
+    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(projects[0]));
+  });
+
+  await test('_resolveWorkItemsCreateTarget: trims whitespace-only name as empty', () => {
+    const { _resolveWorkItemsCreateTarget } = dashboard;
+    const project = { name: 'minions', localPath: '/tmp/minions' };
+    const result = _resolveWorkItemsCreateTarget('   ', [project]);
+    assert.strictEqual(result.project, project,
+      'whitespace-only project name must be treated as empty (single-project auto-target)');
+  });
+
+  // ── _createPipelineFromAction ───────────────────────────────────────────
+  // Uses MINIONS_TEST_DIR isolation so each test writes to its own pipelines/<id>.json.
+
+  await test('_createPipelineFromAction persists a new pipeline and reports created=true', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'pipe-new-' + Date.now(),
+        title: 'Fresh pipeline',
+        trigger: { cron: '0 9 *' },
+        stages: [{ id: 'audit', type: 'task', title: 'Audit' }],
+      };
+      const result = isolated.dashboard._createPipelineFromAction(action);
+      assert.strictEqual(result.type, 'create-pipeline');
+      assert.strictEqual(result.id, action.id);
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.created, true);
+      assert.ok(!result.error);
+      assert.ok(!result.duplicate);
+      const persisted = isolated.shared.safeJson(path.join(isolated.dir, 'pipelines', action.id + '.json'));
+      assert.ok(persisted, 'pipeline file must exist after create');
+      assert.strictEqual(persisted.title, action.title);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('_createPipelineFromAction returns duplicate=true when identical action is replayed', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'pipe-dup-' + Date.now(),
+        title: 'Duplicate replay',
+        trigger: { cron: '0 9 *' },
+        stages: [{ id: 'audit', type: 'task', title: 'Audit' }],
+      };
+      const first = isolated.dashboard._createPipelineFromAction(action);
+      const second = isolated.dashboard._createPipelineFromAction(action);
+      assert.strictEqual(first.created, true);
+      assert.strictEqual(second.ok, true);
+      assert.strictEqual(second.duplicate, true);
+      assert.strictEqual(second.duplicateOf, action.id);
+      assert.ok(/already exists/i.test(second.warning || ''));
+      assert.ok(!second.error);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('_createPipelineFromAction returns error when same id has a different definition', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const id = 'pipe-conflict-' + Date.now();
+      const original = {
+        type: 'create-pipeline',
+        id,
+        title: 'Original',
+        stages: [{ id: 'audit', type: 'task', title: 'Audit' }],
+      };
+      const conflicting = {
+        type: 'create-pipeline',
+        id,
+        title: 'Modified',
+        stages: [{ id: 'plan', type: 'plan', title: 'Plan' }],
+      };
+      isolated.dashboard._createPipelineFromAction(original);
+      const result = isolated.dashboard._createPipelineFromAction(conflicting);
+      assert.ok(result.error, 'differing definition for same id must error');
+      assert.ok(/different definition/i.test(result.error));
+      assert.ok(!result.ok);
+      assert.ok(!result.duplicate);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('_createPipelineFromAction returns error when persistence is silently dropped', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      // Stub savePipeline to be a no-op so getPipeline cannot find the just-saved file.
+      // engine/pipeline lives at MINIONS_DIR, not in the temp dir; the dashboard's lazy
+      // require('./engine/pipeline') resolves the same instance, so monkey-patching the
+      // exports here flows through.
+      const pipelineMod = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+      const origSave = pipelineMod.savePipeline;
+      pipelineMod.savePipeline = () => { /* swallow write */ };
+      try {
+        const action = {
+          type: 'create-pipeline',
+          id: 'pipe-not-persisted-' + Date.now(),
+          title: 'Drop on save',
+          stages: [{ id: 'audit', type: 'task', title: 'Audit' }],
+        };
+        const result = isolated.dashboard._createPipelineFromAction(action);
+        assert.ok(result.error, 'persistence-not-found must surface as error');
+        assert.ok(/not persisted/i.test(result.error));
+        assert.ok(!result.ok);
+      } finally {
+        pipelineMod.savePipeline = origSave;
+      }
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('_createPipelineFromAction returns error when persisted pipeline mismatches expected definition', () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const pipelineMod = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+      const origSave = pipelineMod.savePipeline;
+      // Save a tampered version on disk (different stages) so the post-save verification fails.
+      pipelineMod.savePipeline = (pipeline) => {
+        const tampered = { ...pipeline, stages: [{ id: 'tampered', type: 'task', title: 'Tampered' }] };
+        return origSave(tampered);
+      };
+      try {
+        const action = {
+          type: 'create-pipeline',
+          id: 'pipe-tampered-' + Date.now(),
+          title: 'Tampered persistence',
+          stages: [{ id: 'audit', type: 'task', title: 'Audit' }],
+        };
+        const result = isolated.dashboard._createPipelineFromAction(action);
+        assert.ok(result.error, 'persisted-mismatch must surface as error');
+        assert.ok(/unexpected contents/i.test(result.error));
+        assert.ok(!result.ok);
+      } finally {
+        pipelineMod.savePipeline = origSave;
+      }
+    } finally {
+      isolated.cleanup();
     }
   });
 }
