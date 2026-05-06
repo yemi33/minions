@@ -160,7 +160,60 @@ async function testSharedUtilities() {
     const dir = createTmpDir();
     const fp = path.join(dir, 'bad.json');
     fs.writeFileSync(fp, 'not json at all');
-    assert.strictEqual(shared.safeJson(fp), null);
+    const origErr = console.error;
+    try { console.error = () => {}; assert.strictEqual(shared.safeJson(fp), null); }
+    finally { console.error = origErr; }
+  });
+
+  // P-h3arch-8c19: surface JSON corruption instead of silently returning null.
+  // Missing files remain silent (normal pre-create state); corrupt files must log.
+  await test('safeJson logs parse failure when file exists but is corrupt (P-h3arch-8c19)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt.json');
+    fs.writeFileSync(fp, '{ this: is not [ valid json');
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    try {
+      const result = shared.safeJson(fp);
+      assert.strictEqual(result, null, 'corrupt file with no backup must still return null');
+    } finally {
+      console.error = origErr;
+    }
+    assert.ok(errs.some(line => /parse failure|parse error/i.test(line) && line.includes('corrupt.json')),
+      'parse failure must be logged with the file basename — got: ' + JSON.stringify(errs));
+  });
+
+  await test('safeJson stays silent for missing file (no log noise on pre-create state)', () => {
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    try {
+      const result = shared.safeJson('/nonexistent/totally-absent.json');
+      assert.strictEqual(result, null);
+    } finally {
+      console.error = origErr;
+    }
+    assert.deepStrictEqual(errs, [],
+      'missing file is normal pre-create state — must not log');
+  });
+
+  await test('safeJsonArr returns [] and logs on corrupt JSON (P-h3arch-8c19)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt-arr.json');
+    fs.writeFileSync(fp, 'not-json-at-all');
+    const errs = [];
+    const origErr = console.error;
+    console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+    let result;
+    try {
+      result = shared.safeJsonArr(fp);
+    } finally {
+      console.error = origErr;
+    }
+    assert.deepStrictEqual(result, [], 'safeJsonArr must default to [] on corrupt JSON');
+    assert.ok(errs.some(line => /parse failure|parse error/i.test(line)),
+      'safeJsonArr must surface parse failure via log — got: ' + JSON.stringify(errs));
   });
 
   await test('safeWrite + safeJson roundtrip (object)', () => {
@@ -6635,6 +6688,76 @@ async function testQueriesPullRequests() {
   await test('getPrs returns array for null project (all projects)', () => {
     const prs = queries.getPrs();
     assert.ok(Array.isArray(prs));
+  });
+
+  // Regression: removed projects used to reappear in /api/status because
+  // getPullRequests enumerated every projects/<name>/ filesystem dir, including
+  // names not in CONFIG.projects. Once removeProject archived the data dir, any
+  // stale code path that still held a reference to the project name and called
+  // projectStateDir/projectPrPath would silently recreate projects/<removed>/.
+  // The next status refresh then surfaced it as a ghost.
+  await test('getPullRequests filters out unconfigured (removed) project dirs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      // Two configured projects + one orphan filesystem dir (simulates removed project)
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'alpha', localPath: dir }],
+        agents: {}, engine: {},
+      }));
+      const alphaDir = path.join(dir, 'projects', 'alpha');
+      const orphanDir = path.join(dir, 'projects', 'removed-project');
+      fs.mkdirSync(alphaDir, { recursive: true });
+      fs.mkdirSync(orphanDir, { recursive: true });
+      fs.writeFileSync(path.join(alphaDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-alpha-1', title: 'alpha pr', created: '2025-01-01' }]));
+      fs.writeFileSync(path.join(orphanDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-orphan-1', title: 'should not appear', created: '2025-01-02' }]));
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      const projects = new Set(prs.map(pr => pr._project));
+      assert.ok(projects.has('alpha'), 'configured project should appear');
+      assert.ok(!projects.has('removed-project'), 'unconfigured filesystem dir must NOT surface');
+      assert.ok(!prs.some(pr => pr.id === 'PR-orphan-1'), 'PRs from unconfigured dir must NOT surface');
+    } finally { restore(); }
+  });
+
+  await test('getPullRequests skips .archived sidecar directory', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      // Empty config — no configured projects, only the .archived sibling
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [], agents: {}, engine: {},
+      }));
+      const archivedDir = path.join(dir, 'projects', '.archived', 'demo-20250101');
+      fs.mkdirSync(archivedDir, { recursive: true });
+      fs.writeFileSync(path.join(archivedDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-archived-1', title: 'archived pr' }]));
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(!prs.some(pr => pr.id === 'PR-archived-1'),
+        'PRs under .archived/ must NOT surface');
+    } finally { restore(); }
+  });
+
+  await test('getPullRequests on projects/ containing only .archived returns empty list', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        projects: [], agents: {}, engine: {},
+      }));
+      // Only the .archived sidecar exists — no configured projects, no other dirs
+      fs.mkdirSync(path.join(dir, 'projects', '.archived'), { recursive: true });
+
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(Array.isArray(prs));
+      assert.strictEqual(prs.length, 0, 'should return [] when projects/ has only .archived/');
+    } finally { restore(); }
   });
 }
 
@@ -13758,6 +13881,63 @@ async function testProjectPathHelpers() {
     assert.ok(stateDir.includes('myproject'), `Expected path containing project name: ${stateDir}`);
   });
 
+  // Regression: projectStateDir used to mkdir on every call, which silently
+  // resurrected projects/<removedName>/ whenever any code path (poller, lifecycle,
+  // dashboard read) used a stale project reference after removeProject archived
+  // the data dir. The next getPullRequests enumeration then picked the recreated
+  // dir back up and the project reappeared in /api/status.
+  await test('projectStateDir does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'never-created');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/never-created should not exist');
+      const result = freshShared.projectStateDir({ name: 'never-created' });
+      assert.strictEqual(result, projectDir, 'should return the computed path');
+      assert.ok(!fs.existsSync(projectDir), 'projectStateDir must NOT create the directory');
+    } finally { restore(); }
+  });
+
+  await test('projectWorkItemsPath does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'phantom');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/phantom should not exist');
+      const wiPath = freshShared.projectWorkItemsPath({ name: 'phantom' });
+      assert.ok(wiPath.endsWith('work-items.json'));
+      assert.ok(!fs.existsSync(projectDir), 'projectWorkItemsPath must NOT create projects/<name>/');
+    } finally { restore(); }
+  });
+
+  await test('projectPrPath does not create the directory (read-safe)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'phantom');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/phantom should not exist');
+      const prPath = freshShared.projectPrPath({ name: 'phantom' });
+      assert.ok(prPath.endsWith('pull-requests.json'));
+      assert.ok(!fs.existsSync(projectDir), 'projectPrPath must NOT create projects/<name>/');
+    } finally { restore(); }
+  });
+
+  await test('projectStateDirEnsure creates the directory on demand', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const projectDir = path.join(dir, 'projects', 'ensure-me');
+      assert.ok(!fs.existsSync(projectDir), 'precondition: projects/ensure-me should not exist');
+      const result = freshShared.projectStateDirEnsure({ name: 'ensure-me' });
+      assert.strictEqual(result, projectDir, 'should return the computed path');
+      assert.ok(fs.existsSync(projectDir), 'projectStateDirEnsure must mkdir the directory');
+    } finally { restore(); }
+  });
+
   await test('projectWorkItemsPath ends with work-items.json', () => {
     const p = shared.projectWorkItemsPath({ name: 'myproject' });
     assert.ok(p.endsWith('work-items.json'), `Expected path ending with work-items.json: ${p}`);
@@ -16068,7 +16248,9 @@ async function testBuildAgentContext() {
       fs.mkdirSync(project.localPath, { recursive: true });
       const config = { projects: [project], agents: {}, engine: {} };
       fs.writeFileSync(path.join(minionsDir, 'config.json'), JSON.stringify(config));
-      fs.writeFileSync(freshShared.projectPrPath(project), JSON.stringify([
+      const prPathFor1886 = freshShared.projectPrPath(project);
+      fs.mkdirSync(path.dirname(prPathFor1886), { recursive: true });
+      fs.writeFileSync(prPathFor1886, JSON.stringify([
         { id: 'github:yemi33/minions#1886', status: freshShared.PR_STATUS.ACTIVE, title: 'Object context', _context: { issue: 1886 }, branch: 'work/object-context' },
         { id: 'github:yemi33/minions#1887', status: freshShared.PR_STATUS.ACTIVE, title: 'Array context', _context: ['unexpected'], branch: 'work/array-context' },
         { id: 'github:yemi33/minions#1888', status: freshShared.PR_STATUS.ACTIVE, title: 'Number context', _context: 42, branch: 'work/number-context' },
@@ -19857,6 +20039,51 @@ async function testCheckPlanCompletionIdempotency() {
     }
   }, cleanup);
 
+  // ── Test 7: null/undefined work item title doesn't crash summary builders ──
+  // Regression: engine/lifecycle.js had unguarded w.title.replace('Implement: ', '')
+  // calls at lines 137, 138, 173, 258. A WI with null/undefined title would crash
+  // the entire verify-summary / done-summary build pipeline.
+  await test('checkPlanCompletion does not throw when work item title is null/undefined', () => {
+    cleanup();
+    // Use shared-branch strategy so the line-173 itemSummary path is also exercised.
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd({
+      branch_strategy: 'shared-branch',
+      feature_branch: 'feat/null-title-test',
+    }));
+    // One done item with title=null  → exercises lines 137 and 173 and 258
+    // One failed item with title=undefined → exercises line 138
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+      { id: 'TI-001', title: null, type: 'implement', status: 'done',
+        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
+      { id: 'TI-002', title: undefined, type: 'implement', status: 'failed',
+        sourcePlan: testPlanFile, failReason: 'test failure', dispatched_at: '2026-01-01T00:00:00Z' },
+    ]);
+
+    // Should not throw — the unguarded .replace() would TypeError on null/undefined
+    assert.doesNotThrow(() => lifecycle.checkPlanCompletion(meta, config),
+      'checkPlanCompletion must not crash on null/undefined work item title');
+
+    // Confirm the summary was written with the 'Untitled' fallback
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxFiles.length, 1, 'Inbox summary should still be written');
+    const summaryContent = fs.readFileSync(path.join(inboxDir, inboxFiles[0]), 'utf8');
+    assert.ok(summaryContent.includes('Untitled'),
+      'Summary should contain "Untitled" fallback for null/undefined title');
+
+    // Confirm verify WI was created and its description used the fallback (line 258 reached)
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI should be created (line 258 reached)');
+    assert.ok(verifyItems[0].description.includes('Untitled'),
+      'Verify WI description should contain "Untitled" fallback');
+
+    // Confirm shared-branch PR WI was created and its itemSummary used the fallback (line 173 reached)
+    const prItems = workItems.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(prItems.length, 1, 'Shared-branch PR WI should be created (line 173 reached)');
+    assert.ok(prItems[0].description.includes('Untitled'),
+      'Shared-branch PR WI description should contain "Untitled" fallback');
+  }, cleanup);
+
   restore();
 }
 
@@ -22053,6 +22280,7 @@ async function testDispatchPromptSidecar() {
       const testDispatch = require('../engine/dispatch');
       const testQueries = require('../engine/queries');
       const wiPath = freshShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
       const completedAt = '2026-04-29T18:04:03.000Z';
       fs.writeFileSync(wiPath, JSON.stringify([{
         id: 'W-exit-stderr',
@@ -27982,6 +28210,302 @@ async function testMeetingsIsolatedGaps() {
   });
 }
 
+// ─── mutateMeeting helper (P-c3meet-9af2) ───────────────────────────────────
+// engine/meeting.js exports `mutateMeeting(id, fn)` that wraps the meeting JSON
+// file with mutateJsonFileLocked, replacing the bare-safeWrite saveMeeting RMW
+// pattern. These tests cover:
+//   - Concurrency: 5 parallel child processes each appending a unique finding —
+//     all 5 writes survive (no lost-update under concurrent load).
+//   - Lock-release-before-spawn: advanceMeetingRound must release every file
+//     lock BEFORE side effects that could spawn agents (process kills, dispatch
+//     teardown). Verified by spying on shared.mutateJsonFileLocked and
+//     asserting the dispatch lock fully exits before the meeting lock is
+//     entered, and that no two locks are nested.
+//   - Source-string regression: meeting.js must not call safeWrite directly on
+//     MEETINGS_DIR — all writes must go through the lock helper.
+async function testMutateMeetingHelper() {
+  console.log('\n── meeting.js — mutateMeeting helper (P-c3meet-9af2) ──');
+
+  await test('mutateMeeting helper is exported and uses mutateJsonFileLocked', () => {
+    const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    assert.strictEqual(typeof meetingMod.mutateMeeting, 'function',
+      'meeting.js must export mutateMeeting(id, fn)');
+  });
+
+  await test('mutateMeeting source uses mutateJsonFileLocked (not bare safeWrite to MEETINGS_DIR)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'meeting.js'), 'utf8');
+    // mutateMeeting must exist and reference the locked helper.
+    assert.ok(/function\s+mutateMeeting\b/.test(src),
+      'meeting.js must define a mutateMeeting helper');
+    assert.ok(/mutateJsonFileLocked/.test(src),
+      'meeting.js must call mutateJsonFileLocked (under the hood of mutateMeeting)');
+    // No bare safeWrite into MEETINGS_DIR should remain — every meeting JSON
+    // write must go through the lock helper.
+    assert.ok(!/safeWrite\s*\(\s*path\.join\s*\(\s*MEETINGS_DIR/.test(src),
+      'meeting.js must not safeWrite directly to MEETINGS_DIR — use mutateMeeting');
+  });
+
+  await test('mutateMeeting reads + writes the meeting under a file lock', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-MUT-BASIC-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Basic', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+      const result = meetingMod.mutateMeeting(meetingId, (m) => {
+        assert.ok(m, 'fn should receive the parsed meeting');
+        assert.strictEqual(m.id, meetingId);
+        m.findings.alice = { content: 'mutated' };
+        return m;
+      });
+      assert.strictEqual(result.findings.alice.content, 'mutated');
+      const reread = meetingMod.getMeeting(meetingId);
+      assert.strictEqual(reread.findings.alice.content, 'mutated',
+        'mutation must be persisted to disk');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('mutateMeeting passes null when meeting file does not exist (no write)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-MUT-MISSING-' + Date.now();
+      let receivedArg;
+      const result = meetingMod.mutateMeeting(meetingId, (m) => {
+        receivedArg = m;
+        return null; // skip write
+      });
+      assert.strictEqual(receivedArg, null,
+        'fn should receive null when the meeting file is absent');
+      const fp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      // mutateJsonFileLocked may create an empty {} file, but the write should
+      // be skipped. Either way, getMeeting returns null because there's no id.
+      const m = meetingMod.getMeeting(meetingId);
+      assert.ok(!m || !m.id,
+        'getMeeting should not return a real meeting object for an unwritten ID');
+      // Result should be falsy or empty {} — definitely not a real meeting.
+      assert.ok(!result || !result.id,
+        'mutateMeeting should not synthesise a meeting when fn returns null');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('5 parallel child-process mutateMeeting calls all preserve their unique appends', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-PARALLEL-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Parallel', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+
+      const meetingPath = path.resolve(__dirname, '..', 'engine', 'meeting').replace(/\\/g, '/');
+      const helperScript =
+        "const meetingMod = require('" + meetingPath + "');" +
+        "const id = process.argv[1];" +
+        "const i = process.argv[2];" +
+        "meetingMod.mutateMeeting(id, (m) => {" +
+        "  if (!m) throw new Error('meeting missing');" +
+        "  if (!m.findings) m.findings = {};" +
+        "  m.findings['agent' + i] = { content: 'c-' + i };" +
+        "  return m;" +
+        "});";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, meetingId, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: testDir }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = meetingMod.getMeeting(meetingId);
+      assert.ok(final, 'meeting should still exist');
+      const keys = Object.keys(final.findings).sort();
+      assert.deepStrictEqual(keys, ['agent1', 'agent2', 'agent3', 'agent4', 'agent5'],
+        'every parallel mutateMeeting call must persist — none lost to RMW races');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('advanceMeetingRound releases all locks before spawn-ready side effects (no nested locks; dispatch kill outside meeting lock)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const sharedMod = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const meetingId = 'MTG-LOCK-ORDER-' + Date.now();
+
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Lock Order', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+        roundStartedAt: new Date().toISOString(),
+      });
+
+      // Seed a matching active dispatch so _killMeetingDispatches has work
+      // to do and actually exercises the dispatch lock.
+      const dispatchPath = path.join(testDir, 'engine', 'dispatch.json');
+      fs.writeFileSync(dispatchPath, JSON.stringify({
+        pending: [],
+        active: [{ id: 'a-this', agent: 'alice', meta: { meetingId } }],
+        completed: [],
+      }));
+
+      const events = [];
+      const origMutate = sharedMod.mutateJsonFileLocked;
+      sharedMod.mutateJsonFileLocked = function spy(filePath, fn, opts) {
+        const tag = String(filePath).includes('dispatch.json')
+          ? 'dispatch'
+          : (String(filePath).includes('meetings') ? 'meeting' : 'other');
+        return origMutate.call(this, filePath, (data) => {
+          events.push('enter:' + tag);
+          const result = fn(data);
+          events.push('exit:' + tag);
+          return result;
+        }, opts);
+      };
+
+      try {
+        const advanced = meetingMod.advanceMeetingRound(meetingId);
+        assert.ok(advanced, 'advanceMeetingRound should return the updated meeting');
+        assert.strictEqual(advanced.status, 'debating');
+      } finally {
+        sharedMod.mutateJsonFileLocked = origMutate;
+      }
+
+      // No two locks may be held at the same time — the helper acquires
+      // each lock, runs the callback, and releases before the next.
+      let depth = 0;
+      let maxDepth = 0;
+      for (const ev of events) {
+        if (ev.startsWith('enter:')) { depth += 1; if (depth > maxDepth) maxDepth = depth; }
+        else { depth -= 1; }
+      }
+      assert.strictEqual(maxDepth, 1,
+        'mutateMeeting/advanceMeetingRound must NEVER hold two locks simultaneously (would deadlock + dispatch under meeting lock blocks agent spawn)');
+
+      // The dispatch kill must happen BEFORE we open the meeting lock — no
+      // process kill / agent dispatch teardown is allowed under the meeting
+      // file lock (CLAUDE.md concurrency rule: keep callbacks fast).
+      const dispatchExit = events.indexOf('exit:dispatch');
+      const meetingEnter = events.indexOf('enter:meeting');
+      assert.ok(dispatchExit >= 0, 'dispatch lock should be entered+exited');
+      assert.ok(meetingEnter >= 0, 'meeting lock should be entered');
+      assert.ok(dispatchExit < meetingEnter,
+        'dispatch lock must be fully released before the meeting lock is acquired (kill outside the meeting lock)');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('5 sequential mutateMeeting calls each see prior writes (RMW atomicity)', () => {
+    // Even outside child-process concurrency, each call must re-read the
+    // file rather than caching a stale copy. This guards against a future
+    // refactor that snapshots data outside the lock.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-SEQ-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Seq', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [],
+        transcript: [], conclusion: null,
+      });
+      for (let i = 1; i <= 5; i++) {
+        meetingMod.mutateMeeting(meetingId, (m) => {
+          assert.ok(m, 'fn should receive the parsed meeting');
+          // Prior iterations must be visible (proves re-read each call).
+          assert.strictEqual(Object.keys(m.findings).length, i - 1);
+          m.findings['agent' + i] = { content: 'c-' + i };
+          return m;
+        });
+      }
+      const final = meetingMod.getMeeting(meetingId);
+      assert.strictEqual(Object.keys(final.findings).length, 5);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('saveMeeting still works (back-compat) and writes through the lock', () => {
+    // saveMeeting is retained for the create-new-file path and existing tests;
+    // it must still persist meeting state, just under the new lock helper.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-SAVE-COMPAT-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'Compat', status: 'investigating',
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        transcript: [],
+      });
+      const reread = meetingMod.getMeeting(meetingId);
+      assert.ok(reread, 'saveMeeting must persist a meeting');
+      assert.strictEqual(reread.title, 'Compat');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('deleteMeeting also drops the .backup sidecar so safeJson cannot resurrect deleted meetings', () => {
+    // mutateJsonFileLocked writes a .backup before each mutation; safeJson
+    // auto-restores from .backup when the primary is missing/corrupt. Without
+    // dropping the sidecar in deleteMeeting, a later getMeeting on the same
+    // ID would silently bring the deleted meeting back from the dead.
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require('../engine/meeting');
+      const meetingId = 'MTG-DELETE-BACKUP-' + Date.now();
+      meetingMod.saveMeeting({
+        id: meetingId, title: 'A', status: 'investigating', round: 1,
+        participants: [], findings: {}, debate: {}, humanNotes: [], transcript: [],
+      });
+      // Trigger backup creation by mutating once (backup is created on the
+      // 2nd write, when the file already exists).
+      meetingMod.addMeetingNote(meetingId, 'first note');
+
+      const fp = path.join(meetingMod.MEETINGS_DIR, meetingId + '.json');
+      assert.ok(fs.existsSync(fp + '.backup'),
+        'precondition: a .backup sidecar should exist after the second write');
+
+      const ok = meetingMod.deleteMeeting(meetingId);
+      assert.strictEqual(ok, true);
+      assert.ok(!fs.existsSync(fp), 'primary .json should be gone');
+      assert.ok(!fs.existsSync(fp + '.backup'),
+        '.backup sidecar must also be removed — safeJson would otherwise resurrect the meeting');
+
+      // safeJson must NOT resurrect — getMeeting must return null.
+      assert.strictEqual(meetingMod.getMeeting(meetingId), null,
+        'getMeeting should return null after delete (no .backup resurrection)');
+    } finally {
+      restore();
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -28431,6 +28955,102 @@ async function testSchedulerAdditionalCoverage() {
     assert.strictEqual(step(0), true);
     assert.strictEqual(step(20), true);
     assert.strictEqual(step(21), false);
+  });
+
+  // ─── parseCronField: bounds validation (P-h4cron-2ab8) ────────────────────
+  // Out-of-range values must return a matcher that NEVER fires (() => false),
+  // rather than being silently accepted as exact matchers that never trigger
+  // because val will never reach them. This prevents schedules with typos like
+  // "99 * *" (intended "9 * *") from sitting in config dormant forever.
+
+  await test('parseCronField: exact value above max returns always-false matcher', () => {
+    // minute=99 in a "0-59" field — caller bug, treat as never-fires.
+    const matcher = scheduler.parseCronField('99', 0, 59);
+    for (const v of [0, 30, 59, 99, 100]) {
+      assert.strictEqual(matcher(v), false, `minute=99 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value at hour-max boundary 24 returns always-false matcher', () => {
+    // hour=24 is invalid (range is 0-23) — common off-by-one.
+    const matcher = scheduler.parseCronField('24', 0, 23);
+    for (const v of [0, 12, 23, 24]) {
+      assert.strictEqual(matcher(v), false, `hour=24 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value above dow-max returns always-false matcher', () => {
+    // dow=9 is invalid (range is 0-6).
+    const matcher = scheduler.parseCronField('9', 0, 6);
+    for (const v of [0, 3, 6, 9]) {
+      assert.strictEqual(matcher(v), false, `dow=9 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value below min returns always-false matcher', () => {
+    // parseInt('-5', 10) === -5 (NaN-check passes), so bounds-check must catch it.
+    const matcher = scheduler.parseCronField('-5', 0, 59);
+    for (const v of [-5, 0, 30]) {
+      assert.strictEqual(matcher(v), false, `minute=-5 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: list with all values out of range returns always-false matcher', () => {
+    // dow=7,8,9 — all outside 0-6.
+    const matcher = scheduler.parseCronField('7,8,9', 0, 6);
+    for (const v of [0, 1, 6, 7, 8, 9]) {
+      assert.strictEqual(matcher(v), false, `dow=7,8,9 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: list with mixed in-range and out-of-range keeps only valid entries', () => {
+    // 1 and 5 are valid dow; 7 and 99 are not — only 1 and 5 should match.
+    const matcher = scheduler.parseCronField('1,7,5,99', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(7), false, '7 is out of range and must not match');
+    assert.strictEqual(matcher(99), false, '99 is out of range and must not match');
+  });
+
+  await test('parseCronField: step greater than max returns always-false matcher', () => {
+    // */60 in a 0-59 minute field — step exceeds the range, schedule never fires meaningfully.
+    const matcher = scheduler.parseCronField('*/60', 0, 59);
+    for (const v of [0, 30, 59, 60]) {
+      assert.strictEqual(matcher(v), false, `*/60 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: step equal to max-plus-1 in dow returns always-false matcher', () => {
+    // */7 in a 0-6 dow field — would match only val=0 today; with bounds, never matches.
+    const matcher = scheduler.parseCronField('*/7', 0, 6);
+    for (const v of [0, 3, 6, 7]) {
+      assert.strictEqual(matcher(v), false, `*/7 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: step equal to max still fires (boundary kept inclusive)', () => {
+    // */59 is unusual but technically valid: matches minute 0 (and 59 if reached).
+    // Bounds check rejects step > max only, not step == max — preserve existing semantics.
+    const matcher = scheduler.parseCronField('*/59', 0, 59);
+    assert.strictEqual(matcher(0), true);
+    assert.strictEqual(matcher(59), true);
+    assert.strictEqual(matcher(30), false);
+  });
+
+  await test('parseCronExpr: out-of-range hour produces a non-firing matcher (still returns object)', () => {
+    // "0 99 *" — minute valid, hour=99 invalid. parseCronExpr returns an object,
+    // but matches() must return false for every Date because the hour matcher never fires.
+    const cron = scheduler.parseCronExpr('0 99 *');
+    assert.ok(cron, 'parseCronExpr returns the wrapper even when a field is out of range');
+    for (const date of [
+      new Date(2026, 2, 30, 0, 0),
+      new Date(2026, 2, 30, 12, 0),
+      new Date(2026, 2, 30, 23, 0),
+    ]) {
+      assert.strictEqual(cron.matches(date), false,
+        `out-of-range hour=99 must never match (${date.toISOString()})`);
+    }
   });
 
   // ─── parseCronExpr ────────────────────────────────────────────────────────
@@ -29293,6 +29913,7 @@ async function main() {
     await testMeetingsExtendedBehavioral();
     await testMeetingInternalHelpers();
     await testMeetingsIsolatedGaps();
+    await testMutateMeetingHelper();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
@@ -29322,6 +29943,9 @@ async function main() {
 
     // P-t8822idp: Dashboard bug fixes — tail clamping, notes validation, watcher cleanup, atomic PRD updates
     await testDashboardBugFixes();
+
+    // P-c1read-7b3c: readBody overflow guard — aborted flag + req.destroy()
+    await testReadBodyOverflowGuard();
 
     // P-e9y7xcp5: Auxiliary module bug fixes
     await testAuxModuleBugFixes();
@@ -29409,6 +30033,9 @@ async function main() {
 
     // CC Multi-Tab Conversations
     await testCCMultiTab();
+
+    // P-c2sess-1d8e: CC/doc session writes routed through mutateJsonFileLocked
+    await testCcDocSessionLocking();
 
     // PR review→fix, poll→fix, merge conflict, auto-complete flows
     await testPrReviewFixFlows();
@@ -32302,6 +32929,128 @@ async function testDashboardBugFixes() {
     assert.strictEqual(toDispatch.length, 3, 'Should dispatch 3 unique items');
     assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
     assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
+  });
+}
+
+// ─── P-c1read-7b3c: readBody overflow guard (aborted flag + req.destroy()) ──
+
+async function testReadBodyOverflowGuard() {
+  console.log('\n── P-c1read-7b3c: readBody overflow guard ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Source-string assertions: confirm the structural contract is in place.
+  await test('readBody declares aborted closure variable', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    assert.ok(fnStart > -1, 'dashboard.js must define readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    assert.ok(/let\s+aborted\s*=\s*false\s*;/.test(fnBody),
+      'readBody must declare `let aborted = false;` closure variable');
+  });
+
+  await test('readBody data handler early-returns when aborted is true', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    // Match the data handler's first line: an `if (aborted) return;` early-return.
+    const dataHandlerIdx = fnBody.indexOf("req.on('data'");
+    assert.ok(dataHandlerIdx > -1, 'should have data listener');
+    const dataHandlerSlice = fnBody.slice(dataHandlerIdx, dataHandlerIdx + 400);
+    assert.ok(/if\s*\(\s*aborted\s*\)\s*return\s*;/.test(dataHandlerSlice),
+      'data handler must early-return when aborted is true (no further appending)');
+  });
+
+  await test('readBody overflow path orders: aborted -> clearTimeout -> req.destroy -> reject', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    const dataHandlerIdx = fnBody.indexOf("req.on('data'");
+    // Slice to the end of the data handler (closing of req.on('data', chunk => { ... });).
+    // Use the next listener as a boundary; if absent, fall back to a generous window.
+    const dataHandlerEndMarker = fnBody.indexOf("req.on('end'", dataHandlerIdx);
+    const dataHandlerSlice = fnBody.slice(
+      dataHandlerIdx,
+      dataHandlerEndMarker > -1 ? dataHandlerEndMarker : dataHandlerIdx + 1500
+    );
+    // Inside the body.length > 1e6 branch, find positions of each step.
+    const overflowIdx = dataHandlerSlice.indexOf('body.length > 1e6');
+    assert.ok(overflowIdx > -1, 'overflow check must be present');
+    const overflowSlice = dataHandlerSlice.slice(overflowIdx);
+    const abortedPos = overflowSlice.search(/aborted\s*=\s*true/);
+    const clearPos = overflowSlice.indexOf('clearTimeout(timeout)');
+    const destroyPos = overflowSlice.indexOf('req.destroy()');
+    const rejectPos = overflowSlice.indexOf("reject(new Error('Too large')");
+    assert.ok(abortedPos > -1, 'overflow path must set aborted = true');
+    assert.ok(clearPos > -1, 'overflow path must clearTimeout(timeout)');
+    assert.ok(destroyPos > -1, 'overflow path must call req.destroy()');
+    assert.ok(rejectPos > -1, "overflow path must reject(new Error('Too large'))");
+    assert.ok(abortedPos < clearPos, 'aborted=true must come BEFORE clearTimeout');
+    assert.ok(clearPos < destroyPos, 'clearTimeout must come BEFORE req.destroy()');
+    assert.ok(destroyPos < rejectPos, 'req.destroy() must come BEFORE reject');
+  });
+
+  await test('readBody timeout path also sets aborted = true', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    const setTimeoutIdx = fnBody.indexOf('const timeout = setTimeout(');
+    assert.ok(setTimeoutIdx > -1, 'should have setTimeout setup');
+    // The timeout callback runs until the closing of setTimeout.
+    const timeoutSlice = fnBody.slice(setTimeoutIdx, fnBody.indexOf('}, 30000)', setTimeoutIdx) + 10);
+    assert.ok(/aborted\s*=\s*true/.test(timeoutSlice),
+      'timeout callback must set aborted = true so late-arriving chunks are dropped');
+  });
+
+  // Behavioral test: stream >1MB through a fake req and assert the contract.
+  await test('readBody behavioral: streaming >1MB rejects, calls req.destroy(), drops further chunks', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      assert.ok(typeof dashboard.readBody === 'function',
+        'dashboard.js must export readBody for direct unit-testing');
+
+      const { EventEmitter } = require('events');
+      const req = new EventEmitter();
+      let destroyCalls = 0;
+      req.destroy = () => { destroyCalls++; };
+
+      let rejectErr = null;
+      const promise = dashboard.readBody(req).catch(err => { rejectErr = err; });
+
+      // Stream 1.1MB total: 11 chunks of 100KB each. Body crosses 1e6 on chunk 11.
+      const chunk = Buffer.alloc(100_000, 'x');
+      for (let i = 0; i < 11; i++) {
+        req.emit('data', chunk);
+      }
+      // Allow microtasks to flush the rejection.
+      await new Promise(r => setImmediate(r));
+
+      assert.ok(rejectErr, 'readBody must reject when body exceeds 1MB');
+      assert.ok(/Too large/i.test(rejectErr.message),
+        `rejection message should be 'Too large', got: ${rejectErr.message}`);
+      assert.strictEqual(destroyCalls, 1,
+        `req.destroy() must be called exactly once on overflow (got ${destroyCalls})`);
+
+      // Now emit 10 MORE oversized chunks. With the early-return guard,
+      // the data handler should drop them; req.destroy() should NOT be called again.
+      // Without the guard, body.length > 1e6 would re-fire and bump destroyCalls to 11.
+      for (let i = 0; i < 10; i++) {
+        req.emit('data', chunk);
+      }
+      await new Promise(r => setImmediate(r));
+
+      assert.strictEqual(destroyCalls, 1,
+        `data handler must early-return after abort — destroy should still be 1, got ${destroyCalls}`);
+
+      // Promise stays settled (rejected) — no double-resolve crash.
+      await promise;
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
+      restore();
+    }
   });
 }
 
@@ -41166,9 +41915,13 @@ async function testCCMultiTab() {
     assert.ok(dashSrc.includes('cc-sessions'), 'Should have DELETE /api/cc-sessions route');
   });
 
-  await test('cc-sessions persisted via safeWrite', () => {
+  await test('cc-sessions persisted via mutateJsonFileLocked (P-c2sess-1d8e)', () => {
     assert.ok(dashSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
     assert.ok(dashSrc.includes('CC_SESSIONS_PATH'), 'Should use CC_SESSIONS_PATH constant');
+    // Multi-tab/concurrent dispatch races: every cc-sessions.json write must
+    // route through the file lock, never bare safeWrite.
+    assert.ok(!/safeWrite\s*\(\s*CC_SESSIONS_PATH/.test(dashSrc),
+      'CC_SESSIONS_PATH writes must go through mutateJsonFileLocked, not bare safeWrite');
   });
 
   await test('stream handler accepts tabId', () => {
@@ -41502,6 +42255,166 @@ async function testCCMultiTab() {
     assert.ok(cleanupSrc.includes('Cleanup (resources)'), 'Should log resource cleanup summary');
     assert.ok(cleanupSrc.includes('cc-sessions') && cleanupSrc.includes('doc-sessions') && cleanupSrc.includes('cooldowns') && cleanupSrc.includes('PID files'),
       'Summary should cover all resource types');
+  });
+}
+
+async function testCcDocSessionLocking() {
+  console.log('\n── CC/doc session locked writes (P-c2sess-1d8e) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+
+  // ── Source-string regressions: no bare safeWrite for any CC/doc session path ──
+
+  await test('dashboard.js has no bare safeWrite(CC_SESSIONS_PATH', () => {
+    assert.ok(!/safeWrite\s*\(\s*CC_SESSIONS_PATH/.test(dashSrc),
+      'CC_SESSIONS_PATH writes must use mutateJsonFileLocked (concurrent multi-tab dispatch races)');
+  });
+
+  await test('dashboard.js has no bare safeWrite(DOC_SESSIONS_PATH', () => {
+    assert.ok(!/safeWrite\s*\(\s*DOC_SESSIONS_PATH/.test(dashSrc),
+      'DOC_SESSIONS_PATH writes must use mutateJsonFileLocked (cleanup.js cap-trim runs concurrently)');
+  });
+
+  await test('dashboard.js has no bare safeWrite of cc-session.json (single-session path)', () => {
+    assert.ok(!/safeWrite\s*\(\s*path\.join\s*\(\s*ENGINE_DIR\s*,\s*['"]cc-session\.json['"]\s*\)/.test(dashSrc),
+      'cc-session.json writes (single-session legacy) must use mutateJsonFileLocked');
+  });
+
+  await test('engine/cleanup.js doc-sessions cap-trim uses mutateJsonFileLocked (RMW atomic)', () => {
+    const idx = cleanupSrc.indexOf('DOC_SESSIONS_CAP');
+    assert.ok(idx > -1, 'DOC_SESSIONS_CAP must still exist in cleanup.js');
+    // Look at the surrounding ~600-char block — read+write must be atomic under the lock.
+    const slice = cleanupSrc.slice(Math.max(0, idx - 200), idx + 800);
+    assert.ok(slice.includes('mutateJsonFileLocked'),
+      'doc-sessions cap-trim block must call mutateJsonFileLocked, not safeJson + safeWrite');
+    assert.ok(!/safeWrite\s*\(\s*docSessionsPath/.test(slice),
+      'doc-sessions cap-trim must not call safeWrite(docSessionsPath, ...) — read+write must be atomic');
+  });
+
+  // ── Behavioural test — N parallel child-process locked writes preserve every key ──
+  // Mirrors the testMutateMeetingHelper 5-process pattern: simulates the cleanup-vs-
+  // dashboard race where each process does an RMW (read file → set its key → write).
+  // Without the lock, last-write-wins drops keys; with the lock, every write survives.
+
+  await test('5 parallel locked RMW writes to doc-sessions.json each adding a unique key all survive', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedPath = path.resolve(__dirname, '..', 'engine', 'shared').replace(/\\/g, '/');
+      const docPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'doc-sessions.json');
+      fs.writeFileSync(docPath, '{}');
+
+      // Each child-process does a true RMW: read → mutate → write under the file lock.
+      // Without the lock, concurrent RMWs lose writes (read-then-write is non-atomic).
+      const helperScript =
+        "const sh = require('" + sharedPath + "');" +
+        "const p = process.argv[1];" +
+        "const k = process.argv[2];" +
+        "sh.mutateJsonFileLocked(p, (d) => {" +
+        "  if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};" +
+        "  d['s' + k] = { sessionId: 'sid-' + k, lastActiveAt: new Date().toISOString() };" +
+        "  return d;" +
+        "}, { defaultValue: {} });";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, docPath, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: process.env.MINIONS_TEST_DIR }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+      const keys = Object.keys(final).sort();
+      assert.deepStrictEqual(keys, ['s1', 's2', 's3', 's4', 's5'],
+        'every parallel locked RMW must persist its unique key — none lost to last-write-wins races');
+    } finally {
+      restore();
+    }
+  });
+
+  // Also exercise CC_SESSIONS_PATH (array shape): concurrent processes upserting tab
+  // sessions must not lose entries.
+  await test('5 parallel locked upserts to cc-sessions.json each appending a unique tab all survive', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedPath = path.resolve(__dirname, '..', 'engine', 'shared').replace(/\\/g, '/');
+      const ccPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'cc-sessions.json');
+      fs.writeFileSync(ccPath, '[]');
+
+      const helperScript =
+        "const sh = require('" + sharedPath + "');" +
+        "const p = process.argv[1];" +
+        "const k = process.argv[2];" +
+        "sh.mutateJsonFileLocked(p, (arr) => {" +
+        "  if (!Array.isArray(arr)) arr = [];" +
+        "  arr.push({ id: 'tab-' + k, sessionId: 'sid-' + k, lastActiveAt: new Date().toISOString() });" +
+        "  return arr;" +
+        "}, { defaultValue: [] });";
+
+      const cp = require('child_process');
+      const procs = [];
+      for (let i = 1; i <= 5; i++) {
+        procs.push(new Promise((resolve, reject) => {
+          const child = cp.spawn(
+            process.execPath,
+            ['-e', helperScript, ccPath, String(i)],
+            { env: { ...process.env, MINIONS_TEST_DIR: process.env.MINIONS_TEST_DIR }, stdio: ['ignore', 'pipe', 'pipe'] }
+          );
+          let stderr = '';
+          child.stderr.on('data', d => { stderr += d.toString(); });
+          child.on('error', reject);
+          child.on('exit', code => {
+            if (code === 0) resolve();
+            else reject(new Error(`child exited ${code}: ${stderr}`));
+          });
+        }));
+      }
+      await Promise.all(procs);
+
+      const final = JSON.parse(fs.readFileSync(ccPath, 'utf8'));
+      const ids = final.map(s => s.id).sort();
+      assert.deepStrictEqual(ids, ['tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5'],
+        'every parallel locked upsert must persist its unique tab — none lost to last-write-wins races');
+    } finally {
+      restore();
+    }
+  });
+
+  // ── Targeted source-string sanity: every cited call site routes through the lock ──
+
+  await test('flushPendingDocSessions delegates to persistDocSessions (lock-routed)', () => {
+    // flushPendingDocSessions must also go through the locked write path —
+    // otherwise the on-shutdown debounce flush bypasses the lock.
+    const flushMatch = dashSrc.match(/function flushPendingDocSessions\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(flushMatch, 'flushPendingDocSessions must exist');
+    const body = flushMatch[0];
+    assert.ok(body.includes('persistDocSessions()'),
+      'flushPendingDocSessions must delegate to persistDocSessions (which holds the lock)');
+    assert.ok(!/safeWrite\s*\(\s*DOC_SESSIONS_PATH/.test(body),
+      'flushPendingDocSessions must not bare safeWrite the doc sessions file');
+  });
+
+  await test('persistDocSessions writes through the file lock', () => {
+    const persistMatch = dashSrc.match(/function persistDocSessions\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(persistMatch, 'persistDocSessions must exist');
+    const body = persistMatch[0];
+    assert.ok(body.includes('mutateJsonFileLocked'),
+      'persistDocSessions must call mutateJsonFileLocked');
+    assert.ok(!/safeWrite\s*\(/.test(body),
+      'persistDocSessions must not call bare safeWrite');
   });
 }
 
@@ -54562,6 +55475,129 @@ async function testDashboardPureHelpers() {
       'must remind CC of the generic-fallback shape for un-named endpoints');
   });
 
+  // ── P-h3arch-8c19: archive list must surface JSON corruption (not 500, not silent) ─
+  // Bug: dashboard.js used `JSON.parse(safeRead(...))` inside `try {} catch {}` which
+  // silently dropped corrupt archive files. A corrupt central archive should NOT
+  // cause /api/work-items/archive to return 500 OR to silently hide the corruption —
+  // it must log the parse failure (via safeJsonArr) and still return any valid
+  // project archives so the operator can see partial data.
+
+  await test('handleWorkItemsArchiveList source: uses safeJsonArr (no JSON.parse-swallow) (P-h3arch-8c19)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('async function handleWorkItemsArchiveList');
+    assert.ok(fnStart > 0, 'handleWorkItemsArchiveList must exist');
+    const fnEnd = src.indexOf('async function handleWorkItemsReopen', fnStart);
+    const fn = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 4000);
+    assert.ok(!/JSON\.parse\s*\(\s*safeRead\s*\(/.test(fn),
+      'must not use JSON.parse(safeRead(...)) — that swallows parse errors (use safeJsonArr instead)');
+    assert.ok(!/JSON\.parse\s*\(\s*content\s*\)/.test(fn),
+      'must not use JSON.parse(content) inside try/catch swallow — use safeJsonArr');
+    assert.ok(/safeJsonArr\s*\(/.test(fn),
+      'must call safeJsonArr to read archive files (typed default + logged parse failure)');
+    // The archive helper must NOT keep an inner try { allArchived.push... } catch {} swallow
+    // around each file read — safeJsonArr never throws, so the swallow is dead code that
+    // hides real errors. (Outer try/catch is allowed to catch unexpected runtime errors.)
+    assert.ok(!/try\s*\{\s*allArchived\.push/.test(fn),
+      'must not wrap individual archive reads in a try/catch swallow (safeJsonArr handles failures)');
+  });
+
+  await test('archive list collector: corrupt central archive logs parse failure and returns project archives only (P-h3arch-8c19)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Re-require dashboard against the test MINIONS_DIR so PROJECTS / paths
+      // re-resolve from the seeded config. dashboard.js loads layout.html /
+      // dashboard/ pages at require time, so we copy those in too.
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+
+      // Configure one project so the loop has something to iterate.
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: projDir }],
+        agents: {}, engine: {},
+      }));
+
+      // Corrupt the CENTRAL archive — primary failure path.
+      fs.writeFileSync(path.join(testDir, 'work-items-archive.json'), '{ this is :: not json [');
+
+      // Valid project archive — must still come through.
+      const projectArchivePath = path.join(projDir, 'work-items-archive.json');
+      testShared.safeWrite(projectArchivePath, [
+        { id: 'W-demo-1', title: 'demo archived item', status: 'done', archivedAt: '2026-05-06T00:00:00Z' },
+      ]);
+
+      // Capture stderr while invoking the collector.
+      const errs = [];
+      const origErr = console.error;
+      console.error = (...a) => { errs.push(a.map(String).join(' ')); };
+      let collected;
+      try {
+        const dashboard = require('../dashboard');
+        assert.strictEqual(typeof dashboard._collectArchivedWorkItems, 'function',
+          'dashboard must export _collectArchivedWorkItems for testability');
+        collected = dashboard._collectArchivedWorkItems();
+      } finally {
+        console.error = origErr;
+      }
+
+      // Project archive survives despite central being corrupt.
+      assert.ok(Array.isArray(collected),
+        'collector must return an array (typed default), not throw');
+      const demoEntry = collected.find(i => i.id === 'W-demo-1');
+      assert.ok(demoEntry, 'project archive items must be returned even when central is corrupt');
+      assert.strictEqual(demoEntry._source, 'demo', '_source must reflect the project name');
+
+      // Central corruption surfaced via safeJsonArr → console.error.
+      assert.ok(errs.some(line => /parse failure|parse error/i.test(line) && line.includes('work-items-archive')),
+        'corrupt central archive must trigger a parse-failure log — got: ' + JSON.stringify(errs));
+
+      // No central items leaked through (typed default returned []).
+      assert.ok(!collected.some(i => i._source === 'central'),
+        'corrupt central archive must contribute zero items (not crash, not 500)');
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard')]; } catch {}
+      restore();
+    }
+  });
+
+  await test('archive list collector: aggregates valid central + project archives (P-h3arch-8c19)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+
+      const projDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({
+        projects: [{ name: 'demo', localPath: projDir }],
+        agents: {}, engine: {},
+      }));
+
+      testShared.safeWrite(path.join(testDir, 'work-items-archive.json'),
+        [{ id: 'W-central-1', title: 'central archived' }]);
+      testShared.safeWrite(path.join(projDir, 'work-items-archive.json'),
+        [{ id: 'W-demo-1', title: 'project archived' }]);
+
+      const dashboard = require('../dashboard');
+      const result = dashboard._collectArchivedWorkItems();
+      const sources = result.map(r => `${r._source}:${r.id}`).sort();
+      assert.deepStrictEqual(sources, ['central:W-central-1', 'demo:W-demo-1'],
+        'collector must tag every item with _source and aggregate across central + projects');
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard')]; } catch {}
+      restore();
+    }
+  });
+
   // ── W-mou4s7mj0004b9a3: dashboard helper coverage ─────────────────────────
   // Covers previously-untested or thinly-tested dashboard exports:
   // _normalizeMeetingParticipants, _meetingParticipantsFromAction, _findDuplicateWorkItemCreate,
@@ -55520,6 +56556,54 @@ async function testEngineHelperCoverage() {
       assert.ok(r.archivedTo.startsWith('projects/.archived/demo-'), 'expected projects/.archived/demo-*: ' + r.archivedTo);
       assert.ok(!fs.existsSync(projectDir), 'original data dir should be moved');
       assert.ok(fs.existsSync(path.join(dir, r.archivedTo, 'work-items.json')));
+    } finally { restore(); }
+  });
+
+  // Regression: end-to-end resurrection bug. After removeProject archives the
+  // data dir, subsequent reads via projectStateDir/projectWorkItemsPath/
+  // projectPrPath must NOT recreate projects/<removedName>/, and getPullRequests
+  // must not surface the removed name through any field.
+  await test('removeProject + read helpers do not recreate projects/<name>/ (resurrection bug)', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.ok, true);
+      assert.ok(!fs.existsSync(projectDir), 'data dir should be archived');
+
+      // Simulate stale code paths reading helpers with the now-removed project.
+      const freshShared = require('../engine/shared');
+      const staleProject = { name: 'demo', localPath: dir };
+      freshShared.projectStateDir(staleProject);
+      freshShared.projectWorkItemsPath(staleProject);
+      freshShared.projectPrPath(staleProject);
+      // safeJson is the canonical read for state files — it must tolerate missing.
+      assert.strictEqual(freshShared.safeJson(freshShared.projectWorkItemsPath(staleProject)), null);
+      assert.strictEqual(freshShared.safeJson(freshShared.projectPrPath(staleProject)), null);
+
+      assert.ok(!fs.existsSync(projectDir),
+        'projects/demo/ must NOT be recreated by read-only helpers after removal');
+    } finally { restore(); }
+  });
+
+  await test('removeProject + getPullRequests does not surface the removed project', () => {
+    const { dir, projectDir, restore } = _setupProjectForRemoval();
+    try {
+      // Pre-seed a PR record so we'd notice if the removed project leaked.
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'),
+        JSON.stringify([{ id: 'PR-leak-1', title: 'must not appear', created: '2025-01-01' }]));
+      const { removeProject } = require('../engine/projects');
+      const r = removeProject('demo');
+      assert.strictEqual(r.ok, true);
+
+      // Simulate what /api/status does: read the fresh queries module.
+      delete require.cache[require.resolve('../engine/queries')];
+      const freshQueries = require('../engine/queries');
+      const prs = freshQueries.getPullRequests();
+      assert.ok(!prs.some(p => p._project === 'demo'),
+        '_project field must not surface removed project name');
+      assert.ok(!prs.some(p => p.id === 'PR-leak-1'),
+        'archived PR records must not be surfaced');
     } finally { restore(); }
   });
 

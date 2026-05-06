@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1748 (2026-05-06)
+
+### Fixes
+- guard w.title.replace against null/undefined titles (#2120)
+
 ## 0.1.1746 (2026-05-06)
 
 ### Fixes

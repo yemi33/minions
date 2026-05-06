@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid, log, ts, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
+const { safeJson, uid, log, ts, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getDispatch, getConfig } = queries;
 const { renderPlaybook } = require('./playbook');
@@ -349,9 +349,57 @@ function getMeeting(id) {
   return m;
 }
 
-function saveMeeting(meeting) {
+/**
+ * Read-modify-write helper for meetings/<id>.json under a file lock.
+ *
+ * Mirrors the mutateDispatch / mutateWorkItems / mutatePullRequests pattern.
+ * Use this for ANY change to a meeting's persisted state — bare safeWrite
+ * losses concurrent agent findings (every meeting round writes from a
+ * separate agent process).
+ *
+ * `fn` receives the parsed meeting object (with default fields populated like
+ * getMeeting), or `null` when the file is absent. Return the mutated meeting
+ * to persist it; return `null`/`undefined` to skip the write (the underlying
+ * mutateJsonFileLocked handles the no-op via skipWriteIfUnchanged).
+ *
+ * CRITICAL: keep `fn` fast. Never spawn agents, kill processes, run git
+ * commands, or `await` inside the callback — the lock is held for the
+ * duration of the synchronous call. Do that work BEFORE or AFTER mutateMeeting.
+ */
+function mutateMeeting(id, fn) {
   if (!fs.existsSync(MEETINGS_DIR)) fs.mkdirSync(MEETINGS_DIR, { recursive: true });
-  safeWrite(path.join(MEETINGS_DIR, meeting.id + '.json'), meeting);
+  const filePath = path.join(MEETINGS_DIR, id + '.json');
+  let userResult;
+  shared.mutateJsonFileLocked(filePath, (data) => {
+    const isMeeting = data && typeof data === 'object' && !Array.isArray(data) && data.id;
+    const meeting = isMeeting ? data : null;
+    if (meeting) {
+      // Match getMeeting()'s default-field normalization.
+      if (!meeting.findings) meeting.findings = {};
+      if (!meeting.debate) meeting.debate = {};
+      if (!meeting.humanNotes) meeting.humanNotes = [];
+      if (!meeting.participants) meeting.participants = [];
+      if (!meeting.transcript) meeting.transcript = [];
+      if (!meeting.roundFailures || typeof meeting.roundFailures !== 'object') meeting.roundFailures = {};
+    }
+    userResult = fn(meeting);
+    if (userResult === undefined || userResult === null) {
+      // Skip-write: return original data so JSON.stringify equality holds
+      // and mutateJsonFileLocked's skipWriteIfUnchanged guard takes effect.
+      return data;
+    }
+    return userResult;
+  }, { defaultValue: {}, skipWriteIfUnchanged: true });
+  return userResult === undefined ? null : userResult;
+}
+
+/**
+ * Persist a meeting object as-is. Thin wrapper over mutateMeeting so every
+ * write goes through the file lock — covers the create-new-file path
+ * (createMeeting) and any tests that pre-seed meeting state.
+ */
+function saveMeeting(meeting) {
+  return mutateMeeting(meeting.id, () => meeting);
 }
 
 function createMeeting({ title, agenda, participants }) {
@@ -529,92 +577,98 @@ function discoverMeetingWork(config) {
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
 function collectMeetingFindings(meetingId, agentId, roundName, output, structuredCompletion = null, expectedRound = null, completionInfo = {}) {
-  const meeting = getMeeting(meetingId);
-  if (!meeting) return;
-  if (isTerminalMeetingStatus(meeting.status)) {
-    log('info', `Ignoring late findings from ${agentId} for completed meeting ${meetingId}`);
-    return;
-  }
-
-  const expectedStatus = expectedMeetingStatusForRound(roundName);
-  if (!expectedStatus) {
-    log('warn', `Meeting ${meetingId}: ignoring ${agentId} output for unknown round "${roundName || '(empty)'}"`);
-    return;
-  }
-  if (meeting.status !== expectedStatus) {
-    log('info', `Ignoring stale ${roundName} output from ${agentId} for meeting ${meetingId} currently ${meeting.status}`);
-    return;
-  }
-  if (expectedRound !== null && expectedRound !== undefined && Number(meeting.round || 1) !== Number(expectedRound)) {
-    log('info', `Ignoring stale round ${expectedRound} output from ${agentId} for meeting ${meetingId} currently on round ${meeting.round || 1}`);
-    return;
-  }
-  if (hasRoundTerminalOutcome(meeting, roundName, agentId, meeting.round)) {
-    log('info', `Ignoring duplicate ${roundName} output from ${agentId} for meeting ${meetingId}`);
-    return;
-  }
-
+  // Resolve content OUTSIDE the lock — file reads (note artifacts) and stream
+  // parsing are slow and lock callbacks must stay fast.
   const content = resolveMeetingContributionContent(output, structuredCompletion);
   const completionSucceeded = completionInfo?.success !== false;
 
-  if (!completionSucceeded || isEmptyMeetingContent(content)) {
-    const failures = getRoundFailures(meeting, roundName, meeting.round, true);
-    const reason = !completionSucceeded
-      ? (completionInfo?.reason || completionInfo?.completionStatus || 'Agent failed before completing the meeting round')
-      : 'Agent produced empty meeting output';
-    failures[agentId] = {
-      reason,
-      content: content || completionInfo?.summary || '',
-      submittedAt: ts(),
-    };
-    meeting.transcript.push({
-      round: meeting.round,
-      agent: agentId,
-      type: 'failure',
-      content: reason,
-      at: ts(),
-    });
-    log('warn', `Meeting ${meetingId}: agent ${agentId} failed ${roundName} — ${reason}`);
+  let concludedMeeting = null;
+  let configForInbox = null;
+
+  mutateMeeting(meetingId, (meeting) => {
+    if (!meeting) return null; // file missing — nothing to do
+    if (isTerminalMeetingStatus(meeting.status)) {
+      log('info', `Ignoring late findings from ${agentId} for completed meeting ${meetingId}`);
+      return null;
+    }
+
+    const expectedStatus = expectedMeetingStatusForRound(roundName);
+    if (!expectedStatus) {
+      log('warn', `Meeting ${meetingId}: ignoring ${agentId} output for unknown round "${roundName || '(empty)'}"`);
+      return null;
+    }
+    if (meeting.status !== expectedStatus) {
+      log('info', `Ignoring stale ${roundName} output from ${agentId} for meeting ${meetingId} currently ${meeting.status}`);
+      return null;
+    }
+    if (expectedRound !== null && expectedRound !== undefined && Number(meeting.round || 1) !== Number(expectedRound)) {
+      log('info', `Ignoring stale round ${expectedRound} output from ${agentId} for meeting ${meetingId} currently on round ${meeting.round || 1}`);
+      return null;
+    }
+    if (hasRoundTerminalOutcome(meeting, roundName, agentId, meeting.round)) {
+      log('info', `Ignoring duplicate ${roundName} output from ${agentId} for meeting ${meetingId}`);
+      return null;
+    }
+
+    if (!completionSucceeded || isEmptyMeetingContent(content)) {
+      const failures = getRoundFailures(meeting, roundName, meeting.round, true);
+      const reason = !completionSucceeded
+        ? (completionInfo?.reason || completionInfo?.completionStatus || 'Agent failed before completing the meeting round')
+        : 'Agent produced empty meeting output';
+      failures[agentId] = {
+        reason,
+        content: content || completionInfo?.summary || '',
+        submittedAt: ts(),
+      };
+      meeting.transcript.push({
+        round: meeting.round,
+        agent: agentId,
+        type: 'failure',
+        content: reason,
+        at: ts(),
+      });
+      log('warn', `Meeting ${meetingId}: agent ${agentId} failed ${roundName} — ${reason}`);
+      advanceMeetingIfRoundComplete(meeting, roundName, meetingId);
+      return meeting;
+    }
+
+    if (roundName === 'investigate') {
+      meeting.findings[agentId] = { content, submittedAt: ts() };
+      meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'finding', content, at: ts() });
+    } else if (roundName === 'debate') {
+      meeting.debate[agentId] = { content, submittedAt: ts() };
+      meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'debate', content, at: ts() });
+    } else if (roundName === 'conclude') {
+      meeting.conclusion = { content, agent: agentId, submittedAt: ts() };
+      meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'conclusion', content, at: ts() });
+      meeting.status = 'completed';
+      meeting.completedAt = ts();
+      // Defer inbox write until AFTER the lock releases — writeToInbox hits
+      // the filesystem (slug dedup, write) and must not block other writers.
+      concludedMeeting = meeting;
+      try { configForInbox = queries.getConfig(); } catch { configForInbox = { agents: {} }; }
+      return meeting;
+    }
+
     advanceMeetingIfRoundComplete(meeting, roundName, meetingId);
-    saveMeeting(meeting);
-    return;
-  }
+    return meeting;
+  });
 
-  if (roundName === 'investigate') {
-    meeting.findings[agentId] = { content, submittedAt: ts() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'finding', content, at: ts() });
-  } else if (roundName === 'debate') {
-    meeting.debate[agentId] = { content, submittedAt: ts() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'debate', content, at: ts() });
-  } else if (roundName === 'conclude') {
-    meeting.conclusion = { content, agent: agentId, submittedAt: ts() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'conclusion', content, at: ts() });
-    meeting.status = 'completed';
-    meeting.completedAt = ts();
-
-    // Write transcript to inbox so agents learn from it (slug-based dedup)
+  if (concludedMeeting) {
     try {
-      const config = queries.getConfig();
-      writeMeetingTranscriptToInbox(meeting, meetingId, config.agents || {});
+      writeMeetingTranscriptToInbox(concludedMeeting, meetingId, (configForInbox && configForInbox.agents) || {});
     } catch (e) { log('warn', `Meeting ${meetingId} inbox write: ${e.message}`); }
-
     log('info', `Meeting ${meetingId} completed — transcript written to inbox`);
-    saveMeeting(meeting);
-    return;
   }
-
-  advanceMeetingIfRoundComplete(meeting, roundName, meetingId);
-
-  saveMeeting(meeting);
 }
 
 function addMeetingNote(meetingId, note) {
-  const meeting = getMeeting(meetingId);
-  if (!meeting) return null;
-  meeting.humanNotes.push(note);
-  meeting.transcript.push({ round: meeting.round, agent: 'human', type: 'note', content: note, at: ts() });
-  saveMeeting(meeting);
-  return meeting;
+  return mutateMeeting(meetingId, (meeting) => {
+    if (!meeting) return null;
+    meeting.humanNotes.push(note);
+    meeting.transcript.push({ round: meeting.round, agent: 'human', type: 'note', content: note, at: ts() });
+    return meeting;
+  });
 }
 
 function _killMeetingDispatches(meetingId) {
@@ -672,44 +726,60 @@ function _killMeetingDispatches(meetingId) {
 }
 
 function advanceMeetingRound(meetingId) {
-  const meeting = getMeeting(meetingId);
-  if (!meeting || meeting.status === 'completed' || meeting.status === 'archived') return null;
+  // Pre-check (read-only) so we don't kill dispatches for a meeting that's
+  // already terminal. The authoritative status check still runs INSIDE the
+  // lock below.
+  const existing = getMeeting(meetingId);
+  if (!existing || existing.status === 'completed' || existing.status === 'archived') return null;
+
+  // CRITICAL: kill BEFORE acquiring the meeting lock. _killMeetingDispatches
+  // takes the dispatch.json lock and shells out to kill processes — never
+  // run that under the meeting lock (per CLAUDE.md, lock callbacks must
+  // stay fast and never spawn / kill / await).
   _killMeetingDispatches(meetingId);
-  if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
-  else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
-  else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = ts(); }
-  else return meeting; // no change
-  meeting.roundStartedAt = ts();
-  saveMeeting(meeting);
-  return meeting;
+
+  return mutateMeeting(meetingId, (meeting) => {
+    if (!meeting || meeting.status === 'completed' || meeting.status === 'archived') return null;
+    if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
+    else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
+    else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = ts(); }
+    else return meeting; // unknown active status — no state change, but report current
+    meeting.roundStartedAt = ts();
+    return meeting;
+  });
 }
 
 function endMeeting(meetingId) {
-  const meeting = getMeeting(meetingId);
-  if (!meeting) return null;
+  // See advanceMeetingRound — kill happens BEFORE the meeting lock so dispatch
+  // teardown / process kills never run inside our lock callback.
+  const existing = getMeeting(meetingId);
+  if (!existing) return null;
   _killMeetingDispatches(meetingId);
-  meeting.status = 'completed';
-  meeting.completedAt = ts();
-  saveMeeting(meeting);
-  return meeting;
+
+  return mutateMeeting(meetingId, (meeting) => {
+    if (!meeting) return null;
+    meeting.status = 'completed';
+    meeting.completedAt = ts();
+    return meeting;
+  });
 }
 
 function archiveMeeting(id) {
-  const meeting = getMeeting(id);
-  if (!meeting) return null;
-  meeting.status = 'archived';
-  meeting.archivedAt = ts();
-  saveMeeting(meeting);
-  return meeting;
+  return mutateMeeting(id, (meeting) => {
+    if (!meeting) return null;
+    meeting.status = 'archived';
+    meeting.archivedAt = ts();
+    return meeting;
+  });
 }
 
 function unarchiveMeeting(id) {
-  const meeting = getMeeting(id);
-  if (!meeting || meeting.status !== 'archived') return null;
-  meeting.status = 'completed';
-  delete meeting.archivedAt;
-  saveMeeting(meeting);
-  return meeting;
+  return mutateMeeting(id, (meeting) => {
+    if (!meeting || meeting.status !== 'archived') return null;
+    meeting.status = 'completed';
+    delete meeting.archivedAt;
+    return meeting;
+  });
 }
 
 function deleteMeeting(id) {
@@ -717,6 +787,9 @@ function deleteMeeting(id) {
   const filePath = path.join(MEETINGS_DIR, id + '.json');
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
+  // mutateMeeting writes a .backup sidecar; safeJson auto-restores from it
+  // when the primary is missing, so deletion must also drop the backup.
+  try { fs.unlinkSync(filePath + '.backup'); } catch { /* sidecar may not exist */ }
   return true;
 }
 
@@ -733,68 +806,86 @@ function checkMeetingTimeouts(config) {
   const hardTimeout = (config.engine || {}).meetingRoundHardTimeout
     || ENGINE_DEFAULTS.meetingRoundHardTimeout;
 
-  for (const meeting of meetings) {
-    if (isTerminalMeetingStatus(meeting.status)) continue;
-    if (!ACTIVE_MEETING_STATUSES.has(meeting.status)) continue;
-    if (!meeting.roundStartedAt) continue;
+  for (const snapshot of meetings) {
+    if (isTerminalMeetingStatus(snapshot.status)) continue;
+    if (!ACTIVE_MEETING_STATUSES.has(snapshot.status)) continue;
+    if (!snapshot.roundStartedAt) continue;
 
-    const roundStartedMs = new Date(meeting.roundStartedAt).getTime();
+    const roundStartedMs = new Date(snapshot.roundStartedAt).getTime();
     if (!Number.isFinite(roundStartedMs)) continue;
     const elapsed = Date.now() - roundStartedMs;
     if (elapsed < timeout) continue;
 
-    const respondedCount = meeting.status === 'investigating'
-      ? Object.keys(meeting.findings || {}).length
-      : meeting.status === 'debating'
-        ? Object.keys(meeting.debate || {}).length
-        : 0;
-    const totalCount = meeting.participants.length;
+    // Re-evaluate the timeout transition under the file lock to avoid lost
+    // updates if an agent finalised mid-tick. Helpers (advanceMeetingIfRoundComplete
+    // etc.) operate on the locked-and-rehydrated meeting object.
+    mutateMeeting(snapshot.id, (meeting) => {
+      if (!meeting) return null;
+      if (isTerminalMeetingStatus(meeting.status)) return null;
+      if (!ACTIVE_MEETING_STATUSES.has(meeting.status)) return null;
+      // Use the latest roundStartedAt — the round may have advanced inside
+      // a concurrent collectMeetingFindings call between snapshot and lock.
+      const liveStartedMs = new Date(meeting.roundStartedAt || 0).getTime();
+      if (!Number.isFinite(liveStartedMs)) return null;
+      const liveElapsed = Date.now() - liveStartedMs;
+      if (liveElapsed < timeout) return null;
 
-    const roundName = meeting.status === 'investigating'
-      ? 'investigate'
-      : meeting.status === 'debating'
-        ? 'debate'
-        : 'conclude';
+      const respondedCount = meeting.status === 'investigating'
+        ? Object.keys(meeting.findings || {}).length
+        : meeting.status === 'debating'
+          ? Object.keys(meeting.debate || {}).length
+          : 0;
+      const totalCount = meeting.participants.length;
 
-    if (roundName !== 'conclude') {
-      if (allParticipantsFinishedRound(meeting, roundName, meeting.round)) {
-        log('warn', `Meeting ${meeting.id}: round ${meeting.round} timed out after ${Math.round(elapsed / 60000)}min but all participants are terminal — advancing`);
-        meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} timed out after all participants finished`, at: ts() });
-        advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
-        saveMeeting(meeting);
-      } else if (elapsed >= hardTimeout) {
-        const failures = getRoundFailures(meeting, roundName, meeting.round, true);
-        const stalled = (meeting.participants || []).filter(p => !hasRoundTerminalOutcome(meeting, roundName, p, meeting.round));
-        const reason = `Hard meeting timeout after ${Math.round(elapsed / 60000)}min — agent did not produce ${roundName} output`;
-        for (const agentId of stalled) {
-          failures[agentId] = { reason, content: '', submittedAt: ts() };
-          meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'failure', content: reason, at: ts() });
+      const roundName = meeting.status === 'investigating'
+        ? 'investigate'
+        : meeting.status === 'debating'
+          ? 'debate'
+          : 'conclude';
+
+      if (roundName !== 'conclude') {
+        if (allParticipantsFinishedRound(meeting, roundName, meeting.round)) {
+          log('warn', `Meeting ${meeting.id}: round ${meeting.round} timed out after ${Math.round(liveElapsed / 60000)}min but all participants are terminal — advancing`);
+          meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} timed out after all participants finished`, at: ts() });
+          advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
+          return meeting;
+        } else if (liveElapsed >= hardTimeout) {
+          const failures = getRoundFailures(meeting, roundName, meeting.round, true);
+          const stalled = (meeting.participants || []).filter(p => !hasRoundTerminalOutcome(meeting, roundName, p, meeting.round));
+          const reason = `Hard meeting timeout after ${Math.round(liveElapsed / 60000)}min — agent did not produce ${roundName} output`;
+          for (const agentId of stalled) {
+            failures[agentId] = { reason, content: '', submittedAt: ts() };
+            meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'failure', content: reason, at: ts() });
+          }
+          log('warn', `Meeting ${meeting.id}: round ${meeting.round} hit hard timeout after ${Math.round(liveElapsed / 60000)}min — marking ${stalled.length}/${totalCount} non-responders as failed and advancing`);
+          meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} hard timeout — ${stalled.length} non-responder(s) marked failed`, at: ts() });
+          advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
+          return meeting;
+        } else {
+          log('warn', `Meeting ${meeting.id}: round ${meeting.round} timed out after ${Math.round(liveElapsed / 60000)}min — waiting for all participants to finish (${respondedCount}/${totalCount} succeeded)`);
+          return null; // observational only — no state change
         }
-        log('warn', `Meeting ${meeting.id}: round ${meeting.round} hit hard timeout after ${Math.round(elapsed / 60000)}min — marking ${stalled.length}/${totalCount} non-responders as failed and advancing`);
-        meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round ${meeting.round} hard timeout — ${stalled.length} non-responder(s) marked failed`, at: ts() });
-        advanceMeetingIfRoundComplete(meeting, roundName, meeting.id, config);
-        saveMeeting(meeting);
-      } else {
-        log('warn', `Meeting ${meeting.id}: round ${meeting.round} timed out after ${Math.round(elapsed / 60000)}min — waiting for all participants to finish (${respondedCount}/${totalCount} succeeded)`);
+      } else if (meeting.status === 'concluding') {
+        if (liveElapsed >= hardTimeout) {
+          const reason = `Hard meeting timeout after ${Math.round(liveElapsed / 60000)}min — conclusion agent did not produce output`;
+          const failures = getRoundFailures(meeting, 'conclude', meeting.round, true);
+          const conclusionAgent = (meeting.participants || []).find(p => !hasRoundTerminalOutcome(meeting, 'conclude', p, meeting.round)) || meeting.participants?.[0] || 'system';
+          failures[conclusionAgent] = { reason, content: '', submittedAt: ts() };
+          meeting.transcript.push({ round: meeting.round, agent: conclusionAgent, type: 'failure', content: reason, at: ts() });
+          log('warn', `Meeting ${meeting.id}: conclusion round hit hard timeout after ${Math.round(liveElapsed / 60000)}min — synthesising fallback conclusion`);
+          advanceMeetingIfRoundComplete(meeting, 'conclude', meeting.id, config);
+          return meeting;
+        } else {
+          log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(liveElapsed / 60000)}min — waiting for the conclusion agent to finish`);
+          return null;
+        }
       }
-    } else if (meeting.status === 'concluding') {
-      if (elapsed >= hardTimeout) {
-        const reason = `Hard meeting timeout after ${Math.round(elapsed / 60000)}min — conclusion agent did not produce output`;
-        const failures = getRoundFailures(meeting, 'conclude', meeting.round, true);
-        const conclusionAgent = (meeting.participants || []).find(p => !hasRoundTerminalOutcome(meeting, 'conclude', p, meeting.round)) || meeting.participants?.[0] || 'system';
-        failures[conclusionAgent] = { reason, content: '', submittedAt: ts() };
-        meeting.transcript.push({ round: meeting.round, agent: conclusionAgent, type: 'failure', content: reason, at: ts() });
-        log('warn', `Meeting ${meeting.id}: conclusion round hit hard timeout after ${Math.round(elapsed / 60000)}min — synthesising fallback conclusion`);
-        advanceMeetingIfRoundComplete(meeting, 'conclude', meeting.id, config);
-        saveMeeting(meeting);
-      } else {
-        log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — waiting for the conclusion agent to finish`);
-      }
-    }
+      return null;
+    });
   }
 }
 module.exports = {
-  MEETINGS_DIR, getMeetings, getMeeting, saveMeeting, createMeeting,
+  MEETINGS_DIR, getMeetings, getMeeting, saveMeeting, mutateMeeting, createMeeting,
   discoverMeetingWork, collectMeetingFindings, checkMeetingTimeouts,
   addMeetingNote, advanceMeetingRound, endMeeting, archiveMeeting, unarchiveMeeting, deleteMeeting,
   EMPTY_OUTPUT_PATTERNS,

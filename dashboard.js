@@ -268,6 +268,30 @@ function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
     wiPath: targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json'),
   };
 }
+
+/**
+ * Aggregate archived work items from the central archive plus every project
+ * archive. Each item is tagged with `_source` (`'central'` or the project name)
+ * so the UI can group/filter. Reads via `safeJsonArr` — a corrupt archive
+ * surfaces a logged parse failure and contributes zero items, instead of
+ * throwing 500 or silently dropping the file.
+ *
+ * Exported for testing (P-h3arch-8c19).
+ */
+function collectArchivedWorkItems(minionsDir = MINIONS_DIR, projects = PROJECTS) {
+  const archived = [];
+  const centralPath = path.join(minionsDir, 'work-items-archive.json');
+  for (const item of safeJsonArr(centralPath)) {
+    archived.push({ ...item, _source: 'central' });
+  }
+  for (const project of projects) {
+    const archPath = shared.projectWorkItemsPath(project).replace('.json', '-archive.json');
+    for (const item of safeJsonArr(archPath)) {
+      archived.push({ ...item, _source: project.name });
+    }
+  }
+  return archived;
+}
 function linkPullRequestForTracking({ url, title, project: projectName, autoObserve, context, workItemId }, config = CONFIG, options = {}) {
   if (!url) {
     const err = new Error('url required');
@@ -1137,8 +1161,14 @@ function _filterCcTabSessions(sessions) {
 }
 
 function _readCcTabSessions({ prune = true } = {}) {
-  const sessions = _filterCcTabSessions(shared.safeJsonArr(CC_SESSIONS_PATH));
-  if (prune) safeWrite(CC_SESSIONS_PATH, sessions);
+  if (!prune) return _filterCcTabSessions(shared.safeJsonArr(CC_SESSIONS_PATH));
+  // P-c2sess-1d8e: read+filter+write atomically under the file lock so a
+  // concurrent tab upsert/delete cannot lose entries to last-write-wins.
+  let sessions;
+  mutateJsonFileLocked(CC_SESSIONS_PATH, (raw) => {
+    sessions = _filterCcTabSessions(raw);
+    return sessions;
+  }, { defaultValue: [] });
   return sessions;
 }
 
@@ -2148,6 +2178,7 @@ async function executeDocChatActions(actions) {
 // Session store for doc modals — keyed by filePath or title, persisted to disk
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
+const CC_SESSION_PATH = path.join(ENGINE_DIR, 'cc-session.json');
 const DOC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.docSessionTtlMs;
 const DOC_SESSION_MAX_ENTRIES = shared.ENGINE_DEFAULTS.docSessionMaxEntries;
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
@@ -2196,7 +2227,8 @@ function persistDocSessions() {
   pruneDocSessions();
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
-  safeWrite(DOC_SESSIONS_PATH, obj);
+  // P-c2sess-1d8e: lock against engine/cleanup.js's cap-trim RMW.
+  mutateJsonFileLocked(DOC_SESSIONS_PATH, () => obj, { defaultValue: {} });
 }
 
 const _docSessionPruneTimer = setInterval(() => {
@@ -2261,7 +2293,7 @@ function updateSession(store, key, sessionId, existing) {
       turnCount: (existing ? ccSession.turnCount : 0) + 1,
       _promptHash: _ccPromptHash,
     };
-    safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+    mutateJsonFileLocked(CC_SESSION_PATH, () => ccSession, { defaultValue: {} });
   } else if (key) {
     const prev = docSessions.get(key);
     docSessions.set(key, {
@@ -2335,7 +2367,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     // Invalidate the dead session so future calls don't try to resume it
     if (store === 'cc') {
       ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-      safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+      mutateJsonFileLocked(CC_SESSION_PATH, () => ccSession, { defaultValue: {} });
     } else if (sessionKey) {
       docSessions.delete(sessionKey);
       schedulePersistDocSessions();
@@ -2423,7 +2455,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
     sessionId = null;
     if (store === 'cc') {
       ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-      safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+      mutateJsonFileLocked(CC_SESSION_PATH, () => ccSession, { defaultValue: {} });
     } else if (sessionKey) {
       docSessions.delete(sessionKey);
       schedulePersistDocSessions();
@@ -2713,12 +2745,31 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    // P-c1read-7b3c: aborted closure flag prevents OOM from a misbehaving local
+    // client streaming forever after rejection. The data handler MUST early-return
+    // when aborted is true so no further chunks are appended.
+    let aborted = false;
     const timeout = setTimeout(() => {
+      // Set aborted FIRST so any late-arriving chunk (already in flight) is
+      // dropped by the data handler instead of growing body unbounded.
+      aborted = true;
       req.destroy();
       reject(new Error('Request body timeout after 30s'));
     }, 30000);
-    req.on('data', chunk => { body += chunk; if (body.length > 1e6) { clearTimeout(timeout); reject(new Error('Too large')); } });
+    req.on('data', chunk => {
+      if (aborted) return;
+      body += chunk;
+      if (body.length > 1e6) {
+        // Order matters: set aborted first so any in-flight chunk early-returns,
+        // then clear the timer, tear down the socket, and surface the failure.
+        aborted = true;
+        clearTimeout(timeout);
+        req.destroy();
+        reject(new Error('Too large'));
+      }
+    });
     req.on('end', () => {
+      if (aborted) return;
       clearTimeout(timeout);
       let parsed;
       try { parsed = JSON.parse(body); } catch(e) { reject(e); return; }
@@ -2732,7 +2783,11 @@ function readBody(req) {
       }
       resolve(parsed);
     });
-    req.on('error', (e) => { clearTimeout(timeout); reject(e); });
+    req.on('error', (e) => {
+      if (aborted) return;
+      clearTimeout(timeout);
+      reject(e);
+    });
   });
 }
 
@@ -3296,18 +3351,10 @@ const server = http.createServer(async (req, res) => {
 
   async function handleWorkItemsArchiveList(req, res) {
     try {
-      let allArchived = [];
-      // Central archive
-      const centralPath = path.join(MINIONS_DIR, 'work-items-archive.json');
-      const central = safeRead(centralPath);
-      if (central) { try { allArchived.push(...JSON.parse(central).map(i => ({ ...i, _source: 'central' }))); } catch {} }
-      // Project archives
-      for (const project of PROJECTS) {
-        const archPath = shared.projectWorkItemsPath(project).replace('.json', '-archive.json');
-        const content = safeRead(archPath);
-        if (content) { try { allArchived.push(...JSON.parse(content).map(i => ({ ...i, _source: project.name }))); } catch {} }
-      }
-      return jsonReply(res, 200, allArchived);
+      // collectArchivedWorkItems uses safeJsonArr (typed default + logged parse
+      // failure), so a corrupt archive file is surfaced via console.error and
+      // contributes zero items instead of taking down the whole listing.
+      return jsonReply(res, 200, collectArchivedWorkItems(MINIONS_DIR, PROJECTS));
     } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
@@ -5320,7 +5367,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const result = removeProject(target, { keepData: body.keepData === true, purge: body.purge === true });
       if (!result.ok) return jsonReply(res, result.error?.includes('No project') ? 404 : 400, result);
       reloadConfig();
-      invalidateStatusCache();
+      // includeSlow: getStatus() caches the projects[] field in slow state (60s
+      // TTL) — without flushing it, the removed project keeps appearing under
+      // status.projects for up to a minute even though PROJECTS in memory is
+      // already up to date.
+      invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, result);
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -5390,7 +5441,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       try { if (live.abortFn) live.abortFn(); } catch {}
       _clearCcLiveStream(tabId);
     }
-    safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+    // P-c2sess-1d8e: lock single-session reset against concurrent updateSession writes.
+    mutateJsonFileLocked(CC_SESSION_PATH, () => ccSession, { defaultValue: {} });
     return jsonReply(res, 200, { ok: true });
   }
 
@@ -5419,9 +5471,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   async function handleCCSessionDelete(req, res, match) {
     const id = match?.[1];
     if (!id) return jsonReply(res, 400, { error: 'id required' });
-    const sessions = _readCcTabSessions();
-    const filtered = sessions.filter(s => s.id !== id);
-    safeWrite(CC_SESSIONS_PATH, filtered);
+    // P-c2sess-1d8e: one locked RMW so a concurrent upsert from the streaming
+    // handler cannot resurrect the deleted tab between read and write.
+    mutateJsonFileLocked(CC_SESSIONS_PATH, (raw) => {
+      const sessions = _filterCcTabSessions(raw);
+      return sessions.filter(s => s.id !== id);
+    }, { defaultValue: [] });
     return jsonReply(res, 200, { ok: true });
   }
 
@@ -5773,20 +5828,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const _persistTabId = body.tabId;
         if (_persistTabId && responseSessionId) {
           try {
-            const sessions = _readCcTabSessions();
-            const existing = sessions.find(s => s.id === _persistTabId);
+            // P-c2sess-1d8e: one locked RMW so concurrent multi-tab streams can't
+            // race on read+modify+write — both upsert paths share the lock.
             const preview = (body.message || '').slice(0, 80);
-            if (existing) {
-              existing.sessionId = responseSessionId;
-              existing.lastActiveAt = new Date(now).toISOString();
-              existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
-              existing.preview = preview;
-              existing._promptHash = _ccPromptHash;
-              existing.runtime = currentRuntime;
-            } else {
-              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash, runtime: currentRuntime });
-            }
-            safeWrite(CC_SESSIONS_PATH, sessions);
+            mutateJsonFileLocked(CC_SESSIONS_PATH, (raw) => {
+              const sessions = _filterCcTabSessions(raw);
+              const existing = sessions.find(s => s.id === _persistTabId);
+              if (existing) {
+                existing.sessionId = responseSessionId;
+                existing.lastActiveAt = new Date(now).toISOString();
+                existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
+                existing.preview = preview;
+                existing._promptHash = _ccPromptHash;
+                existing.runtime = currentRuntime;
+              } else {
+                sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash, runtime: currentRuntime });
+              }
+              return sessions;
+            }, { defaultValue: [] });
           } catch { /* non-critical */ }
         }
 
@@ -7356,6 +7415,7 @@ function _installCrashHandlers() {
 // Production entry points use the closures directly; tests import via require('./dashboard').
 module.exports = {
   getMcpServers,
+  readBody,
   _filterCcTabSessions,
   _getVersionCheckInterval,
   _parseWatchInterval,
@@ -7372,6 +7432,7 @@ module.exports = {
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
+  _collectArchivedWorkItems: collectArchivedWorkItems,
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
   buildCCStatePreamble,

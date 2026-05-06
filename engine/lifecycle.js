@@ -134,8 +134,8 @@ function checkPlanCompletion(meta, config) {
     uniquePrs.length ? `- **${uniquePrs.length}** PR(s) created` : '',
     ``,
     `## Items`,
-    ...doneItems.map(w => `- [done] ${w.id}: ${w.title.replace('Implement: ', '')}`),
-    ...failedItems.map(w => `- [failed] ${w.id}: ${w.title.replace('Implement: ', '')}${w.failReason ? ' — ' + w.failReason : ''}`),
+    ...doneItems.map(w => `- [done] ${w.id}: ${(w.title || 'Untitled').replace('Implement: ', '')}`),
+    ...failedItems.map(w => `- [failed] ${w.id}: ${(w.title || 'Untitled').replace('Implement: ', '')}${w.failReason ? ' — ' + w.failReason : ''}`),
     uniquePrs.length ? `\n## Pull Requests` : '',
     ...uniquePrs.map(pr => `- ${pr.id}: ${pr.title || ''} ${pr.url || ''}`),
   ].filter(Boolean).join('\n');
@@ -170,7 +170,7 @@ function checkPlanCompletion(meta, config) {
       const id = 'PL-' + shared.uid();
       const featureBranch = plan.feature_branch;
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
-      const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
+      const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + (w.title || 'Untitled').replace('Implement: ', '')).join('\n');
       mutateWorkItems(wiPath, workItems => {
         if (workItems.some(w => w.sourcePlan === planFile && w.itemType === 'pr')) return workItems;
         workItems.push({
@@ -255,7 +255,7 @@ function checkPlanCompletion(meta, config) {
     const itemsWithCriteria = doneItems.map(w => {
       const planItem = plan.missing_features?.find(f => f.id === w.id);
       const criteria = (planItem?.acceptance_criteria || []).map(c => `  - ${c}`).join('\n');
-      return `### ${w.id}: ${w.title.replace('Implement: ', '')}\n${criteria ? '**Acceptance Criteria:**\n' + criteria : ''}`;
+      return `### ${w.id}: ${(w.title || 'Untitled').replace('Implement: ', '')}\n${criteria ? '**Acceptance Criteria:**\n' + criteria : ''}`;
     }).join('\n\n');
 
     const prSummary = uniquePrs.map(pr =>
