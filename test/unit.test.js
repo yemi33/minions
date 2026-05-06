@@ -28806,6 +28806,9 @@ async function main() {
     // P-t8822idp: Dashboard bug fixes — tail clamping, notes validation, watcher cleanup, atomic PRD updates
     await testDashboardBugFixes();
 
+    // P-c1read-7b3c: readBody overflow guard — aborted flag + req.destroy()
+    await testReadBodyOverflowGuard();
+
     // P-e9y7xcp5: Auxiliary module bug fixes
     await testAuxModuleBugFixes();
 
@@ -31785,6 +31788,128 @@ async function testDashboardBugFixes() {
     assert.strictEqual(toDispatch.length, 3, 'Should dispatch 3 unique items');
     assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
     assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
+  });
+}
+
+// ─── P-c1read-7b3c: readBody overflow guard (aborted flag + req.destroy()) ──
+
+async function testReadBodyOverflowGuard() {
+  console.log('\n── P-c1read-7b3c: readBody overflow guard ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Source-string assertions: confirm the structural contract is in place.
+  await test('readBody declares aborted closure variable', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    assert.ok(fnStart > -1, 'dashboard.js must define readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    assert.ok(/let\s+aborted\s*=\s*false\s*;/.test(fnBody),
+      'readBody must declare `let aborted = false;` closure variable');
+  });
+
+  await test('readBody data handler early-returns when aborted is true', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    // Match the data handler's first line: an `if (aborted) return;` early-return.
+    const dataHandlerIdx = fnBody.indexOf("req.on('data'");
+    assert.ok(dataHandlerIdx > -1, 'should have data listener');
+    const dataHandlerSlice = fnBody.slice(dataHandlerIdx, dataHandlerIdx + 400);
+    assert.ok(/if\s*\(\s*aborted\s*\)\s*return\s*;/.test(dataHandlerSlice),
+      'data handler must early-return when aborted is true (no further appending)');
+  });
+
+  await test('readBody overflow path orders: aborted -> clearTimeout -> req.destroy -> reject', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    const dataHandlerIdx = fnBody.indexOf("req.on('data'");
+    // Slice to the end of the data handler (closing of req.on('data', chunk => { ... });).
+    // Use the next listener as a boundary; if absent, fall back to a generous window.
+    const dataHandlerEndMarker = fnBody.indexOf("req.on('end'", dataHandlerIdx);
+    const dataHandlerSlice = fnBody.slice(
+      dataHandlerIdx,
+      dataHandlerEndMarker > -1 ? dataHandlerEndMarker : dataHandlerIdx + 1500
+    );
+    // Inside the body.length > 1e6 branch, find positions of each step.
+    const overflowIdx = dataHandlerSlice.indexOf('body.length > 1e6');
+    assert.ok(overflowIdx > -1, 'overflow check must be present');
+    const overflowSlice = dataHandlerSlice.slice(overflowIdx);
+    const abortedPos = overflowSlice.search(/aborted\s*=\s*true/);
+    const clearPos = overflowSlice.indexOf('clearTimeout(timeout)');
+    const destroyPos = overflowSlice.indexOf('req.destroy()');
+    const rejectPos = overflowSlice.indexOf("reject(new Error('Too large')");
+    assert.ok(abortedPos > -1, 'overflow path must set aborted = true');
+    assert.ok(clearPos > -1, 'overflow path must clearTimeout(timeout)');
+    assert.ok(destroyPos > -1, 'overflow path must call req.destroy()');
+    assert.ok(rejectPos > -1, "overflow path must reject(new Error('Too large'))");
+    assert.ok(abortedPos < clearPos, 'aborted=true must come BEFORE clearTimeout');
+    assert.ok(clearPos < destroyPos, 'clearTimeout must come BEFORE req.destroy()');
+    assert.ok(destroyPos < rejectPos, 'req.destroy() must come BEFORE reject');
+  });
+
+  await test('readBody timeout path also sets aborted = true', () => {
+    const fnStart = src.indexOf('function readBody(req)');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    const setTimeoutIdx = fnBody.indexOf('const timeout = setTimeout(');
+    assert.ok(setTimeoutIdx > -1, 'should have setTimeout setup');
+    // The timeout callback runs until the closing of setTimeout.
+    const timeoutSlice = fnBody.slice(setTimeoutIdx, fnBody.indexOf('}, 30000)', setTimeoutIdx) + 10);
+    assert.ok(/aborted\s*=\s*true/.test(timeoutSlice),
+      'timeout callback must set aborted = true so late-arriving chunks are dropped');
+  });
+
+  // Behavioral test: stream >1MB through a fake req and assert the contract.
+  await test('readBody behavioral: streaming >1MB rejects, calls req.destroy(), drops further chunks', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      assert.ok(typeof dashboard.readBody === 'function',
+        'dashboard.js must export readBody for direct unit-testing');
+
+      const { EventEmitter } = require('events');
+      const req = new EventEmitter();
+      let destroyCalls = 0;
+      req.destroy = () => { destroyCalls++; };
+
+      let rejectErr = null;
+      const promise = dashboard.readBody(req).catch(err => { rejectErr = err; });
+
+      // Stream 1.1MB total: 11 chunks of 100KB each. Body crosses 1e6 on chunk 11.
+      const chunk = Buffer.alloc(100_000, 'x');
+      for (let i = 0; i < 11; i++) {
+        req.emit('data', chunk);
+      }
+      // Allow microtasks to flush the rejection.
+      await new Promise(r => setImmediate(r));
+
+      assert.ok(rejectErr, 'readBody must reject when body exceeds 1MB');
+      assert.ok(/Too large/i.test(rejectErr.message),
+        `rejection message should be 'Too large', got: ${rejectErr.message}`);
+      assert.strictEqual(destroyCalls, 1,
+        `req.destroy() must be called exactly once on overflow (got ${destroyCalls})`);
+
+      // Now emit 10 MORE oversized chunks. With the early-return guard,
+      // the data handler should drop them; req.destroy() should NOT be called again.
+      // Without the guard, body.length > 1e6 would re-fire and bump destroyCalls to 11.
+      for (let i = 0; i < 10; i++) {
+        req.emit('data', chunk);
+      }
+      await new Promise(r => setImmediate(r));
+
+      assert.strictEqual(destroyCalls, 1,
+        `data handler must early-return after abort — destroy should still be 1, got ${destroyCalls}`);
+
+      // Promise stays settled (rejected) — no double-resolve crash.
+      await promise;
+    } finally {
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
+      restore();
+    }
   });
 }
 
