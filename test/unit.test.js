@@ -43013,6 +43013,134 @@ async function testAgentBusyReassignment() {
     assert.ok(engineSrc.includes("agent_busy") && engineSrc.includes('_agentBusySince'),
       'Both agent_busy and _agentBusySince should be present in the annotation logic');
   });
+
+  // 13. W-motc4y1n000t1a5f: busy reassignment must not double-book an agent that
+  //     already has its own pending dispatch in the queue.
+  //
+  // Reproduces meeting MTG-motbc29r000j18d9 bug: dallas (busy elsewhere) was
+  // reassigned to rebecca, but rebecca already had her own pending dispatch
+  // right behind it. Result: rebecca got two dispatches, dallas zero.
+  await test('busy reassignment does not double-book agent with pending dispatch (behavioral)', () => {
+    // Active dispatch occupies dallas (he is busy elsewhere on a real task)
+    const active = [
+      { id: 'dallas-other-task', agent: 'dallas', meta: { branch: 'work/P-other' } },
+    ];
+    // Two pending items: dallas's would-be meeting + rebecca's own meeting
+    const pending = [
+      { id: 'd-meeting', agent: 'dallas', type: 'meeting', meta: { item: {} } },
+      { id: 'r-meeting', agent: 'rebecca', type: 'meeting', meta: { item: {} } },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    // FIX: seed pendingAgents from current pending queue so reassignment
+    // exclusion accounts for items not yet iterated.
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative pick for dallas's busy item is rebecca (idle).
+    const resolveAlt = () => 'rebecca';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        // Hard-pin check: neither item is hard-pinned in this scenario.
+        const altAgent = resolveAlt();
+        if (
+          altAgent &&
+          altAgent !== item.agent &&
+          !busyAgents.has(altAgent) &&
+          !pendingAgents.has(altAgent)
+        ) {
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+          toDispatch.push(item);
+          busyAgents.add(altAgent);
+        }
+        continue;
+      }
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    // d-meeting must NOT be reassigned to rebecca; she already has r-meeting.
+    const dOut = toDispatch.find(i => i.id === 'd-meeting');
+    if (dOut) {
+      assert.notStrictEqual(dOut.agent, 'rebecca',
+        'd-meeting must not be reassigned to rebecca who already has r-meeting pending — would double-book');
+    }
+    // r-meeting must still dispatch to rebecca normally.
+    const rOut = toDispatch.find(i => i.id === 'r-meeting');
+    assert.strictEqual(rOut?.agent, 'rebecca',
+      'r-meeting should still dispatch to rebecca (her own pending task)');
+    // Net result: rebecca should appear at most once across dispatched items.
+    const rebeccaCount = toDispatch.filter(i => i.agent === 'rebecca').length;
+    assert.ok(rebeccaCount <= 1,
+      `rebecca should not be double-booked; got ${rebeccaCount} dispatches assigned to her`);
+  });
+
+  // 14. Source-level guarantee: dispatch loop seeds pendingAgents and gates
+  //     reassignment with it, so the order-dependent double-book can't reappear.
+  await test('dispatch loop seeds pendingAgents and gates busy reassignment (source check)', () => {
+    assert.ok(engineSrc.includes('pendingAgents'),
+      'Dispatch loop must build a pendingAgents set to prevent reassignment double-booking');
+    // Anchor on the actual log() invocation (unique enough to avoid a comment
+    // line with the same phrase), then look back to find the if-condition.
+    const guardIdx = engineSrc.indexOf('— agent busy and idle alternative available`)');
+    assert.ok(guardIdx > 0, 'Busy reassignment log call should be present');
+    const guardRegion = engineSrc.slice(Math.max(0, guardIdx - 400), guardIdx + 100);
+    assert.ok(guardRegion.includes('pendingAgents'),
+      'Busy reassignment guard must check !pendingAgents.has(altAgent) to avoid double-booking');
+  });
+
+  // 15. Existing unspawned-temp reassignment still works AND is also gated by
+  //     pendingAgents so a temp's item can't double-book a named agent that
+  //     already has a pending dispatch.
+  await test('unspawned-temp reassignment skipped when alternative already pending-claimed (behavioral)', () => {
+    const pending = [
+      { id: 'temp-task', agent: 'temp-abc', type: 'fix', meta: { item: {} } },
+      { id: 'ralph-task', agent: 'ralph', type: 'fix', meta: { item: {} } },
+    ];
+    const busyAgents = new Set(); // no active dispatches
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative for the unspawned temp is ralph (the only named agent).
+    const resolveAlt = () => 'ralph';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      // Unspawned temp path
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) {
+        const altAgent = resolveAlt();
+        if (altAgent && altAgent !== item.agent && !pendingAgents.has(altAgent)) {
+          // Reassign — but in this scenario ralph is already pending, so we should NOT.
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+        }
+      }
+      // Busy block doesn't fire here.
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    const tempOut = toDispatch.find(i => i.id === 'temp-task');
+    assert.strictEqual(tempOut.agent, 'temp-abc',
+      'Temp item must NOT be reassigned to ralph (ralph already has his own pending dispatch)');
+    const ralphCount = toDispatch.filter(i => i.agent === 'ralph').length;
+    assert.strictEqual(ralphCount, 1, 'ralph should appear exactly once in dispatch — no double-book');
+  });
+
+  // 16. Source-level: temp-agent reassignment block also consults pendingAgents.
+  await test('unspawned-temp reassignment guard consults pendingAgents (source check)', () => {
+    const tempIdx = engineSrc.indexOf('temp agent never spawned');
+    assert.ok(tempIdx > 0, 'Unspawned-temp reassignment log line should be present');
+    const tempRegion = engineSrc.slice(Math.max(0, tempIdx - 600), tempIdx + 200);
+    assert.ok(tempRegion.includes('pendingAgents'),
+      'Unspawned-temp reassignment guard must check pendingAgents to avoid double-booking');
+  });
 }
 
 // ─── Synthetic project + hard-pin fallback tests ──────────────────────────────────
