@@ -23,13 +23,8 @@ const { resolveRuntime } = require('./runtimes');
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const COPILOT_TASK_COMPLETE_GRACE_MS = 3000;
+const LLM_EXIT_SETTLE_GRACE_MS = 1000;
 const MISSING_RUNTIME_EXIT_CODE = 78;
-// Grace window between 'exit' and a fallback resolve, in case the runtime
-// child has spawned a detached grandchild that inherited stdout/stderr.
-// In that case `proc.on('close', …)` may never fire (the OS-level pipe stays
-// open until the grandchild also closes its fd). 250ms is plenty for any
-// already-buffered stdout to drain through the 'data' events.
-const STREAM_EXIT_FALLBACK_GRACE_MS = 250;
 
 // ─── Engine-Usage Metrics ────────────────────────────────────────────────────
 //
@@ -615,6 +610,8 @@ function callLLM(promptText, sysPromptText, opts = {}) {
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
     });
+    let settled = false;
+    let exitSettleTimer = null;
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {
       if (taskCompleteTimer) return;
@@ -641,11 +638,16 @@ function callLLM(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    proc.on('close', (code) => {
+    function finish(code) {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
+      try { proc.stdout?.destroy(); } catch {}
+      try { proc.stderr?.destroy(); } catch {}
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
       // parseError lets the adapter classify obvious failure modes (auth /
@@ -665,10 +667,19 @@ function callLLM(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
+    }
+
+    proc.on('close', finish);
+    proc.on('exit', (code) => {
+      if (settled) return;
+      exitSettleTimer = setTimeout(() => finish(code), LLM_EXIT_SETTLE_GRACE_MS);
     });
 
     proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM spawn error (${label}): ${err.message}`);
@@ -715,6 +726,8 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       maxBudget, bare, fallbackModel,
       ...runtimeFeatureOpts,
     });
+    let settled = false;
+    let exitSettleTimer = null;
     let taskCompleteTimer = null;
     const scheduleTaskCompleteClose = () => {
       if (taskCompleteTimer) return;
@@ -744,16 +757,16 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
-    let settled = false;
-    let exitFallbackTimer = null;
-    const finishStream = (code) => {
+    function finish(code) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
-      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       const parsed = acc.finalize();
+      try { proc.stdout?.destroy(); } catch {}
+      try { proc.stderr?.destroy(); } catch {}
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
       const errInfo = code !== 0
@@ -770,27 +783,23 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
         runtime: runtime.name,
         errorClass: errInfo.code,
       });
-    };
+    }
 
+    proc.on('close', finish);
     proc.on('exit', (code) => {
-      // 'close' fires after stdio streams close, but if a detached grandchild
-      // inherited stdout/stderr the OS-level pipe stays open and 'close' may
-      // never fire. Schedule a fallback after a brief drain window so we
-      // still resolve once the process itself has exited.
-      if (settled || exitFallbackTimer) return;
-      exitFallbackTimer = setTimeout(() => finishStream(code), STREAM_EXIT_FALLBACK_GRACE_MS);
-    });
-
-    proc.on('close', (code) => {
-      finishStream(code);
+      // 'close' waits for stdio to close. If the runtime spawned a detached
+      // grandchild that inherited stdout/stderr, the OS pipe stays open and
+      // 'close' may never fire. Fall back to 'exit' after a drain window.
+      if (settled) return;
+      exitSettleTimer = setTimeout(() => finish(code), LLM_EXIT_SETTLE_GRACE_MS);
     });
 
     proc.on('error', (err) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (exitSettleTimer) clearTimeout(exitSettleTimer);
       clearTaskCompleteTimer();
-      if (exitFallbackTimer) { clearTimeout(exitFallbackTimer); exitFallbackTimer = null; }
       for (const f of cleanupFiles) safeUnlink(f);
       shared.log('error', `LLM-stream spawn error (${label}): ${err.message}`);
       resolve({

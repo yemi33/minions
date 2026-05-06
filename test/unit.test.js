@@ -3598,6 +3598,183 @@ async function testEngineDefaults() {
   });
 }
 
+// ─── engine/features.js — Feature Flag Registry ─────────────────────────────
+
+async function testFeatureFlags() {
+  console.log('\n── engine/features.js — Feature Flag Registry ──');
+
+  const features = require(path.join(MINIONS_DIR, 'engine', 'features'));
+  const ENV_KEY = 'MINIONS_FEATURE_TEST_FLAG_A';
+  function clearEnv() { delete process.env[ENV_KEY]; }
+
+  const TEST_REGISTRY = {
+    'test-flag-a': { description: 'test', default: false, addedIn: '0.0.0' },
+    'test-flag-b': { description: 'test', default: true, addedIn: '0.0.0' },
+  };
+
+  await test('exports isFeatureOn, listFeatures, hasFeature, FEATURES', () => {
+    assert.strictEqual(typeof features.isFeatureOn, 'function');
+    assert.strictEqual(typeof features.listFeatures, 'function');
+    assert.strictEqual(typeof features.hasFeature, 'function');
+    assert.strictEqual(typeof features.FEATURES, 'object');
+  });
+
+  await test('isFeatureOn throws on unknown id (typo protection)', () => {
+    assert.throws(() => features.isFeatureOn('definitely-not-registered', {}),
+      /Unknown feature flag.*definitely-not-registered/);
+  });
+
+  await test('hasFeature returns false for unknown id', () => {
+    assert.strictEqual(features.hasFeature('does-not-exist'), false);
+  });
+
+  await test('isFeatureOn returns registry default when neither env nor config sets it', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', {}, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', {}, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', null, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', undefined, TEST_REGISTRY), true);
+  });
+
+  await test('config.features overrides registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', { features: { 'test-flag-b': false } }, TEST_REGISTRY), false);
+  });
+
+  await test('non-boolean config values fall through to registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 'yes' } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 1 } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': null } }, TEST_REGISTRY), false);
+  });
+
+  await test('env var override beats config and default — truthy', () => {
+    try {
+      for (const v of ['1', 'true', 'TRUE', 'on', 'yes']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': false } }, TEST_REGISTRY), true,
+          `env="${v}" should force on`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('env var override beats config and default — falsy', () => {
+    const reg = { 'test-flag-a': { description: 'test', default: true, addedIn: '0.0.0' } };
+    try {
+      for (const v of ['0', 'false', 'FALSE', 'off', 'no', '']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, reg), false,
+          `env="${v}" should force off`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('listFeatures returns shape {id, description, default, enabled, addedIn, expires, expired}', () => {
+    clearEnv();
+    const reg = { 'test-flag-a': { description: 'A flag', default: false, addedIn: '0.1.0', expires: '2099-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-a');
+    assert.ok(entry, 'test-flag-a missing from listFeatures');
+    assert.strictEqual(entry.description, 'A flag');
+    assert.strictEqual(entry.default, false);
+    assert.strictEqual(entry.enabled, false);
+    assert.strictEqual(entry.addedIn, '0.1.0');
+    assert.strictEqual(entry.expires, '2099-01-01');
+    assert.strictEqual(entry.expired, false);
+  });
+
+  await test('listFeatures marks past-expires entries as expired', () => {
+    clearEnv();
+    const reg = { 'test-flag-old': { description: 'old', default: false, addedIn: '0.0.0', expires: '2000-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-old');
+    assert.strictEqual(entry.expired, true, 'past-dated expires should set expired=true');
+  });
+
+  await test('module live registry stays empty (no test pollution leaked into FEATURES)', () => {
+    assert.deepStrictEqual(Object.keys(features.FEATURES), [],
+      'live FEATURES registry must remain empty — tests pass an explicit registry instead of mutating the module');
+  });
+
+  await test('dashboard.js requires engine/features and wires /api/features routes', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes("require('./engine/features')"), 'dashboard.js must require engine/features');
+    assert.ok(dashSrc.includes("'/api/features'"), 'dashboard.js must register GET /api/features route');
+    assert.ok(dashSrc.includes("'/api/features/toggle'"), 'dashboard.js must register POST /api/features/toggle route');
+    assert.ok(/handleFeaturesList\b/.test(dashSrc), 'handleFeaturesList must be defined');
+    assert.ok(/handleFeaturesToggle\b/.test(dashSrc), 'handleFeaturesToggle must be defined');
+  });
+
+  await test('dashboard bootstrap injects window.MINIONS_FEATURES data only', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('window.MINIONS_FEATURES'), 'bootstrap must seed window.MINIONS_FEATURES');
+    assert.ok(!/window\.MinionsFeatures\s*=/.test(dashSrc),
+      'helper body should live in dashboard/js/features-client.js, not inlined in dashboard.js');
+  });
+
+  await test('features-client.js defines window.MinionsFeatures.isOn helper', () => {
+    const clientSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'features-client.js'), 'utf8');
+    assert.ok(/window\.MinionsFeatures\s*=/.test(clientSrc),
+      'features-client.js must define window.MinionsFeatures');
+    assert.ok(/isOn:\s*function/.test(clientSrc),
+      'features-client.js must expose isOn');
+  });
+
+  await test('features-client.js is loaded before settings.js in jsFiles', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fcIdx = dashSrc.indexOf("'features-client'");
+    const settingsIdx = dashSrc.indexOf("'settings'");
+    assert.ok(fcIdx > 0 && settingsIdx > 0 && fcIdx < settingsIdx,
+      "'features-client' must be listed before 'settings' in jsFiles so MinionsFeatures.isOn is defined when settings.js loads");
+  });
+
+  await test('handleFeaturesToggle uses mutateJsonFileLocked for atomic config write', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    assert.ok(start >= 0, 'handleFeaturesToggle must exist');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/mutateJsonFileLocked\s*\(/.test(slice),
+      'handleFeaturesToggle must use mutateJsonFileLocked for atomic config.json RMW');
+  });
+
+  await test('handleFeaturesToggle 404s on unknown feature id', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/features\.hasFeature\s*\(\s*id\s*\)/.test(slice),
+      'handleFeaturesToggle must validate id against features.hasFeature');
+    assert.ok(/jsonReply\(\s*res\s*,\s*404/.test(slice),
+      'handleFeaturesToggle must reply 404 on unknown id');
+  });
+
+  await test('settings.js renders Show experimental flags collapsible', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('Show experimental flags'),
+      'settings.js must render the "Show experimental flags" disclosure');
+    assert.ok(settingsSrc.includes('/api/features'),
+      'settings.js must fetch /api/features');
+    assert.ok(settingsSrc.includes('/api/features/toggle'),
+      'settings.js must POST to /api/features/toggle');
+    assert.ok(settingsSrc.includes('data-feature-toggle'),
+      'settings.js must expose data-feature-toggle hooks for change listeners');
+  });
+
+  await test('settings.js attaches change listener on each feature toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(/querySelectorAll\(\s*['"]input\[data-feature-toggle\]['"]/.test(settingsSrc),
+      'settings.js must wire change listeners via querySelectorAll on data-feature-toggle inputs');
+  });
+
+  await test('CLAUDE.md documents Feature Flags recipe', () => {
+    const claudeMd = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    assert.ok(/##\s+Feature Flags/.test(claudeMd),
+      'CLAUDE.md must include "## Feature Flags" section');
+    assert.ok(claudeMd.includes('engine/features.js'),
+      'CLAUDE.md feature flags section must reference engine/features.js');
+    assert.ok(/MINIONS_FEATURE_/.test(claudeMd),
+      'CLAUDE.md must document the env-var override pattern');
+  });
+}
+
 // ─── shared.js — Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────
 
 async function testRuntimeFleetHelpers() {
@@ -27958,6 +28135,7 @@ async function main() {
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
+    await testFeatureFlags();
     await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
