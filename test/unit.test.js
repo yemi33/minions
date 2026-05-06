@@ -52524,14 +52524,16 @@ async function testPipelineBehavioral() {
     }
   });
 
-  // ── Pipeline CRUD — filesystem with unique IDs + cleanup ──
-
-  const pipelineDir = path.join(MINIONS_DIR, 'pipelines');
+  // ── Pipeline CRUD — isolated tmp dir via createTestMinionsDir() ──
+  // Each test gets a fresh MINIONS_TEST_DIR; pipeline.js re-resolves PIPELINES_DIR
+  // from MINIONS_DIR so writes land in the temp tree, never D:/squad/pipelines/.
+  // The harness's tmp-dir teardown handles cleanup — no per-test fs.unlinkSync needed.
 
   await test('savePipeline + getPipeline round-trip', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId = '_test_crud_roundtrip_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testId = '_test_crud_roundtrip_' + Date.now();
       pipeline.savePipeline({ id: testId, name: 'Test Pipeline', stages: [], enabled: true });
       const loaded = pipeline.getPipeline(testId);
       assert.ok(loaded, 'getPipeline should return the saved pipeline');
@@ -52540,121 +52542,130 @@ async function testPipelineBehavioral() {
       assert.deepStrictEqual(loaded.stages, []);
       assert.strictEqual(loaded.enabled, true);
     } finally {
-      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getPipeline returns null for non-existent pipeline', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
       const result = pipeline.getPipeline('_test_nonexistent_' + Date.now());
       assert.strictEqual(result, null);
     } finally {
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getPipelines returns all valid pipelines', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId1 = '_test_getall_1_' + Date.now();
-    const testId2 = '_test_getall_2_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testId1 = '_test_getall_1_' + Date.now();
+      const testId2 = '_test_getall_2_' + Date.now();
       pipeline.savePipeline({ id: testId1, name: 'P1', stages: [] });
       pipeline.savePipeline({ id: testId2, name: 'P2', stages: [] });
       const all = pipeline.getPipelines();
       assert.ok(Array.isArray(all), 'getPipelines should return an array');
-      const testPipelines = all.filter(p => p.id === testId1 || p.id === testId2);
-      assert.strictEqual(testPipelines.length, 2, 'Should find both test pipelines');
+      assert.strictEqual(all.length, 2, 'Isolated tmp dir should contain only the two saved pipelines');
+      const ids = all.map(p => p.id).sort();
+      assert.deepStrictEqual(ids, [testId1, testId2].sort());
     } finally {
-      try { fs.unlinkSync(path.join(pipelineDir, testId1 + '.json')); } catch {}
-      try { fs.unlinkSync(path.join(pipelineDir, testId2 + '.json')); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getPipelines skips invalid JSON files', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId = '_test_invalid_json_' + Date.now();
-    const badFile = path.join(pipelineDir, testId + '.json');
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const pipelinesDir = path.join(isolatedShared.MINIONS_DIR, 'pipelines');
+      fs.mkdirSync(pipelinesDir, { recursive: true });
+      const testId = '_test_invalid_json_' + Date.now();
+      const badFile = path.join(pipelinesDir, testId + '.json');
       fs.writeFileSync(badFile, 'NOT VALID JSON {{{');
       const all = pipeline.getPipelines();
       // Should not throw, and should not include the bad file
       const found = all.find(p => p && p.id === testId);
       assert.strictEqual(found, undefined, 'Invalid JSON should be skipped');
     } finally {
-      try { fs.unlinkSync(badFile); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('deletePipeline returns true for existing pipeline', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId = '_test_delete_existing_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const pipelinesDir = path.join(isolatedShared.MINIONS_DIR, 'pipelines');
+      const testId = '_test_delete_existing_' + Date.now();
       pipeline.savePipeline({ id: testId, name: 'ToDelete', stages: [] });
-      assert.ok(fs.existsSync(path.join(pipelineDir, testId + '.json')), 'File should exist before delete');
+      assert.ok(fs.existsSync(path.join(pipelinesDir, testId + '.json')), 'File should exist before delete');
       const result = pipeline.deletePipeline(testId);
       assert.strictEqual(result, true);
-      assert.ok(!fs.existsSync(path.join(pipelineDir, testId + '.json')), 'File should be gone after delete');
+      assert.ok(!fs.existsSync(path.join(pipelinesDir, testId + '.json')), 'File should be gone after delete');
     } finally {
-      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('deletePipeline returns false for non-existent pipeline', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
       const result = pipeline.deletePipeline('_test_delete_nonexistent_' + Date.now());
       assert.strictEqual(result, false);
     } finally {
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('savePipeline creates pipelines directory if missing', () => {
-    // This test verifies the mkdir behavior — we can't remove the real dir,
-    // so we verify indirectly: savePipeline should work even on a fresh setup.
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId = '_test_mkdir_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const pipelinesDir = path.join(isolatedShared.MINIONS_DIR, 'pipelines');
+      // Fresh tmp dir does not have a pipelines/ subdir — verify mkdir directly.
+      assert.ok(!fs.existsSync(pipelinesDir), 'pipelines/ should not exist before savePipeline');
+      const testId = '_test_mkdir_' + Date.now();
       pipeline.savePipeline({ id: testId, stages: [] });
+      assert.ok(fs.existsSync(pipelinesDir), 'savePipeline should have created pipelines/');
       const loaded = pipeline.getPipeline(testId);
       assert.ok(loaded, 'Pipeline should be retrievable after save');
     } finally {
-      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('savePipeline overwrites existing pipeline', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testId = '_test_overwrite_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testId = '_test_overwrite_' + Date.now();
       pipeline.savePipeline({ id: testId, name: 'V1', stages: [] });
       pipeline.savePipeline({ id: testId, name: 'V2', stages: [{ id: 's1' }] });
       const loaded = pipeline.getPipeline(testId);
       assert.strictEqual(loaded.name, 'V2', 'Should reflect updated name');
       assert.strictEqual(loaded.stages.length, 1, 'Should reflect updated stages');
     } finally {
-      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   // ── Run Lifecycle — startRun, updateRunStage, completeRun ──
+  // Same isolation pattern: each test gets its own tmp dir, so writes to
+  // engine/pipeline-runs.json land in the temp tree.
 
   const pipelineRunsPath = path.join(MINIONS_DIR, 'engine', 'pipeline-runs.json');
 
   await test('startRun creates a run with pending stages', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_startrun_' + Date.now();
-    // Back up existing runs file
-    let backup = null;
-    try { backup = fs.readFileSync(pipelineRunsPath, 'utf8'); } catch {}
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_startrun_' + Date.now();
       const pipelineDef = {
         id: testPipelineId,
         stages: [
@@ -52674,42 +52685,35 @@ async function testPipelineBehavioral() {
       assert.strictEqual(run.stages['stage-b'].status, 'pending');
       assert.deepStrictEqual(run.stages['stage-a'].artifacts, {});
     } finally {
-      // Clean up: remove test data from pipeline-runs.json
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('startRun returns null when active run already exists', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_startrun_dup_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_startrun_dup_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run1 = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run1, 'First startRun should succeed');
       const run2 = pipeline.startRun(testPipelineId, pipelineDef);
       assert.strictEqual(run2, null, 'Second startRun should return null (active run exists)');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('startRun caps at 10 runs per pipeline', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_startrun_cap_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const isolatedShared = require('../engine/shared');
+      const isolatedRunsPath = path.join(isolatedShared.MINIONS_DIR, 'engine', 'pipeline-runs.json');
+      const testPipelineId = '_test_startrun_cap_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       // Seed 12 completed runs manually
-      shared.mutateJsonFileLocked(pipelineRunsPath, (data) => {
+      isolatedShared.mutateJsonFileLocked(isolatedRunsPath, (data) => {
         data[testPipelineId] = [];
         for (let i = 0; i < 12; i++) {
           data[testPipelineId].push({
@@ -52729,19 +52733,15 @@ async function testPipelineBehavioral() {
       assert.ok(pRuns.length <= 10, `Should cap at 10 runs, got ${pRuns.length}`);
       assert.strictEqual(pRuns[pRuns.length - 1].runId, newRun.runId, 'Last run should be the new one');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('updateRunStage updates stage properties', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_updatestage_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_updatestage_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }, { id: 's2' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run, 'startRun should succeed');
@@ -52761,19 +52761,15 @@ async function testPipelineBehavioral() {
       assert.deepStrictEqual(updatedRun.stages['s1'].artifacts, { workItems: ['WI-1'] });
       assert.strictEqual(updatedRun.stages['s2'].status, 'pending', 's2 should be unchanged');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('updateRunStage is a no-op for non-existent run or stage', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_update_noop_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_update_noop_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run);
@@ -52788,19 +52784,15 @@ async function testPipelineBehavioral() {
       const existingRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
       assert.strictEqual(existingRun.stages['s1'].status, 'pending');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('completeRun sets status and completedAt', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_completerun_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_completerun_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run);
@@ -52812,19 +52804,15 @@ async function testPipelineBehavioral() {
       assert.strictEqual(completedRun.status, 'completed');
       assert.ok(completedRun.completedAt, 'Should have completedAt timestamp');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('completeRun sets failed status correctly', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_completerun_fail_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_completerun_fail_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run);
@@ -52836,19 +52824,15 @@ async function testPipelineBehavioral() {
       assert.strictEqual(failedRun.status, 'failed');
       assert.ok(failedRun.completedAt, 'Should have completedAt timestamp');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getActiveRun returns running run', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_getactive_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_getactive_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run);
@@ -52858,30 +52842,27 @@ async function testPipelineBehavioral() {
       assert.strictEqual(active.runId, run.runId);
       assert.strictEqual(active.status, 'running');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getActiveRun returns null when no active run', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_getactive_none_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_getactive_none_' + Date.now();
       const active = pipeline.getActiveRun(testPipelineId);
       assert.strictEqual(active, undefined, 'Should return undefined for non-existent pipeline');
     } finally {
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   await test('getActiveRun returns null after run completed', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_getactive_done_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_getactive_done_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run);
@@ -52890,21 +52871,17 @@ async function testPipelineBehavioral() {
       const active = pipeline.getActiveRun(testPipelineId);
       assert.ok(!active, 'Should not find active run after completion');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
   // ── startRun allows new run after previous completed ──
 
   await test('startRun allows new run after previous is completed', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_startrun_after_done_' + Date.now();
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_startrun_after_done_' + Date.now();
       const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
       const run1 = pipeline.startRun(testPipelineId, pipelineDef);
       assert.ok(run1);
@@ -52914,12 +52891,7 @@ async function testPipelineBehavioral() {
       assert.ok(run2, 'Should allow new run after previous completed');
       assert.notStrictEqual(run2.runId, run1.runId, 'Should have different runId');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
