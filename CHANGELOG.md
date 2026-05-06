@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1750 (2026-05-06)
+
+### Fixes
+- lock doc-chat into plain-response mode (no tool calls) (#2127)
+
 ## 0.1.1748 (2026-05-06)
 
 ### Fixes
