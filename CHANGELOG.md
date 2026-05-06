@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1740 (2026-05-06)
+
+### Features
+- doc-chat resume retry + 1h timeout + surfaced stderr (#2101)
+- make Command Center chat sessions non-expiring (#2100)
+
+### Fixes
+- invalidate stale session IDs on runtime switch (#2102)
+- drop 5s setTimeout that nuked sysprompt .tmp before Claude could read it (#2105)
+
 ## 0.1.1738 (2026-05-06)
 
 ### Features
