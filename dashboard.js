@@ -2653,10 +2653,40 @@ function _recoverPartialDocChatResponse(result, sessionKey) {
 }
 
 
+// Wraps the streaming onChunk so that once the document delimiter is observed
+// in the growing text, subsequent chunks reuse the locked answer instead of
+// re-scanning the tail. The model emits "<explanation> ---DOCUMENT--- <full file>"
+// — the answer portion can't grow after the delimiter, so re-parsing every
+// chunk through the regenerated file body is wasted O(n²) work.
+//
+// Also dedups identical post-strip answers: the upstream accumulator dedups
+// against the raw growing text, but that text keeps changing as the document
+// body streams in even though the visible answer is locked. Without this
+// guard the SSE writer fires a duplicate `chunk` event for every doc-body
+// delta, which triggers a client DOM rerender and localStorage write each time.
+function _makeDocChatStreamStripper(onChunk) {
+  if (!onChunk) return undefined;
+  let lockedAnswer = null;
+  let lastSent;
+  return (text) => {
+    let answer;
+    if (lockedAnswer !== null) {
+      answer = lockedAnswer;
+    } else {
+      const parsed = _parseDocChatResultText(text);
+      if (parsed.content !== null) lockedAnswer = parsed.answer;
+      answer = parsed.answer;
+    }
+    if (answer === lastSent) return;
+    lastSent = answer;
+    onChunk(answer);
+  };
+}
+
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
-  const docSlice = document.slice(0, 20000);
+  const docSlice = String(document || '');
 
   // freshSession: true → discard any prior session for this key so the call starts clean.
   // Used by one-shot generation flows (e.g. Create Plan from meeting) that must not
@@ -2720,7 +2750,8 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
 
 async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse, onRetry }) {
   const sessionKey = filePath || title;
-  const docSlice = document.slice(0, 20000);
+  const docSlice = String(document || '');
+  const streamStripper = _makeDocChatStreamStripper(onChunk);
 
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
@@ -2742,7 +2773,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),
       onAbortReady,
-      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); },
+      onChunk: streamStripper,
       onToolUse,
       onRetry,
     });
@@ -7464,6 +7495,7 @@ module.exports = {
   parsePinnedEntries,
   _parseDocChatResultText,
   _formatDocChatContext,
+  _makeDocChatStreamStripper,
   _docChatErrorMessage,
   _docChatPartialWarning,
   _docChatFailureResponse,

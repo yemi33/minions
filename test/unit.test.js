@@ -37434,12 +37434,53 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(!/disableTools:\s*true/.test(docStreamFn),
       'Streaming doc-chat must not pass disableTools:true (would lock into Q&A)');
     assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
-    assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text)); }'),
-      'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
+    // Streaming hides the raw ---DOCUMENT--- payload from the live transcript
+    // via _makeDocChatStreamStripper, which also caches the answer once the
+    // delimiter is observed so subsequent chunks (the regenerated file body)
+    // skip the O(n²) re-scan of the growing tail.
+    assert.ok(docStreamFn.includes('onChunk: streamStripper'),
+      'Streaming doc-chat should pass the cached stream stripper as onChunk');
+    assert.ok(docStreamFn.includes('_makeDocChatStreamStripper(onChunk)'),
+      'Streaming doc-chat should build the chunk stripper via _makeDocChatStreamStripper');
     assert.ok(docStreamFn.includes('_buildDocChatPass'),
       'Streaming doc-chat should build document context through the shared _buildDocChatPass helper (which uses _formatDocChatContext)');
     assert.ok(!docStreamFn.includes("' (\\`${filePath}\\`)'"),
       'Streaming doc-chat should not leak a literal ${filePath} placeholder into model context');
+  });
+
+  await test('_makeDocChatStreamStripper locks the answer once the document delimiter is seen and dedupes identical forwards', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const stripper = dashboardModule._makeDocChatStreamStripper;
+    assert.equal(typeof stripper, 'function', '_makeDocChatStreamStripper should be exported for tests');
+    const calls = [];
+    const fn = stripper((text) => calls.push(text));
+    // Pre-delimiter: explanation grows, each unique answer is forwarded.
+    fn('Updating the section.');
+    fn('Updating the section.\n\nHere is the change.');
+    // Delimiter arrives — the locked answer equals the prior explanation, so
+    // the dedup guard should suppress this forward (same value already sent).
+    const DOC_DELIMITER = '---MINIONS-DOC-CHAT-DOCUMENT-v1-6f2f90e3---';
+    fn(`Updating the section.\n\nHere is the change.\n${DOC_DELIMITER}\n# new doc body`);
+    // Doc body keeps growing — locked answer is unchanged, must not refire.
+    fn(`Updating the section.\n\nHere is the change.\n${DOC_DELIMITER}\n# new doc body\n\nMore content here that should be ignored.`);
+    assert.equal(calls.length, 2,
+      `stripper should forward only unique answers (got ${calls.length}: ${JSON.stringify(calls)})`);
+    assert.equal(calls[1], 'Updating the section.\n\nHere is the change.',
+      'forwarded answer must be the locked explanation, not the document body');
+    assert.ok(!calls[1].includes(DOC_DELIMITER) && !calls[1].includes('# new doc body'),
+      'locked answer must not contain the delimiter or the document body');
+  });
+
+  await test('_makeDocChatStreamStripper dedupes identical pre-lock answers and still forwards refined ones', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const calls = [];
+    const stripper = dashboardModule._makeDocChatStreamStripper((t) => calls.push(t));
+    stripper('Hello.');
+    stripper('Hello.'); // identical post-strip — should dedup
+    stripper('Hello. More.'); // different post-strip — should forward
+    assert.equal(calls.length, 2, `dedup should suppress identical pre-lock answers (got ${calls.length})`);
+    assert.equal(calls[0], 'Hello.');
+    assert.equal(calls[1], 'Hello. More.');
   });
 
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
