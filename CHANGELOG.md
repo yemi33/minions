@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1755 (2026-05-06)
+
+### Fixes
+- keep queued strips pinned below progress UX and answers
+
 ## 0.1.1754 (2026-05-06)
 
 ### Fixes
