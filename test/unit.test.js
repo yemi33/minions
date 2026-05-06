@@ -28531,6 +28531,102 @@ async function testSchedulerAdditionalCoverage() {
     assert.strictEqual(step(21), false);
   });
 
+  // ─── parseCronField: bounds validation (P-h4cron-2ab8) ────────────────────
+  // Out-of-range values must return a matcher that NEVER fires (() => false),
+  // rather than being silently accepted as exact matchers that never trigger
+  // because val will never reach them. This prevents schedules with typos like
+  // "99 * *" (intended "9 * *") from sitting in config dormant forever.
+
+  await test('parseCronField: exact value above max returns always-false matcher', () => {
+    // minute=99 in a "0-59" field — caller bug, treat as never-fires.
+    const matcher = scheduler.parseCronField('99', 0, 59);
+    for (const v of [0, 30, 59, 99, 100]) {
+      assert.strictEqual(matcher(v), false, `minute=99 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value at hour-max boundary 24 returns always-false matcher', () => {
+    // hour=24 is invalid (range is 0-23) — common off-by-one.
+    const matcher = scheduler.parseCronField('24', 0, 23);
+    for (const v of [0, 12, 23, 24]) {
+      assert.strictEqual(matcher(v), false, `hour=24 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value above dow-max returns always-false matcher', () => {
+    // dow=9 is invalid (range is 0-6).
+    const matcher = scheduler.parseCronField('9', 0, 6);
+    for (const v of [0, 3, 6, 9]) {
+      assert.strictEqual(matcher(v), false, `dow=9 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: exact value below min returns always-false matcher', () => {
+    // parseInt('-5', 10) === -5 (NaN-check passes), so bounds-check must catch it.
+    const matcher = scheduler.parseCronField('-5', 0, 59);
+    for (const v of [-5, 0, 30]) {
+      assert.strictEqual(matcher(v), false, `minute=-5 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: list with all values out of range returns always-false matcher', () => {
+    // dow=7,8,9 — all outside 0-6.
+    const matcher = scheduler.parseCronField('7,8,9', 0, 6);
+    for (const v of [0, 1, 6, 7, 8, 9]) {
+      assert.strictEqual(matcher(v), false, `dow=7,8,9 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: list with mixed in-range and out-of-range keeps only valid entries', () => {
+    // 1 and 5 are valid dow; 7 and 99 are not — only 1 and 5 should match.
+    const matcher = scheduler.parseCronField('1,7,5,99', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(5), true);
+    assert.strictEqual(matcher(0), false);
+    assert.strictEqual(matcher(7), false, '7 is out of range and must not match');
+    assert.strictEqual(matcher(99), false, '99 is out of range and must not match');
+  });
+
+  await test('parseCronField: step greater than max returns always-false matcher', () => {
+    // */60 in a 0-59 minute field — step exceeds the range, schedule never fires meaningfully.
+    const matcher = scheduler.parseCronField('*/60', 0, 59);
+    for (const v of [0, 30, 59, 60]) {
+      assert.strictEqual(matcher(v), false, `*/60 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: step equal to max-plus-1 in dow returns always-false matcher', () => {
+    // */7 in a 0-6 dow field — would match only val=0 today; with bounds, never matches.
+    const matcher = scheduler.parseCronField('*/7', 0, 6);
+    for (const v of [0, 3, 6, 7]) {
+      assert.strictEqual(matcher(v), false, `*/7 must never match (val=${v})`);
+    }
+  });
+
+  await test('parseCronField: step equal to max still fires (boundary kept inclusive)', () => {
+    // */59 is unusual but technically valid: matches minute 0 (and 59 if reached).
+    // Bounds check rejects step > max only, not step == max — preserve existing semantics.
+    const matcher = scheduler.parseCronField('*/59', 0, 59);
+    assert.strictEqual(matcher(0), true);
+    assert.strictEqual(matcher(59), true);
+    assert.strictEqual(matcher(30), false);
+  });
+
+  await test('parseCronExpr: out-of-range hour produces a non-firing matcher (still returns object)', () => {
+    // "0 99 *" — minute valid, hour=99 invalid. parseCronExpr returns an object,
+    // but matches() must return false for every Date because the hour matcher never fires.
+    const cron = scheduler.parseCronExpr('0 99 *');
+    assert.ok(cron, 'parseCronExpr returns the wrapper even when a field is out of range');
+    for (const date of [
+      new Date(2026, 2, 30, 0, 0),
+      new Date(2026, 2, 30, 12, 0),
+      new Date(2026, 2, 30, 23, 0),
+    ]) {
+      assert.strictEqual(cron.matches(date), false,
+        `out-of-range hour=99 must never match (${date.toISOString()})`);
+    }
+  });
+
   // ─── parseCronExpr ────────────────────────────────────────────────────────
 
   await test('parseCronExpr: dayOfWeek field gates the match', () => {
