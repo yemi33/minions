@@ -37592,12 +37592,82 @@ async function testAutoRecoveryAndAtomicity() {
   await test('ccDocCall surfaces actionable errorClass messages instead of generic failure', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('function _docChatErrorMessage'), 'Should define _docChatErrorMessage helper');
-    const helperFn = src.slice(src.indexOf('function _docChatErrorMessage'), src.indexOf('function _docChatErrorMessage') + 600);
+    const helperStart = src.indexOf('function _docChatErrorMessage');
+    const helperFn = src.slice(helperStart, helperStart + 2000);
     assert.ok(helperFn.includes('auth-failure'), '_docChatErrorMessage should handle auth-failure');
     assert.ok(helperFn.includes('context-limit'), '_docChatErrorMessage should handle context-limit');
     assert.ok(helperFn.includes('budget-exceeded'), '_docChatErrorMessage should handle budget-exceeded');
     assert.ok(helperFn.includes('crash'), '_docChatErrorMessage should handle crash');
     assert.ok(helperFn.includes('sessionPreserved'), '_docChatErrorMessage should differentiate preserved-session failures');
+  });
+
+  // ── Doc-chat error messages are runtime-agnostic; runtime adapter supplies the copy
+  await test('_docChatErrorMessage surfaces adapter-supplied errorMessage instead of hardcoding runtime', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const helperStart = src.indexOf('function _docChatErrorMessage');
+    const helperEnd = src.indexOf('\n}\n', helperStart) + 2;
+    const helperSrc = src.slice(helperStart, helperEnd);
+    // Helper must NOT branch on runtime name — that knowledge lives in the adapter.
+    assert.ok(!/runtime\s*===\s*['"]copilot['"]/.test(helperSrc), 'helper must not branch on runtime === "copilot"');
+    assert.ok(!/runtime\s*===\s*['"]claude['"]/.test(helperSrc), 'helper must not branch on runtime === "claude"');
+    const fn = new Function(`${helperSrc}\nreturn _docChatErrorMessage;`)();
+    // When adapter supplies a message it wins for the runtime-specific codes.
+    const copilotAuth = fn('auth-failure', false, [], 'GitHub Copilot authentication failed — run `gh auth login`.');
+    const claudeAuth = fn('auth-failure', false, [], 'Claude authentication failed — run `claude auth` or check your API key, then try again.');
+    assert.ok(copilotAuth.startsWith('GitHub Copilot authentication failed'), 'Copilot adapter message should be surfaced verbatim');
+    assert.ok(claudeAuth.startsWith('Claude authentication failed'), 'Claude adapter message should be surfaced verbatim');
+    // Tool hint is appended regardless of source.
+    const withTools = fn('auth-failure', false, [{ name: 'Edit' }], 'Some auth message.');
+    assert.ok(/tool/i.test(withTools), 'tool hint should still append');
+    // Generic fallback (no errorMessage) must not name a specific runtime.
+    const fallbackAuth = fn('auth-failure', false, [], null);
+    assert.ok(!/claude/i.test(fallbackAuth) && !/copilot/i.test(fallbackAuth),
+      'fallback auth message must be runtime-agnostic');
+    const fallbackBudget = fn('budget-exceeded', false, [], null);
+    assert.ok(!/claude/i.test(fallbackBudget) && !/copilot/i.test(fallbackBudget),
+      'fallback budget message must be runtime-agnostic');
+    const fallbackCrash = fn('crash', false, [], null);
+    assert.ok(!/claude/i.test(fallbackCrash) && !/copilot/i.test(fallbackCrash),
+      'fallback crash message must be runtime-agnostic');
+  });
+
+  await test('_docChatFailureResponse threads result.errorMessage into _docChatErrorMessage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Try to salvage'));
+    assert.ok(/_docChatErrorMessage\([^)]*result\.errorMessage/.test(failureFn),
+      '_docChatFailureResponse should pass result.errorMessage into _docChatErrorMessage');
+  });
+
+  await test('_docChatPartialWarning is runtime-agnostic (no Claude/Copilot string in source)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const warnStart = src.indexOf('function _docChatPartialWarning');
+    const warnEnd = src.indexOf('\n}\n', warnStart) + 2;
+    const warnSrc = src.slice(warnStart, warnEnd);
+    assert.ok(!/['"`]Claude['"`]|['"`]Copilot['"`]/.test(warnSrc),
+      '_docChatPartialWarning must not hardcode runtime names');
+  });
+
+  await test('engine/llm.js plumbs errInfo.message through as result.errorMessage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    const matches = src.match(/errorMessage:\s*errInfo\.message/g) || [];
+    assert.ok(matches.length >= 2,
+      `llm.js should set errorMessage from errInfo.message in both callLLM and callLLMStreaming (found ${matches.length})`);
+  });
+
+  await test('runtime adapters return remediation strings in parseError', () => {
+    // Load via require so we exercise the actual exported parseError.
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'));
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot.js'));
+    const claudeAuth = claude.parseError('Error 401 Unauthorized');
+    assert.equal(claudeAuth.code, 'auth-failure');
+    assert.ok(/claude auth/i.test(claudeAuth.message), 'claude auth-failure message should include `claude auth` remediation');
+    const copilotAuth = copilot.parseError('not authenticated');
+    assert.equal(copilotAuth.code, 'auth-failure');
+    assert.ok(/gh auth login/i.test(copilotAuth.message), 'copilot auth-failure message should include `gh auth login` remediation');
+    const claudeBudget = claude.parseError('budget exceeded');
+    assert.ok(/account|spending|limit/i.test(claudeBudget.message), 'claude budget message should mention account/spending');
+    const copilotBudget = copilot.parseError('quota exceeded');
+    assert.ok(/quota|copilot/i.test(copilotBudget.message), 'copilot budget message should mention Copilot quota');
   });
 
   await test('ccDocCall passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
@@ -39436,6 +39506,16 @@ async function testDashboardResilience() {
       'doc-chat live progress should stack CoT and progress status vertically');
     assert.ok(modalQaSrc.includes('Doc chat stalled with no tool or text progress for 6 minutes.'),
       'doc-chat should show an explicit stall timeout message instead of spinning forever');
+  });
+
+  await test('doc-chat streaming updates preserve manual collapse state', () => {
+    const mutateFn = modalQaSrc.slice(modalQaSrc.indexOf('function _qaMutateThreadHtml'), modalQaSrc.indexOf('\nfunction _qaResumeQueuedMessages'));
+    assert.ok(mutateFn.includes('const wasCollapsed = _qaIsThreadCollapsed()'),
+      'Thread HTML updates should capture whether the user manually collapsed doc chat');
+    assert.ok(mutateFn.includes('if (wasCollapsed) _setQaThreadCollapsed(true)'),
+      'Thread HTML updates should not re-expand a manually collapsed doc chat');
+    assert.ok(modalQaSrc.includes('function _qaIsThreadCollapsed()') && modalQaSrc.includes('function _setQaThreadCollapsed(collapsed)'),
+      'Doc chat should centralize collapsed-state detection and toggling');
   });
 
   await test('doc-chat clears processing badge when processing completes', () => {

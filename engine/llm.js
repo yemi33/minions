@@ -232,6 +232,7 @@ function _missingRuntimeResult(runtimeName, runtime, reason) {
     toolUses: [],
     runtime: runtime?.name || runtimeName || null,
     errorClass: shared.FAILURE_CLASS.CONFIG_ERROR,
+    errorMessage: message,
     missingRuntime: true,
   };
 }
@@ -689,6 +690,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
         toolUses: parsed.toolUses,
         runtime: runtime.name,
         errorClass: errInfo.code,
+        errorMessage: errInfo.message || null,
       });
     };
 
@@ -711,7 +713,7 @@ function callLLM(promptText, sysPromptText, opts = {}) {
       resolve({
         text: '', usage: null, sessionId: null, code: 1,
         stderr: err.message, raw: '', toolUses: [],
-        runtime: runtime.name, errorClass: null,
+        runtime: runtime.name, errorClass: null, errorMessage: null,
       });
     });
   });
@@ -814,6 +816,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
         toolUses: parsed.toolUses,
         runtime: runtime.name,
         errorClass: errInfo.code,
+        errorMessage: errInfo.message || null,
       });
     };
 
@@ -836,7 +839,7 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
       resolve({
         text: '', usage: null, sessionId: null, code: 1,
         stderr: err.message, raw: '', toolUses: [],
-        runtime: runtime.name, errorClass: null,
+        runtime: runtime.name, errorClass: null, errorMessage: null,
       });
     });
   });

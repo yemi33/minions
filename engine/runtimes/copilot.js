@@ -576,10 +576,10 @@ function parseError(rawOutput) {
     return { message: 'Copilot rejected the requested model', code: 'unknown-model', retriable: false };
   }
   if (/budget.*exceed|premium.*limit.*reach|quota.*exceed/i.test(lower)) {
-    return { message: 'Copilot premium-request budget exceeded', code: 'budget-exceeded', retriable: false };
+    return { message: 'Copilot premium-request budget exceeded — check your GitHub Copilot quota.', code: 'budget-exceeded', retriable: false };
   }
   if (/internal error|panic|uncaught|copilot.*crashed|fatal: copilot/i.test(lower)) {
-    return { message: 'Copilot CLI crashed', code: 'crash', retriable: true };
+    return { message: 'Copilot CLI crashed unexpectedly. Try again.', code: 'crash', retriable: true };
   }
   return { message: '', code: null, retriable: true };
 }

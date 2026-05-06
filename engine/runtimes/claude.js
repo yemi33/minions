@@ -493,16 +493,16 @@ function parseError(rawOutput) {
   const hasExplicitAuthFailure = /invalid api key|api key.*invalid|authentication.*fail|\bunauthorized\b|please.*log.*in|claude\.ai\/login/i.test(text);
   const hasAuthStatusCode = /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s+code)?|statuscode|response(?:\s+status)?|api(?:\s+(?:error|response|status))?)\s*[:=]?\s*(?:401|403)\b|\b(?:401\s+unauthorized|403\s+forbidden)\b/i.test(text);
   if (hasExplicitAuthFailure || hasAuthStatusCode) {
-    return { message: 'Claude authentication failed', code: 'auth-failure', retriable: false };
+    return { message: 'Claude authentication failed — run `claude auth` or check your API key, then try again.', code: 'auth-failure', retriable: false };
   }
   if (/prompt is too long|context window|context.*length.*exceeded|token limit|conversation.*too long/i.test(text)) {
     return { message: 'Claude context window exhausted', code: 'context-limit', retriable: false };
   }
   if (/budget.*exceed|max.budget.usd.*reach|cost.*limit.*exceed/i.test(lower)) {
-    return { message: 'Claude budget cap exceeded', code: 'budget-exceeded', retriable: false };
+    return { message: 'Claude budget cap exceeded — check your Claude account spending limit.', code: 'budget-exceeded', retriable: false };
   }
   if (/internal error|panic|segmentation fault|claude.*crashed|fatal: claude/i.test(lower)) {
-    return { message: 'Claude CLI crashed', code: 'crash', retriable: true };
+    return { message: 'Claude CLI crashed unexpectedly. Try again.', code: 'crash', retriable: true };
   }
   return { message: '', code: null, retriable: true };
 }

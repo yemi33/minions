@@ -2538,13 +2538,34 @@ function _formatDocChatContext({ document, title, filePath, selection, canEdit, 
 
 // Map errorClass codes from the runtime adapter to actionable user-facing messages.
 // sessionPreserved=true means ccCall preserved the session — user can retry immediately.
-function _docChatErrorMessage(errorClass, sessionPreserved = false) {
-  if (errorClass === 'auth-failure') return 'Claude authentication failed — run `claude auth` or check your API key, then try again.';
-  if (errorClass === 'context-limit') return 'Session context is too long. Click "Clear" to start a fresh conversation.';
-  if (errorClass === 'budget-exceeded') return 'API budget exceeded — check your Claude account spending limit.';
-  if (errorClass === 'crash') return 'Claude runtime crashed unexpectedly. Try again.';
-  if (sessionPreserved) return 'Temporary connection issue — your conversation is intact, send your message again.';
+// toolUses=[] from result.toolUses lets the message warn that tools may have already
+// modified files/state before the failure — the user shouldn't assume nothing happened.
+// errorMessage is the runtime adapter's own remediation string (from parseError) —
+// authoritative because it knows whether the runtime is Claude, Copilot, or another;
+// dashboard falls back to generic copy only when the adapter didn't supply one.
+function _docChatErrorMessage(errorClass, sessionPreserved = false, toolUses = [], errorMessage = null) {
+  const tools = Array.isArray(toolUses) ? toolUses : [];
+  const toolHint = tools.length > 0
+    ? ` (${tools.length} tool${tools.length === 1 ? '' : 's'} ran before the failure: ${tools.slice(0, 5).map(t => t.name).join(', ')}${tools.length > 5 ? '…' : ''} — files or state may have been modified.)`
+    : '';
+  if (errorClass === 'auth-failure') return (errorMessage || 'Runtime authentication failed — check your CLI auth or API key, then try again.') + toolHint;
+  if (errorClass === 'context-limit') return 'Session context is too long. Click "Clear" to start a fresh conversation.' + toolHint;
+  if (errorClass === 'budget-exceeded') return (errorMessage || 'Runtime budget exceeded — check your account or quota.') + toolHint;
+  if (errorClass === 'crash') return (errorMessage || 'Runtime crashed unexpectedly. Try again.') + toolHint;
+  if (sessionPreserved) return 'Temporary connection issue — your conversation is intact, send your message again.' + toolHint;
+  if (tools.length > 0) return 'The agent stopped responding before producing a final answer.' + toolHint;
   return 'Failed to process request. Try again.';
+}
+
+// Secondary note rendered alongside a recovered partial answer — distinct from the
+// hard-failure message because the answer/actions/document-edit DID land. The user
+// just needs to know the run wasn't clean.
+function _docChatPartialWarning(errorClass) {
+  if (errorClass === 'auth-failure') return 'Note: auth failed — answer recovered from partial output, but follow-up turns may not work.';
+  if (errorClass === 'context-limit') return 'Note: session context was too long — answer recovered. Click "Clear" before continuing.';
+  if (errorClass === 'budget-exceeded') return 'Note: runtime budget exceeded — answer recovered, but further calls may fail.';
+  if (errorClass === 'crash') return 'Note: runtime crashed before clean exit, but a complete response was recovered.';
+  return 'Note: the agent exited unexpectedly. A complete response was recovered — verify any saved files or dispatched actions.';
 }
 
 // Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
@@ -2580,20 +2601,43 @@ async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSessi
 // Build the {error} envelope returned to the dashboard when doc-chat ultimately
 // fails. Surfaces an actionable user-facing message (via _docChatErrorMessage)
 // plus the runtime's real stderr / exit code / errorClass so the UI can render
-// the cause and so future failures are debuggable from logs.
+// the cause and so future failures are debuggable from logs. toolUses lets the
+// client surface what side-effects already landed despite the failure.
 function _docChatFailureResponse(label, filePath, result, sessionPreserved = false) {
   const stderrTail = (result.stderr || '').slice(-2048);
-  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, filePath=${filePath}, stderr=${stderrTail.slice(0, 200)}`);
+  const toolUses = Array.isArray(result.toolUses) ? result.toolUses : [];
+  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, tools=${toolUses.length}, filePath=${filePath}, stderr=${stderrTail.slice(0, 200)}`);
   return {
-    answer: _docChatErrorMessage(result.errorClass, sessionPreserved),
+    answer: _docChatErrorMessage(result.errorClass, sessionPreserved, toolUses, result.errorMessage || null),
     content: null,
     actions: [],
+    toolUses,
     error: {
       code: result.code ?? null,
       stderr: stderrTail,
       errorClass: result.errorClass || null,
       runtime: result.runtime || null,
     },
+  };
+}
+
+// Try to salvage useful work from a non-zero / empty-text result before falling
+// through to the failure response. Even when the runtime exits non-zero, the
+// model often produced a complete answer / action JSON / document edit in
+// result.text — discarding it just to show "Failed to process request" wastes
+// successful work and confuses users who watched tools run during streaming.
+// Returns null when there's nothing parseable; caller falls through to failure.
+function _recoverPartialDocChatResponse(result, sessionKey) {
+  if (!result || !result.text) return null;
+  const parsed = _parseDocChatResultText(result.text);
+  const hasActions = Array.isArray(parsed.actions) && parsed.actions.length > 0;
+  const hasUseful = !!(parsed.answer || parsed.content || hasActions);
+  if (!hasUseful) return null;
+  return {
+    ...parsed,
+    partial: true,
+    warning: _docChatPartialWarning(result.errorClass),
+    toolUses: Array.isArray(result.toolUses) ? result.toolUses : [],
   };
 }
 
@@ -2653,6 +2697,9 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   }
 
   if (result.code !== 0 || !result.text) {
+    // Try to salvage a parseable answer / action / document edit before failing.
+    const recovered = _recoverPartialDocChatResponse(result, sessionKey);
+    if (recovered) return recovered;
     const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
     return _docChatFailureResponse('doc-chat', filePath, result, sessionPreserved);
   }
@@ -2709,6 +2756,8 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   }
 
   if (result.code !== 0 || !result.text) {
+    const recovered = _recoverPartialDocChatResponse(result, sessionKey);
+    if (recovered) return recovered;
     const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
     return _docChatFailureResponse('doc-chat-stream', filePath, result, sessionPreserved);
   }
@@ -4822,7 +4871,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions, actionParseError, error: ccError } = await ccDocCall({
+      const { answer, content, actions, actionParseError, partial, warning, toolUses, error: ccError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
@@ -4837,6 +4886,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         ...(actionResults ? { actionResults } : {}),
         ...(actionParseError ? { actionParseError } : {}),
         ...(ccError ? { error: ccError } : {}),
+        ...(partial ? { partial: true, warning } : {}),
+        ...(Array.isArray(toolUses) && toolUses.length ? { toolUses } : {}),
         ...extra,
       });
 
@@ -4938,7 +4989,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions, actionParseError, error: ccError } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError, partial, warning, toolUses, error: ccError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4956,6 +5007,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           ...(actionResults ? { actionResults } : {}),
           ...(actionParseError ? { actionParseError } : {}),
           ...(ccError ? { error: ccError } : {}),
+          ...(partial ? { partial: true, warning } : {}),
+          ...(Array.isArray(toolUses) && toolUses.length ? { toolUses } : {}),
           ...extra,
         });
 
