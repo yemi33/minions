@@ -4652,6 +4652,8 @@ async function testProjectHelpers() {
       'dashboard project add/scan should use shared project-discovery');
     assert.ok(cliSrc.includes("require('./engine/project-discovery')"),
       'CLI project add/scan should use shared project-discovery');
+    assert.ok(cliSrc.includes('shared.ensureProjectStateFiles(projectEntry'),
+      'CLI project add/scan should create centralized project state');
   });
 }
 
@@ -14034,6 +14036,56 @@ async function testProjectPathHelpers() {
       const result = freshShared.projectStateDirEnsure({ name: 'ensure-me' });
       assert.strictEqual(result, projectDir, 'should return the computed path');
       assert.ok(fs.existsSync(projectDir), 'projectStateDirEnsure must mkdir the directory');
+    } finally { restore(); }
+  });
+
+  await test('ensureProjectStateFiles creates central state without project-local .minions', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const repo = path.join(dir, 'repo');
+      fs.mkdirSync(repo, { recursive: true });
+      const project = { name: 'demo', localPath: repo };
+
+      const result = freshShared.ensureProjectStateFiles(project, { migrateLegacy: true, removeLegacy: true });
+
+      assert.ok(fs.existsSync(freshShared.projectWorkItemsPath(project)), 'central work-items.json should exist');
+      assert.ok(fs.existsSync(freshShared.projectPrPath(project)), 'central pull-requests.json should exist');
+      assert.deepStrictEqual(freshShared.safeJson(freshShared.projectWorkItemsPath(project)), []);
+      assert.deepStrictEqual(freshShared.safeJson(freshShared.projectPrPath(project)), []);
+      assert.ok(!fs.existsSync(path.join(repo, '.minions')), 'project-local .minions must not be created');
+      assert.ok(result.created.includes('work-items.json'));
+      assert.ok(result.created.includes('pull-requests.json'));
+    } finally { restore(); }
+  });
+
+  await test('ensureProjectStateFiles migrates legacy project-local state and removes known files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const dir = process.env.MINIONS_TEST_DIR;
+      const freshShared = require('../engine/shared');
+      const repo = path.join(dir, 'repo');
+      const legacyDir = path.join(repo, '.minions');
+      fs.mkdirSync(legacyDir, { recursive: true });
+      const project = { name: 'demo', localPath: repo };
+      freshShared.safeWrite(freshShared.projectWorkItemsPath(project), [{ id: 'W-1', title: 'central' }]);
+      freshShared.safeWrite(path.join(legacyDir, 'work-items.json'), [
+        { id: 'W-1', title: 'duplicate' },
+        { id: 'W-2', title: 'legacy' },
+      ]);
+      freshShared.safeWrite(path.join(legacyDir, 'pull-requests.json'), [{ id: 'PR-1', title: 'legacy pr' }]);
+      freshShared.safeWrite(path.join(legacyDir, 'pull-requests.json.backup'), [{ id: 'PR-backup', title: 'old backup' }]);
+
+      const result = freshShared.ensureProjectStateFiles(project, { migrateLegacy: true, removeLegacy: true });
+
+      const workItems = freshShared.safeJson(freshShared.projectWorkItemsPath(project));
+      const prs = freshShared.safeJson(freshShared.projectPrPath(project));
+      assert.deepStrictEqual(workItems.map(w => w.id), ['W-1', 'W-2'], 'legacy work items should merge without duplicating existing ids');
+      assert.deepStrictEqual(prs.map(pr => pr.id), ['PR-1'], 'legacy PRs should move to central state');
+      assert.ok(result.migrated.includes('work-items.json'));
+      assert.ok(result.migrated.includes('pull-requests.json'));
+      assert.ok(!fs.existsSync(legacyDir), 'empty legacy .minions dir should be removed after known files move');
     } finally { restore(); }
   });
 
@@ -34377,6 +34429,8 @@ async function testStatusMutationGuards() {
     const addBody = src.slice(addStart, addEnd);
     assert.ok(addBody.includes('projectDiscovery.discoverProjectMetadata(target)'), 'handleProjectsAdd should resolve metadata with shared project discovery');
     assert.ok(addBody.includes('invalidateStatusCache();'), 'handleProjectsAdd should invalidate cached status so refresh sees the new project immediately');
+    assert.ok(addBody.includes('shared.ensureProjectStateFiles(project'), 'handleProjectsAdd should create centralized project state');
+    assert.ok(!addBody.includes("path.join(target, '.minions')"), 'handleProjectsAdd must not create project-local .minions state');
 
     const scanStart = src.indexOf('async function handleProjectsScan');
     const scanEnd = src.indexOf('async function handleFileBug', scanStart);
@@ -39867,6 +39921,27 @@ async function testDashboardResilience() {
       'Runtime restore should seed queued messages from the persisted session record');
     assert.ok(modalQaSrc.includes('queue: Array.isArray(queue) ? _qaCloneQueue(queue)'),
       '_qaPersistSession should write queued messages into the persisted session record');
+  });
+
+  await test('doc-chat debounces chunk-driven persistence and flushes before terminal writes', () => {
+    // Streaming a doc-chat response can fire dozens of chunk events per
+    // second; without coalescing, every chunk re-serialized the entire
+    // thread HTML to localStorage. Debounce the chunk-period writes via
+    // _qaPersistSessionDebounced; flush before each terminal direct
+    // _qaPersistSession so the final state always lands.
+    assert.ok(modalQaSrc.includes('function _qaPersistSessionDebounced('),
+      'modal-qa.js should define _qaPersistSessionDebounced');
+    assert.ok(modalQaSrc.includes('function _qaFlushPersistDebounce('),
+      'modal-qa.js should define _qaFlushPersistDebounce');
+    const renderFn = modalQaSrc.slice(modalQaSrc.indexOf('function _qaRenderProgress('), modalQaSrc.indexOf('const qaTimer = setInterval'));
+    assert.ok(renderFn.includes('_qaPersistSessionDebounced(sessionKey'),
+      '_qaRenderProgress should call the debounced wrapper for chunk-period writes');
+    assert.ok(!renderFn.includes('_qaPersistSession(sessionKey'),
+      '_qaRenderProgress must not call _qaPersistSession directly (would defeat debounce)');
+    const sendFn = modalQaSrc.slice(modalQaSrc.indexOf('async function _processQaMessage'), modalQaSrc.indexOf('\nfunction qaAbort'));
+    const flushCalls = (sendFn.match(/_qaFlushPersistDebounce\(\)/g) || []).length;
+    assert.ok(flushCalls >= 3,
+      `_processQaMessage should flush before each terminal persist (got ${flushCalls} calls, want >=3 for done/error/queue-advance)`);
   });
 
   await test('doc-chat restores queued work and strips stale loading UI on reopen', () => {

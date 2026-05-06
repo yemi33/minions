@@ -130,6 +130,38 @@ function _qaPersistSession(key, { threadHtml, docContext, filePath, history, que
   _saveQaSessions();
 }
 
+// Debounced wrapper for the streaming hot path. Each chunk event currently
+// fires _qaPersistSession, which serializes the entire thread HTML into
+// localStorage — fine at one or two writes a second, expensive at the dozens
+// per second a fast LLM stream produces. Coalesce into a single write per
+// _QA_PERSIST_DEBOUNCE_MS window. Terminal writes (done / error / abort /
+// queue advance) keep using _qaPersistSession directly so the final state
+// always lands; they call _qaFlushPersistDebounce first to drop any pending
+// stale chunk-period write.
+const _QA_PERSIST_DEBOUNCE_MS = 250;
+let _qaPersistDebounceTimer = null;
+let _qaPersistPending = null;
+
+function _qaPersistSessionDebounced(key, payload) {
+  if (!key) return;
+  _qaPersistPending = { key, payload };
+  if (_qaPersistDebounceTimer) return;
+  _qaPersistDebounceTimer = setTimeout(() => {
+    _qaPersistDebounceTimer = null;
+    const next = _qaPersistPending;
+    _qaPersistPending = null;
+    if (next) _qaPersistSession(next.key, next.payload);
+  }, _QA_PERSIST_DEBOUNCE_MS);
+}
+
+function _qaFlushPersistDebounce() {
+  if (_qaPersistDebounceTimer) {
+    clearTimeout(_qaPersistDebounceTimer);
+    _qaPersistDebounceTimer = null;
+  }
+  _qaPersistPending = null;
+}
+
 function _qaSaveActiveSessionState() {
   if (!_qaSessionKey) return;
   _qaSyncActiveRuntime();
@@ -509,7 +541,7 @@ async function _processQaMessage(message, selection, opts) {
       );
     });
     if (persist) {
-      _qaPersistSession(sessionKey, {
+      _qaPersistSessionDebounced(sessionKey, {
         threadHtml: updatedThreadHtml,
         docContext: capturedDocContext,
         filePath: capturedFilePath,
@@ -653,6 +685,7 @@ async function _processQaMessage(message, selection, opts) {
           }
         }
 
+        _qaFlushPersistDebounce();
         _qaPersistSession(sessionKey, {
           threadHtml: updatedThreadHtml,
           docContext: sessionDocContext,
@@ -710,6 +743,7 @@ async function _processQaMessage(message, selection, opts) {
       if (loadingEl) loadingEl.remove();
       _qaInsertBeforeQueued(tmp, messageHtml);
     });
+    _qaFlushPersistDebounce();
     _qaPersistSession(sessionKey, {
       threadHtml: updatedThreadHtml,
       docContext: capturedDocContext,
@@ -745,6 +779,7 @@ async function _processQaMessage(message, selection, opts) {
       if (queuedEl) queuedEl.remove();
       _qaInsertBeforeQueued(tmp, _qaBuildUserMessageHtml(next.message, next.selection));
     });
+    _qaFlushPersistDebounce();
     _qaPersistSession(sessionKey, {
       threadHtml: nextThreadHtml,
       docContext: (_qaSessions.get(sessionKey) || {}).docContext || capturedDocContext,
