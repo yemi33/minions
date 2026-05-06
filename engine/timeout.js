@@ -562,4 +562,6 @@ module.exports = {
   checkSteering,
   checkIdleThreshold,
   isOsPidAliveForDispatch,
+  parseProcessExitCode, terminalResultIndicatesError, parseTerminalResultFallbackExitCode, // exported for testing
+  readFileTail, runtimeSupportsMidRunSessionId, // exported for testing
 };

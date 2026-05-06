@@ -24105,6 +24105,288 @@ async function testTimeoutBehavioral() {
   });
 }
 
+// ─── engine/timeout.js — Internal Helper Coverage ───────────────────────────
+// Direct unit tests for the pure helpers (parseProcessExitCode, etc.) that the
+// behavioral suite above exercises only indirectly via checkTimeouts.
+// W-mou4rpg00003a3d9: target the previously-untested internal helpers.
+
+async function testTimeoutInternalHelpers() {
+  console.log('\n── engine/timeout.js — Internal Helpers ──');
+
+  const timeout = require('../engine/timeout');
+
+  // ═══ parseProcessExitCode ════════════════════════════════════════════════
+
+  await test('parseProcessExitCode: empty/null/undefined input returns null', () => {
+    assert.strictEqual(timeout.parseProcessExitCode(''), null);
+    assert.strictEqual(timeout.parseProcessExitCode(null), null);
+    assert.strictEqual(timeout.parseProcessExitCode(undefined), null);
+  });
+
+  await test('parseProcessExitCode: garbage with no sentinel returns null', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('hello world\nno sentinel here\n'), null);
+    // Almost-but-not-quite — wrong prefix
+    assert.strictEqual(timeout.parseProcessExitCode('process-exit code=0\n'), null);
+  });
+
+  await test('parseProcessExitCode: single match returns its int', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=0\n'), 0);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=1\n'), 1);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=137\n'), 137);
+  });
+
+  await test('parseProcessExitCode: returns LAST match when multiple sentinels present', () => {
+    // Defends against logs that somehow accumulate stale sentinels (engine restart, etc.)
+    const log = 'noise\n[process-exit] code=0\nmore noise\n[process-exit] code=1\nfinal\n';
+    assert.strictEqual(timeout.parseProcessExitCode(log), 1);
+  });
+
+  await test('parseProcessExitCode: negative exit codes parse correctly', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=-1\n'), -1);
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] code=-15\n'), -15);
+  });
+
+  await test('parseProcessExitCode: spawn-failed literal maps to -1', () => {
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] spawn-failed\n'), -1);
+  });
+
+  await test('parseProcessExitCode: sentinel at start of file (no leading newline) matches', () => {
+    // Pattern is (?:^|\n) — must accept first-line sentinel.
+    assert.strictEqual(timeout.parseProcessExitCode('[process-exit] code=42\n'), 42);
+    assert.strictEqual(timeout.parseProcessExitCode('[process-exit] spawn-failed'), -1);
+  });
+
+  await test('parseProcessExitCode: sentinel without "code=" prefix still parses', () => {
+    // Pattern accepts (?:code=)? — optional prefix
+    assert.strictEqual(timeout.parseProcessExitCode('\n[process-exit] 7\n'), 7);
+  });
+
+  // ═══ terminalResultIndicatesError ════════════════════════════════════════
+
+  await test('terminalResultIndicatesError: is_error===true returns true', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: true }), true);
+  });
+
+  await test('terminalResultIndicatesError: is_error truthy-but-not-true does NOT count', () => {
+    // Strict === true required.
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: 1 }), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ is_error: 'yes' }), false);
+  });
+
+  await test('terminalResultIndicatesError: subtype starting with "error" is true (any case)', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'error' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'ERROR_max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'Error_failed' }), true);
+  });
+
+  await test('terminalResultIndicatesError: subtype "success" returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ subtype: 'success' }), false);
+  });
+
+  await test('terminalResultIndicatesError: terminal_reason matching error regex (snake_case field)', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'max-turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'maxturns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'fatal_error' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'failed' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'cancelled' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'timeout' }), true);
+  });
+
+  await test('terminalResultIndicatesError: terminalReason camelCase variant is honored', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminalReason: 'max_turns' }), true);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminalReason: 'timeout' }), true);
+  });
+
+  await test('terminalResultIndicatesError: benign terminal_reason returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'completed' }), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError({ terminal_reason: 'end_turn' }), false);
+  });
+
+  await test('terminalResultIndicatesError: missing fields / non-object input does not throw and returns false', () => {
+    assert.strictEqual(timeout.terminalResultIndicatesError({}), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError(null), false);
+    assert.strictEqual(timeout.terminalResultIndicatesError(undefined), false);
+  });
+
+  // ═══ parseTerminalResultFallbackExitCode ═════════════════════════════════
+
+  await test('parseTerminalResultFallbackExitCode: empty/null input returns null', () => {
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(''), null);
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(null), null);
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(undefined), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: clean success result returns null', () => {
+    const line = JSON.stringify({ type: 'result', subtype: 'success', terminal_reason: 'end_turn' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: result without terminal_reason or terminalReason is skipped', () => {
+    // Optimized prefilter requires the literal substring; a result line w/o either reason field is ignored.
+    const line = JSON.stringify({ type: 'result', subtype: 'error', is_error: true });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: max_turns terminal returns 1', () => {
+    const line = JSON.stringify({ type: 'result', subtype: 'error', terminal_reason: 'max_turns' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: camelCase terminalReason also detected', () => {
+    const line = JSON.stringify({ type: 'result', terminalReason: 'timeout' });
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: malformed JSON line still triggers regex fallback when shape matches', () => {
+    // Shape: a result line with garbled JSON (e.g. diagnostic prefix) but recognizable type+terminal_reason.
+    const line = `garbage-prefix {"type":"result","terminal_reason":"max_turns"`;
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: malformed JSON line without recognizable error reason returns null', () => {
+    // Has the prefilter substrings but the regex doesn't match an error reason.
+    const line = `garbage-prefix {"type":"result","terminal_reason":"end_turn"`;
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(line), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: multi-line input — last error wins (signals exitCode=1)', () => {
+    const lines = [
+      JSON.stringify({ type: 'result', terminal_reason: 'end_turn' }),
+      'noise',
+      JSON.stringify({ type: 'result', terminal_reason: 'max_turns' }),
+    ].join('\n');
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(lines), 1);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: non-result lines ignored', () => {
+    const lines = [
+      JSON.stringify({ type: 'system', terminal_reason: 'max_turns' }), // wrong type
+      JSON.stringify({ type: 'assistant', message: 'hi' }),              // no result substring
+    ].join('\n');
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(lines), null);
+  });
+
+  await test('parseTerminalResultFallbackExitCode: blank lines handled cleanly', () => {
+    const input = '\n\n   \n';
+    assert.strictEqual(timeout.parseTerminalResultFallbackExitCode(input), null);
+  });
+
+  // ═══ readFileTail ════════════════════════════════════════════════════════
+
+  await test('readFileTail: returns full content when file is smaller than maxBytes', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'small.log');
+    fs.writeFileSync(fp, 'hello world');
+    assert.strictEqual(timeout.readFileTail(fp, 1024), 'hello world');
+  });
+
+  await test('readFileTail: returns last maxBytes when file exceeds maxBytes', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'big.log');
+    // 1000 bytes of 'a' + clear suffix; tail of 100 must exclude the head.
+    fs.writeFileSync(fp, 'a'.repeat(1000) + 'TAIL_MARKER_END');
+    const tail = timeout.readFileTail(fp, 50);
+    assert.strictEqual(Buffer.byteLength(tail, 'utf8'), 50, 'tail must equal maxBytes when file is larger');
+    assert.ok(tail.endsWith('TAIL_MARKER_END'), 'tail must include the file suffix');
+  });
+
+  await test('readFileTail: empty file returns empty string', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'empty.log');
+    fs.writeFileSync(fp, '');
+    assert.strictEqual(timeout.readFileTail(fp, 1024), '');
+  });
+
+  await test('readFileTail: maxBytes equals file size returns full content', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'exact.log');
+    fs.writeFileSync(fp, 'abcdef');
+    assert.strictEqual(timeout.readFileTail(fp, 6), 'abcdef');
+  });
+
+  await test('readFileTail: ENOENT throws (no implicit recovery)', () => {
+    let threw = false;
+    try { timeout.readFileTail('/path/that/does/not/exist.log', 100); }
+    catch { threw = true; }
+    assert.ok(threw, 'readFileTail must throw on missing file (caller wraps in try-catch)');
+  });
+
+  // ═══ runtimeSupportsMidRunSessionId ══════════════════════════════════════
+
+  await test('runtimeSupportsMidRunSessionId: explicit info.midRunSessionId=true takes priority', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: true }), true);
+    // Even when other lookups would say false, the explicit override wins.
+    assert.strictEqual(
+      timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: true, runtime: { capabilities: { midRunSessionId: false } } }),
+      true,
+    );
+  });
+
+  await test('runtimeSupportsMidRunSessionId: explicit info.midRunSessionId=false takes priority', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: false }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: non-boolean midRunSessionId is ignored, falls through to next lookup', () => {
+    // Only literal booleans short-circuit the priority check.
+    assert.strictEqual(
+      timeout.runtimeSupportsMidRunSessionId({ midRunSessionId: 'yes', runtime: { capabilities: { midRunSessionId: false } } }),
+      false,
+    );
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtime.capabilities.midRunSessionId honored when no explicit override', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtime: { capabilities: { midRunSessionId: true } } }), true);
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtime: { capabilities: { midRunSessionId: false } } }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtimeName lookup via registry — claude=true', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'claude' }), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: runtimeName lookup via registry — copilot=false', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'copilot' }), false);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: stub registered runtime is honored via resolveRuntime', () => {
+    const { registerRuntime, _registry } = require('../engine/runtimes');
+    const stubName = 'stub-mid-run-test-' + Date.now();
+    const saved = _registry.get(stubName); // should be undefined
+    registerRuntime(stubName, { capabilities: { midRunSessionId: false } });
+    try {
+      assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: stubName }), false);
+    } finally {
+      // Clean up the stub so subsequent tests are unaffected.
+      if (saved) _registry.set(stubName, saved); else _registry.delete(stubName);
+    }
+  });
+
+  await test('runtimeSupportsMidRunSessionId: unknown runtimeName falls back to true (catch branch)', () => {
+    // resolveRuntime throws on unknown name — catch swallows and returns true (line 69).
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: 'nope-does-not-exist-' + Date.now() }), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: known runtimeName but missing capability flag falls through to default true', () => {
+    const { registerRuntime, _registry } = require('../engine/runtimes');
+    const stubName = 'stub-no-caps-test-' + Date.now();
+    registerRuntime(stubName, { /* no capabilities at all */ });
+    try {
+      assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({ runtimeName: stubName }), true);
+    } finally {
+      _registry.delete(stubName);
+    }
+  });
+
+  await test('runtimeSupportsMidRunSessionId: null/undefined input returns true (default)', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId(null), true);
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId(undefined), true);
+  });
+
+  await test('runtimeSupportsMidRunSessionId: empty object returns true (default)', () => {
+    assert.strictEqual(timeout.runtimeSupportsMidRunSessionId({}), true);
+  });
+}
+
 // ─── Recent Features Tests ─────────────────────────────────────────────────
 
 async function testRecentFeatures() {
@@ -28752,6 +29034,8 @@ async function main() {
     await testAgentSteering();
     // W-mobjwnvz5sbl: behavioral coverage for engine/timeout.js
     await testTimeoutBehavioral();
+    // W-mou4rpg00003a3d9: direct unit coverage of internal parse helpers
+    await testTimeoutInternalHelpers();
     await testRecentFeatures();
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
