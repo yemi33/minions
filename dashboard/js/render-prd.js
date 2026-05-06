@@ -406,12 +406,22 @@ function renderPrdProgress(prog) {
         const agentDisplay = agentInfo ? (agentInfo.emoji || '') + ' ' + escHtml(agentInfo.name || agentId) : (agentId ? escHtml(agentId) : '');
         const deps = (i.depends_on || []).join(', ');
         const wipAnim = i.status === 'in-progress' ? 'animation:prdWipPulse 2s infinite;' : '';
+        const wiForCard = wi[i.id];
+        const wiIdBadge = wiForCard ? '<span style="font-size:8px;color:var(--muted);background:var(--surface);padding:1px 4px;border-radius:3px;border:1px solid var(--border)" title="Work item: ' + escHtml(wiForCard.id) + '">' + escHtml(wiForCard.id) + '</span>' : '';
+        const isDoneCard = i.status === 'done' || (wiForCard && wiForCard.status === 'done');
+        const reopenBtnGraph = isDoneCard
+          ? '<span onclick="event.stopPropagation();prdItemReopen(\'' + src + '\',\'' + iid + '\')" style="font-size:8px;color:var(--blue);cursor:pointer;padding:1px 4px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Re-open: set to updated so engine re-dispatches on existing branch">re-open</span>'
+          : '';
+        const cardTitle = i.description ? escHtml(i.name + ' — ' + i.description) : escHtml(i.name || '');
         html += '<div onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')" ' +
+          'title="' + cardTitle + '" ' +
           'style="background:var(--surface2);border:1px solid var(--border);border-left:3px solid ' + borderColor + ';' + wipAnim +
           'border-radius:4px;padding:6px 8px;margin-bottom:6px;cursor:pointer;font-size:11px">' +
           '<div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">' +
             statusBadge(i.status, i.id) +
             '<span style="font-weight:600;color:var(--text)">' + escHtml(i.id) + '</span>' +
+            wiIdBadge +
+            '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="margin-left:auto;color:var(--red);cursor:pointer;font-size:10px;padding:0 4px;line-height:1" title="Remove item">x</span>' +
           '</div>' +
           '<div style="color:var(--text);font-size:11px;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">' + escHtml(i.name) + '</div>' +
           '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
@@ -436,6 +446,7 @@ function renderPrdProgress(prog) {
               if (!canRetry) return '';
               return '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(rqId) + '\',\'' + escHtml(w ? (w._source || '') : '') + '\',\'' + escHtml(i.source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>';
             })() +
+            reopenBtnGraph +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
             (function() {
               var w = wi[i.id];
