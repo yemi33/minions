@@ -10066,8 +10066,15 @@ async function testArchivePathResolution() {
       'doc-chat handler should not produce isNewVersion (no forking)');
     assert.ok(!docChatSection.includes('versionedFile'),
       'doc-chat handler should not produce versionedFile (no forking)');
-    assert.ok(docChatSection.includes('safeWrite(fullPath, content)'),
-      'doc-chat should save directly to the original file');
+    // The handler delegates the disk write to _finalizeDocChatEdit, which
+    // writes back to the same fullPath the handler resolved.
+    assert.ok(docChatSection.includes('_finalizeDocChatEdit({'),
+      'doc-chat handler should delegate to _finalizeDocChatEdit');
+    const finalizerStart = src.indexOf('function _finalizeDocChatEdit(');
+    const finalizerEnd = src.indexOf('\n}\n', finalizerStart) + 2;
+    const finalizerSrc = src.slice(finalizerStart, finalizerEnd);
+    assert.ok(finalizerSrc.includes('safeWrite(fullPath, delimiterContent)'),
+      '_finalizeDocChatEdit should save directly to fullPath on the whole-file path');
   });
 
   await test('doc-chat does not trigger version actions or forking UI', () => {
@@ -37671,6 +37678,125 @@ async function testAutoRecoveryAndAtomicity() {
     assert.equal(calls[1], 'Hello. More.');
   });
 
+  await test('_finalizeDocChatEdit writes the delimiter content to disk on the whole-file path', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const fullPath = path.join(tmp, 'plan.md');
+    fs.writeFileSync(fullPath, 'old');
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'plan.md', fullPath, isJson: false, canEdit: true,
+      originalContent: 'old', delimiterContent: 'new content',
+    });
+    assert.equal(result.edited, true, 'should report edited=true');
+    assert.equal(result.content, 'new content', 'should return the new content');
+    assert.equal(fs.readFileSync(fullPath, 'utf8'), 'new content', 'disk should have the new content');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await test('_finalizeDocChatEdit rejects invalid JSON on the whole-file path without writing', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const fullPath = path.join(tmp, 'config.json');
+    fs.writeFileSync(fullPath, '{"a":1}');
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'config.json', fullPath, isJson: true, canEdit: true,
+      originalContent: '{"a":1}', delimiterContent: '{not valid json',
+    });
+    assert.equal(result.edited, false, 'should report edited=false');
+    assert.ok(result.answerSuffix && result.answerSuffix.includes('JSON invalid'),
+      'should surface a JSON-invalid suffix');
+    assert.equal(fs.readFileSync(fullPath, 'utf8'), '{"a":1}', 'disk should be unchanged');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await test('_finalizeDocChatEdit detects a surgical edit by re-reading disk after the call', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const fullPath = path.join(tmp, 'doc.md');
+    // Simulate the runtime Edit tool having written to disk during the call
+    fs.writeFileSync(fullPath, '# Section A\n\nFixed body.\n');
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'doc.md', fullPath, isJson: false, canEdit: true,
+      originalContent: '# Section A\n\nOld body.\n',
+      delimiterContent: null,
+    });
+    assert.equal(result.edited, true, 'should report edited=true on a surgical disk diff');
+    assert.equal(result.content, '# Section A\n\nFixed body.\n', 'should return the on-disk content');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await test('_finalizeDocChatEdit returns edited=false when no delimiter and no disk diff', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const fullPath = path.join(tmp, 'doc.md');
+    fs.writeFileSync(fullPath, 'unchanged');
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'doc.md', fullPath, isJson: false, canEdit: true,
+      originalContent: 'unchanged', delimiterContent: null,
+    });
+    assert.equal(result.edited, false);
+    assert.equal(result.content, null);
+  });
+
+  await test('_finalizeDocChatEdit rolls back surgical edits to completed meeting JSONs', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const meetingsDir = path.join(tmp, 'meetings');
+    fs.mkdirSync(meetingsDir, { recursive: true });
+    const fullPath = path.join(meetingsDir, 'm1.json');
+    // Disk reflects the runtime Edit tool's change — status was completed and
+    // the body was modified mid-call. Finalize must roll back to the snapshot.
+    fs.writeFileSync(fullPath, JSON.stringify({ status: 'completed', body: 'mutated' }));
+    const original = JSON.stringify({ status: 'completed', body: 'original' });
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'meetings/m1.json', fullPath, isJson: true, canEdit: true,
+      originalContent: original, delimiterContent: null,
+    });
+    assert.equal(result.edited, false, 'should reject the edit');
+    assert.ok(result.answerSuffix && result.answerSuffix.includes('completed/archived'),
+      'should explain why the edit was rejected');
+    assert.equal(fs.readFileSync(fullPath, 'utf8'), original, 'disk should be rolled back to the snapshot');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await test('_finalizeDocChatEdit rolls back surgical edits that produce invalid JSON', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const fullPath = path.join(tmp, 'config.json');
+    fs.writeFileSync(fullPath, 'not valid json after edit');
+    const original = '{"valid": true}';
+    const result = dashboardModule._finalizeDocChatEdit({
+      filePath: 'config.json', fullPath, isJson: true, canEdit: true,
+      originalContent: original, delimiterContent: null,
+    });
+    assert.equal(result.edited, false);
+    assert.ok(result.answerSuffix && /rolled back/i.test(result.answerSuffix),
+      'should surface a rollback suffix');
+    assert.equal(fs.readFileSync(fullPath, 'utf8'), original, 'disk should be restored');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  await test('_isCompletedMeetingJson only fires on meetings/*.json with completed/archived status', () => {
+    const dashboardModule = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const tmp = createTmpDir();
+    const meetingsDir = path.join(tmp, 'meetings');
+    fs.mkdirSync(meetingsDir, { recursive: true });
+    const completedPath = path.join(meetingsDir, 'done.json');
+    const activePath = path.join(meetingsDir, 'live.json');
+    const archivedPath = path.join(meetingsDir, 'archived.json');
+    fs.writeFileSync(completedPath, JSON.stringify({ status: 'completed' }));
+    fs.writeFileSync(activePath, JSON.stringify({ status: 'active' }));
+    fs.writeFileSync(archivedPath, JSON.stringify({ status: 'archived' }));
+    assert.equal(dashboardModule._isCompletedMeetingJson('meetings/done.json', completedPath, true), true);
+    assert.equal(dashboardModule._isCompletedMeetingJson('meetings/archived.json', archivedPath, true), true);
+    assert.equal(dashboardModule._isCompletedMeetingJson('meetings/live.json', activePath, true), false);
+    assert.equal(dashboardModule._isCompletedMeetingJson('plans/something.md', completedPath, false), false,
+      'non-meeting paths should never be blocked');
+    assert.equal(dashboardModule._isCompletedMeetingJson('meetings/done.json', completedPath, false), false,
+      'non-JSON files under meetings/ should not be treated as meeting state');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // freshSession plumbing now spans _buildDocChatPass + ccDocCall — slice
@@ -37894,7 +38020,9 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fnBody.includes('ccDocCallStreaming({'), 'Streaming doc-chat route should use the streaming doc helper');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'chunk', text })"), 'Streaming doc-chat route should emit chunk events');
     assert.ok(fnBody.includes("writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) })"), 'Streaming doc-chat route should emit tool events');
-    assert.ok(fnBody.includes("type: 'done'") && fnBody.includes('writeDocEvent(donePayload'),
+    // Final terminal event is now written inline (donePayload helper was
+    // collapsed when _finalizeDocChatEdit took over the edit decision).
+    assert.ok(/writeDocEvent\(\s*\{\s*type:\s*'done'/.test(fnBody),
       'Streaming doc-chat route should emit a final done event');
   });
 
@@ -46756,11 +46884,13 @@ async function testRenderUtils() {
       'SSE tool handler should capture evt.input from the server event');
   });
 
-  await test('CC SSE forwards and handles thinking events for streamed runtimes', () => {
-    assert.ok(dashSrc.includes("writer({ type: 'thinking'") && dashSrc.includes('onThinking: () =>'),
-      'dashboard stream handler should forward runtime thinking/progress events');
-    assert.ok(ccSrc.includes("evt.type === 'thinking'") && ccSrc.includes('streamStatusNote = evt.text'),
-      'command-center client should render thinking/progress SSE events');
+  await test('CC SSE drops thinking events — they were redundant with the existing progress UX', () => {
+    assert.ok(!dashSrc.includes("writer({ type: 'thinking'"),
+      'dashboard stream handler should no longer forward thinking events');
+    assert.ok(!dashSrc.includes('onThinking: () =>'),
+      'dashboard CC stream invocation should no longer pass an onThinking callback');
+    assert.ok(!ccSrc.includes("evt.type === 'thinking'"),
+      'command-center client should no longer handle thinking SSE events');
   });
 
   await test('CC stream chunks and terminal text merge append-style instead of replacing prior streamed text', () => {
