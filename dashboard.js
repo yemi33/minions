@@ -2377,7 +2377,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2430,6 +2430,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
     }
   }
 
+  if (onRetry) onRetry(2);
   const freshPrompt = buildPrompt();
   const p2 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
@@ -2450,6 +2451,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (maxTurns <= 1) return result;
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
+  if (onRetry) onRetry(3);
   const p3 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -2467,10 +2469,13 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   return result;
 }
 
-// Lightweight content fingerprint — same algorithm used browser-side (no crypto needed)
+// Lightweight content fingerprint — same algorithm used browser-side (no crypto needed).
+// Uses length + first + middle + last char codes. Collisions on same-length strings with
+// identical first/middle/last chars are rare enough for a staleness check (not a security hash).
 function contentFingerprint(str) {
   if (!str) return '';
-  return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(str.length - 1);
+  const mid = Math.floor(str.length / 2);
+  return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(mid) + ':' + str.charCodeAt(str.length - 1);
 }
 
 function _parseDocChatResultText(text, { allowActions = false } = {}) {
@@ -2524,6 +2529,17 @@ function _formatDocChatContext({ document, title, filePath, selection, canEdit, 
   return context;
 }
 
+// Map errorClass codes from the runtime adapter to actionable user-facing messages.
+// sessionPreserved=true means ccCall preserved the session — user can retry immediately.
+function _docChatErrorMessage(errorClass, sessionPreserved = false) {
+  if (errorClass === 'auth-failure') return 'Claude authentication failed — run `claude auth` or check your API key, then try again.';
+  if (errorClass === 'context-limit') return 'Session context is too long. Click "Clear" to start a fresh conversation.';
+  if (errorClass === 'budget-exceeded') return 'API budget exceeded — check your Claude account spending limit.';
+  if (errorClass === 'crash') return 'Claude runtime crashed unexpectedly. Try again.';
+  if (sessionPreserved) return 'Temporary connection issue — your conversation is intact, send your message again.';
+  return 'Failed to process request. Try again.';
+}
+
 // Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
 // so a fresh-session retry includes the full document instead of relying on the
 // dead session's prior turn for context.
@@ -2555,14 +2571,14 @@ async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSessi
 }
 
 // Build the {error} envelope returned to the dashboard when doc-chat ultimately
-// fails. Keeps the polite user-facing message but exposes the runtime's real
-// stderr / exit code / errorClass so the UI can render the cause and so future
-// failures are debuggable from logs.
-function _docChatFailureResponse(label, filePath, result) {
+// fails. Surfaces an actionable user-facing message (via _docChatErrorMessage)
+// plus the runtime's real stderr / exit code / errorClass so the UI can render
+// the cause and so future failures are debuggable from logs.
+function _docChatFailureResponse(label, filePath, result, sessionPreserved = false) {
   const stderrTail = (result.stderr || '').slice(-2048);
-  console.error(`[${label}] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, errorClass=${result.errorClass || 'null'}, stderr=${stderrTail.slice(0, 200)}`);
+  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, filePath=${filePath}, stderr=${stderrTail.slice(0, 200)}`);
   return {
-    answer: 'Failed to process request. Try again.',
+    answer: _docChatErrorMessage(result.errorClass, sessionPreserved),
     content: null,
     actions: [],
     error: {
@@ -2573,6 +2589,7 @@ function _docChatFailureResponse(label, filePath, result) {
     },
   };
 }
+
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
@@ -2628,13 +2645,14 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   }
 
   if (result.code !== 0 || !result.text) {
-    return _docChatFailureResponse('doc-chat', filePath, result);
+    const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
+    return _docChatFailureResponse('doc-chat', filePath, result, sessionPreserved);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
 }
 
-async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse }) {
+async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse, onRetry }) {
   const sessionKey = filePath || title;
   const docSlice = document.slice(0, 20000);
 
@@ -2660,6 +2678,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       onAbortReady,
       onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
       onToolUse,
+      onRetry,
     });
   };
 
@@ -2682,7 +2701,8 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   }
 
   if (result.code !== 0 || !result.text) {
-    return _docChatFailureResponse('doc-chat-stream', filePath, result);
+    const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
+    return _docChatFailureResponse('doc-chat-stream', filePath, result, sessionPreserved);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -4903,6 +4923,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onAbortReady: (abort) => { _docAbort = abort; },
           onChunk: (text) => { writeDocEvent({ type: 'chunk', text }); },
           onToolUse: (name, input) => { writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) }); },
+          onRetry: (attempt) => { writeDocEvent({ type: 'progress', attempt }); },
         });
         const actionResults = await executeDocChatActions(actions);
         const donePayload = (extra = {}) => ({
