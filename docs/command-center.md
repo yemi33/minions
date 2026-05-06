@@ -13,11 +13,12 @@ CC maintains a true multi-turn session using Claude CLI's `--resume` flag. Unlik
 **Session lifecycle:**
 - **Created** on first message (or after the system prompt changes, or when you click **New Session**)
 - **Resumed** on subsequent messages via `--resume <sessionId>`
-- **Invalidated** when the CC system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. Sessions are also bounded by `ENGINE_DEFAULTS.ccMaxTurns` (default 50 turns) and `ENGINE_DEFAULTS.ccSessionTtlMs` (default 2h — resumed sessions older than this get rotated).
-- **Persisted** to `engine/cc-session.json` — survives dashboard restarts
+- **Invalidated** only when the CC system prompt changes — detected by hashing `CC_STATIC_SYSTEM_PROMPT` into `_ccPromptHash` and comparing on each call. CC chat sessions do **not** auto-expire by TTL or turn count; `ENGINE_DEFAULTS.ccMaxTurns` (default 50) is a per-call tool-use cap inside the Claude CLI, not a session lifetime cap.
+- **Persisted** to `engine/cc-session.json` (legacy global session) and `engine/cc-sessions.json` (per-tab sessions) — both survive dashboard restarts and engine cleanup ticks
 - **Frontend messages** saved to `localStorage` — survive page refresh
+- **Removed** only when the user explicitly closes a tab via the **×** button on the tab strip — that fires `DELETE /api/cc-sessions/:id` to evict the persisted session
 
-Click **New Session** in the drawer header to start fresh.
+Click **New Session** in the drawer header to start fresh; click the **×** on a tab to remove it permanently.
 
 ### Fresh State Each Turn
 

@@ -681,20 +681,11 @@ async function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'orphan PRD status reset: ' + e.message); }
 
-  // 10. Prune CC tab sessions — cap at 50 entries, remove oldest beyond cap
+  // 10. CC tab sessions are non-expiring by design — they persist until the
+  // user explicitly closes the tab (which fires DELETE /api/cc-sessions/:id).
+  // Cleanup intentionally does NOT prune cc-sessions.json; doing so would
+  // silently invalidate live chat tabs the user expects to keep.
   cleaned.ccSessions = 0;
-  try {
-    const ccSessionsPath = path.join(ENGINE_DIR, 'cc-sessions.json');
-    const sessions = shared.safeJsonArr(ccSessionsPath);
-    const CC_SESSIONS_CAP = 50;
-    if (sessions.length > CC_SESSIONS_CAP) {
-      // Sort by lastActiveAt descending, keep newest
-      sessions.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
-      const pruned = sessions.slice(0, CC_SESSIONS_CAP);
-      cleaned.ccSessions = sessions.length - pruned.length;
-      safeWrite(ccSessionsPath, pruned);
-    }
-  } catch (e) { log('warn', 'prune cc-sessions: ' + e.message); }
 
   // 10b. Prune doc-chat sessions — cap at 100 entries, remove oldest beyond cap
   cleaned.docSessions = 0;

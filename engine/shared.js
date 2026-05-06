@@ -914,7 +914,6 @@ const ENGINE_DEFAULTS = {
   removeWorktreeFailureTtlMs: 24 * 60 * 60 * 1000, // stale failed paths are forgotten after a day
   removeWorktreeFailureMaxEntries: 1000, // bound failed-worktree retry suppression cache
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
-  ccSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — keep chats resumable after breaks, still bounded by turn cap
   docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
   docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity
   ccLiveStreamMaxAgeMs: 30 * 60 * 1000, // hard cap reconnect buffers if abort/cleanup stalls

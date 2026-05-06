@@ -932,9 +932,14 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-// Bound resumed session growth so stale conversations do not accumulate unbounded context.
+// CC chat sessions do NOT auto-expire. A tab is removed only via explicit user
+// deletion (DELETE /api/cc-sessions/:id, wired from ccCloseTab). Doc-chat
+// sessions keep their own TTL (DOC_SESSION_TTL_MS) — that's a separate store.
+//
+// CC_SESSION_MAX_TURNS is reused by the doc-chat session pruner to cap
+// per-session turn growth there; CC chat sessions are not capped because
+// users are expected to keep long-running tabs alive indefinitely.
 const CC_SESSION_MAX_TURNS = shared.ENGINE_DEFAULTS.ccMaxTurns;
-const CC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
@@ -1070,18 +1075,17 @@ function _ccTabIsInFlight(tabId) {
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
-  // Invalidate session if system prompt changed (e.g. after code update + restart)
+  // Invalidate session if system prompt changed (e.g. after code update + restart).
+  // This is correctness-driven, not expiration-driven: a session created against
+  // a stale system prompt would carry the old persona/rules into resume turns.
   if (ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
     console.log('[CC] System prompt changed — invalidating stale session');
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  if (_sessionExpired(ccSession.lastActiveAt || ccSession.createdAt, CC_SESSION_TTL_MS)) {
-    console.log('[CC] Session expired by TTL — starting fresh');
-    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-    return false;
-  }
-  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  // No TTL or turn-count cap — CC chat sessions live until the user explicitly
+  // closes the tab (which calls DELETE /api/cc-sessions/:id).
+  return true;
 }
 
 // Static system prompt — baked into session on creation, never changes
@@ -1120,11 +1124,13 @@ function _sessionExpired(lastActiveAt, ttlMs) {
   return Date.now() - at > ttlMs;
 }
 
+// CC tab sessions never auto-expire — only invalid records (missing id /
+// sessionId) and prompt-hash mismatches are filtered out. Tabs are removed
+// from disk only when the user explicitly closes them via DELETE
+// /api/cc-sessions/:id.
 function _filterCcTabSessions(sessions) {
   return (Array.isArray(sessions) ? sessions : []).filter(s =>
     s && s.id && s.sessionId &&
-    (s.turnCount || 0) < CC_SESSION_MAX_TURNS &&
-    !_sessionExpired(s.lastActiveAt || s.createdAt, CC_SESSION_TTL_MS) &&
     (!s._promptHash || s._promptHash === _ccPromptHash)
   );
 }
@@ -1157,10 +1163,12 @@ function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
   return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
 }
 
-// Load persisted CC session on startup
+// Load persisted CC session on startup. CC chat sessions are non-expiring;
+// only restore-time validity checks here are sessionId presence (anything
+// else would auto-expire the user's chat without their consent).
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId && !_sessionExpired(saved.lastActiveAt || saved.createdAt, CC_SESSION_TTL_MS)) ccSession = saved;
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 let _preambleCache = null;

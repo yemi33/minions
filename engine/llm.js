@@ -787,6 +787,9 @@ function callLLMStreaming(promptText, sysPromptText, opts = {}) {
 
     proc.on('close', finish);
     proc.on('exit', (code) => {
+      // 'close' waits for stdio to close. If the runtime spawned a detached
+      // grandchild that inherited stdout/stderr, the OS pipe stays open and
+      // 'close' may never fire. Fall back to 'exit' after a drain window.
       if (settled) return;
       exitSettleTimer = setTimeout(() => finish(code), LLM_EXIT_SETTLE_GRACE_MS);
     });
