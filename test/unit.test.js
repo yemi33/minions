@@ -26421,6 +26421,78 @@ async function testMeetingsExtendedBehavioral() {
     }
   });
 
+  await test('checkMeetingTimeouts hard backstop marks non-responders failed and advances investigating', () => {
+    // Isolated tmp meetings dir — checkMeetingTimeouts iterates ALL meetings in
+    // MEETINGS_DIR, so we must not run with the live dir. Bust the require cache
+    // so the meeting module re-resolves MEETINGS_DIR against MINIONS_TEST_DIR.
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-inv';
+    isolated.saveMeeting({
+      id: testId, title: 'Hard Timeout Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob', 'carol'],
+      findings: { alice: { content: 'A finding' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 4000000).toISOString(), // ~67 min ago, past 60min hard
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: { alice: {}, bob: {}, carol: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Hard backstop should advance the round');
+      assert.strictEqual(m.round, 2);
+      assert.ok(m.roundFailures?.['1']?.bob, 'bob should be marked failed');
+      assert.ok(m.roundFailures['1'].carol, 'carol should be marked failed');
+      assert.strictEqual(m.roundFailures['1'].alice, undefined, 'alice succeeded — no failure record');
+      const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
+      assert.ok(timeoutEntry && /hard timeout/i.test(timeoutEntry.content), 'transcript should record hard-timeout reason');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop does not fire below hardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-soft';
+    isolated.saveMeeting({
+      id: testId, title: 'Soft Window', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'],
+      findings: {}, debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 1200000).toISOString(), // 20 min — past soft 15min, below hard 60min
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'should not advance below hardTimeout');
+      assert.deepStrictEqual(m.roundFailures, {}, 'no participants marked failed');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop honours configured meetingRoundHardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-cfg';
+    isolated.saveMeeting({
+      id: testId, title: 'Custom Hard', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'a' }, bob: { content: 'b' } },
+      debate: { alice: { content: 'a debate' } },
+      humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 60000).toISOString(), // 1 min ago
+    });
+    try {
+      // Tiny soft + hard timeouts to force both gates open
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1, meetingRoundHardTimeout: 1 }, agents: { alice: {}, bob: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'should advance debate → conclude under tight hard cap');
+      assert.ok(m.roundFailures?.['2']?.bob, 'bob should be marked failed');
+    } finally {
+      restore();
+    }
+  });
+
   await test('checkMeetingTimeouts does not auto-complete concluding while conclusion agent is unfinished', () => {
     const testId = 'TEST-EXT-tout-con-' + Date.now();
     meetingMod.saveMeeting({
@@ -30803,9 +30875,97 @@ async function testAutoModeStatus() {
 }
 
 async function testApiRoutesInCcPreamble() {
-  await test('CC preamble references API routes endpoint', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('/api/routes'), 'preamble should reference /api/routes for endpoint discovery');
+  // CC's preamble should auto-index the live API surface (from dashboard.js
+  // ROUTES) and the engine CLI surface (from engine/cli.js CLI_COMMAND_DOCS).
+  // Single source of truth: adding a new endpoint or CLI command lands in
+  // CC's prompt automatically without editing prompts/cc-system.md.
+
+  const dashboard = require(path.join(__dirname, '..', 'dashboard.js'));
+  const cliMod = require(path.join(__dirname, '..', 'engine', 'cli'));
+  const dashSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+  const seedRoute = { method: 'GET', path: '/api/status', desc: 'Full status snapshot', params: null };
+  const seedRoutes = (extra = []) => dashboard._captureApiRoutesMeta([seedRoute, ...extra]);
+
+  await test('CLI_COMMAND_DOCS exported from engine/cli.js', () => {
+    assert.ok(cliMod.CLI_COMMAND_DOCS, 'CLI_COMMAND_DOCS must be exported');
+    assert.ok(typeof cliMod.CLI_COMMAND_DOCS === 'object');
+    assert.ok(Object.keys(cliMod.CLI_COMMAND_DOCS).length >= 10,
+      'docs should cover the engine subcommand fleet');
+  });
+
+  await test('CLI_COMMAND_DOCS covers every command (no drift either direction)', () => {
+    const docKeys = new Set(Object.keys(cliMod.CLI_COMMAND_DOCS));
+    const cmdKeys = new Set(cliMod._listCommandKeys());
+    const missingDoc = [...cmdKeys].filter(k => !docKeys.has(k));
+    const orphanDoc = [...docKeys].filter(k => !cmdKeys.has(k));
+    assert.deepStrictEqual(missingDoc, [],
+      'every command must have a CLI_COMMAND_DOCS entry — add docs when you add a command');
+    assert.deepStrictEqual(orphanDoc, [],
+      'every CLI_COMMAND_DOCS entry must correspond to a real command — remove the doc if the command was deleted');
+  });
+
+  await test('handleCommand help text renders from CLI_COMMAND_DOCS (single source of truth)', () => {
+    const cliSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('formatCliCommandHelpLines'),
+      'help text must be rendered, not hard-coded line-by-line');
+    assert.ok(!cliSrc.includes("'  start [--cli R] [--model M]   Start engine daemon"),
+      'help text must no longer be a hardcoded console.log per command');
+  });
+
+  await test('dashboard captures ROUTES into _ccApiRoutesMeta inside the request handler', () => {
+    assert.ok(dashSrc.includes('_captureApiRoutesMeta(ROUTES)'),
+      'route dispatcher must invoke the metadata capture before iterating');
+    assert.ok(dashSrc.includes('let _ccApiRoutesMeta = null'),
+      'module-level snapshot variable must be declared');
+  });
+
+  await test('dashboard exposes preamble + index helpers for testing', () => {
+    assert.ok(typeof dashboard.buildCCStatePreamble === 'function');
+    assert.ok(typeof dashboard._captureApiRoutesMeta === 'function');
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex === 'function');
+    assert.ok(typeof dashboard._formatCcCliCommandsIndex === 'function');
+    assert.ok(typeof dashboard._resetPreambleCache === 'function');
+  });
+
+  await test('_formatCcApiRoutesIndex returns a string regardless of capture state', () => {
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex() === 'string');
+  });
+
+  await test('_formatCcApiRoutesIndex includes a sample API path after capture', () => {
+    seedRoutes([{ method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title' }]);
+    const out = dashboard._formatCcApiRoutesIndex();
+    assert.ok(out.includes('/api/status'),
+      'rendered API index must include /api/status');
+    assert.ok(out.includes('Create a new work item'),
+      'rendered API index must include endpoint description');
+    assert.ok(out.includes('params: title'),
+      'rendered API index must surface params hint');
+  });
+
+  await test('_formatCcCliCommandsIndex renders the CLI fleet from CLI_COMMAND_DOCS', () => {
+    const out = dashboard._formatCcCliCommandsIndex();
+    assert.ok(out.includes('minions start'),
+      'CLI index must include the start command');
+    assert.ok(out.includes('minions doctor'),
+      'CLI index must include the doctor command');
+    assert.ok(out.includes('Stop engine'),
+      'CLI index must include command summaries');
+  });
+
+  await test('buildCCStatePreamble embeds both auto-indexes', () => {
+    seedRoutes();
+    dashboard._resetPreambleCache();
+    const text = dashboard.buildCCStatePreamble();
+    assert.ok(text.includes('### API Index'),
+      'preamble must include the API Index section');
+    assert.ok(text.includes('### CLI Index'),
+      'preamble must include the CLI Index section');
+    assert.ok(text.includes('/api/status'),
+      'preamble must surface a real route from the captured snapshot');
+    assert.ok(text.includes('minions start'),
+      'preamble must surface a real CLI command');
+    assert.ok(text.includes('single source of truth'),
+      'preamble must declare the SoT discipline so CC trusts the index');
   });
 }
 
@@ -35916,25 +36076,36 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+    // Threshold rule caps small tasks at "≤3 tool calls, 1-2 files" — that's the
+    // tool-use ceiling for self-handling. Anything bigger must delegate.
+    assert.ok(/≤?3 tool calls/.test(src) || /more than 3 tool calls/.test(src),
+      'CC prompt should bound tool use at ~3 calls before requiring delegation');
   });
 
   await test('CC system prompt has size estimation rule for delegation', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
-    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
-    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
-    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+    assert.ok(/Estimate difficulty before responding|size estimation|Estimate first/i.test(src),
+      'CC prompt should have difficulty/size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'),
+      'Should define small/medium/large thresholds');
+    assert.ok(/MUST delegate|DELEGATE/.test(src) && /MAY do it yourself|do it yourself/i.test(src),
+      'Should clearly separate delegate (must, ≥ medium) vs self-do (may, small)');
+    assert.ok(/in doubt.*delegate/i.test(src),
+      'Should default to delegation when uncertain about size');
   });
 
   await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
-    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
-    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
-    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
+    assert.ok(/Delegate when.*Medium|When to delegate/i.test(src),
+      'Should describe when to delegate (medium threshold)');
+    assert.ok(/Small tasks.*do them yourself|When to do it yourself/i.test(src),
+      'Should describe when CC may do small tasks itself');
+    assert.ok(/code changes/i.test(src) && src.includes('implement'),
+      'Delegate list should include code changes');
+    assert.ok(/status lookups|quick file reads/i.test(src),
+      'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -53396,6 +53567,34 @@ async function testDashboardPureHelpers() {
       'must mark build-and-test pr as REQUIRED');
     assert.ok(md.includes('Unknown agent names error'),
       'must warn that unknown agents error');
+  });
+
+  // Delegation rule was rewritten from a closed whitelist ("ONLY these") to a
+  // difficulty-threshold rule (small → MAY do yourself, medium+ → MUST delegate).
+  await test('prompts/cc-system.md: delegation gate is threshold-based, not a closed whitelist', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(!md.includes('When to do it yourself (ONLY these)'),
+      'must drop the "ONLY these" closed-whitelist framing');
+    assert.ok(!md.includes('Your tools are for quick lookups, not for doing the work'),
+      'must drop the categorical "tools are only for lookups" hard-stop');
+    assert.ok(/Estimate difficulty before responding/i.test(md) || /Estimate first, then act/i.test(md),
+      'must instruct CC to assess difficulty before acting');
+    assert.ok(/Small.*MAY do it yourself/i.test(md),
+      'must explicitly permit self-handling small tasks');
+    assert.ok(/Medium.*MUST delegate/i.test(md),
+      'must require delegation at medium difficulty');
+    assert.ok(/not an exhaustive whitelist/i.test(md),
+      'must clarify that the small-task list is illustrative, not closed');
+  });
+
+  await test('prompts/cc-system.md: references the auto-injected API & CLI index', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(/API\s*&\s*CLI Index/i.test(md),
+      'must include an "API & CLI Index" section pointing CC at the preamble');
+    assert.ok(md.includes('CLI_COMMAND_DOCS') && md.includes('ROUTES'),
+      'must name the SoT identifiers so CC understands where the index comes from');
+    assert.ok(md.includes('"endpoint":"/api/...",'),
+      'must remind CC of the generic-fallback shape for un-named endpoints');
   });
 }
 

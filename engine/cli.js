@@ -97,25 +97,39 @@ function handleCommand(cmd, args) {
   } else {
     console.log(`Unknown command: ${cmd}`);
     console.log('Commands:');
-    console.log('  start [--cli R] [--model M]   Start engine daemon (R = registered runtime)');
-    console.log('  stop                          Stop engine');
-    console.log('  pause / resume                Pause/resume dispatching');
-    console.log('  status                        Show engine + agent state + fleet config');
-    console.log('  queue                         Show dispatch queue');
-    console.log('  sources                       Show work source status');
-    console.log('  discover                      Dry-run work discovery');
-    console.log('  dispatch                      Force a dispatch cycle');
-    console.log('  spawn <a> <p>                 Manually spawn agent with prompt');
-    console.log('  work <title> [o]              Add to work-items.json queue');
-    console.log('  plan <src> [p]                Generate PRD from a plan (file or text)');
-    console.log('  kill                          Kill all active agents, reset to pending');
-    console.log('  complete <id>                 Mark a dispatch as done');
-    console.log('  cleanup                       Clean temp files, worktrees, zombies');
-    console.log('  mcp-sync                      Sync MCP servers from ~/.claude.json');
-    console.log('  doctor                        Check prerequisites and runtime health');
-    console.log('  config set-cli <R> [--model M]  Persist defaultCli/defaultModel without starting');
+    for (const line of formatCliCommandHelpLines()) console.log(line);
     process.exit(1);
   }
+}
+
+// SoT for engine-CLI metadata: drives handleCommand's help text and the
+// CC preamble's CLI index in dashboard.js. Drift-checked against `commands`.
+const CLI_COMMAND_DOCS = Object.freeze({
+  start:    { args: '[--cli R] [--model M]', summary: 'Start engine daemon (R = registered runtime)' },
+  stop:     { args: '',                      summary: 'Stop engine' },
+  pause:    { args: '',                      summary: 'Pause dispatching' },
+  resume:   { args: '',                      summary: 'Resume dispatching' },
+  status:   { args: '',                      summary: 'Show engine + agent state + fleet config' },
+  queue:    { args: '',                      summary: 'Show dispatch queue' },
+  sources:  { args: '',                      summary: 'Show work source status per project' },
+  discover: { args: '',                      summary: 'Dry-run work discovery' },
+  dispatch: { args: '',                      summary: 'Force a dispatch cycle' },
+  spawn:    { args: '<agent> <prompt>',      summary: 'Manually spawn an agent with prompt' },
+  work:     { args: '<title> [opts]',        summary: 'Add to work-items.json queue' },
+  plan:     { args: '<file|text> [project]', summary: 'Generate PRD from a plan (file or text)' },
+  kill:       { args: '',                      summary: 'Kill all active agents, reset to pending' },
+  complete:   { args: '<dispatch-id>',         summary: 'Mark a dispatch as done' },
+  cleanup:    { args: '',                      summary: 'Clean temp files, worktrees, zombies' },
+  'mcp-sync': { args: '',                      summary: 'Sync MCP servers from ~/.claude.json' },
+  doctor:     { args: '',                      summary: 'Check prerequisites and runtime health' },
+  config:     { args: 'set-cli <R> [--model M]', summary: 'Persist defaultCli/defaultModel without starting' },
+});
+
+function formatCliCommandHelpLines() {
+  const entries = Object.entries(CLI_COMMAND_DOCS);
+  const lefts = entries.map(([name, { args }]) => '  ' + name + (args ? ' ' + args : ''));
+  const padTo = Math.max(...lefts.map(s => s.length)) + 2;
+  return entries.map(([, { summary }], i) => lefts[i].padEnd(padTo) + summary);
 }
 
 // ─── Runtime fleet flags (--cli / --model / --effort) ────────────────────────
@@ -1461,7 +1475,11 @@ const commands = {
 
 module.exports = {
   handleCommand,
+  // exported for downstream indexing (dashboard CC preamble)
+  CLI_COMMAND_DOCS,
+  formatCliCommandHelpLines,
   // exported for testing
+  _listCommandKeys: () => Object.keys(commands),
   _parseRuntimeFlags,
   _modelLooksIncompatible,
   _applyRuntimeFlags,

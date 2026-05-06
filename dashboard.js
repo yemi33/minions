@@ -1176,6 +1176,50 @@ let _preambleCache = null;
 let _preambleCacheTs = 0;
 const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight orientation, not real-time data
 
+// SoT for CC's runtime API index. Captured lazily on the first HTTP request
+// because ROUTES is closed over inside the request handler. Subsequent
+// captures no-op via the truthy guard.
+let _ccApiRoutesMeta = null;
+
+function _routesAsMeta(routes) {
+  return routes.map(r => ({
+    method: r.method,
+    path: typeof r.path === 'string' ? r.path : String(r.path),
+    desc: r.desc || '',
+    params: r.params || null,
+  }));
+}
+
+function _captureApiRoutesMeta(routes) {
+  if (_ccApiRoutesMeta || !Array.isArray(routes)) return;
+  _ccApiRoutesMeta = _routesAsMeta(routes);
+}
+
+function _formatCcApiRoutesIndex() {
+  if (!Array.isArray(_ccApiRoutesMeta) || _ccApiRoutesMeta.length === 0) return '';
+  return _ccApiRoutesMeta
+    .filter(r => r.path.startsWith('/api/'))
+    .map(r => {
+      const params = r.params ? ` — params: ${r.params}` : '';
+      return `- \`${r.method} ${r.path}\` — ${r.desc}${params}`;
+    })
+    .join('\n');
+}
+
+const { CLI_COMMAND_DOCS: _CC_CLI_DOCS } = require('./engine/cli');
+
+function _formatCcCliCommandsIndex() {
+  if (!_CC_CLI_DOCS) return '';
+  return Object.entries(_CC_CLI_DOCS)
+    .map(([name, { args, summary }]) => `- \`minions ${name}${args ? ' ' + args : ''}\` — ${summary}`)
+    .join('\n');
+}
+
+function _resetPreambleCache() {
+  _preambleCache = null;
+  _preambleCacheTs = 0;
+}
+
 function buildCCStatePreamble() {
   const now = Date.now();
   if (_preambleCache && now - _preambleCacheTs < PREAMBLE_TTL) return _preambleCache;
@@ -1198,6 +1242,19 @@ function buildCCStatePreamble() {
   let pipelineCount = 0;
   try { pipelineCount = require('./engine/pipeline').getPipelines().length; } catch {}
 
+  const apiIndex = _formatCcApiRoutesIndex();
+  const cliIndex = _formatCcCliCommandsIndex();
+  const indexSection = (apiIndex || cliIndex) ? `
+
+### API Index (auto-generated from dashboard.js ROUTES — single source of truth)
+${apiIndex || '(routes not yet captured — first request still pending)'}
+
+### CLI Index (auto-generated from engine/cli.js CLI_COMMAND_DOCS — single source of truth)
+${cliIndex || '(unavailable)'}
+
+For any \`/api/...\` endpoint not covered by a named CC action, use the generic fallback:
+\`{"type":"<descriptive>","endpoint":"/api/...","params":{...}}\`.` : '';
+
   const result = `### Agents
 ${agents}
 
@@ -1211,8 +1268,8 @@ PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs: ${planFiles.length} | Sch
 ### Projects
 ${projects}
 
-Use tools to read \`config.json\` (schedules), \`pipelines/\` dir, or \`curl http://localhost:7331/api/routes\` for details.
-For all state files, look under \`${MINIONS_DIR}\`.`;
+Use tools to read \`config.json\` (schedules), \`pipelines/\` dir for details.
+For all state files, look under \`${MINIONS_DIR}\`.${indexSection}`;
   _preambleCache = result;
   _preambleCacheTs = now;
   return result;
@@ -6546,12 +6603,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
     }},
     { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
-      const list = ROUTES.map(r => ({
-        method: r.method,
-        path: typeof r.path === 'string' ? r.path : r.path.toString(),
-        description: r.desc,
-        params: r.params || null
-      }));
+      const list = _routesAsMeta(ROUTES).map(({ desc, ...rest }) => ({ ...rest, description: desc }));
       return jsonReply(res, 200, { routes: list });
     }},
 
@@ -7184,6 +7236,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────
 
+  // Capture ROUTES metadata into the module-level snapshot so CC's preamble
+  // renders the live API surface (single source of truth — adding any new
+  // route to ROUTES above auto-surfaces it in CC's index).
+  _captureApiRoutesMeta(ROUTES);
+
   const pathname = req.url.split('?')[0];
   const _reqStart = Date.now();
   for (const route of ROUTES) {
@@ -7269,6 +7326,11 @@ module.exports = {
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
+  buildCCStatePreamble,
+  _captureApiRoutesMeta,
+  _formatCcApiRoutesIndex,
+  _formatCcCliCommandsIndex,
+  _resetPreambleCache,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).
