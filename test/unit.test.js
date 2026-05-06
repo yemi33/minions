@@ -21128,6 +21128,192 @@ async function testSessionResume() {
     assert.ok(claudeRuntimeSrc.includes('dispatchId') && claudeRuntimeSrc.includes('session.json'),
       'session.json should include dispatchId');
   });
+
+  // Runtime mismatch invalidation: a session ID produced by one runtime cannot
+  // be resumed under a different runtime. The pre-spawn resume path must drop
+  // the session ID AND clear session.json on mismatch — otherwise the new
+  // runtime spawns with --resume <wrong-runtime-id>, fails with "No
+  // conversation found", and burns a retry slot before the post-failure
+  // cleanup at engine.js fires.
+  await test('saveSession records the producing runtime name (claude)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    claude.saveSession({
+      agentId,
+      dispatchId: 'd-1',
+      branch: 'work/W-test',
+      sessionId: 'sess-claude-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'claude',
+      'claude.saveSession should stamp runtime: "claude" into session.json');
+    assert.strictEqual(saved.sessionId, 'sess-claude-1');
+  });
+
+  await test('saveSession records the producing runtime name (copilot)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'dallas';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    copilot.saveSession({
+      agentId,
+      dispatchId: 'd-2',
+      branch: 'work/W-test',
+      sessionId: 'sess-copilot-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'copilot',
+      'copilot.saveSession should stamp runtime: "copilot" into session.json');
+  });
+
+  await test('claude.getResumeSessionId skips resume + clears session.json when stored runtime is copilot', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    const branch = 'work/W-mot62ant0003022d';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Simulate the bug scenario: a copilot-produced session ID is on disk and
+    // the engine has switched the resolved runtime to claude.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: '1b418f2e-aaaa-bbbb-cccc-deadbeefcafe',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),  // fresh — only runtime mismatch should invalidate
+      branch,
+      runtime: 'copilot',
+    }));
+
+    const logs = [];
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]) },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'claude.getResumeSessionId must return null when stored runtime is copilot');
+    assert.strictEqual(fs.existsSync(sessionPath), false,
+      'session.json must be cleared on runtime mismatch so the next dispatch is fresh');
+    const mismatchLog = logs.find(([, m]) => /runtime mismatch/i.test(m));
+    assert.ok(mismatchLog,
+      'a log line must explain the runtime-switch reason (so it is distinguishable from stale-by-age)');
+  });
+
+  await test('copilot.getResumeSessionId skips resume + clears session.json when stored runtime is claude', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-orphan',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = copilot.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null);
+    assert.strictEqual(fs.existsSync(sessionPath), false);
+  });
+
+  await test('getResumeSessionId resumes when stored runtime matches current runtime', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-match',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-claude-match',
+      'matching runtime must resume normally');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'matching runtime must NOT clear session.json');
+  });
+
+  await test('getResumeSessionId resumes legacy session.json without runtime field (back-compat)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Pre-fix sessions on disk have no `runtime` field.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-legacy',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-legacy',
+      'legacy session without runtime field should still resume — runtime check is opt-in');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'legacy session must not be cleared on runtime check');
+  });
+
+  await test('getResumeSessionId still invalidates by age even when runtime matches', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-old',
+      dispatchId: 'd-old',
+      // 3 hours ago — well beyond the 2h TTL
+      savedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'stale-by-age path must keep working alongside runtime-mismatch path');
+  });
 }
 
 // ─── Wakeup Coalescing Tests ────────────────────────────────────────────────
