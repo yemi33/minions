@@ -2646,8 +2646,11 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
       store: 'doc', sessionKey,
       extraContext, label: 'doc-chat',
       timeout: DOC_CHAT_TIMEOUT_MS,
-      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-      maxTurns: canEdit ? 25 : 10,
+      // Match Command Center's full tool surface and turn budget so doc-chat
+      // can take action (read/write/edit/dispatch) instead of being limited
+      // to Q&A. The doc-chat sysprompt still scopes orchestration to explicit
+      // requests, and ---DOCUMENT--- remains the only document edit channel.
+      allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),
@@ -2702,8 +2705,10 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       store: 'doc', sessionKey,
       extraContext, label: 'doc-chat',
       timeout: DOC_CHAT_TIMEOUT_MS,
-      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-      maxTurns: canEdit ? 25 : 10,
+      // Match Command Center's full tool surface — see ccDocCall for
+      // rationale. Both wrappers must share the same policy so the streaming
+      // variant doesn't diverge from the non-streaming one.
+      allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
       ...(model ? { model } : {}),

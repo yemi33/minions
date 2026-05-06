@@ -37110,19 +37110,38 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('set-teams-tenantId'), 'settings should have tenantId field');
   });
 
-  await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
+  await test('doc-chat shares Command Center tool surface — full toolset, default ccMaxTurns (W-mouc2ho5)', () => {
+    // Per human review on PR #2127: doc-chat must behave the same way as
+    // Command Center, not a Q&A-only subset. Both wrappers must pass the same
+    // allowedTools list as CC and inherit ccMaxTurns from ccCall's default.
+    // The doc-chat sysprompt still scopes orchestration to explicit human
+    // requests, and ---DOCUMENT--- remains the only document edit channel.
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes("'Read,Glob,Grep'"), 'Read-only doc-chat should only allow Read,Glob,Grep');
-    assert.ok(docCallFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Editable doc-chat should allow Read,Write,Edit,Glob,Grep');
-    assert.ok(!docCallFn.slice(0, 500).includes('Bash'), 'Doc-chat should not allow Bash');
-    assert.ok(!docCallFn.slice(0, 500).includes('WebSearch'), 'Doc-chat should not allow WebSearch');
-  });
-
-  await test('doc-chat uses lower maxTurns than CC', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    // Extract CC's full tool list from its signature so the assertion stays in
+    // lock-step with future CC tool-list changes.
+    const ccToolMatch = ccCallFn.match(/allowedTools\s*=\s*'([^']+)'/);
+    assert.ok(ccToolMatch, 'ccCall should declare an allowedTools default');
+    const ccTools = ccToolMatch[1];
+    for (const [label, fnSrc] of [['ccDocCall', docCallFn], ['ccDocCallStreaming', docStreamFn]]) {
+      assert.ok(fnSrc.includes(`allowedTools: '${ccTools}'`),
+        `${label} should pass the same allowedTools as ccCall (got CC list: ${ccTools})`);
+      // Doc-chat must NOT pin maxTurns or disableTools — it must inherit the
+      // same ccMaxTurns default as Command Center so the agentic loop can
+      // close gaps instead of being limited to Q&A.
+      assert.ok(!/maxTurns:\s*1\b/.test(fnSrc),
+        `${label} must not pin maxTurns to 1 (would lock doc-chat into Q&A)`);
+      assert.ok(!/disableTools:\s*true/.test(fnSrc),
+        `${label} must not pass disableTools:true (would lock doc-chat into Q&A)`);
+      // The legacy "canEdit ? 'Read,Write,...' : 'Read,...'" gating must also
+      // be gone — both branches collapse to the full CC tool surface.
+      assert.ok(!/allowedTools:\s*canEdit\s*\?/.test(fnSrc),
+        `${label} should no longer differentiate canEdit at the tool list level`);
+      assert.ok(!/maxTurns:\s*canEdit\s*\?/.test(fnSrc),
+        `${label} should no longer differentiate canEdit at the maxTurns level`);
+    }
   });
 
   await test('doc-chat uses the 1-hour backend timeout (W-mot62ant)', () => {
@@ -37221,9 +37240,18 @@ async function testAutoRecoveryAndAtomicity() {
   await test('streaming doc-chat reuses the same doc-chat session/tool limits', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
-    assert.ok(docStreamFn.includes("'Read,Glob,Grep'"), 'Streaming read-only doc-chat should only allow Read,Glob,Grep');
-    assert.ok(docStreamFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Streaming editable doc-chat should allow Read,Write,Edit,Glob,Grep');
-    assert.ok(docStreamFn.includes('maxTurns: canEdit ? 25 : 10'), 'Streaming doc-chat should keep the lower doc maxTurns limits');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    // Doc-chat shares Command Center's full tool surface (asserted in detail
+    // by the "doc-chat shares Command Center tool surface" test). Here we
+    // just confirm the streaming variant matches the non-streaming one.
+    const ccToolMatch = ccCallFn.match(/allowedTools\s*=\s*'([^']+)'/);
+    assert.ok(ccToolMatch, 'ccCall should declare an allowedTools default');
+    assert.ok(docStreamFn.includes(`allowedTools: '${ccToolMatch[1]}'`),
+      'Streaming doc-chat should pass the same allowedTools as ccCall');
+    assert.ok(!/maxTurns:\s*1\b/.test(docStreamFn),
+      'Streaming doc-chat must not pin maxTurns to 1 (would lock into Q&A)');
+    assert.ok(!/disableTools:\s*true/.test(docStreamFn),
+      'Streaming doc-chat must not pass disableTools:true (would lock into Q&A)');
     assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
     assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); }'),
       'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
@@ -54138,6 +54166,27 @@ async function testDashboardPureHelpers() {
       'doc-chat prompt should show the Command Center dispatch action shape');
     assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
       'doc-chat prompt should map engineering task classes to workType values');
+  });
+
+  await test('doc-chat system prompt does NOT forbid tools — doc-chat must behave like CC (W-mouc2ho5)', () => {
+    // Per human review on PR #2127: doc-chat must behave the same way as
+    // Command Center, not be locked into Q&A. The "Tool Use Policy
+    // (HARD CONSTRAINT)" section that forbade tool calls must stay out of
+    // the sysprompt — it would prevent doc-chat from using its now-aligned
+    // CC-equivalent tool surface (Bash/Read/Write/Edit/Glob/Grep/WebFetch/
+    // WebSearch). The Editing Documents section still defines the
+    // ---DOCUMENT--- channel for whole-file rewrites.
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
+    assert.ok(!/Tool Use Policy/i.test(prompt),
+      'doc-chat sysprompt must NOT declare a Tool Use Policy that forbids tools');
+    assert.ok(!/plain[- ]response mode|plain text only/i.test(prompt),
+      'doc-chat sysprompt must NOT label itself plain-response — that would lock it into Q&A');
+    assert.ok(!/Do not call any tools|do not use any tools|no tool calls/i.test(prompt),
+      'doc-chat sysprompt must NOT forbid tool calls — doc-chat needs the full CC tool surface');
+    // The Editing Documents section still defines the ---DOCUMENT--- channel
+    // for whole-file rewrites — that convention is unchanged.
+    assert.ok(/Editing Documents/i.test(prompt),
+      'doc-chat sysprompt must keep the Editing Documents section that defines the ---DOCUMENT--- edit channel');
   });
 
   await test('doc-chat handlers execute parsed actions and surface parse errors', () => {
