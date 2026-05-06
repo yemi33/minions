@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1756 (2026-05-06)
+
+### Other
+- perf(doc-chat): cache locked answer in stream stripper, drop 20K doc truncation
+
 ## 0.1.1755 (2026-05-06)
 
 ### Fixes
