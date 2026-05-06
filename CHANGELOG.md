@@ -1,5 +1,121 @@
 # Changelog
 
+## 0.1.1743 (2026-05-06)
+
+### Fixes
+- isolate meeting tests off live MEETINGS_DIR (#2111)
+
+## 0.1.1742 (2026-05-06)
+
+### Fixes
+- pending-reassignment double-books agent with own pending dispatch (#2108)
+
+## 0.1.1741 (2026-05-06)
+
+### Features
+- hard-timeout backstop prevents permanent round stalls
+- auto-index API + CLI catalog into preamble; threshold-based delegation gate
+
+### Other
+- chore(gitignore): ignore .vscode/, engine/completions/, pull-requests.json.backup
+
+## 0.1.1739 (2026-05-06)
+
+### Features
+- make Command Center chat sessions non-expiring (#2100)
+
+## 0.1.1738 (2026-05-06)
+
+### Features
+- add feature-flag registry for experimental UX gates
+- graceful runtime-switch reset with transcript carryover
+
+### Fixes
+- prevent hung callLLM Promises when child stdio doesn't drain
+
+### Other
+- chore(gitignore): ignore root-level config.json.backup sidecar
+
+## 0.1.1737 (2026-05-05)
+
+### Other
+- perf: buffered metrics, snapshot-diff sidecar, parallel worktree branch probes
+
+## 0.1.1736 (2026-05-05)
+
+### Other
+- test(lifecycle): add unit tests for review-verdict, completion-field, and item-completed parsers (#2093)
+
+## 0.1.1735 (2026-05-05)
+
+### Other
+- chore(dashboard): unref top-level setIntervals for clean event-loop exit
+
+## 0.1.1734 (2026-05-05)
+
+### Fixes
+- make GitHub comment poll fake gh cross-platform
+
+## 0.1.1733 (2026-05-05)
+
+### Features
+-  dryRun resolveAgent, bounded mainBranch cache, SSE heartbeat helper
+
+## 0.1.1732 (2026-05-05)
+
+### Features
+- fix pipeline cron display (#2087)
+
+## 0.1.1730 (2026-05-05)
+
+### Features
+- detect no-op PR fixes (#2077)
+
+## 0.1.1728 (2026-05-05)
+
+### Features
+- redact repository URLs in filed issues (#2069)
+
+## 0.1.1727 (2026-05-05)
+
+### Features
+- fix Brady Gaster Squad link (#2080)
+
+## 0.1.1726 (2026-05-05)
+
+### Other
+- Extend command center timeout
+
+## 0.1.1724 (2026-05-05)
+
+### Features
+- add per-cause PR automation dedupe (#2075)
+
+## 0.1.1723 (2026-05-05)
+
+### Other
+- Extend command center session TTL
+
+## 0.1.1722 (2026-05-05)
+
+### Other
+- Improve schedule run now feedback
+
+## 0.1.1721 (2026-05-05)
+
+### Fixes
+-  gate PR-derived dispatch on provider polling for both ADO and GitHub
+
+## 0.1.1720 (2026-05-04)
+
+### Features
+-  separate GitHub and ADO project fields (#2065)
+
+## 0.1.1718 (2026-05-04)
+
+### Features
+- prevent deferred steering crash (#2060)
+
 ## 0.1.1716 (2026-05-04)
 
 ### Features

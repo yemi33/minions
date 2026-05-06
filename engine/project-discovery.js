@@ -245,23 +245,33 @@ function execGit(execFileSync, targetDir, args, timeout = 5000) {
   })).trim();
 }
 
+function parseOriginHeadBranch(headRef) {
+  const branch = String(headRef || '').trim().replace(/^refs\/remotes\/origin\//, '');
+  return branch && branch !== 'HEAD' ? branch : '';
+}
+
+function discoverMainBranch(execFileSync, targetDir) {
+  try {
+    return parseOriginHeadBranch(execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']));
+  } catch {}
+
+  try {
+    execGit(execFileSync, targetDir, ['remote', 'set-head', 'origin', '-a'], 10000);
+    return parseOriginHeadBranch(execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']));
+  } catch {}
+
+  return '';
+}
+
 function discoverProjectMetadata(targetDir, options = {}) {
   const execFileSync = options.execFileSync || defaultExecFileSync;
   const result = { _found: [] };
 
-  try {
-    let head = '';
-    try {
-      head = execGit(execFileSync, targetDir, ['symbolic-ref', 'refs/remotes/origin/HEAD']);
-    } catch {
-      head = execGit(execFileSync, targetDir, ['symbolic-ref', 'HEAD']);
-    }
-    const branch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
-    if (branch) {
-      result.mainBranch = branch;
-      result._found.push('main branch');
-    }
-  } catch {}
+  const branch = discoverMainBranch(execFileSync, targetDir);
+  if (branch) {
+    result.mainBranch = branch;
+    result._found.push('main branch');
+  }
 
   try {
     const remoteUrl = execGit(execFileSync, targetDir, ['remote', 'get-url', 'origin']);
@@ -332,17 +342,20 @@ function buildPrUrlBase({ repoHost, org, project, repoName, prUrlBase }) {
 
 function buildProjectEntry({ name, description, localPath, repoHost, repositoryId, org, project, repoName, mainBranch, prUrlBase }) {
   const safeName = (name || 'project').replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'project';
+  const host = repoHost || 'github';
+  const isAdo = host === 'ado';
   return {
     name: safeName,
     description: description || '',
     localPath: (localPath || '').replace(/\\/g, '/'),
-    repoHost: repoHost || 'github',
-    repositoryId: repositoryId || '',
-    adoOrg: org || '',
-    adoProject: project || '',
+    repoHost: host,
+    repositoryId: isAdo ? (repositoryId || '') : '',
+    adoOrg: isAdo ? (org || '') : '',
+    adoProject: isAdo ? (project || '') : '',
+    githubOrg: !isAdo ? (org || '') : '',
     repoName: repoName || name,
     mainBranch: mainBranch || 'main',
-    prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName, prUrlBase }),
+    prUrlBase: buildPrUrlBase({ repoHost: host, org, project, repoName, prUrlBase }),
     workSources: {
       pullRequests: { enabled: true, cooldownMinutes: 30 },
       workItems: { enabled: true, cooldownMinutes: 0 },

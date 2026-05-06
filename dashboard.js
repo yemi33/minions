@@ -30,6 +30,7 @@ const playbook = require('./engine/playbook');
 const dispatchMod = require('./engine/dispatch');
 const steering = require('./engine/steering');
 const projectDiscovery = require('./engine/project-discovery');
+const features = require('./engine/features');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
@@ -448,7 +449,7 @@ function buildDashboardHtml() {
 
   // Assemble JS modules (order matters: utils → state → renderers → commands → refresh)
   const jsFiles = [
-    'utils', 'state', 'render-utils', 'detail-panel', 'live-stream',
+    'utils', 'state', 'features-client', 'render-utils', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
     'render-other', 'render-schedules', 'render-watches', 'render-pipelines', 'render-meetings', 'render-pinned',
@@ -461,16 +462,66 @@ function buildDashboardHtml() {
     jsHtml += `\n// ─── ${f}.js ────────────────────────────────────────\n${content}\n`;
   }
 
+  // Snapshot feature-flag state at build time so the client renders synchronously
+  // without an extra /api/features round-trip. Helper itself lives in
+  // dashboard/js/features-client.js (auto-concatenated below).
+  let featuresBoot = { flags: {}, defaults: {} };
+  try {
+    for (const f of features.listFeatures(queries.getConfig())) {
+      featuresBoot.flags[f.id] = f.enabled;
+      featuresBoot.defaults[f.id] = f.default;
+    }
+  } catch { /* registry empty or config unreadable — ship empty boot state */ }
+
+  const featuresBootstrap = `window.MINIONS_FEATURES = ${JSON.stringify(featuresBoot)};\n`;
+
   return layout
     .replace('/* __CSS__ */', () => css)
     .replace('<!-- __PAGES__ -->', () => pageHtml)
-    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${jsHtml}`);
+    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${featuresBootstrap}${jsHtml}`);
 }
 
 let HTML_RAW = buildDashboardHtml();
 let HTML = HTML_RAW;
 let HTML_GZ = zlib.gzipSync(HTML);
 let HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
+
+const SSE_CLIENT_HEARTBEAT_MS = 30000;
+const _sseClientCleanups = new WeakMap();
+function _removeSseClient(clientSet, res) {
+  const cleanup = _sseClientCleanups.get(res);
+  if (cleanup) cleanup();
+  else clientSet.delete(res);
+}
+
+function _trackSseClient(clientSet, req, res, { heartbeatMs = SSE_CLIENT_HEARTBEAT_MS } = {}) {
+  let closed = false;
+  let heartbeatTimer = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    clientSet.delete(res);
+    _sseClientCleanups.delete(res);
+  };
+  const heartbeat = () => {
+    if (res.destroyed || res.writableEnded) {
+      cleanup();
+      return;
+    }
+    try { res.write(': heartbeat\n\n'); } catch { cleanup(); }
+  };
+  heartbeatTimer = setInterval(heartbeat, heartbeatMs);
+  if (heartbeatTimer.unref) heartbeatTimer.unref();
+  _sseClientCleanups.set(res, cleanup);
+  clientSet.add(res);
+  req.on('close', cleanup);
+  req.on('aborted', cleanup);
+  res.on('close', cleanup);
+  res.on('error', cleanup);
+  return cleanup;
+}
 
 // Hot-reload: watch dashboard/ directory for changes, rebuild, and push reload to browsers
 const _hotReloadClients = new Set();
@@ -486,11 +537,11 @@ function rebuildDashboardHtml() {
     console.log('  Dashboard hot-reloaded');
     // Push reload to all connected browsers via status-stream (saves a connection)
     for (const res of _statusStreamClients) {
-      try { res.write('event: reload\ndata: reload\n\n'); } catch { _statusStreamClients.delete(res); }
+      try { res.write('event: reload\ndata: reload\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
     }
     // Legacy hot-reload clients
     for (const res of _hotReloadClients) {
-      try { res.write('data: reload\n\n'); } catch { _hotReloadClients.delete(res); }
+      try { res.write('data: reload\n\n'); } catch { _removeSseClient(_hotReloadClients, res); }
     }
   } catch (e) { console.error('  Hot-reload error:', e.message); }
 }
@@ -615,7 +666,7 @@ function _compareVersions(a, b) {
 
 // Kick off first npm check on startup, then re-check every 4 hours
 checkNpmVersion().catch(() => {});
-setInterval(() => checkNpmVersion().catch(() => {}), _getVersionCheckInterval());
+setInterval(() => checkNpmVersion().catch(() => {}), _getVersionCheckInterval()).unref();
 
 // Cache disk version + git commit (only changes on deploy/pull, not per-request)
 let _diskVersionCache = null;
@@ -742,7 +793,7 @@ function invalidateStatusCache(opts) {
     if (_statusStreamClients.size === 0) return;
     const data = getStatusJson();
     for (const res of _statusStreamClients) {
-      try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+      try { res.write('data: ' + data + '\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
     }
   }, 500);
 }
@@ -874,32 +925,43 @@ setInterval(() => {
   if (data === _lastStatusPushRef) return; // O(1) reference comparison — new string ref means content changed
   _lastStatusPushRef = data;
   for (const res of _statusStreamClients) {
-    try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+    try { res.write('data: ' + data + '\n\n'); } catch { _removeSseClient(_statusStreamClients, res); }
   }
-}, 10000);
+}, 10000).unref();
 
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-// Bound resumed session growth so stale conversations do not accumulate unbounded context.
+// CC chat sessions do NOT auto-expire. A tab is removed only via explicit user
+// deletion (DELETE /api/cc-sessions/:id, wired from ccCloseTab). Doc-chat
+// sessions keep their own TTL (DOC_SESSION_TTL_MS) — that's a separate store.
+//
+// CC_SESSION_MAX_TURNS is reused by the doc-chat session pruner to cap
+// per-session turn growth there; CC chat sessions are not capped because
+// users are expected to keep long-running tabs alive indefinitely.
 const CC_SESSION_MAX_TURNS = shared.ENGINE_DEFAULTS.ccMaxTurns;
-const CC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const ccLiveStreams = new Map(); // tabId → buffered live stream state for reconnect-after-disconnect
+const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long-running CC orchestration can span many tool calls
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
 const CC_STREAM_REATTACH_GRACE_MS = 60000; // keep CC job alive briefly after disconnect so the UI can reattach
 const CC_STREAM_DONE_RETENTION_MS = 30000; // retain final payload briefly so reconnect can still receive it
+const CC_LIVE_STREAM_MAX_AGE_MS = shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs;
 // Doc-chat is interactive — long-doc edits with multi-step Read+Write tool use can run
-// 4–5 min on `canEdit:true` paths. CC's default 2-min timeout was killing legitimate
-// edits mid-stream. Pinned to 6 min as the bounded but generous ceiling.
-const DOC_CHAT_TIMEOUT_MS = 360000;
+// well past 5 min on `canEdit:true` paths. Bumped to 1 hour (matching CC) so legitimate
+// edits aren't killed mid-stream and the backend timeout never beats the user's reading
+// time. The doc-chat handlers still abort on client disconnect.
+const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000;
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _getCcLiveStream(tabId) {
   return ccLiveStreams.get(tabId) || null;
+}
+function _touchCcLiveStream(state) {
+  if (state) state.updatedAt = Date.now();
 }
 function _clearCcLiveTimers(tabId) {
   const state = _getCcLiveStream(tabId);
@@ -933,6 +995,8 @@ function _ensureCcLiveStream(tabId) {
     abortFn: null,
     abortTimer: null,
     cleanupTimer: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
   };
   ccLiveStreams.set(tabId, state);
   return state;
@@ -942,6 +1006,7 @@ function _attachCcLiveStream(tabId, writer, endResponse) {
   _clearCcLiveTimers(tabId);
   state.writer = writer;
   state.endResponse = endResponse;
+  _touchCcLiveStream(state);
   return state;
 }
 function _detachCcLiveStream(tabId, writer) {
@@ -960,7 +1025,9 @@ function _scheduleCcLiveAbort(tabId) {
     const live = _getCcLiveStream(tabId);
     if (!live || live.donePayload || live.writer) return;
     try { if (live.abortFn) live.abortFn(); } catch {}
+    _scheduleCcLiveCleanup(tabId, CC_STREAM_REATTACH_GRACE_MS);
   }, CC_STREAM_REATTACH_GRACE_MS);
+  if (state.abortTimer.unref) state.abortTimer.unref();
 }
 function _scheduleCcLiveCleanup(tabId, delayMs = CC_STREAM_DONE_RETENTION_MS) {
   const state = _getCcLiveStream(tabId);
@@ -971,7 +1038,25 @@ function _scheduleCcLiveCleanup(tabId, delayMs = CC_STREAM_DONE_RETENTION_MS) {
     if (!live || live.writer) return;
     _clearCcLiveStream(tabId);
   }, delayMs);
+  if (state.cleanupTimer.unref) state.cleanupTimer.unref();
 }
+function _sweepCcLiveStreams() {
+  const now = Date.now();
+  for (const [tabId, state] of ccLiveStreams.entries()) {
+    const age = now - (state.updatedAt || state.createdAt || now);
+    if (state.donePayload && !state.writer && age > CC_STREAM_DONE_RETENTION_MS) {
+      _clearCcLiveStream(tabId);
+      continue;
+    }
+    if (age <= CC_LIVE_STREAM_MAX_AGE_MS) continue;
+    try { if (state.abortFn) state.abortFn(); } catch {}
+    try { if (state.endResponse) state.endResponse(); } catch {}
+    _releaseCCTab(tabId);
+    _clearCcLiveStream(tabId);
+  }
+}
+const _ccLiveSweepTimer = setInterval(_sweepCcLiveStreams, Math.min(CC_LIVE_STREAM_MAX_AGE_MS, 5 * 60 * 1000));
+if (_ccLiveSweepTimer.unref) _ccLiveSweepTimer.unref();
 function _ccTabIsInFlight(tabId) {
   if (!ccInFlightTabs.has(tabId)) return false;
   // Auto-release stale locks — if a request has been in-flight longer than CC_INFLIGHT_TIMEOUT_MS,
@@ -991,18 +1076,17 @@ function _ccTabIsInFlight(tabId) {
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
-  // Invalidate session if system prompt changed (e.g. after code update + restart)
+  // Invalidate session if system prompt changed (e.g. after code update + restart).
+  // This is correctness-driven, not expiration-driven: a session created against
+  // a stale system prompt would carry the old persona/rules into resume turns.
   if (ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
     console.log('[CC] System prompt changed — invalidating stale session');
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  if (_sessionExpired(ccSession.lastActiveAt || ccSession.createdAt, CC_SESSION_TTL_MS)) {
-    console.log('[CC] Session expired by TTL — starting fresh');
-    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-    return false;
-  }
-  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  // No TTL or turn-count cap — CC chat sessions live until the user explicitly
+  // closes the tab (which calls DELETE /api/cc-sessions/:id).
+  return true;
 }
 
 // Static system prompt — baked into session on creation, never changes
@@ -1041,11 +1125,13 @@ function _sessionExpired(lastActiveAt, ttlMs) {
   return Date.now() - at > ttlMs;
 }
 
+// CC tab sessions never auto-expire — only invalid records (missing id /
+// sessionId) and prompt-hash mismatches are filtered out. Tabs are removed
+// from disk only when the user explicitly closes them via DELETE
+// /api/cc-sessions/:id.
 function _filterCcTabSessions(sessions) {
   return (Array.isArray(sessions) ? sessions : []).filter(s =>
     s && s.id && s.sessionId &&
-    (s.turnCount || 0) < CC_SESSION_MAX_TURNS &&
-    !_sessionExpired(s.lastActiveAt || s.createdAt, CC_SESSION_TTL_MS) &&
     (!s._promptHash || s._promptHash === _ccPromptHash)
   );
 }
@@ -1056,15 +1142,83 @@ function _readCcTabSessions({ prune = true } = {}) {
   return sessions;
 }
 
-// Load persisted CC session on startup
+const CC_CARRYOVER_MAX_TURNS = 20;
+const CC_CARRYOVER_PER_MSG_CHARS = 2000;
+
+function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
+  if (!Array.isArray(transcript) || transcript.length === 0) return '';
+  const filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  if (filtered.length === 0) return '';
+  const recent = filtered.slice(-CC_CARRYOVER_MAX_TURNS);
+  const truncated = filtered.length > recent.length;
+  const header = previousRuntime
+    ? `--- Previous conversation (carried over from ${previousRuntime} session) ---`
+    : `--- Previous conversation (carried over) ---`;
+  const lines = recent.map(m => {
+    const who = m.role === 'user' ? 'User' : 'Assistant';
+    let text = m.text.trim();
+    if (text.length > CC_CARRYOVER_PER_MSG_CHARS) text = text.slice(0, CC_CARRYOVER_PER_MSG_CHARS) + '… [truncated]';
+    return `${who}: ${text}`;
+  });
+  const truncationNote = truncated ? `[earlier messages truncated — showing last ${recent.length} of ${filtered.length}]\n\n` : '';
+  return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
+}
+
+// Load persisted CC session on startup. CC chat sessions are non-expiring;
+// only restore-time validity checks here are sessionId presence (anything
+// else would auto-expire the user's chat without their consent).
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId && !_sessionExpired(saved.lastActiveAt || saved.createdAt, CC_SESSION_TTL_MS)) ccSession = saved;
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 let _preambleCache = null;
 let _preambleCacheTs = 0;
 const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight orientation, not real-time data
+
+// SoT for CC's runtime API index. Captured lazily on the first HTTP request
+// because ROUTES is closed over inside the request handler. Subsequent
+// captures no-op via the truthy guard.
+let _ccApiRoutesMeta = null;
+
+function _routesAsMeta(routes) {
+  return routes.map(r => ({
+    method: r.method,
+    path: typeof r.path === 'string' ? r.path : String(r.path),
+    desc: r.desc || '',
+    params: r.params || null,
+  }));
+}
+
+function _captureApiRoutesMeta(routes) {
+  if (_ccApiRoutesMeta || !Array.isArray(routes)) return;
+  _ccApiRoutesMeta = _routesAsMeta(routes);
+}
+
+function _formatCcApiRoutesIndex() {
+  if (!Array.isArray(_ccApiRoutesMeta) || _ccApiRoutesMeta.length === 0) return '';
+  return _ccApiRoutesMeta
+    .filter(r => r.path.startsWith('/api/'))
+    .map(r => {
+      const params = r.params ? ` — params: ${r.params}` : '';
+      return `- \`${r.method} ${r.path}\` — ${r.desc}${params}`;
+    })
+    .join('\n');
+}
+
+const { CLI_COMMAND_DOCS: _CC_CLI_DOCS } = require('./engine/cli');
+
+function _formatCcCliCommandsIndex() {
+  if (!_CC_CLI_DOCS) return '';
+  return Object.entries(_CC_CLI_DOCS)
+    .map(([name, { args, summary }]) => `- \`minions ${name}${args ? ' ' + args : ''}\` — ${summary}`)
+    .join('\n');
+}
+
+function _resetPreambleCache() {
+  _preambleCache = null;
+  _preambleCacheTs = 0;
+}
 
 function buildCCStatePreamble() {
   const now = Date.now();
@@ -1088,6 +1242,19 @@ function buildCCStatePreamble() {
   let pipelineCount = 0;
   try { pipelineCount = require('./engine/pipeline').getPipelines().length; } catch {}
 
+  const apiIndex = _formatCcApiRoutesIndex();
+  const cliIndex = _formatCcCliCommandsIndex();
+  const indexSection = (apiIndex || cliIndex) ? `
+
+### API Index (auto-generated from dashboard.js ROUTES — single source of truth)
+${apiIndex || '(routes not yet captured — first request still pending)'}
+
+### CLI Index (auto-generated from engine/cli.js CLI_COMMAND_DOCS — single source of truth)
+${cliIndex || '(unavailable)'}
+
+For any \`/api/...\` endpoint not covered by a named CC action, use the generic fallback:
+\`{"type":"<descriptive>","endpoint":"/api/...","params":{...}}\`.` : '';
+
   const result = `### Agents
 ${agents}
 
@@ -1101,8 +1268,8 @@ PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs: ${planFiles.length} | Sch
 ### Projects
 ${projects}
 
-Use tools to read \`config.json\` (schedules), \`pipelines/\` dir, or \`curl http://localhost:7331/api/routes\` for details.
-For all state files, look under \`${MINIONS_DIR}\`.`;
+Use tools to read \`config.json\` (schedules), \`pipelines/\` dir for details.
+For all state files, look under \`${MINIONS_DIR}\`.${indexSection}`;
   _preambleCache = result;
   _preambleCacheTs = now;
   return result;
@@ -1310,21 +1477,28 @@ function _messageRequestsOrchestration(message) {
   const text = String(message || '').toLowerCase();
   if (!text.trim()) return false;
 
-  const explicitOrchestration = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
-  const docTarget = '\\b(document|doc|text|selection|paragraph|section|wording|copy|markdown|plan)\\b';
+  const docTarget = '\\b(document|doc|text|selection|selected text|selected paragraph|selected section|paragraph|section|wording|copy|markdown|plan)\\b';
   const docEditVerb = '\\b(edit|rewrite|revise|update|change|rephrase|polish|format|shorten|expand|summarize|correct|add|write)\\b';
   const explicitDocEdit = new RegExp(`${docEditVerb}[\\s\\S]{0,120}${docTarget}|${docTarget}[\\s\\S]{0,120}${docEditVerb}`).test(text)
     || /\bfix\b[\s\S]{0,80}\b(typo|typos|grammar|spelling|wording|copy|markdown)\b[\s\S]{0,80}\b(document|doc|text|selection|paragraph|section|plan)\b/.test(text);
-  if (explicitDocEdit && !explicitOrchestration) return false;
+  const actionTerm = '\\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\\b';
+  const untrustedActionMention = new RegExp(
+    `${docTarget}[\\s\\S]{0,120}\\b(says|contains|mentions|includes|reads|states|instructs|asks|tells|literal|literally)\\b[\\s\\S]{0,160}${actionTerm}`
+  ).test(text)
+    || new RegExp(`\\b(summarize|explain|quote|describe|analyze|extract)\\b[\\s\\S]{0,160}${docTarget}[\\s\\S]{0,160}${actionTerm}`).test(text);
+  const explicitFollowupAction = /\b(and|then|also)\b[\s\S]{0,80}\b(dispatch|delegate|assign|orchestrate|hand off|handoff|work item|ticket|agent|minions|watch|monitor|schedule|pipeline|meeting)\b/.test(text);
+  if (untrustedActionMention && !explicitFollowupAction) return false;
 
-  return /\b(dispatch|delegate|assign)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify)\b/.test(text)
-    || /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text)
-    || /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
+  const dispatchAction = /\b(dispatch|delegate|assign|orchestrate|hand off|handoff)\b[\s\S]{0,120}\b(agent|dallas|ripley|lambert|rebecca|ralph|work item|task|fix|implement|explore|investigate|audit|review|test|verify|build)\b/.test(text);
+  const workItemAction = /\b(create|open|file|add)\b[\s\S]{0,80}\b(work item|task|ticket)\b/.test(text);
+  const stateAction = /\b(create|add|set up|start)\b[\s\S]{0,80}\b(watch|monitor|schedule|pipeline|meeting)\b/.test(text)
     || /\b(watch|monitor|keep an eye on)\b[\s\S]{0,100}\b(pr|pull request|work item|build)\b/.test(text)
-    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text)
-    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(bug|issue|error|crash|exception|regression|failing test|test failure|build failure|ci|feature|code|endpoint|api|ui|workflow|integration|pr|pull request)\b/.test(text)
-    || /\b(run|add|write)\b[\s\S]{0,80}\b(test|tests|coverage)\b/.test(text);
+    || /\b(cancel|retry|reopen|archive|pause|approve|reject|execute|resume|steer)\b[\s\S]{0,100}\b(plan|work item|agent|pr|pull request|schedule|pipeline)\b/.test(text);
+  const agentEngineeringAction = /\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b[\s\S]{0,120}\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b/.test(text)
+    || /\b(fix|debug|repair|investigate|audit|review|test|verify|build|refactor|implement)\b[\s\S]{0,120}\b(minions|agent|dallas|ripley|lambert|rebecca|ralph)\b/.test(text);
+  const explicitActionIntent = dispatchAction || workItemAction || stateAction || agentEngineeringAction;
+  if (explicitDocEdit && !explicitActionIntent) return false;
+  return explicitActionIntent;
 }
 
 function _escapeRegExp(str) {
@@ -1581,6 +1755,70 @@ function meetingParticipantsFromAction(action) {
   );
 }
 
+function normalizePipelineForCompare(pipeline) {
+  if (!pipeline || typeof pipeline !== 'object') return null;
+  return {
+    title: pipeline.title || '',
+    stages: Array.isArray(pipeline.stages) ? pipeline.stages : [],
+    trigger: pipeline.trigger && typeof pipeline.trigger === 'object' ? pipeline.trigger : {},
+    enabled: pipeline.enabled !== false,
+    stopWhen: pipeline.stopWhen || null,
+    monitoredResources: Array.isArray(pipeline.monitoredResources) ? pipeline.monitoredResources : [],
+  };
+}
+
+function buildPipelineFromAction(action) {
+  const pipeline = {
+    id: String(action.id || '').trim(),
+    title: String(action.title || '').trim(),
+    stages: action.stages,
+    trigger: action.trigger && typeof action.trigger === 'object' ? action.trigger : {},
+    enabled: action.enabled !== false,
+  };
+  if (action.stopWhen) pipeline.stopWhen = action.stopWhen;
+  if (Array.isArray(action.monitoredResources) && action.monitoredResources.length > 0) {
+    pipeline.monitoredResources = action.monitoredResources;
+  }
+  return pipeline;
+}
+
+function pipelineDefinitionsEqual(a, b) {
+  return JSON.stringify(normalizePipelineForCompare(a)) === JSON.stringify(normalizePipelineForCompare(b));
+}
+
+function createPipelineFromAction(action) {
+  const { savePipeline, getPipeline } = require('./engine/pipeline');
+  const pipeline = buildPipelineFromAction(action);
+  const existing = getPipeline(pipeline.id);
+  if (existing) {
+    if (pipelineDefinitionsEqual(existing, pipeline)) {
+      return {
+        type: 'create-pipeline',
+        id: pipeline.id,
+        ok: true,
+        duplicate: true,
+        duplicateOf: pipeline.id,
+        warning: `Pipeline "${pipeline.id}" already exists; no changes made.`,
+      };
+    }
+    return {
+      type: 'create-pipeline',
+      id: pipeline.id,
+      error: `Pipeline "${pipeline.id}" already exists with a different definition. Use edit-pipeline to update it.`,
+    };
+  }
+  savePipeline(pipeline);
+  const persisted = getPipeline(pipeline.id);
+  if (!persisted) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" was not persisted.` };
+  }
+  if (!pipelineDefinitionsEqual(persisted, pipeline)) {
+    return { type: 'create-pipeline', id: pipeline.id, error: `Pipeline "${pipeline.id}" persisted with unexpected contents.` };
+  }
+  invalidateStatusCache();
+  return { type: 'create-pipeline', id: pipeline.id, ok: true, created: true };
+}
+
 // Required-field validator for CC actions. Returns null when valid, an error string when not.
 // Centralises field-required checks so the model can't quietly emit a malformed action and have
 // the server silently fall back to placeholder values (e.g. "Untitled"). The handler invokes this
@@ -1615,6 +1853,11 @@ function _ccValidateAction(action) {
       if (meetingParticipantsFromAction(action).length < 2) return 'create-meeting action requires at least 2 participants';
       return null;
     }
+    case 'create-pipeline':
+      if (!action.id || typeof action.id !== 'string' || !action.id.trim()) return 'create-pipeline action missing required field: id';
+      if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return 'create-pipeline action missing required field: title';
+      if (!Array.isArray(action.stages) || action.stages.length === 0) return 'create-pipeline action requires non-empty stages array';
+      return null;
     default:
       return null; // unknown types fall through to existing handler / generic fallback
   }
@@ -1720,7 +1963,7 @@ async function executeCCActions(actions) {
           // Pre-flight routing check: warn the user if no agent is currently available so the new
           // item won't sit pending invisibly. Routing failure is non-fatal — the WI was created.
           try {
-            const resolvedAgent = routing.resolveAgent(workType, CONFIG, { agentHints });
+            const resolvedAgent = routing.resolveAgent(workType, CONFIG, { agentHints, dryRun: true });
             if (!resolvedAgent) {
               const lastResult = results[results.length - 1];
               lastResult.warning = `Created ${id} but no agent is currently available to dispatch (routing returned no match for workType=${workType}${agentHints.length ? ', hints=' + agentHints.join(',') : ''}). Item will sit pending until an agent becomes available.`;
@@ -1764,12 +2007,20 @@ async function executeCCActions(actions) {
             project_path: project.localPath || '',
             task: `Build & test ${pr.id}: ${pr.title || ''}`,
           }, `Build & test ${pr.id}: ${pr.title || ''}`,
-          { dispatchKey, source: 'cc-build-and-test', pr, branch: pr.branch, project: { name: project.name, localPath: project.localPath } });
+           { dispatchKey, source: 'cc-build-and-test', pr, branch: pr.branch, project: { name: project.name, localPath: project.localPath } });
           if (!item) {
+            if (agentId?.startsWith('temp-')) {
+              routing.tempAgents.delete(agentId);
+              routing._claimedAgents.delete(agentId);
+            }
             results.push({ type: 'build-and-test', error: 'Failed to render build-and-test playbook' });
             break;
           }
           const id = dispatchMod.addToDispatch(item);
+          if (agentId?.startsWith('temp-')) {
+            routing.tempAgents.delete(agentId);
+            routing._claimedAgents.delete(agentId);
+          }
           results.push({ type: 'build-and-test', id, agent: agentId, pr: pr.id, ok: true });
           break;
         }
@@ -1853,6 +2104,10 @@ async function executeCCActions(actions) {
           results.push({ type: 'create-meeting', id: meeting.id, ok: true });
           break;
         }
+        case 'create-pipeline': {
+          results.push(createPipelineFromAction(action));
+          break;
+        }
         case 'delete-watch': {
           const deleted = watchesMod.deleteWatch(action.id);
           if (deleted) invalidateStatusCache();
@@ -1894,7 +2149,35 @@ async function executeDocChatActions(actions) {
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
 const DOC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.docSessionTtlMs;
+const DOC_SESSION_MAX_ENTRIES = shared.ENGINE_DEFAULTS.docSessionMaxEntries;
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
+
+function _docSessionLastActiveMs(session) {
+  const ms = Date.parse(session?.lastActiveAt || session?.createdAt || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function pruneDocSessions() {
+  let changed = false;
+  for (const [key, s] of docSessions.entries()) {
+    if (!s || (s.turnCount || 0) >= CC_SESSION_MAX_TURNS ||
+        _sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS) ||
+        s._promptHash !== _docChatPromptHash) {
+      docSessions.delete(key);
+      changed = true;
+    }
+  }
+  const maxEntries = Number(DOC_SESSION_MAX_ENTRIES) > 0 ? Number(DOC_SESSION_MAX_ENTRIES) : 200;
+  if (docSessions.size > maxEntries) {
+    const oldest = Array.from(docSessions.entries())
+      .sort((a, b) => _docSessionLastActiveMs(a[1]) - _docSessionLastActiveMs(b[1]));
+    for (const [key] of oldest.slice(0, docSessions.size - maxEntries)) {
+      docSessions.delete(key);
+      changed = true;
+    }
+  }
+  return changed;
+}
 
 // Load persisted doc sessions on startup
 try {
@@ -1905,14 +2188,21 @@ try {
       if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) continue;
       docSessions.set(key, s);
     }
+    pruneDocSessions();
   }
 } catch { /* optional */ }
 
 function persistDocSessions() {
+  pruneDocSessions();
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
   safeWrite(DOC_SESSIONS_PATH, obj);
 }
+
+const _docSessionPruneTimer = setInterval(() => {
+  if (pruneDocSessions()) persistDocSessions();
+}, Math.min(DOC_SESSION_TTL_MS, 60 * 60 * 1000));
+if (_docSessionPruneTimer.unref) _docSessionPruneTimer.unref();
 
 // Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
 let _persistDocSessionsTimer = null;
@@ -1981,6 +2271,7 @@ function updateSession(store, key, sessionId, existing) {
       _docHash: prev?._docHash || null,
       _promptHash: _docChatPromptHash,
     });
+    pruneDocSessions();
     schedulePersistDocSessions();
   }
 }
@@ -1997,7 +2288,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2086,7 +2377,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2249,6 +2540,57 @@ function _docChatErrorMessage(errorClass, sessionPreserved = false) {
   return 'Failed to process request. Try again.';
 }
 
+// Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
+// so a fresh-session retry includes the full document instead of relying on the
+// dead session's prior turn for context.
+function _buildDocChatPass({ docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession }) {
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
+  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
+  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
+  const extraContext = _formatDocChatContext({
+    document: docSlice, title, filePath, selection, canEdit, isJson, docUnchanged,
+  });
+  return { extraContext, docHash, hadSession: !!existing?.sessionId };
+}
+
+// One-shot recovery from a stuck resumed session: if the initial call rode an
+// existing session and came back empty / non-zero, invalidate the persisted
+// session and re-run via the supplied closure. ccCall already retries fresh
+// when the runtime can't extract a sessionId, but on adapter-still-alive
+// failures it preserves the session — and from doc-chat's perspective that's
+// the failure mode the user actually sees ("Failed to process request").
+async function _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce }) {
+  if (!initialPass.hadSession || freshSession || result.missingRuntime) return result;
+  if (result.code === 0 && result.text) return result;
+  console.log(`[doc-chat] Resumed session call failed (code=${result.code}, empty=${!result.text}) — invalidating session and retrying fresh for ${sessionKey || 'untitled'}`);
+  if (sessionKey) {
+    docSessions.delete(sessionKey);
+    schedulePersistDocSessions();
+  }
+  return runOnce();
+}
+
+// Build the {error} envelope returned to the dashboard when doc-chat ultimately
+// fails. Surfaces an actionable user-facing message (via _docChatErrorMessage)
+// plus the runtime's real stderr / exit code / errorClass so the UI can render
+// the cause and so future failures are debuggable from logs.
+function _docChatFailureResponse(label, filePath, result, sessionPreserved = false) {
+  const stderrTail = (result.stderr || '').slice(-2048);
+  console.error(`[${label}] Failed: code=${result.code}, errorClass=${result.errorClass || 'null'}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, filePath=${filePath}, stderr=${stderrTail.slice(0, 200)}`);
+  return {
+    answer: _docChatErrorMessage(result.errorClass, sessionPreserved),
+    content: null,
+    actions: [],
+    error: {
+      code: result.code ?? null,
+      stderr: stderrTail,
+      errorClass: result.errorClass || null,
+      runtime: result.runtime || null,
+    },
+  };
+}
+
+
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
@@ -2262,33 +2604,30 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
   }
 
-  // Skip re-sending full document on session resume if content unchanged
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCall(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCall(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     // One-shot call — discard the session ccCall just stored so it cannot
@@ -2298,7 +2637,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2307,8 +2646,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
 
   if (result.code !== 0 || !result.text) {
     const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
-    console.error(`[doc-chat] Failed: code=${result.code}, errorClass=${result.errorClass}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: _docChatErrorMessage(result.errorClass, sessionPreserved), content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat', filePath, result, sessionPreserved);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -2322,42 +2660,40 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     docSessions.delete(sessionKey);
   }
 
-  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = freshSession ? null : resolveSession('doc', sessionKey);
-  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
-
-  const docContext = _formatDocChatContext({
-    document: docSlice,
-    title,
-    filePath,
-    selection,
-    canEdit,
-    isJson,
-    docUnchanged,
-  });
   const allowActions = _messageRequestsOrchestration(message);
 
-  const result = await ccCallStreaming(message, {
-    store: 'doc', sessionKey,
-    extraContext: docContext, label: 'doc-chat',
-    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 25 : 10,
-    timeout: DOC_CHAT_TIMEOUT_MS,
-    skipStatePreamble: true,
-    systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
-    ...(model ? { model } : {}),
-    onAbortReady,
-    onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
-    onToolUse,
-    onRetry,
+  const runOnce = async () => {
+    const { extraContext } = _buildDocChatPass({
+      docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
+    });
+    return ccCallStreaming(message, {
+      store: 'doc', sessionKey,
+      extraContext, label: 'doc-chat',
+      timeout: DOC_CHAT_TIMEOUT_MS,
+      allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+      maxTurns: canEdit ? 25 : 10,
+      skipStatePreamble: true,
+      systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      ...(model ? { model } : {}),
+      onAbortReady,
+      onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); },
+      onToolUse,
+      onRetry,
+    });
+  };
+
+  const initialPass = _buildDocChatPass({
+    docSlice, title, filePath, selection, canEdit, isJson, sessionKey, freshSession,
   });
+  let result = await runOnce();
+  result = await _retryDocChatAfterResumeFailure({ result, initialPass, freshSession, sessionKey, runOnce });
 
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
     schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
-    if (session) session._docHash = docHash;
+    if (session) session._docHash = initialPass.docHash;
   }
 
   if (result.missingRuntime) {
@@ -2366,8 +2702,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
 
   if (result.code !== 0 || !result.text) {
     const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
-    console.error(`[doc-chat-stream] Failed: code=${result.code}, errorClass=${result.errorClass}, sessionPreserved=${sessionPreserved}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
-    return { answer: _docChatErrorMessage(result.errorClass, sessionPreserved), content: null, actions: [] };
+    return _docChatFailureResponse('doc-chat-stream', filePath, result, sessionPreserved);
   }
 
   return _parseDocChatResultText(result.text, { allowActions });
@@ -4464,7 +4799,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
-      const { answer, content, actions, actionParseError } = await ccDocCall({
+      const { answer, content, actions, actionParseError, error: ccError } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
@@ -4473,11 +4808,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
       const actionResults = await executeDocChatActions(actions);
       const baseReply = (extra = {}) => ({
-        ok: true,
+        ok: !ccError,
         answer,
         actions,
         ...(actionResults ? { actionResults } : {}),
         ...(actionParseError ? { actionParseError } : {}),
+        ...(ccError ? { error: ccError } : {}),
         ...extra,
       });
 
@@ -4579,7 +4915,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
 
-        const { answer, content, actions, actionParseError } = await ccDocCallStreaming({
+        const { answer, content, actions, actionParseError, error: ccError } = await ccDocCallStreaming({
           message: body.message, document: currentContent, title: body.title,
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
@@ -4596,6 +4932,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           actions,
           ...(actionResults ? { actionResults } : {}),
           ...(actionParseError ? { actionParseError } : {}),
+          ...(ccError ? { error: ccError } : {}),
           ...extra,
         });
 
@@ -4945,20 +5282,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, e.statusCode || 400, { error: e.message });
       }
 
-      const project = {
-        name, description, localPath: target.replace(/\\/g, '/'),
-        repoHost: detected.repoHost || 'ado', repositoryId: detected.repositoryId || '',
-        adoOrg: detected.org || '', adoProject: detected.project || '',
-        repoName: detected.repoName || name, mainBranch: detected.mainBranch || 'main',
-        prUrlBase: projectDiscovery.buildPrUrlBase({
-          repoHost: detected.repoHost,
-          org: detected.org,
-          project: detected.project,
-          repoName: detected.repoName,
-          prUrlBase: detected.prUrlBase,
-        }),
-        workSources: { pullRequests: { enabled: true, cooldownMinutes: 30 }, workItems: { enabled: true, cooldownMinutes: 0 } }
-      };
+      const project = projectDiscovery.buildProjectEntry({
+        name, description, localPath: target,
+        repoHost: detected.repoHost || 'github',
+        repositoryId: detected.repositoryId || '',
+        org: detected.org || '',
+        project: detected.project || '',
+        repoName: detected.repoName || name,
+        mainBranch: detected.mainBranch || 'main',
+        prUrlBase: detected.prUrlBase,
+      });
 
       config.projects.push(project);
       safeWrite(configPath, config);
@@ -5191,11 +5524,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   function _invokeCcStream({ prompt, sessionId, liveState, toolUses, model, effort, maxTurns, engineConfig }) {
     const { callLLMStreaming } = require('./engine/llm');
     return callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-      timeout: 900000, label: 'command-center', model, maxTurns,
+      timeout: CC_CALL_TIMEOUT_MS, label: 'command-center', model, maxTurns,
       allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       sessionId, effort, direct: true,
       engineConfig,
       onChunk: (text) => {
+        _touchCcLiveStream(liveState);
         const display = stripCCActionsForStream(text);
         liveState.text = display;
         // Once text is flowing, the SSE-replay branch (live.thinkingSent &&
@@ -5204,11 +5538,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (liveState.writer) liveState.writer({ type: 'chunk', text: display });
       },
       onToolUse: (name, input) => {
+        _touchCcLiveStream(liveState);
         toolUses.push({ name, input: input || {} });
         liveState.tools.push({ name, input: input || {} });
         if (liveState.writer) liveState.writer({ type: 'tool', name, input: _lightToolInput(input) });
       },
       onThinking: () => {
+        _touchCcLiveStream(liveState);
         liveState.thinkingSent = true;
         if (liveState.writer) liveState.writer({ type: 'thinking', text: 'Thinking...' });
       },
@@ -5343,7 +5679,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Session management — per-tab: use sessionId from request, don't mutate global ccSession
         let tabSessionId = body.sessionId || null;
         let sessionReset = false;
-        // If system prompt changed since this session was created, force a fresh session
+        let sessionResetReason = null;
+        let previousRuntime = null;
+        const currentRuntime = shared.resolveCcCli(CONFIG.engine);
+        // If system prompt or runtime changed since this session was created, force a fresh session
         if (tabSessionId) {
           const sessions = _readCcTabSessions();
           const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
@@ -5353,12 +5692,19 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           } else if (tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
             tabSessionId = null;
             sessionReset = true;
+            sessionResetReason = 'promptChanged';
+          } else if (tabEntry.runtime && tabEntry.runtime !== currentRuntime) {
+            tabSessionId = null;
+            sessionReset = true;
+            sessionResetReason = 'runtimeChanged';
+            previousRuntime = tabEntry.runtime;
           }
         }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
-        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
+        const carryover = sessionReset ? _buildTranscriptCarryover(body.transcript, { previousRuntime }) : '';
+        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + (carryover ? carryover + '\n\n---\n\n' : '') + body.message;
 
         const { trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
@@ -5436,8 +5782,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
               existing.preview = preview;
               existing._promptHash = _ccPromptHash;
+              existing.runtime = currentRuntime;
             } else {
-              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
+              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash, runtime: currentRuntime });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -5460,7 +5807,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Issue #1834: surface action JSON parse failures so the UI can warn
         // instead of silently dropping. Client renders this as a small notice.
         if (_actionParseError) donePayload.actionParseError = _actionParseError;
-        if (sessionReset) donePayload.sessionReset = true;
+        if (sessionReset) {
+          donePayload.sessionReset = true;
+          if (sessionResetReason) donePayload.sessionResetReason = sessionResetReason;
+          if (previousRuntime) donePayload.previousRuntime = previousRuntime;
+          donePayload.currentRuntime = currentRuntime;
+        }
         liveState.donePayload = donePayload;
         if (liveState.writer) liveState.writer(donePayload);
 
@@ -6083,6 +6435,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
 
+  async function handleFeaturesList(req, res) {
+    try {
+      return jsonReply(res, 200, { features: features.listFeatures(CONFIG) });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
+  async function handleFeaturesToggle(req, res) {
+    try {
+      const body = await readBody(req);
+      const id = body && typeof body.id === 'string' ? body.id.trim() : '';
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+      if (!features.hasFeature(id)) {
+        return jsonReply(res, 404, { error: `Unknown feature flag: "${id}". Register it in engine/features.js.` });
+      }
+      const enabled = body.enabled === true;
+      const configPath = path.join(MINIONS_DIR, 'config.json');
+      mutateJsonFileLocked(configPath, (cfg) => {
+        if (!cfg.features || typeof cfg.features !== 'object') cfg.features = {};
+        cfg.features[id] = enabled;
+        return cfg;
+      });
+      reloadConfig();
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, enabled });
+    } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
+  }
+
   async function handleHealth(req, res) {
     const engine = getEngineState();
     const agents = getAgents();
@@ -6245,12 +6624,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
     }},
     { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
-      const list = ROUTES.map(r => ({
-        method: r.method,
-        path: typeof r.path === 'string' ? r.path : r.path.toString(),
-        description: r.desc,
-        params: r.params || null
-      }));
+      const list = _routesAsMeta(ROUTES).map(({ desc, ...rest }) => ({ ...rest, description: desc }));
       return jsonReply(res, 200, { routes: list });
     }},
 
@@ -6259,15 +6633,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/status-stream', desc: 'SSE stream of real-time status updates', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       res.write('data: ' + getStatusJson() + '\n\n');
-      _statusStreamClients.add(res);
-      req.on('close', () => _statusStreamClients.delete(res));
+      _trackSseClient(_statusStreamClients, req, res);
     }},
     { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
     { method: 'GET', path: '/api/hot-reload', desc: 'SSE stream for dashboard hot-reload notifications', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       res.write('data: connected\n\n');
-      _hotReloadClients.add(res);
-      req.on('close', () => _hotReloadClients.delete(res));
+      _trackSseClient(_hotReloadClients, req, res);
     }},
 
     // Work items
@@ -6875,11 +7247,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
 
+    // Feature flags (experimental / in-progress UX gates — see engine/features.js)
+    { method: 'GET', path: '/api/features', desc: 'List registered feature flags with current enabled state', handler: handleFeaturesList },
+    { method: 'POST', path: '/api/features/toggle', desc: 'Enable/disable a registered feature flag', params: 'id, enabled', handler: handleFeaturesToggle },
+
     // Teams Bot Framework webhook
     { method: 'POST', path: '/api/bot', desc: 'Bot Framework webhook for Teams integration', handler: handleTeamsBot },
   ];
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────
+
+  // Capture ROUTES metadata into the module-level snapshot so CC's preamble
+  // renders the live API surface (single source of truth — adding any new
+  // route to ROUTES above auto-surfaces it in CC's index).
+  _captureApiRoutesMeta(ROUTES);
 
   const pathname = req.url.split('?')[0];
   const _reqStart = Date.now();
@@ -6964,7 +7345,13 @@ module.exports = {
   _findDuplicateWorkItemCreate: findDuplicateWorkItemCreate,
   _createWorkItemWithDedup: createWorkItemWithDedup,
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
+  _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
+  buildCCStatePreamble,
+  _captureApiRoutesMeta,
+  _formatCcApiRoutesIndex,
+  _formatCcCliCommandsIndex,
+  _resetPreambleCache,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).
@@ -7022,7 +7409,7 @@ if (require.main === module) {
       } catch (e) {
         console.error(`[watchdog] Error: ${e.message}`);
       }
-    }, 30000);
+    }, 30000).unref();
     console.log(`  Engine watchdog: active (checks every 30s)`);
   });
 

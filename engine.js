@@ -154,6 +154,17 @@ const realActivityMap = new Map(); // dispatchId → timestamp of last agent std
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 const engineRestartGraceExempt = new Set(); // dispatch IDs with confirmed-dead PIDs at restart — bypass grace period
 
+function cleanupTempAgent(agentId) {
+  if (!tempAgents.has(agentId)) return;
+  tempAgents.delete(agentId);
+  try {
+    const agentDir = path.join(AGENTS_DIR, agentId);
+    // Keep output archive but remove temp agent directory (live-output.log etc.)
+    fs.rmSync(agentDir, { recursive: true, force: true });
+    log('info', `Temp agent ${agentId} cleaned up`);
+  } catch { /* cleanup */ }
+}
+
 // Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
 // Cleared at the start of each tick cycle (see tickInner)
 const _failedRefCache = new Set();
@@ -271,17 +282,72 @@ function _runtimeLogger() {
   };
 }
 
+function _collectAgentFailureSignal(rawOutput) {
+  const text = rawOutput == null ? '' : String(rawOutput);
+  if (!text) return '';
+
+  const signals = [];
+  let sawJsonLine = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (!line.startsWith('{')) {
+      signals.push(line);
+      continue;
+    }
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    sawJsonLine = true;
+
+    const type = String(obj.type || '');
+    const subtype = String(obj.subtype || '');
+    const eventType = String(obj.event?.type || '');
+    const isErrorEvent = type === 'error'
+      || eventType === 'error'
+      || subtype.startsWith('error')
+      || obj.is_error === true
+      || obj.error != null;
+    if (!isErrorEvent) continue;
+
+    for (const value of [
+      subtype,
+      obj.error,
+      obj.message,
+      obj.stderr,
+      obj.result,
+      obj.event?.error,
+      obj.event?.message,
+    ]) {
+      if (typeof value === 'string' && value.trim()) signals.push(value.trim());
+    }
+  }
+
+  if (signals.length > 0) return signals.join('\n');
+  return sawJsonLine ? '' : text;
+}
+
+function _stdoutForFallbackClassification(rawStdout, failureSignal) {
+  if (failureSignal) return failureSignal;
+  const text = rawStdout == null ? '' : String(rawStdout);
+  if (!text.trim()) return '';
+  return 'agent produced non-empty stdout without a terminal runtime error signal';
+}
+
 function _classifyAgentFailure(runtime, code, stdout, stderr) {
+  const failureSignal = _collectAgentFailureSignal(stdout);
+  const fallbackStdout = _stdoutForFallbackClassification(stdout, failureSignal);
   if (runtime && typeof runtime.classifyFailure === 'function') {
     const classified = runtime.classifyFailure({
       code,
-      stdout,
+      stdout: failureSignal,
       stderr,
-      fallback: classifyFailureFallback,
+      fallback: (fallbackCode, _stdout, fallbackStderr) =>
+        classifyFailureFallback(fallbackCode, fallbackStdout, fallbackStderr),
     });
     if (classified && classified.failureClass) return classified;
   }
-  return { failureClass: classifyFailureFallback(code, stdout, stderr) };
+  return { failureClass: classifyFailureFallback(code, fallbackStdout, stderr) };
 }
 
 function ackPendingSteeringFiles(agentId, procInfo, rawOutput, observedAtMs = Date.now()) {
@@ -637,6 +703,7 @@ async function spawnAgent(dispatchItem, config) {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
           _cleanupPromptFiles();
           completeDispatch(id, DISPATCH_RESULT.ERROR, 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
+          cleanupTempAgent(agentId);
           return null;
         }
       }
@@ -890,6 +957,7 @@ async function spawnAgent(dispatchItem, config) {
                 });
               } catch (e) { log('warn', `Failed to auto-queue conflict-fix: ${e.message}`); }
             }
+            cleanupTempAgent(agentId);
             return;
           }
         } catch (e) {
@@ -1036,6 +1104,7 @@ async function spawnAgent(dispatchItem, config) {
     // orphan detector's "logSize > stub-only" check can tell this apart from a
     // hung process. Then rethrow so the dispatch loop handles it normally.
     try { fs.appendFileSync(liveOutputPath, `[${new Date().toISOString()}] spawn-failed: ${spawnErr.message}\n[process-exit] spawn-failed\n`); } catch { /* cleanup-only best effort */ }
+    cleanupTempAgent(agentId);
     throw spawnErr;
   }
 
@@ -1167,6 +1236,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] No session to resume. Message was: ${steerMsg}\n`); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering skipped (no session)', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1197,6 +1267,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Could not write prompt. Message was: ${steerMsg}\n`); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering prompt write failed', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1219,6 +1290,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering not supported by runtime', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1247,6 +1319,7 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering spawn failed', '', { processWorkItemFailure: false });
+        cleanupTempAgent(agentId);
         return;
       }
 
@@ -1365,6 +1438,7 @@ async function spawnAgent(dispatchItem, config) {
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
+      cleanupTempAgent(agentId);
       return;
     }
 
@@ -1388,6 +1462,7 @@ async function spawnAgent(dispatchItem, config) {
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
+      cleanupTempAgent(agentId);
       return;
     }
 
@@ -1400,9 +1475,9 @@ async function spawnAgent(dispatchItem, config) {
     const hardContractFail = completionContractFailure?.severity === 'hard'
       || completionContractFailure?.nonTerminal === true;
     const effectiveResult = hardContractFail ? DISPATCH_RESULT.ERROR : (((code === 0 && !agentReportedFailure) || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR);
-    const completionReportPath = structuredCompletion?._path || dispatchItem.meta?.completionReportPath || shared.dispatchCompletionReportPath(id);
+    const finalCompletionReportPath = structuredCompletion?._path || dispatchItem.meta?.completionReportPath || shared.dispatchCompletionReportPath(id);
     const completionOpts = {
-      ...(completionReportPath ? { completionReportPath } : {}),
+      ...(finalCompletionReportPath ? { completionReportPath: finalCompletionReportPath } : {}),
       ...(structuredCompletion ? { structuredCompletion } : {}),
     };
     const completeOpts = hardContractFail
@@ -1484,16 +1559,7 @@ async function spawnAgent(dispatchItem, config) {
       } catch (err) { log('warn', `Artifact tracking: ${err.message}`); }
     }
 
-    // Clean up temp agent directory
-    if (tempAgents.has(agentId)) {
-      tempAgents.delete(agentId);
-      try {
-        const agentDir = path.join(AGENTS_DIR, agentId);
-        // Keep output archive but remove temp agent directory (live-output.log etc.)
-        fs.rmSync(agentDir, { recursive: true, force: true });
-        log('info', `Temp agent ${agentId} cleaned up`);
-      } catch { /* cleanup */ }
-    }
+    cleanupTempAgent(agentId);
   }
 
   proc.on('close', onAgentClose);
@@ -1503,6 +1569,7 @@ async function spawnAgent(dispatchItem, config) {
     activeProcesses.delete(id);
     realActivityMap.delete(id);
     completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
+    cleanupTempAgent(agentId);
   });
 
   // Safety: if process exits immediately (within 3s), log it
@@ -2159,6 +2226,12 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
+function isPrNoOpFixCauseSuppressed(pr, cause) {
+  if (!shared.isPrNoOpFixCausePaused(pr, cause)) return false;
+  log('warn', `PR ${pr.id}: suppressing ${cause} automation after repeated no-op fix attempts; waiting for human resume or new evidence`);
+  return true;
+}
+
 const PR_PENDING_MISSING_BRANCH = shared.PR_PENDING_REASON.MISSING_BRANCH;
 
 function normalizePrBranch(value) {
@@ -2251,6 +2324,93 @@ function ensurePrBranchForDispatch(project, pr, automationType) {
     log('warn', `PR ${pr.id}: ${reason}`);
   }
   return '';
+}
+
+function prCausePart(value, fallback = 'unknown') {
+  const raw = String(value || '').trim();
+  return shared.safeSlugComponent(raw || fallback, 80);
+}
+
+function getPrCauseHead(pr) {
+  return pr?.headSha
+    || pr?.headSHA
+    || pr?.head?.sha
+    || pr?._adoSourceCommit
+    || pr?._adoHeadCommit
+    || pr?.lastMergeSourceCommit?.commitId
+    || pr?.lastMergeCommit?.commitId
+    || '';
+}
+
+function getPrCauseBase(pr) {
+  return pr?.baseSha
+    || pr?.base?.sha
+    || pr?._adoTargetCommit
+    || pr?.lastMergeTargetCommit?.commitId
+    || pr?.targetSha
+    || pr?.targetRefSha
+    || pr?.baseRefName
+    || pr?.targetRefName
+    || '';
+}
+
+function getPrAutomationCauseKey(kind, pr) {
+  if (kind === 'review-feedback') {
+    const reviewRef = pr?.minionsReview?.dispatchId
+      || pr?.minionsReview?.reviewedAt
+      || pr?.lastReviewedAt
+      || getPrCauseHead(pr)
+      || pr?.reviewNote
+      || pr?.minionsReview?.note
+      || 'review';
+    return `review-feedback:${prCausePart(reviewRef)}`;
+  }
+  if (kind === 'human-comment') {
+    const commentRef = pr?.humanFeedback?.lastProcessedCommentKey
+      || pr?.humanFeedback?.lastProcessedCommentId
+      || pr?.humanFeedback?.commentId
+      || pr?.humanFeedback?.lastProcessedCommentDate
+      || pr?.humanFeedback?.feedbackContent
+      || 'comment';
+    return `human-comment:${prCausePart(commentRef)}`;
+  }
+  if (kind === 'build') {
+    const checkName = pr?.buildFailReason || pr?._buildStatusDetail || 'check';
+    const signature = pr?.buildFailureSignature
+      || pr?.buildErrorLog
+      || pr?._buildStatusDetail
+      || pr?.buildStatusDetail
+      || pr?.buildFailReason
+      || 'failure';
+    return `build:${prCausePart(checkName)}:${prCausePart(getPrCauseHead(pr), 'unknown-head')}:${prCausePart(signature)}`;
+  }
+  if (kind === 'merge-conflict') {
+    return `merge-conflict:${prCausePart(getPrCauseBase(pr), 'unknown-base')}:${prCausePart(getPrCauseHead(pr), 'unknown-head')}`;
+  }
+  return `${kind}:${prCausePart(getPrCauseHead(pr) || pr?.id || 'pr')}`;
+}
+
+function getPrAutomationDispatchKey(baseKey, causeKey) {
+  return `${baseKey}-${shared.safeSlugComponent(causeKey, 96)}`;
+}
+
+function isPrAutomationCausePending(project, pr, causeKey) {
+  if (!causeKey) return false;
+  const prCanonicalId = shared.getCanonicalPrId(project, pr, pr?.url || '');
+  const dispatch = getDispatch();
+  return [...(dispatch.pending || []), ...(dispatch.active || [])].some(d => {
+    if (d.meta?.automationCauseKey !== causeKey) return false;
+    if (!prCanonicalId) return true;
+    const dispatchProject = d.meta?.project?.name
+      ? (getProjects(getConfig()).find(p => p.name === d.meta.project.name) || d.meta.project)
+      : (d.meta?.project || null);
+    const dispatchPrId = shared.getCanonicalPrId(dispatchProject, d.meta?.pr, d.meta?.pr?.url || '');
+    return !dispatchPrId || dispatchPrId === prCanonicalId;
+  });
+}
+
+function isPrAutomationCauseHandledOrPending(project, pr, causeKey) {
+  return shared.hasPrAutomationCause(pr, causeKey) || isPrAutomationCausePending(project, pr, causeKey);
 }
 
 
@@ -2393,10 +2553,14 @@ async function discoverFromPrs(config, project) {
 
     // Fresh reviewer comments are actionable fixes, even while the PR is otherwise
     // awaiting a stale-vote re-review or has build-fix retries escalated.
-    const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
+    const humanFixBaseKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;
+    const humanCauseKey = getPrAutomationCauseKey('human-comment', pr);
+    const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if (autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched) {
+    if (pollEnabled && autoFixHumanComments && (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.HUMAN_FEEDBACK)) {
       const key = humanFixKey;
+      if (isPrAutomationCauseHandledOrPending(project, pr, humanCauseKey)) continue;
       let staleCoalesced = [];
       const alreadyDispatched = isAlreadyDispatched(key);
       const blockedByCooldown = isOnCooldown(key, cooldownMs);
@@ -2437,7 +2601,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: prBranch,
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, automationCauseKey: humanCauseKey, source: 'pr-human-feedback', pr, branch: prBranch, project: projMeta });
       if (item) { newWork.push(item); fixDispatched = true; }
     }
 
@@ -2489,10 +2653,13 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); }
     }
 
-    // PRs with changes requested → route back to author for fix
-    // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
-    if (evalLoopEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched) {
-      const key = `fix-${project?.name || 'default'}-${prDisplayId}`;
+    // PRs with changes requested → route back to author for fix.
+    // Gate on evalLoopEnabled and provider polling — the review→fix cycle depends on fresh vote state.
+    if (evalLoopEnabled && pollEnabled && autoFixReviewFeedback && reviewStatus === 'changes-requested' && !awaitingReReview && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.REVIEW_FEEDBACK)) {
+      const reviewCauseKey = getPrAutomationCauseKey('review-feedback', pr);
+      const key = getPrAutomationDispatchKey(`fix-${project?.name || 'default'}-${prDisplayId}`, reviewCauseKey);
+      if (isPrAutomationCauseHandledOrPending(project, pr, reviewCauseKey)) continue;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, { authorAgent: pr.agent });
       if (!agentId) continue;
@@ -2502,7 +2669,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, automationCauseKey: reviewCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
       }
@@ -2516,8 +2683,11 @@ async function discoverFromPrs(config, project) {
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
-    if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const key = `build-fix-${project?.name || 'default'}-${prDisplayId}`;
+    if (pollEnabled && autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing'
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.BUILD_FAILURE)) {
+      const buildCauseKey = getPrAutomationCauseKey('build', pr);
+      const key = getPrAutomationDispatchKey(`build-fix-${project?.name || 'default'}-${prDisplayId}`, buildCauseKey);
+      if (isPrAutomationCauseHandledOrPending(project, pr, buildCauseKey)) continue;
       if (fixThrottled || isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live build check — cached buildStatus may be stale: ADO can
@@ -2578,7 +2748,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: prBranch,
         review_note: reviewNote,
-      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, automationCauseKey: buildCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         try {
@@ -2606,16 +2776,18 @@ async function discoverFromPrs(config, project) {
       }
     }
 
-    // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
+    // PRs with merge conflicts — dispatch fix to resolve (gated by provider polling + autoFixConflicts)
     const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
-    if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
-      const key = `conflict-fix-${project?.name || 'default'}-${prDisplayId}`;
+    if (pollEnabled && autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched
+      && !isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.MERGE_CONFLICT)) {
+      const conflictCauseKey = getPrAutomationCauseKey('merge-conflict', pr);
+      const key = getPrAutomationDispatchKey(`conflict-fix-${project?.name || 'default'}-${prDisplayId}`, conflictCauseKey);
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
       // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
       const conflictFixedAt = pr._conflictFixedAt;
       const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
-      if (!withinLag && !fixThrottled && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      if (!withinLag && !fixThrottled && !isPrAutomationCauseHandledOrPending(project, pr, conflictCauseKey) && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         // Pre-dispatch live conflict check — cached `_mergeConflict` may be
         // stale: ADO/GitHub recompute mergeStatus asynchronously (1–5 min lag),
         // so a successful upstream merge can leave the flag set even after the
@@ -2647,7 +2819,7 @@ async function discoverFromPrs(config, project) {
             const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
               pr_id: pr.id, pr_branch: prBranch,
               review_note: `This PR has merge conflicts with the target branch. Inspect the live PR and repository history, choose the safest merge/rebase/update strategy, resolve all conflicts, validate the result, and push the branch.`,
-            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: prBranch, project: projMeta });
+            }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, automationCauseKey: conflictCauseKey, source: 'pr', pr, branch: prBranch, project: projMeta });
             if (item) {
               newWork.push(item);
               setCooldown(key);
@@ -3136,7 +3308,9 @@ function buildProjectContext(projects, assignedProject, isFanOut, agentName, age
   const projectList = projects.map(p => {
     let line = `### ${p.name}\n`;
     line += `- **Path:** ${p.localPath}\n`;
-    line += `- **Repo:** ${p.adoOrg}/${p.adoProject}/${p.repoName} (ID: ${p.repositoryId || 'unknown'}, host: ${getRepoHostLabel(p)})\n`;
+    line += p.repoHost === 'github'
+      ? `- **Repo:** ${p.githubOrg || p.adoOrg || ''}/${p.repoName} (host: ${getRepoHostLabel(p)})\n`
+      : `- **Repo:** ${p.adoOrg}/${p.adoProject}/${p.repoName} (ID: ${p.repositoryId || 'unknown'}, host: ${getRepoHostLabel(p)})\n`;
     if (p.description) line += `- **What it is:** ${p.description}\n`;
     return line;
   }).join('\n');
@@ -3897,7 +4071,7 @@ async function tickInner() {
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    safe('runCleanup', () => runCleanup(config));
+    try { await runCleanup(config); } catch (e) { log('warn', `runCleanup: ${e.message}`); }
   }
 
   // 2.55. Check persistent watches (3 tick-equivalents, default ~3 minutes)
@@ -4152,6 +4326,17 @@ async function tickInner() {
 
   // Build set of agents currently active (one task per agent at a time).
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  // W-motc4y1n000t1a5f: Track agents that already have a pending dispatch in
+  // the queue. Reassignment routes (busy / unspawned-temp) must not move a
+  // dispatch onto an agent who already has their own pending entry — order-
+  // dependent iteration would otherwise double-book that agent. Seeded once
+  // from the snapshot of pending and updated on successful reassignment.
+  const pendingAgents = new Set();
+  for (const p of (dispatch.pending || [])) {
+    if (typeof p.agent === 'string' && p.agent && p.agent !== routing.ANY_AGENT) {
+      pendingAgents.add(p.agent);
+    }
+  }
   // Branch mutex: track branches locked by active dispatches to prevent concurrent writes
   const lockedBranches = new Set();
   for (const d of (dispatch.active || [])) {
@@ -4235,9 +4420,12 @@ async function tickInner() {
     const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
     if (isUnspawnedTemp) {
       const altAgent = resolvePendingDispatchAgent(item, config);
-      if (altAgent && altAgent !== item.agent) {
+      // W-motc4y1n000t1a5f: don't reassign onto an agent who already has
+      // their own pending dispatch — that would double-book the alt.
+      if (altAgent && altAgent !== item.agent && !pendingAgents.has(altAgent)) {
         const prevAgent = item.agent;
         assignPendingDispatchAgent(item, altAgent, config);
+        pendingAgents.add(altAgent);
         log('info', `Reassigning ${item.id} from unspawned temp ${prevAgent} to ${altAgent} — temp agent never spawned`);
         // Persist reassignment to dispatch.json so it survives restarts/ticks
         persistPendingDispatchAgent(item);
@@ -4253,10 +4441,14 @@ async function tickInner() {
         continue; // Valid hard pin — keep waiting for pinned agent
       }
       // agent busy and idle alternative available — reroute immediately (no threshold)
+      // W-motc4y1n000t1a5f: pendingAgents check prevents reassigning onto an
+      // agent who already has their own pending dispatch (order-dependent
+      // double-book in the meeting fan-out scenario).
       const altAgent = resolvePendingDispatchAgent(item, config);
-      if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
+      if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent) && !pendingAgents.has(altAgent)) {
         log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy and idle alternative available`);
         assignPendingDispatchAgent(item, altAgent, config);
+        pendingAgents.add(altAgent);
         persistPendingDispatchAgent(item);
         // Fall through to branch mutex / concurrency checks below
       } else if (isSoftFixDispatch(item)) {
@@ -4409,7 +4601,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
   isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
-  _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, // exported for testing
+  _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, _classifyAgentFailure, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,

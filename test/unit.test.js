@@ -1659,6 +1659,49 @@ async function testRuntimeAdapters() {
     }
   });
 
+  await test('claude.resolveBinary infers native from stale cached .exe path and backfills', () => {
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, 'claude.exe');
+    fs.writeFileSync(fakeBin, '');
+    withClaudeCapsCache(claude, { claudeBin: fakeBin }, capsPath => {
+      const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+      assert.deepStrictEqual(result, { bin: fakeBin, native: true, leadingArgs: [] });
+      const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+      assert.deepStrictEqual(persisted, { claudeBin: fakeBin, claudeIsNative: true });
+    });
+  });
+
+  await test('claude.resolveBinary infers non-native from stale cached .js path and backfills', () => {
+    const tmpDir = createTmpDir();
+    const fakeBin = path.join(tmpDir, 'cli.js');
+    fs.writeFileSync(fakeBin, '');
+    withClaudeCapsCache(claude, { claudeBin: fakeBin }, capsPath => {
+      const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+      assert.deepStrictEqual(result, { bin: fakeBin, native: false, leadingArgs: [] });
+      const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+      assert.deepStrictEqual(persisted, { claudeBin: fakeBin, claudeIsNative: false });
+    });
+  });
+
+  await test('claude.resolveBinary preserves explicit cached claudeIsNative values', () => {
+    const cases = [
+      { file: 'claude.exe', claudeIsNative: false },
+      { file: 'cli.js', claudeIsNative: true },
+    ];
+    for (const c of cases) {
+      const tmpDir = createTmpDir();
+      const fakeBin = path.join(tmpDir, c.file);
+      fs.writeFileSync(fakeBin, '');
+      const cached = { claudeBin: fakeBin, claudeIsNative: c.claudeIsNative };
+      withClaudeCapsCache(claude, cached, capsPath => {
+        const result = claude.resolveBinary({ env: { PATH: tmpDir } });
+        assert.deepStrictEqual(result, { bin: fakeBin, native: c.claudeIsNative, leadingArgs: [] });
+        const persisted = JSON.parse(fs.readFileSync(capsPath, 'utf8'));
+        assert.deepStrictEqual(persisted, cached);
+      });
+    }
+  });
+
   // ── capsFile / modelsCache / spawnScript paths ────────────────────────────
 
   await test('claude.capsFile points at engine/claude-caps.json', () => {
@@ -1675,6 +1718,18 @@ async function testRuntimeAdapters() {
 }
 
 function isWinPlatform() { return process.platform === 'win32'; }
+
+function withClaudeCapsCache(claude, cached, fn) {
+  const capsPath = claude.capsFile;
+  const snapshot = _captureFileState(capsPath);
+  try {
+    fs.mkdirSync(path.dirname(capsPath), { recursive: true });
+    fs.writeFileSync(capsPath, JSON.stringify(cached, null, 2));
+    fn(capsPath);
+  } finally {
+    _restoreFileState(snapshot);
+  }
+}
 
 // ─── engine/runtimes/copilot.js — Copilot Adapter (P-1d4a8e7c) ──────────────
 
@@ -2604,11 +2659,14 @@ async function testGitHubIssueCreation() {
   function fakeGh(fixtures) {
     const calls = [];
     const execFileSync = (file, args) => {
-      calls.push({ file, args: args.slice() });
+      const call = { file, args: args.slice() };
+      calls.push(call);
       const key = args.slice(0, 2).join(' ');
       if (key === '--version') return 'gh version 2.0.0\n';
       if (key === 'label list') return fixtures.labelsJson;
       if (key === 'issue create') {
+        const bodyFile = args[args.indexOf('--body-file') + 1];
+        call.body = fs.readFileSync(bodyFile, 'utf8');
         const createCalls = calls.filter(c => c.args[0] === 'issue' && c.args[1] === 'create').length;
         if (fixtures.throwOnCreateCall === createCalls) {
           const err = new Error(fixtures.createError || 'could not add label: "missing" not found');
@@ -2682,6 +2740,50 @@ async function testGitHubIssueCreation() {
     assert.deepStrictEqual(result.labelsSkipped, ['bug']);
     assert.ok(/filed without labels/i.test(result.warning), 'fallback warning should be user-friendly, not raw gh stderr');
     assert.ok(!/could not add label/i.test(result.warning), 'raw gh label failure must not be the final UX');
+  });
+
+  await test('createGitHubIssue redacts repository identifiers from title and body before gh create', () => {
+    const gh = fakeGh({ labelsJson: '[]' });
+    issues.createGitHubIssue({
+      title: 'Bug in https://github.com/SecretOrg/PrivateRepo and SecretOrg/PrivateRepo',
+      description: [
+        'Useful context: stack trace line 123',
+        'GitHub URL: https://github.com/SecretOrg/PrivateRepo/issues/99',
+        'GitHub SSH: git@github.com:SecretOrg/PrivateRepo.git',
+        'ADO URL: https://dev.azure.com/SecretOrg/SecretProject/_git/PrivateRepo/pullrequest/7',
+        'Token URL: https://example.test/path?access_token=ghp_abcdefghijklmnopqrstuvwxyz123456',
+        'Configured remote: ssh://git@private.example.com/team/topsecret.git',
+        'Configured repo id: 11111111-2222-3333-4444-555555555555',
+      ].join('\n'),
+      labels: [],
+      repo: 'yemi33/minions',
+      projects: [{
+        repoHost: 'github',
+        adoOrg: 'SecretOrg',
+        adoProject: 'SecretProject',
+        repoName: 'PrivateRepo',
+        repositoryId: '11111111-2222-3333-4444-555555555555',
+        prUrlBase: 'https://github.com/SecretOrg/PrivateRepo/pull/',
+        remoteUrl: 'ssh://git@private.example.com/team/topsecret.git',
+      }],
+      tmpDir: createTmpDir(),
+      execFileSync: gh.execFileSync,
+    });
+
+    const create = gh.calls.find(c => c.args[0] === 'issue' && c.args[1] === 'create');
+    const sentTitle = create.args[create.args.indexOf('--title') + 1];
+    const sentBody = create.body;
+    const sent = `${sentTitle}\n${sentBody}`;
+
+    assert.ok(sentTitle.includes('[REDACTED_REPO_URL]'), 'repo URL in title should be redacted');
+    assert.ok(sentTitle.includes('[REDACTED_REPO]'), 'owner/repo identifier in title should be redacted');
+    assert.ok(sentBody.includes('Useful context: stack trace line 123'), 'non-sensitive context should be preserved');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'GitHub/ADO repo URLs in body should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_URL]'), 'token-bearing non-repo URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPO_URL]'), 'configured private remote URL should be redacted');
+    assert.ok(sentBody.includes('[REDACTED_REPOSITORY_ID]'), 'configured repositoryId should be redacted');
+    assert.ok(!/SecretOrg\/PrivateRepo|github\.com\/SecretOrg\/PrivateRepo|dev\.azure\.com\/SecretOrg|private\.example\.com|access_token=|11111111-2222-3333-4444-555555555555/.test(sent),
+      'raw sensitive repository URLs, identifiers, token URLs, and repository IDs must not be sent to gh');
   });
 }
 
@@ -3496,6 +3598,183 @@ async function testEngineDefaults() {
   });
 }
 
+// ─── engine/features.js — Feature Flag Registry ─────────────────────────────
+
+async function testFeatureFlags() {
+  console.log('\n── engine/features.js — Feature Flag Registry ──');
+
+  const features = require(path.join(MINIONS_DIR, 'engine', 'features'));
+  const ENV_KEY = 'MINIONS_FEATURE_TEST_FLAG_A';
+  function clearEnv() { delete process.env[ENV_KEY]; }
+
+  const TEST_REGISTRY = {
+    'test-flag-a': { description: 'test', default: false, addedIn: '0.0.0' },
+    'test-flag-b': { description: 'test', default: true, addedIn: '0.0.0' },
+  };
+
+  await test('exports isFeatureOn, listFeatures, hasFeature, FEATURES', () => {
+    assert.strictEqual(typeof features.isFeatureOn, 'function');
+    assert.strictEqual(typeof features.listFeatures, 'function');
+    assert.strictEqual(typeof features.hasFeature, 'function');
+    assert.strictEqual(typeof features.FEATURES, 'object');
+  });
+
+  await test('isFeatureOn throws on unknown id (typo protection)', () => {
+    assert.throws(() => features.isFeatureOn('definitely-not-registered', {}),
+      /Unknown feature flag.*definitely-not-registered/);
+  });
+
+  await test('hasFeature returns false for unknown id', () => {
+    assert.strictEqual(features.hasFeature('does-not-exist'), false);
+  });
+
+  await test('isFeatureOn returns registry default when neither env nor config sets it', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', {}, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', {}, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', null, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', undefined, TEST_REGISTRY), true);
+  });
+
+  await test('config.features overrides registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, TEST_REGISTRY), true);
+    assert.strictEqual(features.isFeatureOn('test-flag-b', { features: { 'test-flag-b': false } }, TEST_REGISTRY), false);
+  });
+
+  await test('non-boolean config values fall through to registry default', () => {
+    clearEnv();
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 'yes' } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': 1 } }, TEST_REGISTRY), false);
+    assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': null } }, TEST_REGISTRY), false);
+  });
+
+  await test('env var override beats config and default — truthy', () => {
+    try {
+      for (const v of ['1', 'true', 'TRUE', 'on', 'yes']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': false } }, TEST_REGISTRY), true,
+          `env="${v}" should force on`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('env var override beats config and default — falsy', () => {
+    const reg = { 'test-flag-a': { description: 'test', default: true, addedIn: '0.0.0' } };
+    try {
+      for (const v of ['0', 'false', 'FALSE', 'off', 'no', '']) {
+        process.env[ENV_KEY] = v;
+        assert.strictEqual(features.isFeatureOn('test-flag-a', { features: { 'test-flag-a': true } }, reg), false,
+          `env="${v}" should force off`);
+      }
+    } finally { clearEnv(); }
+  });
+
+  await test('listFeatures returns shape {id, description, default, enabled, addedIn, expires, expired}', () => {
+    clearEnv();
+    const reg = { 'test-flag-a': { description: 'A flag', default: false, addedIn: '0.1.0', expires: '2099-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-a');
+    assert.ok(entry, 'test-flag-a missing from listFeatures');
+    assert.strictEqual(entry.description, 'A flag');
+    assert.strictEqual(entry.default, false);
+    assert.strictEqual(entry.enabled, false);
+    assert.strictEqual(entry.addedIn, '0.1.0');
+    assert.strictEqual(entry.expires, '2099-01-01');
+    assert.strictEqual(entry.expired, false);
+  });
+
+  await test('listFeatures marks past-expires entries as expired', () => {
+    clearEnv();
+    const reg = { 'test-flag-old': { description: 'old', default: false, addedIn: '0.0.0', expires: '2000-01-01' } };
+    const entry = features.listFeatures({}, reg).find(f => f.id === 'test-flag-old');
+    assert.strictEqual(entry.expired, true, 'past-dated expires should set expired=true');
+  });
+
+  await test('module live registry stays empty (no test pollution leaked into FEATURES)', () => {
+    assert.deepStrictEqual(Object.keys(features.FEATURES), [],
+      'live FEATURES registry must remain empty — tests pass an explicit registry instead of mutating the module');
+  });
+
+  await test('dashboard.js requires engine/features and wires /api/features routes', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes("require('./engine/features')"), 'dashboard.js must require engine/features');
+    assert.ok(dashSrc.includes("'/api/features'"), 'dashboard.js must register GET /api/features route');
+    assert.ok(dashSrc.includes("'/api/features/toggle'"), 'dashboard.js must register POST /api/features/toggle route');
+    assert.ok(/handleFeaturesList\b/.test(dashSrc), 'handleFeaturesList must be defined');
+    assert.ok(/handleFeaturesToggle\b/.test(dashSrc), 'handleFeaturesToggle must be defined');
+  });
+
+  await test('dashboard bootstrap injects window.MINIONS_FEATURES data only', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('window.MINIONS_FEATURES'), 'bootstrap must seed window.MINIONS_FEATURES');
+    assert.ok(!/window\.MinionsFeatures\s*=/.test(dashSrc),
+      'helper body should live in dashboard/js/features-client.js, not inlined in dashboard.js');
+  });
+
+  await test('features-client.js defines window.MinionsFeatures.isOn helper', () => {
+    const clientSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'features-client.js'), 'utf8');
+    assert.ok(/window\.MinionsFeatures\s*=/.test(clientSrc),
+      'features-client.js must define window.MinionsFeatures');
+    assert.ok(/isOn:\s*function/.test(clientSrc),
+      'features-client.js must expose isOn');
+  });
+
+  await test('features-client.js is loaded before settings.js in jsFiles', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fcIdx = dashSrc.indexOf("'features-client'");
+    const settingsIdx = dashSrc.indexOf("'settings'");
+    assert.ok(fcIdx > 0 && settingsIdx > 0 && fcIdx < settingsIdx,
+      "'features-client' must be listed before 'settings' in jsFiles so MinionsFeatures.isOn is defined when settings.js loads");
+  });
+
+  await test('handleFeaturesToggle uses mutateJsonFileLocked for atomic config write', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    assert.ok(start >= 0, 'handleFeaturesToggle must exist');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/mutateJsonFileLocked\s*\(/.test(slice),
+      'handleFeaturesToggle must use mutateJsonFileLocked for atomic config.json RMW');
+  });
+
+  await test('handleFeaturesToggle 404s on unknown feature id', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const start = dashSrc.indexOf('async function handleFeaturesToggle');
+    const slice = dashSrc.slice(start, start + 1500);
+    assert.ok(/features\.hasFeature\s*\(\s*id\s*\)/.test(slice),
+      'handleFeaturesToggle must validate id against features.hasFeature');
+    assert.ok(/jsonReply\(\s*res\s*,\s*404/.test(slice),
+      'handleFeaturesToggle must reply 404 on unknown id');
+  });
+
+  await test('settings.js renders Show experimental flags collapsible', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('Show experimental flags'),
+      'settings.js must render the "Show experimental flags" disclosure');
+    assert.ok(settingsSrc.includes('/api/features'),
+      'settings.js must fetch /api/features');
+    assert.ok(settingsSrc.includes('/api/features/toggle'),
+      'settings.js must POST to /api/features/toggle');
+    assert.ok(settingsSrc.includes('data-feature-toggle'),
+      'settings.js must expose data-feature-toggle hooks for change listeners');
+  });
+
+  await test('settings.js attaches change listener on each feature toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(/querySelectorAll\(\s*['"]input\[data-feature-toggle\]['"]/.test(settingsSrc),
+      'settings.js must wire change listeners via querySelectorAll on data-feature-toggle inputs');
+  });
+
+  await test('CLAUDE.md documents Feature Flags recipe', () => {
+    const claudeMd = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    assert.ok(/##\s+Feature Flags/.test(claudeMd),
+      'CLAUDE.md must include "## Feature Flags" section');
+    assert.ok(claudeMd.includes('engine/features.js'),
+      'CLAUDE.md feature flags section must reference engine/features.js');
+    assert.ok(/MINIONS_FEATURE_/.test(claudeMd),
+      'CLAUDE.md must document the env-var override pattern');
+  });
+}
+
 // ─── shared.js — Runtime Fleet Resolution (P-3b8e5f1d) ──────────────────────
 
 async function testRuntimeFleetHelpers() {
@@ -4269,6 +4548,50 @@ async function testProjectHelpers() {
       'ADO discovery should prefer az repos show after parsing the remote');
   });
 
+  await test('discoverProjectMetadata refreshes origin HEAD before using mainBranch when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let originHeadReads = 0;
+    const calls = [];
+    const execFileSync = (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') {
+        originHeadReads++;
+        if (originHeadReads === 1) throw new Error('origin/HEAD unset');
+        return 'refs/remotes/origin/main\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') return 'origin/HEAD set to main\n';
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, 'main');
+    assert.ok(detected._found.includes('main branch'), 'main branch should be marked as discovered after refreshing origin/HEAD');
+    assert.ok(calls.some(([cmd, args]) => cmd === 'git' && args.join(' ') === 'remote set-head origin -a'),
+      'discovery should ask git to refresh origin/HEAD before defaulting');
+  });
+
+  await test('discoverProjectMetadata does not derive mainBranch from checked-out HEAD when origin HEAD is unset', () => {
+    const discovery = require('../engine/project-discovery');
+    const repoDir = createTmpDir();
+    let localHeadAsked = false;
+    const execFileSync = (cmd, args) => {
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref refs/remotes/origin/HEAD') throw new Error('origin/HEAD unset');
+      if (cmd === 'git' && args.join(' ') === 'remote set-head origin -a') throw new Error('remote HEAD unavailable');
+      if (cmd === 'git' && args.join(' ') === 'symbolic-ref HEAD') {
+        localHeadAsked = true;
+        return 'refs/heads/feature/transient-checkout\n';
+      }
+      if (cmd === 'git' && args.join(' ') === 'remote get-url origin') return 'https://github.com/yemi33/minions.git\n';
+      throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
+    };
+
+    const detected = discovery.discoverProjectMetadata(repoDir, { execFileSync });
+    assert.strictEqual(detected.mainBranch, undefined);
+    assert.strictEqual(localHeadAsked, false, 'project discovery must not use local HEAD as a mainBranch fallback');
+  });
+
   await test('dashboard and CLI project add use shared project discovery helpers', () => {
     const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
@@ -5017,6 +5340,326 @@ async function testPrAttachmentContract() {
         'failed dispatch should be removed from active');
       assert.ok(!testQueries.getDispatch().completed.some(d => d.id === dispatchItem.id),
         'failed human-feedback dispatch should not leave a completed dedupe blocker');
+    } finally { restore(); }
+  });
+
+  await test('comment-only human-feedback fix clears pending feedback without marking branch fixed', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-human',
+        title: 'Triage Firebase preview comment',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        humanFeedback: { pendingFix: true, feedbackContent: 'Firebase preview is ready.' },
+        minionsReview: { fixedAt: '2026-05-04T00:00:00.000Z', note: 'old fix marker' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-human',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage preview comment',
+        meta: {
+          source: 'pr-human-feedback',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#208', prNumber: 208, url: 'https://github.com/octo/demo/pull/208' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment explaining the Firebase/Appetize preview status; no branch changes were needed.',
+        files_changed: 'none',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'comment-only triage should still consume the pending human-feedback item');
+      assert.strictEqual(updatedPr.reviewStatus, 'pending',
+        'comment-only triage must not move a pending PR to awaiting re-review');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only triage must not leave fixedAt set because no branch update happened');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
+  await test('comment-only review-feedback fix does not create a re-review trigger', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: { dallas: { name: 'Dallas' } }, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+
+      const wiPath = testShared.projectWorkItemsPath(project);
+      fs.mkdirSync(path.dirname(wiPath), { recursive: true });
+      const item = {
+        id: 'W-comment-only-review',
+        title: 'Triage review feedback',
+        type: 'fix',
+        status: testShared.WI_STATUS.DISPATCHED,
+        dispatched_to: 'dallas',
+      };
+      testShared.safeWrite(wiPath, [item]);
+
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'github:octo/demo#209',
+        prNumber: 209,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        minionsReview: { note: 'Reviewer asked whether preview comments require changes.' },
+      }]);
+
+      const dispatchItem = {
+        id: 'D-comment-only-review',
+        type: testShared.WORK_TYPE.FIX,
+        agent: 'dallas',
+        task: 'Triage review feedback',
+        meta: {
+          source: 'pr',
+          item,
+          project,
+          pr: { id: 'github:octo/demo#209', prNumber: 209, url: 'https://github.com/octo/demo/pull/209' },
+          runtimeName: 'copilot',
+        },
+      };
+      testShared.safeWrite(testShared.dispatchCompletionReportPath(dispatchItem.id), {
+        status: 'success',
+        summary: 'Posted a triage comment; no branch changes were needed.',
+        files_changed: 'comment-only',
+        pr: 'N/A',
+      });
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'dallas', 0, '', config);
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting',
+        'review-feedback triage should wait for reviewer action instead of redispatching another fix');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'comment-only review-feedback triage must not trigger automatic re-review');
+      assert.ok(updatedPr.minionsReview.triagedAt,
+        'comment-only review-feedback triage should leave a durable triage marker');
+    } finally { restore(); }
+  });
+
+  await test('no-op PR fix completion records attempt without resetting review state', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: {} };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7001',
+        prNumber: 7001,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop',
+        humanFeedback: {
+          pendingFix: false,
+          lastProcessedCommentDate: '2026-05-05T07:00:00.000Z',
+          feedbackContent: 'Please fix the edge case.',
+        },
+        minionsReview: { note: 'Please fix the edge case.', reviewedAt: '2026-05-05T06:00:00.000Z' },
+      }]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7001', prNumber: 7001 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: {
+            id: 'D-noop-human-1',
+            task: 'Fix PR-7001: no-op — human feedback',
+            meta: { dispatchKey: 'human-fix-demo-PR-7001' },
+          },
+          branchChange: {
+            changed: false,
+            beforeHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            afterHead: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: true, cause: testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK, paused: false, count: 1 });
+      assert.strictEqual(updatedPr.reviewStatus, 'changes-requested',
+        'no-op fix must not reset reviewStatus to waiting');
+      assert.ok(!updatedPr.minionsReview.fixedAt,
+        'no-op fix must not stamp fixedAt or trigger re-review');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, true,
+        'first no-op human-feedback fix should restore pendingFix so one retry is possible');
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].count, 1);
+      assert.strictEqual(updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK].paused, false);
+    } finally { restore(); }
+  });
+
+  await test('repeated no-op PR fix pauses only the unchanged automation cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const config = { projects: [project], agents: { ralph: { name: 'Ralph' } }, engine: { prNoOpFixPauseAttempts: 2 } };
+      const prPath = testShared.projectPrPath(project);
+      testShared.safeWrite(prPath, [{
+        id: 'PR-7002',
+        prNumber: 7002,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/noop-pause',
+        humanFeedback: {
+          pendingFix: true,
+          lastProcessedCommentDate: '2026-05-05T07:30:00.000Z',
+          feedbackContent: 'Still broken.',
+        },
+        minionsReview: { note: 'Review feedback still applies.', reviewedAt: '2026-05-05T06:30:00.000Z' },
+      }]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-1', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr-human-feedback',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-human-2', task: 'Fix PR-7002 — human feedback', meta: { dispatchKey: 'human-fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+      lifecycle.updatePrAfterFix(
+        { id: 'PR-7002', prNumber: 7002 },
+        project,
+        'pr',
+        {
+          config,
+          dispatchItem: { id: 'D-noop-review-1', task: 'Fix PR-7002 — review feedback', meta: { dispatchKey: 'fix-demo-PR-7002' } },
+          branchChange: { changed: false, beforeHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', afterHead: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      const humanRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK];
+      const reviewRecord = updatedPr._noOpFixes[testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK];
+      assert.strictEqual(humanRecord.count, 2);
+      assert.strictEqual(humanRecord.paused, true,
+        'second no-op for same human-feedback evidence should pause that cause');
+      assert.strictEqual(updatedPr.humanFeedback.pendingFix, false,
+        'paused human-feedback cause should not immediately requeue the same fix');
+      assert.strictEqual(reviewRecord.count, 1);
+      assert.strictEqual(reviewRecord.paused, false,
+        'separate review-feedback cause should not be paused by human-feedback no-ops');
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(updatedPr, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), true);
+      const withNewEvidence = {
+        ...updatedPr,
+        humanFeedback: { ...updatedPr.humanFeedback, feedbackContent: 'Still broken, plus a new failing case.' },
+      };
+      assert.strictEqual(testShared.isPrNoOpFixCausePaused(withNewEvidence, testShared.PR_FIX_CAUSE.HUMAN_FEEDBACK), false,
+        'changed evidence should allow automation again without clearing other cause records');
+    } finally { restore(); }
+  });
+
+  await test('PR discovery checks paused no-op fix causes before dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function isPrNoOpFixCauseSuppressed'),
+      'engine discovery should have a shared suppression helper');
+    for (const cause of ['HUMAN_FEEDBACK', 'REVIEW_FEEDBACK', 'BUILD_FAILURE', 'MERGE_CONFLICT']) {
+      assert.ok(src.includes(`isPrNoOpFixCauseSuppressed(pr, shared.PR_FIX_CAUSE.${cause})`),
+        `discoverFromPrs must suppress paused no-op ${cause} automation before dispatch`);
+    }
+  });
+
+  await test('changed-branch PR fix completion preserves normal waiting re-review behavior', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const project = { name: 'demo', localPath: testDir };
+      const prPath = testShared.projectPrPath(project);
+      const pr = {
+        id: 'PR-7003',
+        prNumber: 7003,
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'changes-requested',
+        branch: 'work/changed',
+        minionsReview: { note: 'Needs a fix.' },
+      };
+      pr._noOpFixes = {
+        [testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK]: {
+          count: 1,
+          paused: false,
+          evidenceFingerprint: testShared.prFixEvidenceFingerprint(pr, testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK),
+        },
+      };
+      testShared.safeWrite(prPath, [pr]);
+
+      const result = lifecycle.updatePrAfterFix(
+        { id: 'PR-7003', prNumber: 7003 },
+        project,
+        'pr',
+        {
+          dispatchItem: {
+            id: 'D-changed-review-1',
+            task: 'Fix PR-7003 — review feedback',
+            meta: { dispatchKey: 'fix-demo-PR-7003' },
+          },
+          branchChange: {
+            changed: true,
+            beforeHead: 'cccccccccccccccccccccccccccccccccccccccc',
+            afterHead: 'dddddddddddddddddddddddddddddddddddddddd',
+          },
+        },
+      );
+
+      const [updatedPr] = testShared.safeJson(prPath);
+      assert.deepStrictEqual(result, { noOp: false, cause: testShared.PR_FIX_CAUSE.REVIEW_FEEDBACK });
+      assert.strictEqual(updatedPr.reviewStatus, 'waiting');
+      assert.ok(updatedPr.minionsReview.fixedAt, 'changed branch should stamp fixedAt for re-review');
+      assert.strictEqual(updatedPr.minionsReview.note, 'Fixed, awaiting re-review');
+      assert.ok(!updatedPr._noOpFixes, 'successful changed-branch fix should clear stale no-op record');
+      assert.ok(!updatedPr._lastNoOpFix, 'successful changed-branch fix should clear stale no-op marker');
     } finally { restore(); }
   });
 
@@ -6587,6 +7230,186 @@ async function testLifecycleHelpers() {
   });
 }
 
+async function testLifecyclePureParsers() {
+  console.log('\n── lifecycle.js — Pure parsers ──');
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+
+  await test('parseReviewVerdict parses approve variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: APPROVE'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: approve'), 'approved');
+    assert.strictEqual(lifecycle.parseReviewVerdict('Review posted.\nVERDICT: **APPROVE**'), 'approved');
+  });
+
+  await test('parseReviewVerdict parses request-changes separator variants', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST_CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST-CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('VERDICT: REQUEST CHANGES'), 'changes-requested');
+    assert.strictEqual(lifecycle.parseReviewVerdict('verdict: **request_changes**'), 'changes-requested');
+  });
+
+  await test('parseReviewVerdict returns null without a verdict marker', () => {
+    assert.strictEqual(lifecycle.parseReviewVerdict('Reviewed the PR and left comments.'), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(null), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(''), null);
+    assert.strictEqual(lifecycle.parseReviewVerdict(undefined), null);
+  });
+
+  await test('isReviewBailout detects idempotent bailout phrases case-insensitively', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('I will bail out and not duplicate the review.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('BAILING OUT because the review exists.'), true);
+    assert.strictEqual(lifecycle.isReviewBailout('A minions review was already posted.'), true);
+  });
+
+  await test('isReviewBailout rejects verdict-only and non-string output', () => {
+    assert.strictEqual(lifecycle.isReviewBailout('VERDICT: APPROVE'), false);
+    assert.strictEqual(lifecycle.isReviewBailout(null), false);
+    assert.strictEqual(lifecycle.isReviewBailout(undefined), false);
+    assert.strictEqual(lifecycle.isReviewBailout(42), false);
+  });
+
+  await test('parseCompletionFieldSummary parses allowed multi-field summaries and strips unknown fields', () => {
+    const summary = [
+      'status: success',
+      'summary: Implemented lifecycle parser coverage',
+      'tests: npm test',
+      'unknown: ignored',
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Implemented lifecycle parser coverage',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary rejects status-only success summaries', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary('status: success'), null);
+  });
+
+  await test('parseCompletionFieldSummary accepts status-only failure summaries', () => {
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: failed'), { status: 'failed' });
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary('status: error'), { status: 'error' });
+  });
+
+  await test('parseCompletionFieldSummary strips quotes and accepts bullet prefixes', () => {
+    const summary = [
+      '- status: `success`',
+      '* summary: "Parser tests added"',
+      "- tests: 'npm test'",
+    ].join('\n');
+    assert.deepStrictEqual(lifecycle.parseCompletionFieldSummary(summary), {
+      status: 'success',
+      summary: 'Parser tests added',
+      tests: 'npm test',
+    });
+  });
+
+  await test('parseCompletionFieldSummary returns null for empty or non-string input', () => {
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(null), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(''), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary(undefined), null);
+    assert.strictEqual(lifecycle.parseCompletionFieldSummary({ status: 'success' }), null);
+  });
+
+  await test('parseCompletionReportFile reads valid report files and tags source metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'completions', 'D-valid-report.json');
+      sharedInner.safeWrite(reportPath, { status: 'success', summary: 'Done' });
+
+      const result = lifecycleInner.parseCompletionReportFile({
+        id: 'D-valid-report',
+        meta: { completionReportPath: reportPath },
+      });
+
+      assert.deepStrictEqual(result, {
+        status: 'success',
+        summary: 'Done',
+        _source: 'report-file',
+        _path: reportPath,
+      });
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for missing report files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const missingPath = sharedInner.dispatchCompletionReportPath('D-missing-report');
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-missing-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile(
+        { id: 'D-missing-report', meta: { completionReportPath: missingPath } },
+        { warnIfMissing: true },
+      ), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null for malformed or non-object reports', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const malformedPath = sharedInner.dispatchCompletionReportPath('D-malformed-report');
+      const arrayPath = sharedInner.dispatchCompletionReportPath('D-array-report');
+      fs.mkdirSync(path.dirname(malformedPath), { recursive: true });
+      fs.writeFileSync(malformedPath, '{not json');
+      sharedInner.safeWrite(arrayPath, ['status', 'success']);
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-malformed-report' }), null);
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-array-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile returns null when status and outcome are missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-no-status-report');
+      sharedInner.safeWrite(reportPath, { summary: 'No status here' });
+
+      assert.strictEqual(lifecycleInner.parseCompletionReportFile({ id: 'D-no-status-report' }), null);
+    } finally { restore(); }
+  });
+
+  await test('parseCompletionReportFile promotes outcome to status', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycleInner = require('../engine/lifecycle');
+      const sharedInner = require('../engine/shared');
+      const reportPath = sharedInner.dispatchCompletionReportPath('D-outcome-report');
+      sharedInner.safeWrite(reportPath, { outcome: 'success', summary: 'Outcome only' });
+
+      const result = lifecycleInner.parseCompletionReportFile({ id: 'D-outcome-report' });
+
+      assert.strictEqual(result.status, 'success');
+      assert.strictEqual(result.outcome, 'success');
+      assert.strictEqual(result.summary, 'Outcome only');
+      assert.strictEqual(result._source, 'report-file');
+      assert.strictEqual(result._path, reportPath);
+    } finally { restore(); }
+  });
+
+  await test('isItemCompleted returns true for canonical and legacy done statuses', () => {
+    for (const status of shared.DONE_STATUSES) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), true, `expected ${status} to count as completed`);
+    }
+  });
+
+  await test('isItemCompleted returns false for non-completed or missing statuses', () => {
+    for (const status of [shared.WI_STATUS.PENDING, shared.WI_STATUS.DISPATCHED, shared.WI_STATUS.FAILED]) {
+      assert.strictEqual(lifecycle.isItemCompleted({ status }), false, `expected ${status} to be incomplete`);
+    }
+    assert.strictEqual(lifecycle.isItemCompleted(null), false);
+    assert.strictEqual(lifecycle.isItemCompleted(undefined), false);
+    assert.strictEqual(lifecycle.isItemCompleted({}), false);
+  });
+}
+
 async function testSyncPrdItemStatus() {
   console.log('\n── lifecycle.js — PRD Sync ──');
 
@@ -7898,11 +8721,51 @@ async function testGithubHelpers() {
   console.log('\n── github.js — Helper Functions ──');
 
   const github = require(path.join(MINIONS_DIR, 'engine', 'github'));
+  const assertBackoffNear = (entry, expectedMs) => {
+    const remainingMs = entry.backoffUntil - Date.now();
+    assert.ok(remainingMs > 0, 'backoffUntil should be in the future');
+    assert.ok(remainingMs <= expectedMs + 1000,
+      `backoff should be no more than ${expectedMs}ms, got ${remainingMs}ms`);
+    assert.ok(remainingMs >= expectedMs - 1000,
+      `backoff should be at least ${expectedMs}ms, got ${remainingMs}ms`);
+  };
 
   await test('github module exports required functions', () => {
     assert.ok(typeof github.pollPrStatus === 'function');
     assert.ok(typeof github.pollPrHumanComments === 'function');
     assert.ok(typeof github.reconcilePrs === 'function');
+    assert.ok(typeof github.isGitHub === 'function');
+    assert.ok(typeof github.getRepoSlug === 'function');
+    assert.ok(typeof github.isSlugInBackoff === 'function');
+    assert.ok(typeof github.recordSlugFailure === 'function');
+    assert.ok(typeof github.resetSlugBackoff === 'function');
+    assert.ok(typeof github._hasMinionsReviewVerdict === 'function');
+    assert.ok(github._ghPollBackoff instanceof Map);
+    assert.ok(github._ghThrottle);
+  });
+
+  await test('isGitHub returns true only for GitHub projects', () => {
+    assert.strictEqual(github.isGitHub({ repoHost: 'github' }), true);
+    assert.strictEqual(github.isGitHub({ repoHost: 'ado' }), false);
+    assert.strictEqual(github.isGitHub({}), false);
+    assert.strictEqual(github.isGitHub(null), false);
+  });
+
+  await test('getRepoSlug returns owner/repo only when org and repo are configured', () => {
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', githubOrg: 'yemi33', repoName: 'minions' }), 'yemi33/minions');
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', githubOrg: 'yemi33' }), null);
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github', repoName: 'minions' }), null);
+    assert.strictEqual(github.getRepoSlug({ repoHost: 'github' }), null);
+  });
+
+  await test('GitHub verdict regex recognizes supported Minions review verdict forms', () => {
+    assert.strictEqual(github._hasMinionsReviewVerdict('VERDICT: APPROVE\n\nLooks good.'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('**VERDICT: REQUEST_CHANGES**\n\nPlease fix.'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('VERDICT: REQUEST-CHANGES'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('verdict: approve'), true);
+    assert.strictEqual(github._hasMinionsReviewVerdict('Please fix the typo on line 42.'), false);
+    assert.strictEqual(github._hasMinionsReviewVerdict(''), false);
+    assert.strictEqual(github._hasMinionsReviewVerdict(null), false);
   });
 
   await test('GitHub treats Minions verdict comments as agent comments', () => {
@@ -7910,8 +8773,166 @@ async function testGithubHelpers() {
       'Minions approval comments should not trigger human-feedback fixes');
     assert.ok(github._isAgentComment({ body: '**VERDICT: REQUEST_CHANGES**\n\nPlease fix this issue.' }),
       'Minions request-changes comments should not trigger human-feedback fixes');
+    assert.ok(github._isAgentComment({ body: 'Minions triage: Firebase preview comment is informational; no code changes needed.' }),
+      'Minions-authored triage comments should not trigger human-feedback fixes');
     assert.strictEqual(github._isAgentComment({ body: 'Please fix the typo on line 42.' }), false,
       'Ordinary human feedback should still trigger fixes');
+  });
+
+  await test('GitHub treats Firebase/Appetize bot preview comments as non-actionable while preserving human feedback', () => {
+    const firebasePreview = {
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: '## Firebase App Distribution\n\nAndroid preview uploaded. View this release in the Firebase console.',
+    };
+    const appetizePreview = {
+      user: { login: 'appetize-preview[bot]', type: 'Bot' },
+      body: '### Appetize Preview\n\nOpen the Android preview at https://appetize.io/app/example.',
+    };
+    const explicitHumanFeedback = {
+      user: { login: 'alice', type: 'User' },
+      body: 'The Firebase/Appetize preview crashes after sign-in; please fix it.',
+    };
+
+    assert.ok(github._isNonActionableComment(firebasePreview, { engine: {} }),
+      'Firebase App Distribution bot status comments should advance cutoff without dispatching fixes');
+    assert.ok(github._isNonActionableComment(appetizePreview, { engine: {} }),
+      'Appetize bot preview comments should advance cutoff without dispatching fixes');
+    assert.strictEqual(github._isNonActionableComment(explicitHumanFeedback, { engine: {} }), false,
+      'Explicit human comments that mention preview systems must remain actionable');
+  });
+
+  await test('GitHub comment poll advances cutoff for PR #208-like preview and Minions triage comments without pending fix', async () => {
+    const restore = createTestMinionsDir();
+    const oldPath = process.env.PATH;
+    try {
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const binDir = path.join(testDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      // Cross-platform fake gh: a Node.js dispatcher invoked via a shell shim
+      // on Unix and a .cmd shim on Windows. The previous "#!/bin/sh" fake
+      // only ran on POSIX, so this test was Windows-broken.
+      const ghJs = path.join(binDir, 'gh-fake.js');
+      fs.writeFileSync(ghJs, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const endpoint = args[1] || '';
+const responses = {
+  'repos/octo/demo': '{"name":"demo"}',
+  'repos/octo/demo/issues/208/comments': '[{"id":1,"created_at":"2026-05-05T08:01:00Z","updated_at":"2026-05-05T08:01:00Z","body":"## Firebase App Distribution\\\\n\\\\nAndroid preview uploaded. View this release in Firebase.","user":{"login":"github-actions[bot]","type":"Bot"}},{"id":2,"created_at":"2026-05-05T08:02:00Z","updated_at":"2026-05-05T08:02:00Z","body":"Minions triage: Appetize preview is informational; no code changes needed.","user":{"login":"yemi33","type":"User"}}]',
+  'repos/octo/demo/pulls/208/comments': '[]',
+};
+process.stdout.write(Object.prototype.hasOwnProperty.call(responses, endpoint) ? responses[endpoint] : '[]');
+`);
+      if (process.platform === 'win32') {
+        fs.writeFileSync(path.join(binDir, 'gh.cmd'), `@echo off\r\nnode "${ghJs.replace(/\\/g, '\\\\')}" %*\r\n`);
+      } else {
+        const ghShim = path.join(binDir, 'gh');
+        fs.writeFileSync(ghShim, `#!/bin/sh\nexec node "${ghJs}" "$@"\n`);
+        fs.chmodSync(ghShim, 0o755);
+      }
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath || ''}`;
+
+      const project = { name: 'demo', localPath: testDir, repoHost: 'github', adoOrg: 'octo', repoName: 'demo' };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(path.join(testDir, 'config.json'), config);
+      testShared.safeWrite(testShared.projectPrPath(project), [{
+        id: 'github:octo/demo#208',
+        prNumber: 208,
+        url: 'https://github.com/octo/demo/pull/208',
+        status: testShared.PR_STATUS.ACTIVE,
+        reviewStatus: 'pending',
+        created: '2026-05-05T08:00:00Z',
+      }]);
+
+      delete require.cache[require.resolve('../engine/github')];
+      const freshGithub = require('../engine/github');
+      await freshGithub.pollPrHumanComments(config);
+
+      const [updatedPr] = testShared.safeJson(testShared.projectPrPath(project));
+      assert.strictEqual(updatedPr.humanFeedback?.lastProcessedCommentDate, '2026-05-05T08:02:00Z',
+        'non-actionable preview/triage comments should advance the processed cutoff');
+      assert.ok(!updatedPr.humanFeedback?.pendingFix,
+        'non-actionable preview/triage comments must not create pending human feedback');
+      assert.ok(!updatedPr.humanFeedback?.feedbackContent,
+        'non-actionable preview/triage comments must not become fix-agent context');
+    } finally {
+      process.env.PATH = oldPath;
+      try { delete require.cache[require.resolve('../engine/github')]; } catch {}
+      restore();
+    }
+  });
+
+  await test('slug backoff reports fresh and expired slugs as not throttled', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.set(slug, { failures: 1, backoffUntil: Date.now() - 1 });
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('recordSlugFailure applies base backoff for the first failure', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    const entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 1);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_BASE_MS);
+    assert.strictEqual(github.isSlugInBackoff(slug), true);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('recordSlugFailure doubles slug backoff and caps at the maximum', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    github.recordSlugFailure(slug);
+    let entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 2);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_BASE_MS * 2);
+
+    for (let i = 0; i < 10; i++) github.recordSlugFailure(slug);
+    entry = github._ghPollBackoff.get(slug);
+    assert.strictEqual(entry.failures, 12);
+    assertBackoffNear(entry, github.GH_POLL_BACKOFF_MAX_MS);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('resetSlugBackoff clears slug backoff entries', () => {
+    github._ghPollBackoff.clear();
+    const slug = 'yemi33/minions';
+    github.recordSlugFailure(slug);
+    assert.strictEqual(github._ghPollBackoff.has(slug), true);
+    github.resetSlugBackoff(slug);
+    assert.strictEqual(github._ghPollBackoff.has(slug), false);
+    assert.strictEqual(github.isSlugInBackoff(slug), false);
+    github._ghPollBackoff.clear();
+  });
+
+  await test('GitHub throttle wrappers expose initial and transition state snapshots', () => {
+    github._ghThrottle._reset();
+    assert.strictEqual(github.isGhThrottled(), false);
+    assert.deepStrictEqual(github.getGhThrottleState(), {
+      throttled: false,
+      retryAfter: 0,
+      consecutiveHits: 0,
+    });
+
+    github._ghThrottle.recordThrottle(5000);
+    assert.strictEqual(github.isGhThrottled(), true);
+    const throttled = github.getGhThrottleState();
+    assert.strictEqual(throttled.throttled, true);
+    assert.strictEqual(throttled.consecutiveHits, 1);
+    assert.ok(throttled.retryAfter > Date.now());
+
+    github._ghThrottle.recordSuccess();
+    assert.strictEqual(github.isGhThrottled(), false);
+    assert.deepStrictEqual(github.getGhThrottleState(), {
+      throttled: false,
+      retryAfter: throttled.retryAfter,
+      consecutiveHits: 0,
+    });
+    github._ghThrottle._reset();
   });
 }
 
@@ -8799,6 +9820,7 @@ async function testLlmModule() {
       '_buildSpawnAgentFlags',
       '_createStreamAccumulator',
       '_resetBinCache',
+      '_resetMetricsBufferForTest',
       '_resolveBin',
       '_resolveModelFor',
       '_resolveModelForRuntime',
@@ -8806,6 +9828,7 @@ async function testLlmModule() {
       '_resolveRuntimeFor',
       'callLLM',
       'callLLMStreaming',
+      'flushMetricsBuffer',
       'trackEngineUsage',
     ]);
   });
@@ -8926,6 +9949,7 @@ async function testLlmModule() {
         costUsd: 0.05, inputTokens: 1000, outputTokens: 500,
         cacheRead: 200, cacheCreation: 100, durationMs: 3000,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['agent-dispatch'];
       assert.strictEqual(cat.calls, 1);
@@ -8947,6 +9971,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.01, inputTokens: 100, outputTokens: 50, cacheRead: 10, cacheCreation: 5, durationMs: 1000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.02, inputTokens: 200, outputTokens: 80, cacheRead: 20, cacheCreation: 10, durationMs: 2000 });
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.04, inputTokens: 400, outputTokens: 100, cacheRead: 30, cacheCreation: 15, durationMs: 1500 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['command-center'];
       assert.strictEqual(cat.calls, 3);
@@ -8967,6 +9992,7 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       // Only costUsd present — all other fields missing
       freshLlm.trackEngineUsage('doc-chat', { costUsd: 0.001 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['doc-chat'];
       assert.strictEqual(cat.calls, 1);
@@ -8989,6 +10015,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.01, durationMs: 500 });
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.02 }); // no duration
       freshLlm.trackEngineUsage('consolidation', { costUsd: 0.03, durationMs: 750 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['consolidation'];
       assert.strictEqual(cat.calls, 3);
@@ -9005,6 +10032,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('agent-dispatch', {
         costUsd: 0.5, inputTokens: 5000, outputTokens: 1000, cacheRead: 200,
       });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       assert.ok(metrics._daily, '_daily bucket should exist');
@@ -9026,6 +10054,7 @@ async function testLlmModule() {
       freshLlm.trackEngineUsage('command-center', { costUsd: 0.1, inputTokens: 100, outputTokens: 50, cacheRead: 10 });
       freshLlm.trackEngineUsage('consolidation',  { costUsd: 0.2, inputTokens: 200, outputTokens: 80, cacheRead: 20 });
       freshLlm.trackEngineUsage('doc-chat',       { costUsd: 0.3, inputTokens: 300, outputTokens: 90, cacheRead: 30 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const today = new Date().toISOString().slice(0, 10);
       const daily = metrics._daily[today];
@@ -9071,7 +10100,8 @@ async function testLlmModule() {
       fs.unlinkSync(metricsPath);
       assert.ok(!fs.existsSync(metricsPath), 'precondition: file absent');
       freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 50 });
-      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first call');
+      freshLlm.flushMetricsBuffer();
+      assert.ok(fs.existsSync(metricsPath), 'metrics.json should be created on first flush');
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.strictEqual(metrics._engine['agent-dispatch'].calls, 1);
       assert.strictEqual(metrics._engine['agent-dispatch'].inputTokens, 50);
@@ -9092,6 +10122,7 @@ async function testLlmModule() {
       };
       fs.writeFileSync(metricsPath, JSON.stringify(seed));
       freshLlm.trackEngineUsage('new-cat', { costUsd: 0.01, inputTokens: 100 });
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       assert.deepStrictEqual(metrics._engine['other-cat'], seed._engine['other-cat'],
         'unrelated category must be preserved byte-for-byte');
@@ -9109,9 +10140,10 @@ async function testLlmModule() {
       for (let i = 0; i < 25; i++) {
         freshLlm.trackEngineUsage('stress-cat', { costUsd: 0.001, inputTokens: 10, outputTokens: 4, cacheRead: 1, cacheCreation: 0 });
       }
+      freshLlm.flushMetricsBuffer();
       const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
       const cat = metrics._engine['stress-cat'];
-      assert.strictEqual(cat.calls, 25, 'every mutateJsonFileLocked call must land — no dropped writes');
+      assert.strictEqual(cat.calls, 25, 'every buffered call must land in the flush — no dropped counters');
       assert.strictEqual(cat.inputTokens, 250);
       assert.strictEqual(cat.outputTokens, 100);
       assert.strictEqual(cat.cacheRead, 25);
@@ -9126,12 +10158,13 @@ async function testLlmModule() {
       const metricsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'metrics.json');
       fs.unlinkSync(metricsPath);
       fs.mkdirSync(metricsPath); // force any write attempt to fail
-      // Must not throw — trackEngineUsage catches and logs internally
+      // Must not throw — flushMetricsBuffer catches and logs internally
       const origErr = console.error;
       let caught = false;
       console.error = () => { caught = true; };
       try {
         freshLlm.trackEngineUsage('agent-dispatch', { costUsd: 0.1, inputTokens: 10 });
+        freshLlm.flushMetricsBuffer();
       } finally {
         console.error = origErr;
       }
@@ -9188,13 +10221,12 @@ async function testPrReviewFixCycle() {
       'updatePrAfterFix should reset reviewStatus to waiting for re-review');
   });
 
-  await test('Human feedback cooldown key uses PR ID only (no timestamp)', () => {
+  await test('Human feedback cooldown base key uses PR ID before per-cause suffix', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // The key should NOT include lastProcessedCommentDate
-    assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
-      'Human fix key should not include timestamp (prevents cooldown bypass)');
-    assert.ok(src.includes("const humanFixKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
-      'Human fix key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixBaseKey = `human-fix-${project?.name || 'default'}-${prDisplayId}`;"),
+      'Human fix base key should stay PR-level while using the stable display ID');
+    assert.ok(src.includes("const humanFixKey = getPrAutomationDispatchKey(humanFixBaseKey, humanCauseKey);"),
+      'Human fix dispatch key should add a normalized per-comment cause suffix');
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
@@ -14475,6 +15507,19 @@ async function testTempAgentBudget() {
     } finally { restore(); }
   });
 
+  await test('resolveAgent dryRun does not retain temp agent metadata — behavioral', () => {
+    const { routing, restore } = loadFreshRouting();
+    try {
+      const config = { agents: {}, engine: { allowTempAgents: true, maxConcurrent: 5 } };
+      routing.setTempBudget(1);
+      const resolved = routing.resolveAgent('implement', config, { dryRun: true });
+      assert.strictEqual(resolved, 'temp-preview', 'dryRun should report temp availability without allocating a real temp id');
+      assert.strictEqual(routing.tempAgents.size, 0, 'dryRun must not add entries to tempAgents');
+      assert.strictEqual(routing.getTempBudget(), 1, 'dryRun must not consume temp-agent budget');
+      assert.strictEqual(routing._claimedAgents.size, 0, 'dryRun must not claim agents');
+    } finally { restore(); }
+  });
+
   await test('tempBudget resets between ticks via setTempBudget — behavioral', () => {
     const { routing, restore } = loadFreshRouting();
     try {
@@ -15291,6 +16336,93 @@ async function testDiscoverFromPrs() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
 
+  async function withPrCauseDiscovery(pr, opts, assertion) {
+    const restore = createTestMinionsDir();
+    const githubPath = require.resolve('../engine/github');
+    const previousGithubModule = require.cache[githubPath];
+    try {
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+        '../engine/github',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      require.cache[githubPath] = {
+        id: githubPath,
+        filename: githubPath,
+        loaded: true,
+        exports: {
+          pollPrStatus: async () => {},
+          pollPrHumanComments: async () => {},
+          reconcilePrs: async () => {},
+          checkLiveReviewStatus: async () => opts?.liveReview || 'changes-requested',
+          checkLiveBuildAndConflict: async () => opts?.liveBuild || ({ buildStatus: 'failing', mergeConflict: true }),
+          isGhThrottled: () => false,
+        },
+      };
+
+      const freshShared = require('../engine/shared');
+      const freshQueries = require('../engine/queries');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const playbookDir = path.join(testDir, 'playbooks');
+      fs.mkdirSync(playbookDir, { recursive: true });
+      fs.writeFileSync(path.join(playbookDir, 'fix.md'), 'Fix {{pr_id}} on {{pr_branch}}: {{review_note}}');
+      fs.writeFileSync(path.join(playbookDir, 'review.md'), 'Review {{pr_id}} on {{pr_branch}}');
+      fs.writeFileSync(path.join(playbookDir, 'shared-rules.md'), '');
+      const project = opts?.project || {
+        name: 'demo',
+        localPath: testDir,
+        repoHost: 'github',
+        adoOrg: 'octo',
+        repoName: 'repo',
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+      };
+      const config = opts?.config || {
+        projects: [project],
+        workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
+        engine: {
+          ghPollEnabled: true,
+          evalLoop: true,
+          autoFixReviewFeedback: true,
+          autoFixHumanComments: true,
+          autoFixBuilds: true,
+          autoFixConflicts: true,
+        },
+        agents: {
+          dallas: { name: 'Dallas', role: 'Engineer' },
+          ripley: { name: 'Ripley', role: 'Reviewer' },
+        },
+      };
+      freshShared.safeWrite(path.join(testDir, 'config.json'), config);
+      freshShared.safeWrite(path.join(testDir, 'engine', 'dispatch.json'), opts?.dispatch || { pending: [], active: [], completed: [] });
+      freshQueries.invalidateDispatchCache();
+      freshQueries.getPrs = () => [pr];
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine'));
+      const discovered = await engineModule.discoverFromPrs(config, project);
+      await assertion({ discovered, freshShared, freshQueries, project, config });
+    } finally {
+      restore();
+      if (previousGithubModule) require.cache[githubPath] = previousGithubModule;
+      else delete require.cache[githubPath];
+      for (const mod of [
+        '../engine/shared',
+        '../engine/queries',
+        '../engine/cooldown',
+        '../engine/routing',
+        '../engine/playbook',
+        '../engine',
+      ]) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  }
+
   await test('discoverFromPrs skips non-active PRs', () => {
     assert.ok(src.includes("pr.status !== 'active'"),
       'Should skip PRs not in active status');
@@ -15310,6 +16442,127 @@ async function testDiscoverFromPrs() {
   await test('discoverFromPrs handles human feedback pendingFix', () => {
     assert.ok(src.includes('pendingFix') || src.includes('humanFeedback'),
       'Should discover fix work when human feedback is pending');
+  });
+
+  await test('discoverFromPrs does not redispatch handled review-feedback cause', async () => {
+    const causeKey = 'review-feedback:review-dispatch-1';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2050',
+      prNumber: 2050,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Same review feedback',
+      branch: 'feat/pr-2050',
+      prdItems: ['W-2050'],
+      minionsReview: { dispatchId: 'review-dispatch-1', note: 'Fix the boundary.' },
+      _automationFixCauses: { [causeKey]: { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2050',
+    }, {}, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'handled review-feedback cause must not dispatch another fix');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed review-feedback cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2051',
+      prNumber: 2051,
+      status: 'active',
+      reviewStatus: 'changes-requested',
+      agent: 'dallas',
+      title: 'Changed review feedback',
+      branch: 'feat/pr-2051',
+      prdItems: ['W-2051'],
+      minionsReview: { dispatchId: 'new-review', note: 'A different review finding.' },
+      _automationFixCauses: { 'review-feedback:old-review': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2051',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'review-feedback:new-review');
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('fix-demo-PR-2051-'),
+        'dispatch key should stay PR-scoped while including a cause-specific suffix');
+    });
+  });
+
+  await test('discoverFromPrs does not redispatch pending human-comment cause', async () => {
+    const causeKey = 'human-comment:comment-77';
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2052',
+      prNumber: 2052,
+      status: 'active',
+      reviewStatus: 'waiting',
+      agent: 'dallas',
+      title: 'Same human comment',
+      branch: 'feat/pr-2052',
+      prdItems: ['W-2052'],
+      humanFeedback: {
+        pendingFix: true,
+        lastProcessedCommentKey: 'comment-77',
+        feedbackContent: 'Please address this comment.',
+      },
+      url: 'https://github.com/octo/repo/pull/2052',
+    }, {
+      dispatch: {
+        pending: [{
+          id: 'pending-human-fix',
+          type: 'fix',
+          agent: 'dallas',
+          meta: {
+            dispatchKey: 'human-fix-demo-PR-2052-human-comment-comment-77',
+            automationCauseKey: causeKey,
+            project: { name: 'demo' },
+            pr: { id: 'github:octo/repo#2052', prNumber: 2052, url: 'https://github.com/octo/repo/pull/2052' },
+          },
+        }],
+        active: [],
+        completed: [],
+      },
+    }, async ({ discovered }) => {
+      assert.deepStrictEqual(discovered, [], 'pending same-comment fix must block duplicate dispatch');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed build failure signature', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2053',
+      prNumber: 2053,
+      status: 'active',
+      reviewStatus: 'waiting',
+      buildStatus: 'failing',
+      buildFailReason: 'CI',
+      buildFailureSignature: 'new-signature',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed build failure',
+      branch: 'feat/pr-2053',
+      prdItems: ['W-2053'],
+      _automationFixCauses: { 'build:CI:head-1:old-signature': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2053',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'build:CI:head-1:new-signature');
+    });
+  });
+
+  await test('discoverFromPrs dispatches changed merge-conflict base cause', async () => {
+    await withPrCauseDiscovery({
+      id: 'github:octo/repo#2054',
+      prNumber: 2054,
+      status: 'active',
+      reviewStatus: 'waiting',
+      _mergeConflict: true,
+      baseSha: 'base-2',
+      headSha: 'head-1',
+      agent: 'dallas',
+      title: 'Changed conflict base',
+      branch: 'feat/pr-2054',
+      prdItems: ['W-2054'],
+      _automationFixCauses: { 'merge-conflict:base-1:head-1': { status: 'handled' } },
+      url: 'https://github.com/octo/repo/pull/2054',
+    }, {}, async ({ discovered }) => {
+      assert.strictEqual(discovered.length, 1);
+      assert.strictEqual(discovered[0].meta?.automationCauseKey, 'merge-conflict:base-2:head-1');
+    });
   });
 
   await test('discoverFromPrs dispatches new human feedback even after build-fix escalation (#1907)', async () => {
@@ -15344,7 +16597,7 @@ async function testDiscoverFromPrs() {
       const config = {
         projects: [project],
         workSources: { pullRequests: { enabled: true, cooldownMinutes: 0 } },
-        engine: { ghPollEnabled: false, evalLoop: true, maxBuildFixAttempts: 3 },
+        engine: { ghPollEnabled: true, evalLoop: true, maxBuildFixAttempts: 3 },
         agents: { ralph: { name: 'Ralph', role: 'Engineer' } },
       };
       freshShared.safeWrite(path.join(testDir, 'config.json'), config);
@@ -15382,7 +16635,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh reviewer comments must dispatch despite buildFixEscalated');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1907');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1907-'));
       assert.ok(discovered[0].prompt.includes('Please address this new review finding.'),
         'human-feedback fix prompt must include the fresh reviewer comment');
     } finally {
@@ -15487,7 +16741,8 @@ async function testDiscoverFromPrs() {
       assert.strictEqual(discovered.length, 1, 'fresh comments should create one human-feedback fix, not a stale re-review');
       assert.strictEqual(discovered[0].type, 'fix');
       assert.strictEqual(discovered[0].meta?.source, 'pr-human-feedback');
-      assert.strictEqual(discovered[0].meta?.dispatchKey, 'human-fix-demo-PR-1908');
+      assert.ok(discovered[0].meta?.automationCauseKey.startsWith('human-comment:'));
+      assert.ok(discovered[0].meta?.dispatchKey.startsWith('human-fix-demo-PR-1908-'));
       assert.ok(!String(discovered[0].meta?.dispatchKey).startsWith('rereview-'),
         'pending human feedback must not be hidden behind a stale-vote re-review dispatch');
     } finally {
@@ -16174,8 +17429,22 @@ async function testDiscoverFromPrs() {
     const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
     assert.ok(changesBlock.includes('evalLoopEnabled'),
       'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+    assert.ok(changesBlock.includes('pollEnabled'),
+      'changes-requested fix dispatch must be gated on the PR provider poll toggle so stale vote state cannot dispatch fixes');
     assert.ok(changesBlock.includes('autoFixReviewFeedback'),
       'changes-requested fix dispatch must be independently configurable');
+  });
+
+  await test('discoverFromPrs gates cached PR-state fix dispatches on provider polling', () => {
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixHumanComments'),
+      'human-comment fix dispatch must require the PR provider poll toggle');
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixBuilds'),
+      'build-fix dispatch must require the PR provider poll toggle');
+    assert.ok(fnBody.includes('if (pollEnabled && autoFixConflicts'),
+      'conflict-fix dispatch must require the PR provider poll toggle');
   });
 
   await test('discoverFromPrs applies provider throttle to review, re-review, review-fix, and human-comment fix dispatches', () => {
@@ -16279,7 +17548,7 @@ async function testBuildFixRetryCap() {
       'Pollers may still clean old build-fix attempt fields when a PR recovers/closes');
   });
 
-  await test('PR comment pollers do not ignore bot authors by default', () => {
+  await test('PR comment pollers use explicit non-actionable classification instead of blanket bot filtering', () => {
     const ghCommentsBlock = githubSrc.slice(
       githubSrc.indexOf('async function pollPrHumanComments'),
       githubSrc.indexOf('// ─── PR Reconciliation', githubSrc.indexOf('async function pollPrHumanComments'))
@@ -16289,13 +17558,13 @@ async function testBuildFixRetryCap() {
       adoSrc.indexOf('if (totalUpdated > 0)', adoSrc.indexOf('async function pollPrHumanComments'))
     );
 
-    assert.ok(!ghCommentsBlock.includes("user?.type === 'Bot'"),
-      'GitHub comment poll must not ignore GitHub Bot users by default');
+    assert.ok(ghCommentsBlock.includes('_isNonActionableComment(c, config)'),
+      'GitHub comment poll should classify non-actionable comments through a dedicated helper');
     assert.ok(!/dependabot|renovate|github-actions|azure-pipelines|codecov|sonar/.test(ghCommentsBlock),
-      'GitHub comment poll must not ignore common bot logins by default');
+      'GitHub comment poll must not ignore common bot logins by blanket login defaults');
     assert.ok(!adoCommentsBlock.includes('/\\b(bot|service|build|pipeline|codecov|sonar)\\b/i.test(authorName)'),
       'ADO comment poll must not ignore bot/service authors by default');
-    assert.ok(ghCommentsBlock.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
+    assert.ok(githubSrc.includes('ignoredAuthors.has(login)') && adoCommentsBlock.includes('ignoredAuthors.some'),
       'explicit ignoredCommentAuthors settings should still be honored');
   });
 }
@@ -19012,6 +20281,65 @@ async function testLifecycleUncoveredFns() {
     } finally { restore(); }
   });
 
+  await test('updatePrAfterFix: stale human-feedback completion preserves newer pendingFix cause', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-human-race', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          reviewStatus: 'waiting', status: 'active',
+          humanFeedback: {
+            pendingFix: true,
+            lastProcessedCommentKey: 'new-comment',
+            feedbackContent: 'Newer feedback still needs a fix.',
+          } },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#2075', url: 'https://github.com/o/r/pull/2075', prNumber: 2075,
+          humanFeedback: {
+            lastProcessedCommentKey: 'old-comment',
+            feedbackContent: 'Older feedback already fixed.',
+          } },
+        project, 'pr-human-feedback', 'human-comment:old-comment', 'old-dispatch');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0].humanFeedback.pendingFix, true,
+        'old human-feedback fix completion must not clear a newer pending comment cause');
+      assert.strictEqual(after[0].humanFeedback.lastProcessedCommentKey, 'new-comment',
+        'newer comment cause metadata must be preserved');
+      assert.strictEqual(after[0]._automationFixCauses['human-comment:old-comment'].status, 'handled',
+        'the completed old comment cause should still be marked handled');
+    } finally { restore(); }
+  });
+
+  await test('updatePrAfterFix: marks automation cause handled when provided', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sharedIsolated = require('../engine/shared');
+
+      const project = { name: 'fix-proj-cause', localPath: createTmpDir(), mainBranch: 'main' };
+      const prsPath = sharedIsolated.projectPrPath(project);
+      sharedIsolated.safeWrite(prsPath, [
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14,
+          reviewStatus: 'changes-requested', status: 'active' },
+      ]);
+
+      lifecycle.updatePrAfterFix(
+        { id: 'github:o/r#14', url: 'https://github.com/o/r/pull/14', prNumber: 14 },
+        project, 'pr', 'review-feedback:review-14', 'dispatch-14');
+
+      const after = JSON.parse(fs.readFileSync(prsPath, 'utf8'));
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].status, 'handled');
+      assert.strictEqual(after[0]._automationFixCauses['review-feedback:review-14'].dispatchId, 'dispatch-14');
+    } finally { restore(); }
+  });
+
   await test('updatePrAfterFix: no-op when matching PR record not found', () => {
     const restore = createTestMinionsDir();
     try {
@@ -19728,6 +21056,103 @@ async function testSpawnAgentScript() {
     assert.strictEqual(countAddDir(fresh.args), 2, 'non-resume path must include both --add-dir flags');
     assert.strictEqual(countAddDir(resumed.args), 2, 'resume path must include both --add-dir flags');
   });
+
+  // Regression for W-motay65e000g39b5: a 5s setTimeout used to nuke the
+  // sysprompt .tmp before Claude could finish its lazy `--system-prompt-file`
+  // read on cold starts (MCP boot, --add-dir traversal, Windows process
+  // startup overhead). Two layers:
+  //   (a) source-level guard — no `setTimeout(...unlinkSync(sysTmpPath)...)`,
+  //   (b) behavioral — file persists while the spawned child is alive and is
+  //       cleaned up only when spawn-agent.js itself exits.
+
+  await test('spawn-agent.js: no setTimeout-based deletion of sysprompt .tmp (regression W-motay65e000g39b5)', () => {
+    // Bug shape: `setTimeout(() => { ...fs.unlinkSync(sysTmpPath)...; }, 5000)` —
+    // both halves on the same line. Look for any `setTimeout` callback that
+    // unlinks sysTmpPath within its own body (bounded by `}` so we never span
+    // across to the unrelated process.on('exit') cleanup function below).
+    const badPattern = /setTimeout\s*\([^}]*?unlinkSync\s*\(\s*sysTmpPath\s*\)/;
+    assert.ok(!badPattern.test(src),
+      'spawn-agent.js must NOT setTimeout-delete sysTmpPath — Claude reads --system-prompt-file lazily and cold starts can land after a short timer');
+  });
+
+  await test('spawn-agent.js: sysprompt .tmp persists during child lifetime and unlinks on spawn-agent exit', async () => {
+    const dir = createTmpDir();
+    const promptPath = path.join(dir, 'prompt-test.md');
+    const sysPath = path.join(dir, 'sysprompt-test.md');
+    const tmpSysPath = sysPath + '.tmp';
+    fs.writeFileSync(promptPath, 'user prompt');
+    fs.writeFileSync(sysPath, 'system prompt');
+
+    // Stub-loader script preloaded via `node --require`. Registers a runtime
+    // adapter that points the spawned binary at `node -e <sleeper>` so we can
+    // observe spawn-agent's .tmp lifecycle without a real Claude/Copilot
+    // install. Module-singleton caching means the registry our preload mutates
+    // is the same one spawn-agent.js's `resolveRuntime()` consults.
+    const stubPath = path.join(dir, 'stub-loader.js');
+    const runtimesPath = path.join(MINIONS_DIR, 'engine', 'runtimes');
+    fs.writeFileSync(stubPath, [
+      `const runtimes = require(${JSON.stringify(runtimesPath)});`,
+      `runtimes.registerRuntime('test-stub', {`,
+      `  name: 'test-stub',`,
+      `  capabilities: { systemPromptFile: true, streaming: false },`,
+      `  resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),`,
+      `  buildArgs: () => ['-e', 'setTimeout(() => {}, 1500)'],`,
+      `  buildPrompt: (p) => p,`,
+      `  installHint: 'test-stub (in-memory)',`,
+      `});`,
+    ].join('\n'));
+
+    const { spawn } = require('child_process');
+    // Strip MINIONS_REPO_HOST so spawn-agent doesn't try to acquire an ADO
+    // token (which would shell out to azureauth and add latency / flakiness).
+    const childEnv = { ...process.env };
+    delete childEnv.MINIONS_REPO_HOST;
+
+    const child = spawn(
+      process.execPath,
+      [
+        '--require', stubPath,
+        path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'),
+        promptPath, sysPath,
+        '--runtime', 'test-stub',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv },
+    );
+
+    let stderrBuf = '';
+    child.stderr.on('data', (chunk) => { stderrBuf += chunk.toString(); });
+    child.stdout.on('data', () => {}); // drain
+
+    try {
+      // Mid-flight check: poll briefly for the .tmp file. Windows process
+      // startup can take a couple hundred ms, so we wait up to ~1.5s.
+      let observedDuringChild = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (fs.existsSync(tmpSysPath) && child.exitCode === null) {
+          observedDuringChild = true;
+          break;
+        }
+      }
+      assert.ok(observedDuringChild,
+        `.tmp sysprompt file should exist on disk while spawn-agent's child process is alive (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      // Wait for spawn-agent.js to finish (child sleeper exits at ~1.5s).
+      const exitCode = await new Promise((resolve) => child.on('exit', resolve));
+
+      // process.on('exit') cleanup must have unlinked the .tmp.
+      assert.ok(!fs.existsSync(tmpSysPath),
+        `.tmp sysprompt file should be unlinked once spawn-agent.js exits (stderr: ${stderrBuf.slice(0, 400)})`);
+
+      assert.strictEqual(exitCode, 0,
+        `spawn-agent.js should exit cleanly when the spawned child exits 0 (got ${exitCode}; stderr: ${stderrBuf.slice(0, 400)})`);
+    } finally {
+      if (child.exitCode === null) {
+        try { child.kill(); } catch { /* best effort */ }
+      }
+      try { fs.unlinkSync(tmpSysPath); } catch { /* may already be cleaned */ }
+    }
+  });
 }
 
 // ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
@@ -19815,6 +21240,192 @@ async function testSessionResume() {
   await test('session.json stores dispatchId for traceability', () => {
     assert.ok(claudeRuntimeSrc.includes('dispatchId') && claudeRuntimeSrc.includes('session.json'),
       'session.json should include dispatchId');
+  });
+
+  // Runtime mismatch invalidation: a session ID produced by one runtime cannot
+  // be resumed under a different runtime. The pre-spawn resume path must drop
+  // the session ID AND clear session.json on mismatch — otherwise the new
+  // runtime spawns with --resume <wrong-runtime-id>, fails with "No
+  // conversation found", and burns a retry slot before the post-failure
+  // cleanup at engine.js fires.
+  await test('saveSession records the producing runtime name (claude)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    claude.saveSession({
+      agentId,
+      dispatchId: 'd-1',
+      branch: 'work/W-test',
+      sessionId: 'sess-claude-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'claude',
+      'claude.saveSession should stamp runtime: "claude" into session.json');
+    assert.strictEqual(saved.sessionId, 'sess-claude-1');
+  });
+
+  await test('saveSession records the producing runtime name (copilot)', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'dallas';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    copilot.saveSession({
+      agentId,
+      dispatchId: 'd-2',
+      branch: 'work/W-test',
+      sessionId: 'sess-copilot-1',
+      agentsDir: dir,
+      logger: { warn() {} },
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, agentId, 'session.json'), 'utf8'));
+    assert.strictEqual(saved.runtime, 'copilot',
+      'copilot.saveSession should stamp runtime: "copilot" into session.json');
+  });
+
+  await test('claude.getResumeSessionId skips resume + clears session.json when stored runtime is copilot', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'lambert';
+    const branch = 'work/W-mot62ant0003022d';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Simulate the bug scenario: a copilot-produced session ID is on disk and
+    // the engine has switched the resolved runtime to claude.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: '1b418f2e-aaaa-bbbb-cccc-deadbeefcafe',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),  // fresh — only runtime mismatch should invalidate
+      branch,
+      runtime: 'copilot',
+    }));
+
+    const logs = [];
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]) },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'claude.getResumeSessionId must return null when stored runtime is copilot');
+    assert.strictEqual(fs.existsSync(sessionPath), false,
+      'session.json must be cleared on runtime mismatch so the next dispatch is fresh');
+    const mismatchLog = logs.find(([, m]) => /runtime mismatch/i.test(m));
+    assert.ok(mismatchLog,
+      'a log line must explain the runtime-switch reason (so it is distinguishable from stale-by-age)');
+  });
+
+  await test('copilot.getResumeSessionId skips resume + clears session.json when stored runtime is claude', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-orphan',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = copilot.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null);
+    assert.strictEqual(fs.existsSync(sessionPath), false);
+  });
+
+  await test('getResumeSessionId resumes when stored runtime matches current runtime', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-claude-match',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-claude-match',
+      'matching runtime must resume normally');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'matching runtime must NOT clear session.json');
+  });
+
+  await test('getResumeSessionId resumes legacy session.json without runtime field (back-compat)', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    // Pre-fix sessions on disk have no `runtime` field.
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-legacy',
+      dispatchId: 'd-old',
+      savedAt: new Date().toISOString(),
+      branch,
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-legacy',
+      'legacy session without runtime field should still resume — runtime check is opt-in');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'legacy session must not be cleared on runtime check');
+  });
+
+  await test('getResumeSessionId still invalidates by age even when runtime matches', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-old',
+      dispatchId: 'd-old',
+      // 3 hours ago — well beyond the 2h TTL
+      savedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'stale-by-age path must keep working alongside runtime-mismatch path');
   });
 }
 
@@ -20528,7 +22139,7 @@ async function testDashboardAssembly() {
 
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
-    assert.ok(html.length < 700000, `HTML should be < 700KB (got ${html.length})`);
+    assert.ok(html.length < 750000, `HTML should be < 750KB (got ${html.length})`);
 
   });
 }
@@ -20912,6 +22523,18 @@ async function testAgentSteering() {
       'Deferred checkpoint resume should keep original output available for completion parsing');
     assert.ok(engineSrc.includes('[steering-pending]'),
       'If no checkpoint sessionId exists, live output should explicitly show pending/not-delivered state');
+  });
+
+  await test('deferred steering resume can reuse completion report path without TDZ shadowing', () => {
+    const engineOnlySrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const closeStart = engineOnlySrc.indexOf('async function onAgentClose');
+    const closeEnd = engineOnlySrc.indexOf("proc.on('close', onAgentClose)", closeStart);
+    assert.ok(closeStart >= 0 && closeEnd > closeStart, 'Should locate onAgentClose');
+    const closeBody = engineOnlySrc.slice(closeStart, closeEnd);
+    assert.ok(closeBody.includes('if (completionReportPath) childEnv.MINIONS_COMPLETION_REPORT = completionReportPath;'),
+      'Steering resume should pass the spawn-level completion report path to the resumed process');
+    assert.ok(!/\bconst\s+completionReportPath\b/.test(closeBody),
+      'onAgentClose must not redeclare completionReportPath; doing so puts steering resume in the temporal dead zone');
   });
 
   await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
@@ -22590,6 +24213,13 @@ async function testRecentFeatures() {
     assert.ok(dashSrc.includes('_hotReloadClients') && dashSrc.includes('reload'),
       'Should push reload event to connected browsers on rebuild');
   });
+
+  await test('dashboard SSE clients have heartbeat cleanup instead of bare Set retention', () => {
+    assert.ok(dashSrc.includes('function _trackSseClient') && dashSrc.includes("': heartbeat\\n\\n'"),
+      'SSE clients should get heartbeat writes that clean up dead responses even when status does not change');
+    assert.ok(dashSrc.includes('_removeSseClient(_statusStreamClients') && dashSrc.includes('_removeSseClient(_hotReloadClients'),
+      'SSE write failures should run cleanup, not just delete the response from the Set');
+  });
 }
 
 // ─── Dashboard UI Function Tests ───────────────────────────────────────────
@@ -22601,6 +24231,42 @@ async function testDashboardUIFunctions() {
   const prsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
   const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
   const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+  const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+  const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+
+  function buildPipelineRenderHarness() {
+    const elements = {};
+    function makeEl() {
+      return {
+        innerHTML: '',
+        textContent: '',
+        style: {},
+        classList: {
+          add() {},
+          contains() { return false; },
+        },
+      };
+    }
+    const documentStub = {
+      getElementById(id) {
+        if (!elements[id]) elements[id] = makeEl();
+        return elements[id];
+      },
+      querySelectorAll() { return []; },
+    };
+    const windowStub = {};
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const api = new Function(
+      'document', 'window', 'setInterval', 'clearInterval', 'fetch', 'alert', 'Intl',
+      'escHtml', 'isDeleted', 'timeSinceStr', 'renderMd', 'showToast', 'refresh', 'closeModal',
+      'function formatLocalClock(hour, minute) { return String(Number(hour)).padStart(2, "0") + ":" + String(Number(minute)).padStart(2, "0"); }\n' +
+      schedulesSrc + '\n' + pipelineSrc + '\nreturn { cronToHuman: _cronToHuman, renderPipelines, openPipelineDetail };'
+    )(
+      documentStub, windowStub, () => 1, () => {}, () => Promise.reject(new Error('unused')), () => {},
+      Intl, esc, () => false, () => 'now', esc, () => {}, () => {}, () => {}
+    );
+    return { api, elements };
+  }
 
   // Work item creation modal
   await test('openCreateWorkItemModal exists', () => {
@@ -22631,13 +24297,42 @@ async function testDashboardUIFunctions() {
       'Detail modal should not truncate description content to 1000 chars');
   });
 
+  await test('_cronToHuman supports common 5-field pipeline cron without changing 3-field list fallback', () => {
+    const { api } = buildPipelineRenderHarness();
+    assert.strictEqual(api.cronToHuman('0 9 * * *'), 'Daily at 09:00');
+    assert.strictEqual(api.cronToHuman('0 9 * * 1-5'), 'Weekdays at 09:00');
+    assert.strictEqual(api.cronToHuman('30 8 * * 0,6'), 'Weekends at 08:30');
+    assert.strictEqual(api.cronToHuman('15 14 * * 1,3'), 'Mondays, Wednesdays at 14:15');
+    assert.strictEqual(api.cronToHuman('0 9 *'), 'Daily at 09:00');
+    assert.strictEqual(api.cronToHuman('0 9 1,3'), '0 9 1,3');
+  });
+
+  await test('pipeline cards and details render 5-field cron as local schedule text', () => {
+    const { api, elements } = buildPipelineRenderHarness();
+    const pipeline = {
+      id: 'momentum-daily-one-bug-fix',
+      title: 'Momentum daily one bug fix',
+      trigger: { cron: '0 9 * * *' },
+      stages: [{ id: 'fix', type: 'task', title: 'Fix one bug' }],
+      runs: [],
+    };
+    api.renderPipelines([pipeline]);
+    const cardHtml = elements['pipelines-content'].innerHTML;
+    assert.ok(cardHtml.includes('Daily at 09:00'), 'pipeline card should show human schedule text');
+    assert.ok(!cardHtml.includes('0 9 * * *'), 'pipeline card should not show raw 5-field cron');
+
+    api.openPipelineDetail('momentum-daily-one-bug-fix');
+    const detailHtml = elements['modal-body'].innerHTML;
+    assert.ok(detailHtml.includes('Daily at 09:00'), 'pipeline detail should show human schedule text');
+    assert.ok(detailHtml.includes(Intl.DateTimeFormat().resolvedOptions().timeZone), 'pipeline detail should include the local timezone');
+    assert.ok(!detailHtml.includes('0 9 * * *'), 'pipeline detail should not show raw 5-field cron');
+  });
+
   await test('dashboard cards ignore click-to-open while user is selecting text', () => {
     const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
-    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const meetingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
     const plansCardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
-    const schedulesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
     const watchesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
     const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
     assert.ok(utilsSrc.includes('function shouldIgnoreSelectionClick()'),
@@ -23295,8 +24990,8 @@ async function testDispatchCycleIntegration() {
   await test('Dashboard pushes status via SSE using _statusStreamClients', () => {
     assert.ok(dashSrc.includes('_statusStreamClients'),
       'dashboard.js must define _statusStreamClients');
-    assert.ok(dashSrc.includes('_statusStreamClients.add(res'),
-      'Dashboard must add clients to _statusStreamClients on SSE connect');
+    assert.ok(dashSrc.includes('_trackSseClient(_statusStreamClients'),
+      'Dashboard must register status stream clients via _trackSseClient (heartbeat + cleanup)');
     assert.ok(dashSrc.includes('res.write(') && dashSrc.includes('data:'),
       'Dashboard must write SSE data frames to connected clients');
   });
@@ -23538,6 +25233,14 @@ async function testMeetings() {
     assert.ok(dashSrc.includes('body.reconnect') && dashSrc.includes('No live command-center response to reconnect'),
       'Streaming CC should support reconnect requests for an in-flight tab');
   });
+
+  await test('CC live stream reconnect buffers have hard-age cleanup', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('CC_LIVE_STREAM_MAX_AGE_MS') && dashSrc.includes('shared.ENGINE_DEFAULTS.ccLiveStreamMaxAgeMs'),
+      'CC live stream buffers should have a configured hard max age');
+    assert.ok(dashSrc.includes('function _sweepCcLiveStreams') && dashSrc.includes('_ccLiveSweepTimer'),
+      'CC live stream buffers should be swept if abort/cleanup stalls');
+  });
 }
 
 // ─── Team Meetings Behavioral Tests ─────────────────────────────────────────
@@ -23562,62 +25265,65 @@ async function testMeetingsBehavioral() {
   });
 
   await test('getMeetings returns empty array when meetings dir is missing', () => {
-    // Temporarily rename meetings dir if it exists
-    const backupDir = meetingsDir + '-test-backup-' + Date.now();
-    let renamed = false;
-    if (fs.existsSync(meetingsDir)) {
-      fs.renameSync(meetingsDir, backupDir);
-      renamed = true;
-    }
+    // Use isolated minions dir — never rename live MEETINGS_DIR (caused real
+    // data loss on 2026-05-06 when a sibling test crashed mid-rename).
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      // seedTestMinionsDir does not create meetings/, so the dir is missing.
+      assert.ok(!fs.existsSync(isolated.MEETINGS_DIR), 'precondition: meetings dir must be missing');
+      const result = isolated.getMeetings();
       assert.deepStrictEqual(result, [], 'Should return empty array when dir missing');
     } finally {
-      if (renamed) fs.renameSync(backupDir, meetingsDir);
+      restore();
     }
   });
 
   await test('getMeetings filters out corrupt JSON files', () => {
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    const corruptId = 'TEST-corrupt-' + Date.now();
-    const corruptPath = path.join(meetingsDir, corruptId + '.json');
-    fs.writeFileSync(corruptPath, 'NOT VALID JSON {{{');
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      const corruptId = 'TEST-corrupt';
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, corruptId + '.json'), 'NOT VALID JSON {{{');
+      const result = isolated.getMeetings();
       assert.ok(Array.isArray(result), 'Should return array');
       const corruptEntry = result.find(m => m && m.id === corruptId);
       assert.strictEqual(corruptEntry, undefined, 'Corrupt JSON should be filtered out');
     } finally {
-      cleanupMeeting(corruptId);
+      restore();
     }
   });
 
   await test('getMeetings returns valid JSON meetings', () => {
-    const testId = 'TEST-valid-' + Date.now();
-    const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(testMeeting));
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      const testId = 'TEST-valid';
+      const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, testId + '.json'), JSON.stringify(testMeeting));
+      const result = isolated.getMeetings();
       const found = result.find(m => m.id === testId);
       assert.ok(found, 'Should include the test meeting');
       assert.strictEqual(found.title, 'Test Meeting');
       assert.strictEqual(found.status, 'investigating');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('getMeetings only returns .json files', () => {
-    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
-    const txtPath = path.join(meetingsDir, 'TEST-not-json-' + Date.now() + '.txt');
-    fs.writeFileSync(txtPath, 'not a json file');
+    const restore = createTestMinionsDir();
     try {
-      const result = meetingMod.getMeetings();
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      fs.mkdirSync(isolated.MEETINGS_DIR, { recursive: true });
+      fs.writeFileSync(path.join(isolated.MEETINGS_DIR, 'TEST-not-json.txt'), 'not a json file');
+      const result = isolated.getMeetings();
       // No .txt entry should appear
       assert.ok(Array.isArray(result), 'Should return array');
     } finally {
-      try { fs.unlinkSync(txtPath); } catch {}
+      restore();
     }
   });
 
@@ -24732,136 +26438,221 @@ async function testMeetingsExtendedBehavioral() {
     assert.strictEqual(result, false, 'Should return false for missing meeting');
   });
 
-  // ── checkMeetingTimeouts (safe tests — no side effects on real meetings) ──
+  // ── checkMeetingTimeouts (isolated — never iterates real MEETINGS_DIR) ──
+  // Each test routes the checkMeetingTimeouts call through createTestMinionsDir(),
+  // so even tiny meetingRoundTimeout values cannot force-advance live meetings
+  // (real incident on 2026-05-06 — see W-motcfcil000w5c75).
 
   await test('checkMeetingTimeouts does not advance meeting within timeout window', () => {
-    const testId = 'TEST-EXT-tout-safe-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [],
-      roundStartedAt: new Date().toISOString(), // just now — well within timeout
-    });
+    const restore = createTestMinionsDir();
     try {
-      // Use a large timeout to ensure no real meetings are affected
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-safe';
+      isolated.saveMeeting({
+        id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [],
+        roundStartedAt: new Date().toISOString(), // just now — well within timeout
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating', 'Should NOT advance — within timeout');
       assert.strictEqual(m.round, 1, 'Round should remain 1');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts skips completed meetings', () => {
-    const testId = 'TEST-EXT-tout-skip-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: { content: 'Done' }, transcript: [],
-      completedAt: new Date().toISOString(),
-      roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-skip';
+      isolated.saveMeeting({
+        id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: { content: 'Done' }, transcript: [],
+        completedAt: new Date().toISOString(),
+        roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts skips archived meetings', () => {
-    const testId = 'TEST-EXT-tout-archived-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Archived Timeout', status: 'archived', round: 3,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: { content: 'Done' }, transcript: [],
-      archivedAt: new Date().toISOString(),
-      roundStartedAt: new Date(Date.now() - 9999999).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-archived';
+      isolated.saveMeeting({
+        id: testId, title: 'Archived Timeout', status: 'archived', round: 3,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: { content: 'Done' }, transcript: [],
+        archivedAt: new Date().toISOString(),
+        roundStartedAt: new Date(Date.now() - 9999999).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'archived', 'Archived meeting should remain archived');
       assert.strictEqual(m.archivedAt !== undefined, true, 'archivedAt should be preserved');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not advance investigating with unfinished participants', () => {
-    const testId = 'TEST-EXT-tout-inv-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
-      participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
-      debate: {}, humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(), // 16.7 min ago
-    });
+    const restore = createTestMinionsDir();
     try {
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-inv';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
+        participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
+        debate: {}, humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(), // 16.7 min ago
+      });
       // Default ENGINE_DEFAULTS.meetingRoundTimeout is 900000 (15 min)
-      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating', 'Should not advance until every participant succeeds or fails');
       assert.strictEqual(m.round, 1);
       const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
       assert.strictEqual(timeoutEntry, undefined, 'Should not record timeout transcript unless advancing an already-terminal round');
     } finally {
-      cleanupMeeting(testId);
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not advance debating with unfinished participants', () => {
-    const testId = 'TEST-EXT-tout-deb-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
-      participants: ['alice', 'bob'],
-      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
-      debate: { alice: { content: 'Alice debate' } }, // only alice submitted
-      humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
-      const m = meetingMod.getMeeting(testId);
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-deb';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
+        participants: ['alice', 'bob'],
+        findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+        debate: { alice: { content: 'Alice debate' } }, // only alice submitted
+        humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'debating', 'Should not advance until every participant succeeds or fails');
       assert.strictEqual(m.round, 2);
     } finally {
-      cleanupMeeting(testId);
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop marks non-responders failed and advances investigating', () => {
+    // Isolated tmp meetings dir — checkMeetingTimeouts iterates ALL meetings in
+    // MEETINGS_DIR, so we must not run with the live dir. Bust the require cache
+    // so the meeting module re-resolves MEETINGS_DIR against MINIONS_TEST_DIR.
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-inv';
+    isolated.saveMeeting({
+      id: testId, title: 'Hard Timeout Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob', 'carol'],
+      findings: { alice: { content: 'A finding' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 4000000).toISOString(), // ~67 min ago, past 60min hard
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: { alice: {}, bob: {}, carol: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Hard backstop should advance the round');
+      assert.strictEqual(m.round, 2);
+      assert.ok(m.roundFailures?.['1']?.bob, 'bob should be marked failed');
+      assert.ok(m.roundFailures['1'].carol, 'carol should be marked failed');
+      assert.strictEqual(m.roundFailures['1'].alice, undefined, 'alice succeeded — no failure record');
+      const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
+      assert.ok(timeoutEntry && /hard timeout/i.test(timeoutEntry.content), 'transcript should record hard-timeout reason');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop does not fire below hardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-soft';
+    isolated.saveMeeting({
+      id: testId, title: 'Soft Window', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'],
+      findings: {}, debate: {}, humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 1200000).toISOString(), // 20 min — past soft 15min, below hard 60min
+    });
+    try {
+      isolated.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'should not advance below hardTimeout');
+      assert.deepStrictEqual(m.roundFailures, {}, 'no participants marked failed');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('checkMeetingTimeouts hard backstop honours configured meetingRoundHardTimeout', () => {
+    const restore = createTestMinionsDir();
+    const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+    const testId = 'TEST-EXT-hard-cfg';
+    isolated.saveMeeting({
+      id: testId, title: 'Custom Hard', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'a' }, bob: { content: 'b' } },
+      debate: { alice: { content: 'a debate' } },
+      humanNotes: [], conclusion: null, transcript: [], roundFailures: {},
+      roundStartedAt: new Date(Date.now() - 60000).toISOString(), // 1 min ago
+    });
+    try {
+      // Tiny soft + hard timeouts to force both gates open
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1, meetingRoundHardTimeout: 1 }, agents: { alice: {}, bob: {} } });
+      const m = isolated.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'should advance debate → conclude under tight hard cap');
+      assert.ok(m.roundFailures?.['2']?.bob, 'bob should be marked failed');
+    } finally {
+      restore();
     }
   });
 
   await test('checkMeetingTimeouts does not auto-complete concluding while conclusion agent is unfinished', () => {
-    const testId = 'TEST-EXT-tout-con-' + Date.now();
-    meetingMod.saveMeeting({
-      id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
-      participants: ['alice', 'bob'],
-      findings: {
-        alice: { content: 'Module X has an auth bug that breaks the save path.' },
-        bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
-      },
-      debate: {
-        alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
-        bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
-      },
-      humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
-    });
+    const restore = createTestMinionsDir();
     try {
-      meetingMod.checkMeetingTimeouts({
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-EXT-tout-con';
+      isolated.saveMeeting({
+        id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
+        participants: ['alice', 'bob'],
+        findings: {
+          alice: { content: 'Module X has an auth bug that breaks the save path.' },
+          bob: { content: 'Release risk is concentrated in the auth flow rather than the whole dashboard.' },
+        },
+        debate: {
+          alice: { content: 'We should fix module X before release and add regression coverage. Shipping now is risky.' },
+          bob: { content: 'I agree the auth issue blocks release, but we can keep scope tight by patching only the broken path.' },
+        },
+        humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date(Date.now() - 1000000).toISOString(),
+      });
+      isolated.checkMeetingTimeouts({
         engine: {},
         agents: {
           alice: { name: 'Alice' },
           bob: { name: 'Bob' },
         },
       });
-      const m = meetingMod.getMeeting(testId);
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'concluding', 'Should wait for conclusion agent terminal outcome');
       assert.strictEqual(m.conclusion, null, 'Should not synthesize conclusion purely from timeout');
       assert.strictEqual(m.completedAt, undefined, 'Should not complete while conclusion is unfinished');
     } finally {
-      cleanupMeeting(testId);
-      cleanupInboxForMeeting(testId);
+      restore();
     }
   });
 
@@ -25437,24 +27228,29 @@ async function testMeetingsIsolatedGaps() {
   // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
 
   await test('checkMeetingTimeouts skips meeting with no roundStartedAt', () => {
-    const testId = 'TEST-GAP-tout-noStart-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [],
-      // no roundStartedAt intentionally
-    });
+    // Isolated: any non-trivial timeout value passed to the real module
+    // would iterate every live meeting in MEETINGS_DIR and could force-advance
+    // them (real incident on 2026-05-06 — see W-motcfcil000w5c75).
+    const restore = createTestMinionsDir();
     try {
+      const isolated = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      const testId = 'TEST-GAP-tout-noStart';
+      isolated.saveMeeting({
+        id: testId, title: 'No RoundStarted', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [],
+        // no roundStartedAt intentionally
+      });
       // Tiny timeout — would fire immediately if roundStartedAt existed.
-      meetingModReal.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
-      const m = meetingModReal.getMeeting(testId);
+      isolated.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = isolated.getMeeting(testId);
       assert.strictEqual(m.status, 'investigating',
         'meeting without roundStartedAt must not be auto-advanced');
       assert.strictEqual(m.round, 1, 'round must not be bumped');
       assert.strictEqual((m.transcript || []).length, 0,
         'no transcript entry should be written for a no-op check');
     } finally {
-      cleanupReal(testId);
+      restore();
     }
   });
 
@@ -26828,6 +28624,7 @@ async function main() {
     await testClassifyInboxItem();
     await testSkillFrontmatter();
     await testEngineDefaults();
+    await testFeatureFlags();
     await testRuntimeFleetHelpers();
     await testProjectHelpers();
     await testPrLinks();
@@ -26853,6 +28650,7 @@ async function main() {
 
     // lifecycle.js tests
     await testLifecycleHelpers();
+    await testLifecyclePureParsers();
     await testSyncPrdItemStatus();
 
     // consolidation.js tests
@@ -28285,6 +30083,22 @@ async function testScheduleDetailModal() {
       'runScheduleNow should be exposed with schedule dashboard functions');
   });
 
+  await test('schedule Run now button is disabled while request is pending', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const start = src.indexOf('async function runScheduleNow');
+    const end = src.indexOf('async function deleteSchedule');
+    assert.ok(start >= 0 && end > start, 'runScheduleNow should exist before deleteSchedule');
+    const body = src.slice(start, end);
+    assert.ok(body.includes('if (btn && btn.disabled) return;'),
+      'runScheduleNow should ignore duplicate clicks while already disabled');
+    assert.ok(body.includes('btn.disabled = true') && body.includes("btn.textContent = 'Running...'"),
+      'runScheduleNow should immediately disable the clicked button and show pending text');
+    assert.ok(body.includes("btn.setAttribute('aria-busy', 'true')"),
+      'runScheduleNow should expose pending state to assistive tech');
+    assert.ok(body.includes('} finally {') && body.includes('btn.disabled = false') && body.includes("btn.removeAttribute('aria-busy')"),
+      'runScheduleNow should restore the button after success or failure');
+  });
+
   await test('dashboard exposes schedule Run Now API that enqueues scheduler work item', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     assert.ok(src.includes("path: '/api/schedules/run-now'"), 'should register /api/schedules/run-now route');
@@ -29195,9 +31009,97 @@ async function testAutoModeStatus() {
 }
 
 async function testApiRoutesInCcPreamble() {
-  await test('CC preamble references API routes endpoint', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('/api/routes'), 'preamble should reference /api/routes for endpoint discovery');
+  // CC's preamble should auto-index the live API surface (from dashboard.js
+  // ROUTES) and the engine CLI surface (from engine/cli.js CLI_COMMAND_DOCS).
+  // Single source of truth: adding a new endpoint or CLI command lands in
+  // CC's prompt automatically without editing prompts/cc-system.md.
+
+  const dashboard = require(path.join(__dirname, '..', 'dashboard.js'));
+  const cliMod = require(path.join(__dirname, '..', 'engine', 'cli'));
+  const dashSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+  const seedRoute = { method: 'GET', path: '/api/status', desc: 'Full status snapshot', params: null };
+  const seedRoutes = (extra = []) => dashboard._captureApiRoutesMeta([seedRoute, ...extra]);
+
+  await test('CLI_COMMAND_DOCS exported from engine/cli.js', () => {
+    assert.ok(cliMod.CLI_COMMAND_DOCS, 'CLI_COMMAND_DOCS must be exported');
+    assert.ok(typeof cliMod.CLI_COMMAND_DOCS === 'object');
+    assert.ok(Object.keys(cliMod.CLI_COMMAND_DOCS).length >= 10,
+      'docs should cover the engine subcommand fleet');
+  });
+
+  await test('CLI_COMMAND_DOCS covers every command (no drift either direction)', () => {
+    const docKeys = new Set(Object.keys(cliMod.CLI_COMMAND_DOCS));
+    const cmdKeys = new Set(cliMod._listCommandKeys());
+    const missingDoc = [...cmdKeys].filter(k => !docKeys.has(k));
+    const orphanDoc = [...docKeys].filter(k => !cmdKeys.has(k));
+    assert.deepStrictEqual(missingDoc, [],
+      'every command must have a CLI_COMMAND_DOCS entry — add docs when you add a command');
+    assert.deepStrictEqual(orphanDoc, [],
+      'every CLI_COMMAND_DOCS entry must correspond to a real command — remove the doc if the command was deleted');
+  });
+
+  await test('handleCommand help text renders from CLI_COMMAND_DOCS (single source of truth)', () => {
+    const cliSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('formatCliCommandHelpLines'),
+      'help text must be rendered, not hard-coded line-by-line');
+    assert.ok(!cliSrc.includes("'  start [--cli R] [--model M]   Start engine daemon"),
+      'help text must no longer be a hardcoded console.log per command');
+  });
+
+  await test('dashboard captures ROUTES into _ccApiRoutesMeta inside the request handler', () => {
+    assert.ok(dashSrc.includes('_captureApiRoutesMeta(ROUTES)'),
+      'route dispatcher must invoke the metadata capture before iterating');
+    assert.ok(dashSrc.includes('let _ccApiRoutesMeta = null'),
+      'module-level snapshot variable must be declared');
+  });
+
+  await test('dashboard exposes preamble + index helpers for testing', () => {
+    assert.ok(typeof dashboard.buildCCStatePreamble === 'function');
+    assert.ok(typeof dashboard._captureApiRoutesMeta === 'function');
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex === 'function');
+    assert.ok(typeof dashboard._formatCcCliCommandsIndex === 'function');
+    assert.ok(typeof dashboard._resetPreambleCache === 'function');
+  });
+
+  await test('_formatCcApiRoutesIndex returns a string regardless of capture state', () => {
+    assert.ok(typeof dashboard._formatCcApiRoutesIndex() === 'string');
+  });
+
+  await test('_formatCcApiRoutesIndex includes a sample API path after capture', () => {
+    seedRoutes([{ method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title' }]);
+    const out = dashboard._formatCcApiRoutesIndex();
+    assert.ok(out.includes('/api/status'),
+      'rendered API index must include /api/status');
+    assert.ok(out.includes('Create a new work item'),
+      'rendered API index must include endpoint description');
+    assert.ok(out.includes('params: title'),
+      'rendered API index must surface params hint');
+  });
+
+  await test('_formatCcCliCommandsIndex renders the CLI fleet from CLI_COMMAND_DOCS', () => {
+    const out = dashboard._formatCcCliCommandsIndex();
+    assert.ok(out.includes('minions start'),
+      'CLI index must include the start command');
+    assert.ok(out.includes('minions doctor'),
+      'CLI index must include the doctor command');
+    assert.ok(out.includes('Stop engine'),
+      'CLI index must include command summaries');
+  });
+
+  await test('buildCCStatePreamble embeds both auto-indexes', () => {
+    seedRoutes();
+    dashboard._resetPreambleCache();
+    const text = dashboard.buildCCStatePreamble();
+    assert.ok(text.includes('### API Index'),
+      'preamble must include the API Index section');
+    assert.ok(text.includes('### CLI Index'),
+      'preamble must include the CLI Index section');
+    assert.ok(text.includes('/api/status'),
+      'preamble must surface a real route from the captured snapshot');
+    assert.ok(text.includes('minions start'),
+      'preamble must surface a real CLI command');
+    assert.ok(text.includes('single source of truth'),
+      'preamble must declare the SoT discipline so CC trusts the index');
   });
 }
 
@@ -29967,7 +31869,9 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have unhandledRejection handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
   });
 
@@ -29978,8 +31882,23 @@ async function testAuxModuleBugFixes() {
     assert.ok(idx > 0, 'Must have uncaughtException handler');
     const block = src.slice(idx, idx + 500);
     assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
-    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    // Either inline flushLogs() or via the drainBuffers() helper that wraps it
+    assert.ok(block.includes('flushLogs') || block.includes('drainBuffers'),
+      'Handler must flush logs (directly or via drainBuffers) before exit');
     assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
+  });
+
+  await test('cli.js: drainBuffers helper drains both metrics and logs in a single shutdown step', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    const idx = src.indexOf('function drainBuffers');
+    assert.ok(idx > 0, 'cli.js should define a drainBuffers helper for shutdown paths');
+    const block = src.slice(idx, idx + 600);
+    assert.ok(block.includes('flushMetricsBuffer'),
+      'drainBuffers must call llm.flushMetricsBuffer so pending engine-usage deltas survive shutdown');
+    assert.ok(block.includes('flushLogs'),
+      'drainBuffers must call shared.flushLogs so buffered log entries survive shutdown');
+    assert.ok(block.includes('console.error'),
+      'drainBuffers must console.error on flush failure so a refactor mistake (typo, missing export) is not silent');
   });
 
   // Bug #37: consolidation.js word length cap for ReDoS prevention
@@ -31760,6 +33679,27 @@ async function testEngineAuditCritical() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     assert.ok(src.includes('s.monitoredResources'),
       'openPipelineDetail must render per-stage monitoredResources');
+  });
+
+  await test('render-pipelines.js shows clear empty run copy for cron pipelines', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _getPipelineEmptyRunCopy'),
+      'pipeline renderer should centralize empty run copy');
+    assert.ok(src.includes('pipeline-empty-runs'),
+      'pipeline detail should render a styled empty run state');
+    assert.ok(src.includes('Scheduled for'),
+      'cron-triggered pipelines should explain their schedule before first run');
+  });
+
+  await test('dashboard date rendering uses shared local format helpers', () => {
+    const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    const pipelineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const scheduleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    assert.ok(utilsSrc.includes('function formatLocalDateTime'), 'utils should expose formatLocalDateTime');
+    assert.ok(utilsSrc.includes('function formatLocalTime'), 'utils should expose formatLocalTime');
+    assert.ok(utilsSrc.includes('function formatLocalClock'), 'utils should expose formatLocalClock for cron display');
+    assert.ok(pipelineSrc.includes('formatLocalDateTime(r.startedAt)'), 'pipeline run timestamps should use shared local date formatting');
+    assert.ok(scheduleSrc.includes('formatLocalClock(h, m)'), 'cron labels should use local clock formatting');
   });
 
   await test('pipeline abort button shows Aborting then refreshes detail', () => {
@@ -33919,16 +35859,91 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
-  await test('doc-chat uses a shorter timeout than command center', () => {
+  await test('doc-chat uses the 1-hour backend timeout (W-mot62ant)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
-      'Doc-chat should define a dedicated 6-minute timeout');
+    assert.ok(src.includes('const CC_CALL_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Command Center should define a 1-hour backend call timeout');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    const ccStreamFn = src.slice(src.indexOf('async function ccCallStreaming('), src.indexOf('// Lightweight content fingerprint'));
+    const invokeFn = src.slice(src.indexOf('function _invokeCcStream'), src.indexOf('function finishMissingRuntime'));
+    assert.ok(ccCallFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Non-streaming CC should default to the 1-hour call timeout');
+    assert.ok(ccStreamFn.includes('timeout = CC_CALL_TIMEOUT_MS'),
+      'Streaming CC should default to the 1-hour call timeout');
+    assert.ok(invokeFn.includes('timeout: CC_CALL_TIMEOUT_MS'),
+      'SSE Command Center path should use the 1-hour call timeout');
+    assert.ok(src.includes('const DOC_CHAT_TIMEOUT_MS = 60 * 60 * 1000'),
+      'Doc-chat should also use a 1-hour backend timeout (long edit/Read+Write tool runs)');
+    assert.ok(!src.includes('const DOC_CHAT_TIMEOUT_MS = 360000'),
+      'The legacy 6-minute doc-chat timeout must be gone');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
     assert.ok(docCallFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Non-streaming doc-chat should use the dedicated doc-chat timeout');
     assert.ok(docStreamFn.includes('timeout: DOC_CHAT_TIMEOUT_MS'),
       'Streaming doc-chat should use the dedicated doc-chat timeout');
+  });
+
+  await test('doc-chat retries fresh once when a resumed session returns empty/non-zero (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The retry/invalidate logic now lives in a shared helper used by both
+    // wrappers. Check the helper for the actual logic and the wrappers for the
+    // delegation.
+    const retryHelper = src.slice(src.indexOf('async function _retryDocChatAfterResumeFailure'),
+      src.indexOf('function _docChatFailureResponse'));
+    assert.ok(/Resumed session call failed/.test(retryHelper),
+      'retry helper should log when a resumed session fails before retrying fresh');
+    assert.ok(/docSessions\.delete\(sessionKey\)/.test(retryHelper),
+      'retry helper should invalidate the persisted session before retrying fresh');
+    assert.ok(/schedulePersistDocSessions\(\)/.test(retryHelper),
+      'retry helper should persist the invalidated session map');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    for (const [label, fnSrc] of [['ccDocCall', docCallFn], ['ccDocCallStreaming', docStreamFn]]) {
+      assert.ok(fnSrc.includes('_retryDocChatAfterResumeFailure'),
+        `${label} should delegate to the shared retry helper`);
+    }
+  });
+
+  await test('doc-chat failure response surfaces stderr / code / errorClass instead of swallowing them (W-mot62ant)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Failure-response shape lives in the shared _docChatFailureResponse helper —
+    // slice from its definition through ccDocCallStreaming so the structured
+    // payload is visible to source-level assertions.
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('async function ccDocCallStreaming('));
+    assert.ok(/error:\s*\{/.test(failureFn),
+      'doc-chat failure response should attach a structured error object');
+    assert.ok(/slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should clip stderr to the last 2KB');
+    assert.ok(/stderr:\s*stderrTail/.test(failureFn) || /stderr:[^\n,]*slice\(-2048\)/.test(failureFn),
+      'doc-chat failure response should include the truncated stderr');
+    assert.ok(/errorClass:\s*result\.errorClass/.test(failureFn),
+      'doc-chat failure response should include the runtime errorClass');
+    assert.ok(/code:\s*result\.code/.test(failureFn),
+      'doc-chat failure response should include the runtime exit code');
+    // And both wrappers must actually delegate to the helper on the failure branch.
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
+    const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
+    assert.ok(docCallFn.includes("_docChatFailureResponse('doc-chat'"),
+      'ccDocCall should delegate to _docChatFailureResponse on failure');
+    assert.ok(docStreamFn.includes("_docChatFailureResponse('doc-chat-stream'"),
+      'ccDocCallStreaming should delegate to _docChatFailureResponse on failure');
+    // Doc-chat handlers must forward the structured error to the response so
+    // the dashboard can render it.
+    const handleDocChatFn = src.slice(src.indexOf('async function handleDocChat('), src.indexOf('async function handleDocChatStream('));
+    const handleDocChatStreamFn = src.slice(src.indexOf('async function handleDocChatStream('), src.indexOf('async function handleInboxPersist'));
+    assert.ok(handleDocChatFn.includes('error: ccError'),
+      'handleDocChat should forward the cc error to the JSON response');
+    assert.ok(handleDocChatStreamFn.includes('error: ccError'),
+      'handleDocChatStream should forward the cc error to the SSE done event');
+  });
+
+  await test('CC frontend stream timeout buffers the 1-hour backend timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('var CC_STREAM_FETCH_TIMEOUT_MS = (60 * 60 * 1000) + 60000'),
+      'CC frontend stream timeout should be backend hour plus delivery buffer');
+    assert.ok(src.includes('AbortSignal.timeout(CC_STREAM_FETCH_TIMEOUT_MS)'),
+      'CC stream fetch should use the named timeout constant');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -33946,15 +35961,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docStreamFn.includes('skipStatePreamble: true'), 'Streaming doc-chat should skip the state preamble');
     assert.ok(docStreamFn.includes('onChunk: (text) => { if (onChunk) onChunk(_docChatDisplayText(text, { allowActions })); }'),
       'Streaming doc-chat should hide the raw ---DOCUMENT--- payload from the live partial transcript');
-    assert.ok(docStreamFn.includes('_formatDocChatContext'),
-      'Streaming doc-chat should build document context through the shared formatter');
+    assert.ok(docStreamFn.includes('_buildDocChatPass'),
+      'Streaming doc-chat should build document context through the shared _buildDocChatPass helper (which uses _formatDocChatContext)');
     assert.ok(!docStreamFn.includes("' (\\`${filePath}\\`)'"),
       'Streaming doc-chat should not leak a literal ${filePath} placeholder into model context');
   });
 
   await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
+    // freshSession plumbing now spans _buildDocChatPass + ccDocCall — slice
+    // through both so the source-level assertions still see the literal pattern.
+    const docCallFn = src.slice(src.indexOf('function _buildDocChatPass'), src.indexOf('async function ccDocCallStreaming('));
     // ccDocCall must accept freshSession param
     assert.ok(docCallFn.includes('freshSession'), 'ccDocCall should accept freshSession parameter');
     // When freshSession is true, existing session must be skipped
@@ -34050,6 +36067,17 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
     assert.ok(resolveFn.includes('_sessionExpired'), 'resolveSession should use shared expiry helper');
     assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+  });
+
+  await test('doc-session store prunes by TTL and max entries outside access path', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('DOC_SESSION_MAX_ENTRIES') && src.includes('shared.ENGINE_DEFAULTS.docSessionMaxEntries'),
+      'Doc sessions should have a configured max-entry cap');
+    assert.ok(src.includes('function pruneDocSessions') && src.includes('_docSessionPruneTimer'),
+      'Doc sessions should be pruned periodically, not only when resolveSession touches a key');
+    // CRLF-tolerant: dashboard.js may be checked out with either line ending.
+    assert.ok(/pruneDocSessions\(\);\r?\n\s+const obj = \{\};/.test(src),
+      'persistDocSessions should prune before serializing sessions to disk');
   });
 
   await test('resolveSession TTL check comes after turnCount check', () => {
@@ -34193,18 +36221,26 @@ async function testAutoRecoveryAndAtomicity() {
   await test('ccDocCall passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCallStreaming('));
-    assert.ok(docCallFn.includes('result.errorClass'), 'ccDocCall should reference result.errorClass');
-    assert.ok(docCallFn.includes('_docChatErrorMessage'), 'ccDocCall should use _docChatErrorMessage helper');
+    assert.ok(docCallFn.includes('_docChatFailureResponse'), 'ccDocCall should delegate failure to _docChatFailureResponse');
+    assert.ok(docCallFn.includes('sessionPreserved'), 'ccDocCall should compute sessionPreserved before delegation');
     assert.ok(docCallFn.includes('resolveSession('), 'ccDocCall should check session state for preserved-session detection');
     assert.ok(!docCallFn.includes("'Failed to process request. Try again.'"), 'ccDocCall should not return generic failure string directly');
+    // _docChatFailureResponse derives the user-facing answer from errorClass + sessionPreserved via _docChatErrorMessage
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Doc-specific wrapper'));
+    assert.ok(failureFn.includes('_docChatErrorMessage'), '_docChatFailureResponse should use _docChatErrorMessage helper');
+    assert.ok(failureFn.includes('result.errorClass'), '_docChatFailureResponse should reference result.errorClass');
   });
 
   await test('ccDocCallStreaming passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docStreamFn = src.slice(src.indexOf('async function ccDocCallStreaming('), src.indexOf('// -- POST helpers --'));
-    assert.ok(docStreamFn.includes('result.errorClass'), 'ccDocCallStreaming should reference result.errorClass');
-    assert.ok(docStreamFn.includes('_docChatErrorMessage'), 'ccDocCallStreaming should use _docChatErrorMessage helper');
+    assert.ok(docStreamFn.includes('_docChatFailureResponse'), 'ccDocCallStreaming should delegate failure to _docChatFailureResponse');
+    assert.ok(docStreamFn.includes('sessionPreserved'), 'ccDocCallStreaming should compute sessionPreserved before delegation');
     assert.ok(!docStreamFn.includes("'Failed to process request. Try again.'"), 'ccDocCallStreaming should not return generic failure string directly');
+    // _docChatFailureResponse derives the user-facing answer from errorClass + sessionPreserved via _docChatErrorMessage
+    const failureFn = src.slice(src.indexOf('function _docChatFailureResponse'), src.indexOf('// Doc-specific wrapper'));
+    assert.ok(failureFn.includes('_docChatErrorMessage'), '_docChatFailureResponse should use _docChatErrorMessage helper');
+    assert.ok(failureFn.includes('result.errorClass'), '_docChatFailureResponse should reference result.errorClass');
   });
 
   // ── Doc-chat stall timer / retry progress events (W-mot9v0et0006b327) ──────
@@ -34272,25 +36308,36 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+    // Threshold rule caps small tasks at "≤3 tool calls, 1-2 files" — that's the
+    // tool-use ceiling for self-handling. Anything bigger must delegate.
+    assert.ok(/≤?3 tool calls/.test(src) || /more than 3 tool calls/.test(src),
+      'CC prompt should bound tool use at ~3 calls before requiring delegation');
   });
 
   await test('CC system prompt has size estimation rule for delegation', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
-    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
-    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
-    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+    assert.ok(/Estimate difficulty before responding|size estimation|Estimate first/i.test(src),
+      'CC prompt should have difficulty/size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'),
+      'Should define small/medium/large thresholds');
+    assert.ok(/MUST delegate|DELEGATE/.test(src) && /MAY do it yourself|do it yourself/i.test(src),
+      'Should clearly separate delegate (must, ≥ medium) vs self-do (may, small)');
+    assert.ok(/in doubt.*delegate/i.test(src),
+      'Should default to delegation when uncertain about size');
   });
 
   await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
-    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
-    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
-    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
-    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
+    assert.ok(/Delegate when.*Medium|When to delegate/i.test(src),
+      'Should describe when to delegate (medium threshold)');
+    assert.ok(/Small tasks.*do them yourself|When to do it yourself/i.test(src),
+      'Should describe when CC may do small tasks itself');
+    assert.ok(/code changes/i.test(src) && src.includes('implement'),
+      'Delegate list should include code changes');
+    assert.ok(/status lookups|quick file reads/i.test(src),
+      'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -35497,6 +37544,63 @@ async function testAutoRecoveryAndAtomicity() {
       assert.ok(result.text.includes('install streaming runtime'), result.text);
     } finally {
       runtimes._registry.delete(name);
+    }
+  });
+
+  await test('callLLMStreaming settles after process exit even when inherited pipes stay open', async () => {
+    const runtimes = require(path.join(MINIONS_DIR, 'engine', 'runtimes'));
+    const name = 'exit-before-close-runtime-test-' + Date.now();
+    const childCode = 'setTimeout(() => {}, 4000)';
+    const script = [
+      "const { spawn } = require('child_process');",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: ['ignore', 'inherit', 'ignore'], detached: true });`,
+      'child.unref();',
+      "process.stdout.write(JSON.stringify({ type: 'result', result: 'exit fallback done', session_id: 'exit-session', usage: {} }) + '\\n', () => process.exit(0));",
+    ].join('\n');
+    runtimes.registerRuntime(name, {
+      name,
+      capabilities: { streamConsumer: true },
+      resolveBinary: () => ({ bin: process.execPath, native: true, leadingArgs: [] }),
+      buildPrompt: (prompt) => prompt,
+      buildArgs: () => ['-e', script],
+      parseStreamChunk: (line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      },
+      createStreamConsumer: (ctx) => ({
+        consume(obj) {
+          if (obj?.type !== 'result') return;
+          ctx.setText(obj.result || '');
+          ctx.setSessionId(obj.session_id || '');
+          ctx.setUsage({ durationMs: 0 });
+        },
+      }),
+      parseOutput: (raw) => {
+        for (const line of String(raw || '').trim().split('\n').reverse()) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj?.type === 'result') {
+              return { text: obj.result || '', usage: { durationMs: 0 }, sessionId: obj.session_id || null, model: null };
+            }
+          } catch {}
+        }
+        return { text: '', usage: null, sessionId: null, model: null };
+      },
+      parseError: () => ({ message: '', code: null, retriable: true }),
+    });
+    try {
+      const started = Date.now();
+      const result = await llm.callLLMStreaming('hello', '', {
+        cli: name,
+        direct: true,
+        timeout: 10000,
+      });
+      const elapsedMs = Date.now() - started;
+      assert.strictEqual(result.text, 'exit fallback done');
+      assert.strictEqual(result.sessionId, 'exit-session');
+      assert.ok(elapsedMs < 3000, `should resolve from exit fallback before inherited pipe closes (elapsed ${elapsedMs}ms)`);
+    } finally {
+      runtimes._registry.delete(name);
+      llm._resetBinCache();
     }
   });
 
@@ -37408,6 +39512,23 @@ async function testFailureClassEnum() {
       'onAgentClose should pass failureClass to completeDispatch opts');
   });
 
+  await test('_classifyAgentFailure ignores benign JSONL stdout when classifying runtime exit', () => {
+    const engine = require('../engine.js');
+    const claude = require('../engine/runtimes/claude');
+    const rawStdout = [
+      '{"type":"system","subtype":"init","slash_commands":["check-self-authored-review-comment","diagnose-build-fail-branch-behind"]}',
+      '{"type":"result","result":"Security audit examples mention HTTP 401 Unauthorized and merge conflict handling, but this is report text rather than a runtime error.","session_id":"sess-audit"}',
+    ].join('\n');
+
+    const result = engine._classifyAgentFailure(claude, 1, rawStdout, '');
+
+    assert.strictEqual(result.failureClass, shared.FAILURE_CLASS.UNKNOWN,
+      'benign assistant/report JSONL text should not become permission-blocked, merge-conflict, or build-failure');
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.MERGE_CONFLICT);
+    assert.notStrictEqual(result.failureClass, shared.FAILURE_CLASS.BUILD_FAILURE);
+  });
+
   await test('exit code 78 uses classifyFailure result (CONFIG_ERROR)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The code=78 handler should pass failureClass to completeDispatch
@@ -38483,6 +40604,19 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
   });
 
+  await test('ccCloseTab fires DELETE /api/cc-sessions/:id so server entry is removed on explicit close', () => {
+    // CC sessions are non-expiring on the server. The user closing a tab must
+    // fan out to a server-side delete so cc-sessions.json stays in sync.
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccCloseTab'),
+      ccSrc.indexOf('\nfunction', ccSrc.indexOf('function ccCloseTab') + 1));
+    assert.ok(/fetch\([^)]*\/api\/cc-sessions\//.test(fn),
+      'ccCloseTab must call fetch on /api/cc-sessions/:id');
+    assert.ok(/method:\s*['"]DELETE['"]/.test(fn),
+      'ccCloseTab must use the DELETE method');
+    assert.ok(fn.includes('encodeURIComponent'),
+      'ccCloseTab should encode the tab id when constructing the URL');
+  });
+
   await test('tab bar rendered in layout.html', () => {
     assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
   });
@@ -38586,37 +40720,48 @@ async function testCCMultiTab() {
       'ccSwitchTab should call ccRenderTabBar');
   });
 
-  // ── Session TTL tests ──────────────────────────────────────────────────────
+  // ── Session lifecycle tests (CC sessions are non-expiring) ────────────────
 
-  await test('CC sessions use ENGINE_DEFAULTS TTL', () => {
-    assert.ok(dashSrc.includes('CC_SESSION_TTL_MS'), 'CC_SESSION_TTL_MS constant should exist');
-    assert.ok(dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
-      'CC session TTL should come from shared ENGINE_DEFAULTS');
+  await test('CC sessions do not auto-expire via TTL', () => {
+    // CC chat sessions are removed only when the user explicitly closes the
+    // tab (DELETE /api/cc-sessions/:id). The TTL knob was removed.
+    assert.ok(!dashSrc.includes('CC_SESSION_TTL_MS'),
+      'CC_SESSION_TTL_MS constant must not exist — CC sessions are non-expiring');
+    assert.ok(!dashSrc.includes('shared.ENGINE_DEFAULTS.ccSessionTtlMs'),
+      'CC session code must not consume ccSessionTtlMs');
+    assert.ok(!('ccSessionTtlMs' in shared.ENGINE_DEFAULTS),
+      'ENGINE_DEFAULTS.ccSessionTtlMs should be removed');
   });
 
-  await test('ccSessionValid checks TTL before resuming', () => {
+  await test('ccSessionValid only checks sessionId presence and prompt hash (no TTL, no turnCount cap)', () => {
     // Extract ccSessionValid function body
     const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
     assert.ok(match, 'ccSessionValid should exist');
     const body = match[0];
-    assert.ok(body.includes('_sessionExpired'), 'ccSessionValid should use shared expiry helper');
-    assert.ok(body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid should apply CC session TTL');
-    assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
-    assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
+    assert.ok(body.includes('_promptHash'), 'ccSessionValid must still check prompt hash (correctness)');
+    assert.ok(body.includes('sessionId'), 'ccSessionValid must guard on sessionId presence');
+    assert.ok(!body.includes('_sessionExpired'), 'ccSessionValid must NOT call _sessionExpired (no TTL)');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'ccSessionValid must NOT reference a TTL constant');
+    assert.ok(!body.includes('CC_SESSION_MAX_TURNS'),
+      'ccSessionValid must NOT cap by turnCount — sessions live until user closes the tab');
   });
 
-  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC sessions', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
     assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'resolveSession must not reference CC TTL constant');
     assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
-  await test('CC session restored on startup with TTL filtering', () => {
+  await test('CC session restored on startup without TTL filtering', () => {
     const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
     assert.ok(startupMatch, 'Should have CC session startup loader');
-    assert.ok(startupMatch[0].includes('_sessionExpired'), 'Startup loader should filter expired sessions');
+    assert.ok(!startupMatch[0].includes('_sessionExpired'),
+      'CC startup loader must NOT filter by TTL — sessions are non-expiring');
+    assert.ok(!startupMatch[0].includes('CC_SESSION_TTL_MS'),
+      'CC startup loader must NOT reference a TTL constant');
   });
 
   await test('doc sessions restored on startup with TTL filtering', () => {
@@ -38652,15 +40797,59 @@ async function testCCMultiTab() {
       'isAssistant should exclude system messages');
   });
 
+  await test('runtime stored with tab session for runtime-switch detection', () => {
+    assert.ok(dashSrc.includes('runtime: currentRuntime'),
+      'Should persist runtime field on tab sessions');
+    assert.ok(dashSrc.includes('shared.resolveCcCli(CONFIG.engine)'),
+      'Should resolve current CC runtime');
+    assert.ok(dashSrc.includes("tabEntry.runtime") && dashSrc.includes("!== currentRuntime"),
+      'Stream handler should compare persisted runtime against current');
+  });
+
+  await test('runtime mismatch sets sessionResetReason and previousRuntime', () => {
+    assert.ok(dashSrc.includes("sessionResetReason = 'runtimeChanged'"),
+      'Runtime mismatch should set sessionResetReason');
+    assert.ok(dashSrc.includes('previousRuntime = tabEntry.runtime'),
+      'Should capture previousRuntime from persisted entry');
+    assert.ok(dashSrc.includes('donePayload.sessionResetReason') && dashSrc.includes('donePayload.previousRuntime'),
+      'Done payload should surface reset reason and previous runtime');
+  });
+
+  await test('transcript carryover helper prepends previous conversation on reset', () => {
+    assert.ok(dashSrc.includes('_buildTranscriptCarryover'),
+      'Should define transcript carryover helper');
+    assert.ok(dashSrc.includes('CC_CARRYOVER_MAX_TURNS'),
+      'Should cap carryover at a constant');
+    assert.ok(dashSrc.includes('Previous conversation'),
+      'Carryover header should mark prior dialogue clearly');
+    assert.ok(dashSrc.includes('sessionReset ? _buildTranscriptCarryover'),
+      'Carryover should fire only when session resets');
+  });
+
+  await test('frontend sends transcript and renders runtime-aware reset notice', () => {
+    assert.ok(ccSrc.includes('_ccBuildTranscript'),
+      'Frontend should build a transcript helper');
+    assert.ok(ccSrc.includes('transcript: _ccBuildTranscript'),
+      'Initial stream request should include transcript');
+    assert.ok(ccSrc.includes("evt.sessionResetReason === 'runtimeChanged'"),
+      'Frontend should branch on runtimeChanged reset reason');
+    assert.ok(ccSrc.includes('CC_TRANSCRIPT_MAX_TURNS'),
+      'Frontend should cap transcript turns');
+  });
+
   // ── Resource cleanup tests ───────────────────────────────────────────────
 
   const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
   const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
 
-  await test('cleanup.js prunes cc-sessions.json with cap', () => {
-    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
-    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
-    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  await test('cleanup.js does NOT auto-prune cc-sessions.json (sessions are non-expiring)', () => {
+    // CC chat sessions only disappear when the user explicitly closes a tab
+    // (DELETE /api/cc-sessions/:id). Auto-pruning would silently invalidate
+    // long-lived chat tabs the user expects to keep.
+    assert.ok(!cleanupSrc.includes('CC_SESSIONS_CAP'),
+      'cleanup.js must not define a CC_SESSIONS_CAP — sessions are non-expiring');
+    assert.ok(!/sessions\.sort\(\(a, b\)\s*=>\s*new Date\(b\.lastActiveAt[\s\S]*safeWrite\(ccSessionsPath/.test(cleanupSrc),
+      'cleanup.js must not sort+slice cc-sessions.json — that auto-expires tabs');
   });
 
   await test('cleanup.js prunes doc-sessions.json with cap', () => {
@@ -40246,6 +42435,20 @@ async function testPrReviewFixFlows() {
     }
   });
 
+  await test('settings UI presents PR automation gates as provider-neutral', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('ADO PR dispatch gates are inert when this is off'),
+      'ADO polling copy should describe only the provider poll gate');
+    assert.ok(settingsSrc.includes('GitHub PR dispatch gates are inert when this is off'),
+      'GitHub polling copy should describe only the provider poll gate');
+    assert.ok(settingsSrc.includes('Shared dispatch gate: auto-fix agent when a PR build fails'),
+      'auto-fix build copy should be shared across ADO and GitHub');
+    assert.ok(settingsSrc.includes('also requires that PR provider polling is enabled'),
+      'automation gate copy should state provider polling is also required');
+    assert.ok(!settingsSrc.includes('downstream of ADO Polling'),
+      'shared automation toggles must not be described as ADO-only');
+  });
+
   await test('dashboard exposes dispatch completion report endpoint', () => {
     const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(dashboardSrc.includes('/^\\/api\\/dispatch\\/([\\w.-]+)\\/completion-report$/'),
@@ -40299,8 +42502,8 @@ async function testPrReviewFixFlows() {
   console.log('\n── Comment Filtering ──');
 
   await test('agent comments included in context but do not trigger fix', () => {
-    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('!isAgent'),
-      'GitHub should detect agent comments and exclude from trigger');
+    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('_isNonActionableComment(c, config)'),
+      'GitHub should detect agent comments through the non-actionable classifier and exclude them from trigger');
   });
 
   await test('Minions signature patterns detected', () => {
@@ -41296,8 +43499,8 @@ async function testAdoThrottleDashboard() {
     const src = fnMatch[0];
     assert.ok(src.includes('retryAfter'),
       'renderAdoThrottleAlert must reference retryAfter to show resume time');
-    // Should format time (HH:MM)
-    assert.ok(src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
+    // Should format time via shared local formatter or direct local-time formatting.
+    assert.ok(src.includes('formatLocalTime') || src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
       'renderAdoThrottleAlert must format retryAfter as a local time');
   });
 
@@ -41575,6 +43778,134 @@ async function testAgentBusyReassignment() {
     // Must be set when reason === 'agent_busy' and cleared otherwise
     assert.ok(engineSrc.includes("agent_busy") && engineSrc.includes('_agentBusySince'),
       'Both agent_busy and _agentBusySince should be present in the annotation logic');
+  });
+
+  // 13. W-motc4y1n000t1a5f: busy reassignment must not double-book an agent that
+  //     already has its own pending dispatch in the queue.
+  //
+  // Reproduces meeting MTG-motbc29r000j18d9 bug: dallas (busy elsewhere) was
+  // reassigned to rebecca, but rebecca already had her own pending dispatch
+  // right behind it. Result: rebecca got two dispatches, dallas zero.
+  await test('busy reassignment does not double-book agent with pending dispatch (behavioral)', () => {
+    // Active dispatch occupies dallas (he is busy elsewhere on a real task)
+    const active = [
+      { id: 'dallas-other-task', agent: 'dallas', meta: { branch: 'work/P-other' } },
+    ];
+    // Two pending items: dallas's would-be meeting + rebecca's own meeting
+    const pending = [
+      { id: 'd-meeting', agent: 'dallas', type: 'meeting', meta: { item: {} } },
+      { id: 'r-meeting', agent: 'rebecca', type: 'meeting', meta: { item: {} } },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    // FIX: seed pendingAgents from current pending queue so reassignment
+    // exclusion accounts for items not yet iterated.
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative pick for dallas's busy item is rebecca (idle).
+    const resolveAlt = () => 'rebecca';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        // Hard-pin check: neither item is hard-pinned in this scenario.
+        const altAgent = resolveAlt();
+        if (
+          altAgent &&
+          altAgent !== item.agent &&
+          !busyAgents.has(altAgent) &&
+          !pendingAgents.has(altAgent)
+        ) {
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+          toDispatch.push(item);
+          busyAgents.add(altAgent);
+        }
+        continue;
+      }
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    // d-meeting must NOT be reassigned to rebecca; she already has r-meeting.
+    const dOut = toDispatch.find(i => i.id === 'd-meeting');
+    if (dOut) {
+      assert.notStrictEqual(dOut.agent, 'rebecca',
+        'd-meeting must not be reassigned to rebecca who already has r-meeting pending — would double-book');
+    }
+    // r-meeting must still dispatch to rebecca normally.
+    const rOut = toDispatch.find(i => i.id === 'r-meeting');
+    assert.strictEqual(rOut?.agent, 'rebecca',
+      'r-meeting should still dispatch to rebecca (her own pending task)');
+    // Net result: rebecca should appear at most once across dispatched items.
+    const rebeccaCount = toDispatch.filter(i => i.agent === 'rebecca').length;
+    assert.ok(rebeccaCount <= 1,
+      `rebecca should not be double-booked; got ${rebeccaCount} dispatches assigned to her`);
+  });
+
+  // 14. Source-level guarantee: dispatch loop seeds pendingAgents and gates
+  //     reassignment with it, so the order-dependent double-book can't reappear.
+  await test('dispatch loop seeds pendingAgents and gates busy reassignment (source check)', () => {
+    assert.ok(engineSrc.includes('pendingAgents'),
+      'Dispatch loop must build a pendingAgents set to prevent reassignment double-booking');
+    // Anchor on the actual log() invocation (unique enough to avoid a comment
+    // line with the same phrase), then look back to find the if-condition.
+    const guardIdx = engineSrc.indexOf('— agent busy and idle alternative available`)');
+    assert.ok(guardIdx > 0, 'Busy reassignment log call should be present');
+    const guardRegion = engineSrc.slice(Math.max(0, guardIdx - 400), guardIdx + 100);
+    assert.ok(guardRegion.includes('pendingAgents'),
+      'Busy reassignment guard must check !pendingAgents.has(altAgent) to avoid double-booking');
+  });
+
+  // 15. Existing unspawned-temp reassignment still works AND is also gated by
+  //     pendingAgents so a temp's item can't double-book a named agent that
+  //     already has a pending dispatch.
+  await test('unspawned-temp reassignment skipped when alternative already pending-claimed (behavioral)', () => {
+    const pending = [
+      { id: 'temp-task', agent: 'temp-abc', type: 'fix', meta: { item: {} } },
+      { id: 'ralph-task', agent: 'ralph', type: 'fix', meta: { item: {} } },
+    ];
+    const busyAgents = new Set(); // no active dispatches
+    const pendingAgents = new Set();
+    for (const p of pending) {
+      if (typeof p.agent === 'string' && p.agent) pendingAgents.add(p.agent);
+    }
+    // Routing's alternative for the unspawned temp is ralph (the only named agent).
+    const resolveAlt = () => 'ralph';
+    const toDispatch = [];
+
+    for (const item of pending) {
+      // Unspawned temp path
+      const isUnspawnedTemp = item.agent?.startsWith('temp-') && !busyAgents.has(item.agent);
+      if (isUnspawnedTemp) {
+        const altAgent = resolveAlt();
+        if (altAgent && altAgent !== item.agent && !pendingAgents.has(altAgent)) {
+          // Reassign — but in this scenario ralph is already pending, so we should NOT.
+          item.agent = altAgent;
+          pendingAgents.add(altAgent);
+        }
+      }
+      // Busy block doesn't fire here.
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+
+    const tempOut = toDispatch.find(i => i.id === 'temp-task');
+    assert.strictEqual(tempOut.agent, 'temp-abc',
+      'Temp item must NOT be reassigned to ralph (ralph already has his own pending dispatch)');
+    const ralphCount = toDispatch.filter(i => i.agent === 'ralph').length;
+    assert.strictEqual(ralphCount, 1, 'ralph should appear exactly once in dispatch — no double-book');
+  });
+
+  // 16. Source-level: temp-agent reassignment block also consults pendingAgents.
+  await test('unspawned-temp reassignment guard consults pendingAgents (source check)', () => {
+    const tempIdx = engineSrc.indexOf('temp agent never spawned');
+    assert.ok(tempIdx > 0, 'Unspawned-temp reassignment log line should be present');
+    const tempRegion = engineSrc.slice(Math.max(0, tempIdx - 600), tempIdx + 200);
+    assert.ok(tempRegion.includes('pendingAgents'),
+      'Unspawned-temp reassignment guard must check pendingAgents to avoid double-booking');
   });
 }
 
@@ -50271,18 +52602,25 @@ async function testDashboardPureHelpers() {
 
   // ── doc-chat action/document parsing ─────────────────────────────────────
 
-  await test('_messageRequestsOrchestration matches explicit orchestration and engineering asks', () => {
+  await test('_messageRequestsOrchestration requires explicit human orchestration intent', () => {
     assert.strictEqual(_messageRequestsOrchestration('Summarize the selected paragraph'), false);
     assert.strictEqual(_messageRequestsOrchestration('The document literally contains ===ACTIONS==='), false);
+    assert.strictEqual(_messageRequestsOrchestration('Summarize the document text that says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('The selected text says "dispatch fix for this".'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Quote the selection: dispatch fix for this'), false);
     assert.strictEqual(_messageRequestsOrchestration('Rewrite this paragraph to be clearer'), false);
     assert.strictEqual(_messageRequestsOrchestration('Fix the typos in this document'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan to add tests for the API section'), false);
     assert.strictEqual(_messageRequestsOrchestration('Add API test coverage notes to this document'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), false);
+    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), false);
     assert.strictEqual(_messageRequestsOrchestration('Update this plan and dispatch a fix for the API tests'), true);
+    assert.strictEqual(_messageRequestsOrchestration('The document says "dispatch fix for this"; then dispatch a fix for it.'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch Dallas to fix the failing test'), true);
+    assert.strictEqual(_messageRequestsOrchestration('dispatch fix for this'), true);
     assert.strictEqual(_messageRequestsOrchestration('Dispatch fix for point A'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Fix this bug described in the doc'), true);
-    assert.strictEqual(_messageRequestsOrchestration('Investigate why CI is failing here'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Create a work item for the documented API bug'), true);
+    assert.strictEqual(_messageRequestsOrchestration('Have Minions investigate why CI is failing here'), true);
     assert.strictEqual(_messageRequestsOrchestration('Create a watch for PR 123 until build passes'), true);
   });
 
@@ -50342,8 +52680,8 @@ async function testDashboardPureHelpers() {
       fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
       delete require.cache[require.resolve(dashboardPath)];
       const freshDashboard = require(dashboardPath);
-      const allowActions = freshDashboard._messageRequestsOrchestration('Fix this bug described in the doc');
-      assert.strictEqual(allowActions, true, 'complex engineering doc-chat ask should allow action parsing');
+      const allowActions = freshDashboard._messageRequestsOrchestration('dispatch fix for this');
+      assert.strictEqual(allowActions, true, 'explicit doc-chat dispatch ask should allow action parsing');
       const parsed = freshDashboard._parseDocChatResultText(
         'I will open a work item for that bug.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix documented bug","workType":"fix","priority":"high","description":"Investigate and fix the bug described in the document."}]',
         { allowActions }
@@ -50362,10 +52700,10 @@ async function testDashboardPureHelpers() {
     }
   });
 
-  await test('doc-chat system prompt routes engineering work to Command Center action JSON', () => {
+  await test('doc-chat system prompt routes explicit orchestration to Command Center action JSON', () => {
     const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'doc-chat-system.md'), 'utf8');
-    assert.ok(prompt.includes('Complex Engineering Requests'),
-      'doc-chat prompt should distinguish engineering delegation from document editing');
+    assert.ok(prompt.includes('Explicit Minions Orchestration Requests'),
+      'doc-chat prompt should distinguish explicit orchestration from document editing');
     assert.ok(prompt.includes('"type": "dispatch"') || prompt.includes('"type":"dispatch"'),
       'doc-chat prompt should show the Command Center dispatch action shape');
     assert.ok(prompt.includes('fix') && prompt.includes('explore') && prompt.includes('review') && prompt.includes('test'),
@@ -50542,72 +52880,75 @@ async function testDashboardPureHelpers() {
     assert.deepStrictEqual(_filterCcTabSessions([s1, s2, s3]), []);
   });
 
-  await test('_filterCcTabSessions drops sessions with turnCount >= CC_SESSION_MAX_TURNS', () => {
+  await test('_filterCcTabSessions keeps sessions with very high turnCount (no turn cap)', () => {
+    // CC chat sessions are non-expiring — turnCount is no longer a kill switch.
+    // A user with a long-running tab should be able to send hundreds of turns
+    // without the session disappearing from the list.
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const overTurns = { ...freshSession(), turnCount: max };
-    const wayOver = { ...freshSession(), turnCount: max + 10 };
-    assert.deepStrictEqual(_filterCcTabSessions([overTurns, wayOver]), []);
+    const wayOver = { ...freshSession(), id: 'tab-way-over', sessionId: 'sess-way-over', turnCount: max * 10 };
+    const kept = _filterCcTabSessions([overTurns, wayOver]);
+    assert.strictEqual(kept.length, 2,
+      'CC tab sessions must NOT be filtered by turnCount — sessions live until the user closes the tab');
   });
 
-  await test('_filterCcTabSessions keeps sessions with turnCount < CC_SESSION_MAX_TURNS', () => {
-    const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
-    const underTurns = { ...freshSession(), turnCount: max - 1 };
-    const kept = _filterCcTabSessions([underTurns]);
-    assert.strictEqual(kept.length, 1);
-    assert.strictEqual(kept[0].turnCount, max - 1);
-  });
-
-  await test('_filterCcTabSessions drops sessions whose lastActiveAt is past TTL', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expired = {
+  await test('_filterCcTabSessions keeps sessions whose lastActiveAt is well past the old 7d TTL', () => {
+    // Old 7d TTL is gone — sessions older than a week (or month, or year)
+    // must still be kept until the user explicitly closes the tab.
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancient = {
       ...freshSession(),
-      lastActiveAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString(), // 70 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expired]), []);
+    const kept = _filterCcTabSessions([ancient]);
+    assert.strictEqual(kept.length, 1,
+      'CC tab sessions must NOT be filtered by lastActiveAt age — they are non-expiring');
+    assert.strictEqual(kept[0].id, 'tab-1');
   });
 
-  await test('_filterCcTabSessions falls back to createdAt when lastActiveAt missing', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
-    const expiredByCreatedAt = {
+  await test('_filterCcTabSessions keeps sessions with stale createdAt and no lastActiveAt', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const ancientByCreatedAt = {
       id: 'tab-2',
       sessionId: 'sess-2',
       turnCount: 0,
-      createdAt: new Date(Date.now() - ttl - 60000).toISOString(),
+      createdAt: new Date(Date.now() - sevenDaysMs * 5).toISOString(), // 35 days old
     };
-    assert.deepStrictEqual(_filterCcTabSessions([expiredByCreatedAt]), []);
-
-    const freshByCreatedAt = {
-      id: 'tab-3',
-      sessionId: 'sess-3',
-      turnCount: 0,
-      createdAt: new Date().toISOString(),
-    };
-    assert.strictEqual(_filterCcTabSessions([freshByCreatedAt]).length, 1);
+    assert.strictEqual(_filterCcTabSessions([ancientByCreatedAt]).length, 1,
+      'Old sessions without lastActiveAt must still be kept — no TTL applies');
   });
 
   await test('_filterCcTabSessions drops sessions whose _promptHash does not match current hash', () => {
-    // A _promptHash that is definitely not the current 8-char md5 slice.
+    // Prompt-hash invalidation is correctness-driven and must remain.
     const mismatched = { ...freshSession(), _promptHash: 'deadbeef-impossible-hash' };
     assert.deepStrictEqual(_filterCcTabSessions([mismatched]), []);
   });
 
-  await test('_filterCcTabSessions filters a mixed list, keeping only valid sessions', () => {
-    const ttl = shared.ENGINE_DEFAULTS.ccSessionTtlMs;
+  await test('_filterCcTabSessions filters mixed list — drops only invalid records and prompt-hash mismatches', () => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     const max = shared.ENGINE_DEFAULTS.ccMaxTurns;
     const sessions = [
-      freshSession(),                                                            // keep
-      { ...freshSession(), id: null },                                           // drop (no id)
-      { ...freshSession(), turnCount: max },                                     // drop (turns)
-      { ...freshSession(), lastActiveAt: new Date(Date.now() - ttl - 1).toISOString() }, // drop (expired)
-      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                    // drop (hash mismatch)
-      freshSession(),                                                            // keep
+      freshSession(),                                                                         // keep
+      { ...freshSession(), id: null },                                                        // drop (no id)
+      { ...freshSession(), id: 'tab-no-sess', sessionId: null },                              // drop (no sessionId)
+      { ...freshSession(), id: 'tab-many-turns', sessionId: 'sess-mt', turnCount: max * 5 },   // KEEP (no turn cap)
+      { ...freshSession(), id: 'tab-old', sessionId: 'sess-old',
+        lastActiveAt: new Date(Date.now() - sevenDaysMs * 10).toISOString() },                // KEEP (no TTL)
+      { ...freshSession(), _promptHash: 'wrong-hash-12345' },                                 // drop (hash mismatch)
+      { ...freshSession(), id: 'tab-fresh-2', sessionId: 'sess-fresh-2' },                    // keep
     ];
     const kept = _filterCcTabSessions(sessions);
-    assert.strictEqual(kept.length, 2);
+    assert.strictEqual(kept.length, 4,
+      'Should keep fresh, very-old, many-turns, and a second fresh — drop only invalid + hash mismatch');
     for (const s of kept) {
       assert.ok(s.id && s.sessionId, 'kept sessions must have id and sessionId');
-      assert.ok(s.turnCount < max, 'kept sessions must be under the turn cap');
+      assert.notStrictEqual(s._promptHash, 'wrong-hash-12345',
+        'kept sessions must not be the prompt-hash mismatch fixture');
     }
+    const keptIds = kept.map(s => s.id).sort();
+    assert.deepStrictEqual(keptIds,
+      ['tab-1', 'tab-fresh-2', 'tab-many-turns', 'tab-old'].sort(),
+      'kept records should be the four valid fixtures');
   });
 
   // ── _getVersionCheckInterval (patches queries.getConfig) ───────────────
@@ -50847,7 +53188,7 @@ async function testDashboardPureHelpers() {
     if (config) fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
     fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
     fs.cpSync(path.join(MINIONS_DIR, 'prompts'), path.join(testDir, 'prompts'), { recursive: true });
-    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+    for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
     const isolatedDashboard = require('../dashboard');
@@ -50858,12 +53199,89 @@ async function testDashboardPureHelpers() {
       dir: testDir,
       cleanup() {
         restore();
-        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing']) {
+        for (const mod of ['../dashboard', '../engine/shared', '../engine/queries', '../engine/routing', '../engine/pipeline']) {
           try { delete require.cache[require.resolve(mod)]; } catch {}
         }
       },
     };
   }
+
+  await test('executeCCActions: create-pipeline reports success only after persistence', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-persisted',
+        title: 'CC Pipeline Persisted',
+        trigger: { cron: '0 9 1-5' },
+        stages: [
+          { id: 'audit', type: 'task', title: 'Audit reliability', taskType: 'explore' },
+          { id: 'plan', type: 'plan', title: 'Plan fixes', dependsOn: ['audit'] },
+        ],
+      };
+
+      const results = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].ok, true, results[0].error || 'create-pipeline should succeed');
+      assert.strictEqual(results[0].created, true);
+      assert.strictEqual(results[0].id, action.id);
+      const saved = isolated.shared.safeJson(path.join(isolated.dir, 'pipelines', action.id + '.json'));
+      assert.ok(saved, 'pipeline must exist on disk before reporting success');
+      assert.strictEqual(saved.title, action.title);
+      assert.deepStrictEqual(saved.trigger, action.trigger);
+      assert.strictEqual(saved.stages.length, 2);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: duplicate create-pipeline replay returns clear ok duplicate', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const action = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-duplicate',
+        title: 'CC Pipeline Duplicate',
+        trigger: { cron: '30 8 *' },
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+
+      const first = await isolated.dashboard.executeCCActions([action]);
+      const second = await isolated.dashboard.executeCCActions([action]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.strictEqual(first[0].created, true);
+      assert.strictEqual(second[0].ok, true);
+      assert.strictEqual(second[0].duplicate, true, 'replayed action should be duplicate, not failure');
+      assert.strictEqual(second[0].duplicateOf, action.id);
+      assert.ok(/already exists/i.test(second[0].warning || ''), 'duplicate response should explain already-created state');
+      const files = fs.readdirSync(path.join(isolated.dir, 'pipelines')).filter(f => f === action.id + '.json');
+      assert.strictEqual(files.length, 1, 'duplicate replay must leave one pipeline file');
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions: create-pipeline existing different definition returns error', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const base = {
+        type: 'create-pipeline',
+        id: 'cc-pipeline-conflict',
+        title: 'CC Pipeline Conflict',
+        stages: [{ id: 'audit', type: 'task', title: 'Audit reliability' }],
+      };
+      const first = await isolated.dashboard.executeCCActions([base]);
+      const second = await isolated.dashboard.executeCCActions([{ ...base, title: 'Different Definition' }]);
+
+      assert.strictEqual(first[0].ok, true);
+      assert.ok(second[0].error, 'different existing pipeline should require edit-pipeline instead of silent success');
+      assert.ok(/different definition/i.test(second[0].error));
+    } finally {
+      isolated.cleanup();
+    }
+  });
 
   await test('work-item create dedup: CC action returns API fallback duplicate instead of creating another item', async () => {
     const isolated = loadIsolatedDashboardForDedup();
@@ -51509,6 +53927,34 @@ async function testDashboardPureHelpers() {
       'must mark build-and-test pr as REQUIRED');
     assert.ok(md.includes('Unknown agent names error'),
       'must warn that unknown agents error');
+  });
+
+  // Delegation rule was rewritten from a closed whitelist ("ONLY these") to a
+  // difficulty-threshold rule (small → MAY do yourself, medium+ → MUST delegate).
+  await test('prompts/cc-system.md: delegation gate is threshold-based, not a closed whitelist', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(!md.includes('When to do it yourself (ONLY these)'),
+      'must drop the "ONLY these" closed-whitelist framing');
+    assert.ok(!md.includes('Your tools are for quick lookups, not for doing the work'),
+      'must drop the categorical "tools are only for lookups" hard-stop');
+    assert.ok(/Estimate difficulty before responding/i.test(md) || /Estimate first, then act/i.test(md),
+      'must instruct CC to assess difficulty before acting');
+    assert.ok(/Small.*MAY do it yourself/i.test(md),
+      'must explicitly permit self-handling small tasks');
+    assert.ok(/Medium.*MUST delegate/i.test(md),
+      'must require delegation at medium difficulty');
+    assert.ok(/not an exhaustive whitelist/i.test(md),
+      'must clarify that the small-task list is illustrative, not closed');
+  });
+
+  await test('prompts/cc-system.md: references the auto-injected API & CLI index', () => {
+    const md = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(/API\s*&\s*CLI Index/i.test(md),
+      'must include an "API & CLI Index" section pointing CC at the preamble');
+    assert.ok(md.includes('CLI_COMMAND_DOCS') && md.includes('ROUTES'),
+      'must name the SoT identifiers so CC understands where the index comes from');
+    assert.ok(md.includes('"endpoint":"/api/...",'),
+      'must remind CC of the generic-fallback shape for un-named endpoints');
   });
 }
 

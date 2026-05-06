@@ -28,10 +28,18 @@ async function openSettings() {
 
   _settingsData = null;
   let data;
+  let featuresList = [];
   try {
-    const res = await fetch('/api/settings');
-    data = await res.json();
+    const [settingsRes, featuresRes] = await Promise.all([
+      fetch('/api/settings'),
+      fetch('/api/features').catch(() => null),
+    ]);
+    data = await settingsRes.json();
     _settingsData = data;
+    if (featuresRes && featuresRes.ok) {
+      const fjson = await featuresRes.json().catch(() => null);
+      if (fjson && Array.isArray(fjson.features)) featuresList = fjson.features;
+    }
   } catch (e) { showToast('cmd-toast', 'Failed to load settings: ' + e.message, false); return; }
 
   const e = data.engine || {};
@@ -94,17 +102,17 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">PR Polling &amp; Dispatch Gates</h3>' +
     '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px">' +
       '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">' +
-        settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Keeps ADO PR build results, votes, and comments fresh each tick — the two fix gates below are silently inert when this is off') +
-        '<div style="margin-left:20px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
-          settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Dispatch gate: auto-fix agent when build fails (downstream of ADO Polling)') +
-          settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Dispatch gate: auto-fix agent when merge conflict detected (downstream of ADO Polling)') +
-          settingsToggle('Auto-review PRs', 'set-autoReviewPrs', e.autoReviewPrs !== false, 'Dispatch gate: review agent for newly opened agent PRs (throttle-aware)') +
-          settingsToggle('Auto-re-review PRs', 'set-autoReReviewPrs', e.autoReReviewPrs !== false, 'Dispatch gate: review agent after a fix push is awaiting re-review (throttle-aware)') +
-          settingsToggle('Auto-fix Review Feedback', 'set-autoFixReviewFeedback', e.autoFixReviewFeedback !== false, 'Dispatch gate: fix agent for minions changes-requested verdicts (throttle-aware)') +
-          settingsToggle('Auto-fix Human Comments', 'set-autoFixHumanComments', e.autoFixHumanComments !== false, 'Dispatch gate: fix agent for actionable human PR comments (throttle-aware)') +
-        '</div>' +
+        settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Keeps ADO PR build results, votes, and comments fresh each tick; ADO PR dispatch gates are inert when this is off') +
+        settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick; GitHub PR dispatch gates are inert when this is off') +
       '</div>' +
-      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Keeps GitHub PR build results, votes, and comments fresh each tick (reconciliation always runs regardless)') +
+      '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px">' +
+        settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Shared dispatch gate: auto-fix agent when a PR build fails; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Shared dispatch gate: auto-fix agent when a PR merge conflict is detected; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-review PRs', 'set-autoReviewPrs', e.autoReviewPrs !== false, 'Shared dispatch gate: review agent for newly opened agent PRs; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-re-review PRs', 'set-autoReReviewPrs', e.autoReReviewPrs !== false, 'Shared dispatch gate: review agent after a fix push is awaiting re-review; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Review Feedback', 'set-autoFixReviewFeedback', e.autoFixReviewFeedback !== false, 'Shared dispatch gate: fix agent for minions changes-requested verdicts; also requires that PR provider polling is enabled') +
+        settingsToggle('Auto-fix Human Comments', 'set-autoFixHumanComments', e.autoFixHumanComments !== false, 'Shared dispatch gate: fix agent for actionable human PR comments; also requires that PR provider polling is enabled') +
+      '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">' +
         settingsField('PR Status Poll Frequency', 'set-prPollStatusEvery', e.prPollStatusEvery ?? e.adoPollStatusEvery ?? 12, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
         settingsField('PR Comments Poll Frequency', 'set-prPollCommentsEvery', e.prPollCommentsEvery ?? e.adoPollCommentsEvery ?? 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
@@ -276,6 +284,36 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
     '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
 
+    // Toggles persist immediately via POST /api/features/toggle — no Save needed.
+    '<details id="settings-features-details" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">' +
+      '<summary style="cursor:pointer;font-size:13px;color:var(--blue);user-select:none">Show experimental flags ' +
+        '<span style="font-size:10px;color:var(--muted)">(' + featuresList.length + ' registered)</span>' +
+      '</summary>' +
+      '<div style="font-size:10px;color:var(--muted);margin:8px 0 10px">In-progress UX or behavior gates. Toggles persist immediately. Registry: <code>engine/features.js</code>. Env override: <code>MINIONS_FEATURE_&lt;NAME&gt;=1</code>.</div>' +
+      (featuresList.length === 0
+        ? '<div style="font-size:11px;color:var(--muted);padding:12px;border:1px dashed var(--border);border-radius:4px;text-align:center">No experimental features registered. Add entries to <code>engine/features.js</code> to gate new work.</div>'
+        : '<div style="display:flex;flex-direction:column;gap:8px">' +
+          featuresList.map(function(f) {
+            const checked = f.enabled ? ' checked' : '';
+            const expiredBadge = f.expired
+              ? ' <span style="font-size:9px;padding:1px 5px;background:rgba(220,80,80,0.15);color:var(--red);border-radius:3px;margin-left:4px">EXPIRED</span>'
+              : '';
+            const meta = [];
+            if (f.addedIn) meta.push('added in ' + escHtml(f.addedIn));
+            if (f.expires) meta.push('expires ' + escHtml(f.expires));
+            meta.push(f.default ? 'default: on' : 'default: off');
+            return '<label data-feature-id="' + escHtml(f.id) + '" style="display:flex;align-items:flex-start;gap:8px;padding:8px;border:1px solid var(--border);border-radius:4px;cursor:pointer">' +
+              '<input type="checkbox" data-feature-toggle="' + escHtml(f.id) + '"' + checked + ' style="margin-top:3px;cursor:pointer">' +
+              '<div style="flex:1">' +
+                '<div style="font-size:11px;font-weight:600;color:var(--text)">' + escHtml(f.id) + expiredBadge + '</div>' +
+                (f.description ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escHtml(f.description) + '</div>' : '') +
+                '<div style="font-size:9px;color:var(--muted);margin-top:3px">' + meta.join(' · ') + '</div>' +
+              '</div>' +
+            '</label>';
+          }).join('') +
+        '</div>') +
+    '</details>' +
+
   '</div>';
 
   document.getElementById('modal-title').textContent = 'Settings';
@@ -312,6 +350,34 @@ async function openSettings() {
   // 3. On defaultCli change → re-fetch models so the input never shows stale list.
   // The same pattern wires ccCli → ccModel; ccCli inherits defaultCli when unset.
   initRuntimeFleetUI(e, agents);
+
+  document.querySelectorAll('input[data-feature-toggle]').forEach(function(input) {
+    input.addEventListener('change', async function() {
+      const id = input.getAttribute('data-feature-toggle');
+      const enabled = input.checked;
+      if (window.MinionsFeatures && typeof window.MinionsFeatures._setLocal === 'function') {
+        window.MinionsFeatures._setLocal(id, enabled);
+      }
+      try {
+        const r = await fetch('/api/features/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, enabled }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || ('HTTP ' + r.status));
+        }
+        showToast('cmd-toast', 'Feature "' + id + '" ' + (enabled ? 'enabled' : 'disabled'), true);
+      } catch (err) {
+        input.checked = !enabled;
+        if (window.MinionsFeatures && typeof window.MinionsFeatures._setLocal === 'function') {
+          window.MinionsFeatures._setLocal(id, !enabled);
+        }
+        showToast('cmd-toast', 'Failed to toggle "' + id + '": ' + err.message, false);
+      }
+    });
+  });
 }
 
 async function initRuntimeFleetUI(engineCfg, agentsCfg) {

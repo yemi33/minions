@@ -42,22 +42,71 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 const _BEARER_RE = /Bearer\s+[A-Za-z0-9+/=._\-]{20,}/g;
 const _JWT_RE = /ey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(?:\.[A-Za-z0-9_\-]{10,})?/g;
 const _AZUREAUTH_RE = /"token"\s*:\s*"[A-Za-z0-9+/=._\-]{20,}"/g;
+const _URL_RE = /\b(?:https?|ssh):\/\/[^\s<>"'`]+/gi;
+const _GITHUB_REPO_URL_RE = /\b(?:(?:https?:\/\/|ssh:\/\/git@)github\.com[/:]|git@github\.com:)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_DEV_REPO_URL_RE = /\bhttps?:\/\/dev\.azure\.com\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_VISUALSTUDIO_REPO_URL_RE = /\bhttps?:\/\/[^/\s<>"'`]+\.visualstudio\.com\/(?:DefaultCollection\/)?[^/\s<>"'`]+\/_git\/[^/\s<>"'`)]+(?:\/[^\s<>"'`]*)?/gi;
+const _ADO_SSH_REPO_URL_RE = /\b(?:ssh:\/\/)?git@ssh\.dev\.azure\.com[:/]v3\/[^/\s<>"'`]+\/[^/\s<>"'`]+\/[^/\s<>"'`)]+/gi;
+const _TOKEN_URL_PARAM_RE = /[?&](?:access[_-]?token|auth[_-]?token|token|api[_-]?key|sig|signature|pat)=/i;
+const _URL_CREDENTIALS_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i;
 
-function _redactString(s) {
-  if (typeof s !== 'string' || s.length === 0) return s;
+function _escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _redactedWithTrailingPunctuation(raw, replacement) {
+  const match = String(raw).match(/^(.+?)([.,;:!?)]*)$/);
+  return replacement + (match ? match[2] : '');
+}
+
+function _redactUrlMatch(raw, replacement) {
+  return _redactedWithTrailingPunctuation(raw, replacement);
+}
+
+function _redactTokenBearingUrls(s) {
+  return s.replace(_URL_RE, url => (
+    _TOKEN_URL_PARAM_RE.test(url) || _URL_CREDENTIALS_RE.test(url)
+      ? _redactUrlMatch(url, '[REDACTED_URL]')
+      : url
+  ));
+}
+
+function _redactRepositoryUrls(s) {
   return s
+    .replace(_GITHUB_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_DEV_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_VISUALSTUDIO_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'))
+    .replace(_ADO_SSH_REPO_URL_RE, url => _redactUrlMatch(url, '[REDACTED_REPO_URL]'));
+}
+
+function _redactConfiguredRepositoryIdentifiers(s, options) {
+  const entries = Array.isArray(options?.repositoryIdentifiers) ? options.repositoryIdentifiers : [];
+  let out = s;
+  for (const entry of entries) {
+    const value = typeof entry === 'string' ? entry : entry?.value;
+    const replacement = typeof entry === 'string' ? '[REDACTED_REPO]' : (entry?.replacement || '[REDACTED_REPO]');
+    if (typeof value !== 'string' || value.length < 4) continue;
+    out = out.replace(new RegExp(_escapeRegExp(value), 'gi'), replacement);
+  }
+  return out;
+}
+
+function _redactString(s, options = {}) {
+  if (typeof s !== 'string' || s.length === 0) return s;
+  const repoRedacted = options.redactRepositoryUrls ? _redactRepositoryUrls(s) : s;
+  return _redactTokenBearingUrls(_redactConfiguredRepositoryIdentifiers(repoRedacted, options))
     .replace(_AZUREAUTH_RE, '"token":"[REDACTED_AZUREAUTH]"')
     .replace(_BEARER_RE, 'Bearer [REDACTED]')
     .replace(_JWT_RE, '[REDACTED_JWT]');
 }
 
-function redactSecrets(value) {
+function redactSecrets(value, options = {}) {
   if (value == null) return value;
-  if (typeof value === 'string') return _redactString(value);
-  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (typeof value === 'string') return _redactString(value, options);
+  if (Array.isArray(value)) return value.map(v => redactSecrets(v, options));
   if (typeof value === 'object') {
     const out = {};
-    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k]);
+    for (const k of Object.keys(value)) out[k] = redactSecrets(value[k], options);
     return out;
   }
   return value;
@@ -635,10 +684,34 @@ function execAsync(cmd, opts = {}) {
  * Cached per rootDir to avoid repeated git calls within a tick.
  */
 const _mainBranchCache = new Map();
+function _pruneTimedMap(map, { maxEntries, ttlMs, getTs, now = Date.now() }) {
+  const max = Number(maxEntries) > 0 ? Number(maxEntries) : Infinity;
+  const ttl = Number(ttlMs) > 0 ? Number(ttlMs) : Infinity;
+  for (const [key, value] of map) {
+    const entryTs = Number(getTs(value)) || 0;
+    if (entryTs <= 0 || now - entryTs > ttl) map.delete(key);
+  }
+  if (map.size <= max) return;
+  const oldest = Array.from(map.entries())
+    .sort((a, b) => (Number(getTs(a[1])) || 0) - (Number(getTs(b[1])) || 0));
+  for (const [key] of oldest.slice(0, Math.max(0, map.size - max))) map.delete(key);
+}
+
+function _setMainBranchCache(cacheKey, branch) {
+  _pruneTimedMap(_mainBranchCache, {
+    maxEntries: ENGINE_DEFAULTS.mainBranchCacheMaxEntries,
+    ttlMs: ENGINE_DEFAULTS.mainBranchCacheTtlMs,
+    getTs: entry => entry?.ts,
+  });
+  _mainBranchCache.set(cacheKey, { branch, ts: Date.now() });
+}
+
 function resolveMainBranch(rootDir, configuredBranch) {
   const cacheKey = rootDir + ':' + (configuredBranch || '');
+  // _setMainBranchCache prunes on every write, which bounds the map without
+  // an extra O(n) scan on hits. The TTL check below handles per-entry expiry.
   const cached = _mainBranchCache.get(cacheKey);
-  if (cached && (Date.now() - cached.ts) < 300000) return cached.branch; // 5min TTL
+  if (cached && (Date.now() - cached.ts) < ENGINE_DEFAULTS.mainBranchCacheTtlMs) return cached.branch;
 
   const gitOpts = { cwd: rootDir, encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true };
 
@@ -646,12 +719,12 @@ function resolveMainBranch(rootDir, configuredBranch) {
   if (configuredBranch) {
     try {
       _execSync(`git rev-parse --verify "${configuredBranch}"`, gitOpts);
-      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, configuredBranch);
       return configuredBranch;
     } catch { /* configured branch doesn't exist locally */ }
     try {
       _execSync(`git rev-parse --verify "origin/${configuredBranch}"`, gitOpts);
-      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, configuredBranch);
       return configuredBranch;
     } catch { /* not on remote either */ }
   }
@@ -661,14 +734,14 @@ function resolveMainBranch(rootDir, configuredBranch) {
     const ref = _execSync('git symbolic-ref refs/remotes/origin/HEAD', gitOpts).trim();
     const branch = ref.replace('refs/remotes/origin/', '');
     if (branch) {
-      _mainBranchCache.set(cacheKey, { branch, ts: Date.now() });
+      _setMainBranchCache(cacheKey, branch);
       return branch;
     }
   } catch { /* no remote HEAD set */ }
 
   // 3. Fallback
   const fallback = configuredBranch || 'main';
-  _mainBranchCache.set(cacheKey, { branch: fallback, ts: Date.now() });
+  _setMainBranchCache(cacheKey, fallback);
   return fallback;
 }
 
@@ -785,9 +858,11 @@ const ENGINE_DEFAULTS = {
   autoReReviewPrs: true, // auto-dispatch review agents after a PR fix is pushed
   autoFixReviewFeedback: true, // auto-dispatch fix agents for minions review changes-requested verdicts
   autoFixHumanComments: true, // auto-dispatch fix agents for actionable human PR comments
+  prNoOpFixPauseAttempts: 2, // pause one PR automation cause after repeated no-op fixes for unchanged evidence
   completionReportRetentionDays: 90, // retain completion report sidecars beyond capped dispatch history
   completionReportMaxFiles: 5000, // hard cap for completion report sidecars during cleanup
-  meetingRoundTimeout: 900000, // 15min per meeting round before auto-advance
+  meetingRoundTimeout: 900000, // 15min per meeting round — soft signal; logs a "still waiting" warning each tick
+  meetingRoundHardTimeout: 3600000, // 60min hard backstop — non-terminal participants are marked failed and the round advances. Prevents permanent stalls if an agent's dispatch never spawns or its completion gets dropped.
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // legacy UI/config field; engine discovery no longer enforces review→fix cycle caps
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
@@ -835,9 +910,15 @@ const ENGINE_DEFAULTS = {
   maxPendingContextEntryBytes: 256 * 1024, // 256 KB — cap each pendingContexts entry to prevent huge PR comments from bloating cooldowns.json
   maxDispatchPromptBytes: 1024 * 1024, // 1 MB — dispatch items with prompts larger than this sidecar to engine/contexts/ to prevent dispatch.json OOM (#1167)
   maxStateFileBytes: 100 * 1024 * 1024, // 100 MB — fail startup with a clear error when dispatch.json / cooldowns.json exceed this, rather than silently OOMing on JSON.parse (#1167)
+  mainBranchCacheTtlMs: 300000, // 5min — cache git default-branch detection, then prune expired entries
+  mainBranchCacheMaxEntries: 100, // bound repo/branch detection cache in long-lived dashboard/engine processes
+  removeWorktreeFailureTtlMs: 24 * 60 * 60 * 1000, // stale failed paths are forgotten after a day
+  removeWorktreeFailureMaxEntries: 1000, // bound failed-worktree retry suppression cache
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
-  ccSessionTtlMs: 2 * 60 * 60 * 1000, // 2h — expire stale resumed CC sessions to cap context growth
   docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
+  docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity
+  ccLiveStreamMaxAgeMs: 30 * 60 * 1000, // hard cap reconnect buffers if abort/cleanup stalls
+  metricsFlushIntervalMs: 10000, // batch trackEngineUsage writes to metrics.json — flushed every 10s instead of per-call to cut lock contention and dashboard mtime churn
   maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
   maxLlmStderrBytes: 64 * 1024, // keep only a bounded stderr tail from direct Claude calls
   maxLlmLineBufferBytes: 128 * 1024, // cap the incremental JSON line buffer to avoid malformed-stream OOMs
@@ -1477,6 +1558,13 @@ function nextWorkItemId(items, prefix) {
 
 // ── ADO URL ──────────────────────────────────────────────────────────────────
 
+/** Return the org/owner for a project regardless of host. Prefers host-specific field, falls back to adoOrg for backward compat. */
+function getProjectOrg(project) {
+  if (!project) return '';
+  if (project.repoHost === 'github') return project.githubOrg || project.adoOrg || '';
+  return project.adoOrg || '';
+}
+
 function getAdoOrgBase(project) {
   if (project.prUrlBase) {
     const devAzure = project.prUrlBase.match(/^(https?:\/\/dev\.azure\.com\/[^/]+)/i);
@@ -1922,7 +2010,7 @@ function getProjectPrScope(project) {
   if (host === 'github') {
     const parsed = parseGitHubPrUrl(project.prUrlBase || '');
     if (parsed?.scope) return parsed.scope;
-    const owner = normalizePrScopeSegment(project.adoOrg);
+    const owner = normalizePrScopeSegment(getProjectOrg(project));
     const repo = normalizePrScopeSegment(project.repoName);
     return owner && repo ? `github:${owner}/${repo}` : '';
   }
@@ -2428,6 +2516,13 @@ function mutatePullRequests(filePath, mutator) {
  * 2. cmd /c rd /s /q as final fallback handles any remaining reserved names
  */
 const _removeWorktreeFailures = new Map(); // path → { count, lastAttempt }
+function _pruneRemoveWorktreeFailures() {
+  _pruneTimedMap(_removeWorktreeFailures, {
+    maxEntries: ENGINE_DEFAULTS.removeWorktreeFailureMaxEntries,
+    ttlMs: ENGINE_DEFAULTS.removeWorktreeFailureTtlMs,
+    getTs: entry => entry?.lastAttempt,
+  });
+}
 
 // Windows reserved device names that cannot be deleted via normal paths
 const _WIN_RESERVED_NAMES = new Set([
@@ -2435,6 +2530,62 @@ const _WIN_RESERVED_NAMES = new Set([
   'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
   'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
 ]);
+
+const PR_FIX_CAUSE = {
+  HUMAN_FEEDBACK: 'human-feedback',
+  REVIEW_FEEDBACK: 'review-feedback',
+  BUILD_FAILURE: 'build-failure',
+  MERGE_CONFLICT: 'merge-conflict',
+  UNKNOWN: 'pr-fix',
+};
+
+function getPrFixAutomationCause({ dispatchKey = '', source = '', task = '' } = {}) {
+  const key = String(dispatchKey || '').toLowerCase();
+  const src = String(source || '').toLowerCase();
+  const title = String(task || '').toLowerCase();
+  if (src === 'pr-human-feedback' || key.startsWith('human-fix-') || title.includes('human feedback')) return PR_FIX_CAUSE.HUMAN_FEEDBACK;
+  if (key.startsWith('build-fix-') || title.includes('build failure')) return PR_FIX_CAUSE.BUILD_FAILURE;
+  if (key.startsWith('conflict-fix-') || title.includes('merge conflict')) return PR_FIX_CAUSE.MERGE_CONFLICT;
+  if (key.startsWith('fix-') || src === 'pr') return PR_FIX_CAUSE.REVIEW_FEEDBACK;
+  return PR_FIX_CAUSE.UNKNOWN;
+}
+
+function prFixEvidenceFingerprint(pr, cause = PR_FIX_CAUSE.UNKNOWN) {
+  const review = pr?.minionsReview || {};
+  const feedback = pr?.humanFeedback || {};
+  const evidence = { cause };
+  if (cause === PR_FIX_CAUSE.HUMAN_FEEDBACK) {
+    evidence.lastProcessedCommentDate = feedback.lastProcessedCommentDate || '';
+    evidence.feedbackContent = feedback.feedbackContent || '';
+  } else if (cause === PR_FIX_CAUSE.BUILD_FAILURE) {
+    evidence.buildStatus = pr?.buildStatus || '';
+    evidence.buildFailReason = pr?.buildFailReason || '';
+    evidence.buildErrorLog = pr?.buildErrorLog || '';
+    evidence.buildStatusDetail = pr?._buildStatusDetail || '';
+  } else if (cause === PR_FIX_CAUSE.MERGE_CONFLICT) {
+    evidence.mergeConflict = !!pr?._mergeConflict;
+    evidence.mergeStatus = pr?.mergeStatus || '';
+    evidence.mergeConflictDetail = pr?._mergeConflictDetail || '';
+  } else {
+    evidence.reviewStatus = pr?.reviewStatus || '';
+    evidence.lastReviewedAt = pr?.lastReviewedAt || '';
+    evidence.reviewedAt = review.reviewedAt || '';
+    evidence.reviewNote = review.note || pr?.reviewNote || '';
+  }
+  return crypto.createHash('sha1').update(JSON.stringify(evidence)).digest('hex').slice(0, 16);
+}
+
+function getPrNoOpFixRecord(pr, cause) {
+  if (!pr || !cause || !pr._noOpFixes || typeof pr._noOpFixes !== 'object') return null;
+  const record = pr._noOpFixes[cause];
+  return record && typeof record === 'object' ? record : null;
+}
+
+function isPrNoOpFixCausePaused(pr, cause) {
+  const record = getPrNoOpFixRecord(pr, cause);
+  if (!record?.paused) return false;
+  return record.evidenceFingerprint === prFixEvidenceFingerprint(pr, cause);
+}
 
 /**
  * Recursively purge Windows reserved-name pseudo-files (NUL, CON, PRN, AUX, etc.)
@@ -2470,6 +2621,7 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
     log('warn', `removeWorktree: refusing to remove ${wtPath} — not under ${worktreeRoot}`);
     return false;
   }
+  _pruneRemoveWorktreeFailures();
   // Skip paths that failed 3+ times — retry after 1 hour cooldown
   const prior = _removeWorktreeFailures.get(resolved);
   if (prior && prior.count >= 3 && Date.now() - prior.lastAttempt < 3600000) return false;
@@ -2506,6 +2658,7 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
       fail.count++;
       fail.lastAttempt = Date.now();
       _removeWorktreeFailures.set(resolved, fail);
+      _pruneRemoveWorktreeFailures();
       if (fail.count <= 3) log('warn', `removeWorktree: failed for ${wtPath} (attempt ${fail.count}/3): ${rmErr.message}`);
       return false;
     }
@@ -2523,6 +2676,40 @@ function safeSlugComponent(text, maxLen = 80) {
   const hash = crypto.createHash('md5').update(raw).digest('hex').slice(0, 8);
   const base = slugify(raw, Math.max(8, maxLen - 9)) || 'item';
   return `${base}-${hash}`.slice(0, maxLen);
+}
+
+const PR_AUTOMATION_CAUSE_LIMIT = 50;
+
+function getPrAutomationCauses(pr) {
+  const causes = pr?._automationFixCauses;
+  return causes && typeof causes === 'object' && !Array.isArray(causes) ? causes : {};
+}
+
+function hasPrAutomationCause(pr, causeKey) {
+  return !!(causeKey && getPrAutomationCauses(pr)[causeKey]);
+}
+
+function markPrAutomationCause(pr, causeKey, details = {}) {
+  if (!pr || !causeKey) return false;
+  const now = ts();
+  const causes = { ...getPrAutomationCauses(pr) };
+  causes[causeKey] = {
+    ...(causes[causeKey] || {}),
+    ...details,
+    status: details.status || causes[causeKey]?.status || 'handled',
+    updatedAt: now,
+  };
+  if (!causes[causeKey].firstSeenAt) causes[causeKey].firstSeenAt = now;
+
+  const entries = Object.entries(causes);
+  if (entries.length > PR_AUTOMATION_CAUSE_LIMIT) {
+    entries
+      .sort((a, b) => String(b[1]?.updatedAt || b[1]?.firstSeenAt || '').localeCompare(String(a[1]?.updatedAt || a[1]?.firstSeenAt || '')))
+      .slice(PR_AUTOMATION_CAUSE_LIMIT)
+      .forEach(([key]) => delete causes[key]);
+  }
+  pr._automationFixCauses = causes;
+  return true;
 }
 
 function formatTranscriptEntry(t) {
@@ -2680,6 +2867,7 @@ module.exports = {
   mergePrLinkItems, // exported for testing
   upsertPullRequestRecord,
   nextWorkItemId,
+  getProjectOrg,
   getAdoOrgBase,
   sanitizePath,
   sanitizeBranch,
@@ -2696,6 +2884,11 @@ module.exports = {
   validateProjectName,
   validateProjectPath,
   validatePid,
+  PR_FIX_CAUSE,
+  getPrFixAutomationCause,
+  prFixEvidenceFingerprint,
+  getPrNoOpFixRecord,
+  isPrNoOpFixCausePaused,
   parseSkillFrontmatter,
   sleepMs,
   killGracefully,
@@ -2708,6 +2901,9 @@ module.exports = {
   redactSecrets,
   slugify,
   safeSlugComponent,
+  getPrAutomationCauses,
+  hasPrAutomationCause,
+  markPrAutomationCause,
   formatTranscriptEntry,
   getPinnedItems,
   _logBuffer, // exported for testing

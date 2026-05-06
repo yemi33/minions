@@ -4,6 +4,7 @@
 var CC_MAX_TABS = 20;
 var CC_MAX_MESSAGES_PER_TAB = 30;
 var CC_TITLE_MAX_LENGTH = 40;
+var CC_STREAM_FETCH_TIMEOUT_MS = (60 * 60 * 1000) + 60000; // backend CC timeout plus 1-minute delivery buffer
 
 var _ccTabs = [];         // [{id, title, sessionId, messages: [{role, html}]}]
 var _ccActiveTabId = null;
@@ -98,6 +99,26 @@ function _ccStripActionBlockFromText(value) {
 function _ccActiveTab() {
   if (!_ccActiveTabId || _ccTabs.length === 0) return null;
   return _ccTabs.find(function(t) { return t.id === _ccActiveTabId; }) || null;
+}
+
+// Build a plain-text transcript from a tab's stored messages — sent on every
+// initial request so the server can carry it over if the session has to reset
+// (runtime switch, system-prompt change). Last 20 user/assistant turns only;
+// system/action rows are skipped because they're UI artifacts, not dialog.
+var CC_TRANSCRIPT_MAX_TURNS = 20;
+function _ccBuildTranscript(tab) {
+  if (!tab || !Array.isArray(tab.messages) || tab.messages.length === 0) return [];
+  var out = [];
+  for (var i = 0; i < tab.messages.length; i++) {
+    var m = tab.messages[i];
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    var html = typeof m.html === 'string' ? m.html : '';
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    var text = (tmp.textContent || tmp.innerText || '').trim();
+    if (text) out.push({ role: m.role, text: text });
+  }
+  return out.slice(-CC_TRANSCRIPT_MAX_TURNS);
 }
 
 function _ccMergeStreamText(prev, incoming) {
@@ -371,6 +392,12 @@ function ccCloseTab(id) {
     closingTab._queue = [];
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
   }
+  // Tabs are non-expiring on the server — explicit close is the only path that
+  // removes the persisted session. Fire-and-forget DELETE so closing a tab
+  // also evicts the server-side cc-sessions.json entry.
+  try {
+    fetch('/api/cc-sessions/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function() {});
+  } catch {}
   _ccTabs.splice(idx, 1);
   if (_ccActiveTabId === id) {
     // Switch to adjacent tab or create new
@@ -711,7 +738,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     var res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
-      signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(960000)
+      signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(CC_STREAM_FETCH_TIMEOUT_MS)
     });
 
     if (!res.ok) {
@@ -755,7 +782,15 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
         terminalEventSeen = true;
         _cleanupStreamDiv();
         if (evt.sessionReset) {
-          addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
+          var resetText;
+          if (evt.sessionResetReason === 'runtimeChanged' && evt.previousRuntime && evt.currentRuntime) {
+            resetText = 'Runtime switched (' + escHtml(evt.previousRuntime) + ' → ' + escHtml(evt.currentRuntime) + ') — started a fresh session and carried over recent history.';
+          } else if (evt.sessionResetReason === 'promptChanged') {
+            resetText = 'Minions was updated — started a fresh session and carried over recent history.';
+          } else {
+            resetText = 'Minions was updated — started a fresh session with latest context.';
+          }
+          addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">' + resetText + '</div>', false, activeTabId);
         }
         var finalText = _ccMergeStreamText(streamedText, evt.text || '');
         var rendered = renderMd(finalText || streamedText || '');
@@ -823,7 +858,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     while (true) {
       var consume = await _ccConsumeStream(
         reconnectAttempts === 0
-          ? { message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }
+          ? { message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null, transcript: _ccBuildTranscript(activeTab) }
           : { tabId: activeTabId, sessionId: activeTab.sessionId || null, reconnect: true },
         reconnectAttempts > 0
       );
@@ -934,7 +969,13 @@ function ccRetryLast(tabId, retryId) {
 
 async function _ccFetch(url, body) {
   var res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { var d = await res.json().catch(function() { return {}; }); throw new Error(d.error || 'Request failed (' + res.status + ')'); }
+  if (!res.ok) {
+    var d = await res.json().catch(function() { return {}; });
+    var err = new Error(d.error || 'Request failed (' + res.status + ')');
+    err.status = res.status;
+    err.data = d;
+    throw err;
+  }
   return res;
 }
 
@@ -946,6 +987,8 @@ function _tagServerExecuted(actions, actionResults) {
     if (r && r.ok) {
       actions[i]._serverExecuted = true;
       if (r.id) actions[i]._serverId = r.id;
+      if (r.warning) actions[i]._serverWarning = r.warning;
+      if (r.duplicate) actions[i]._serverDuplicate = true;
     } else if (r && r.error) {
       actions[i]._serverExecuted = true;
       actions[i]._serverError = r.error;
@@ -965,8 +1008,10 @@ async function ccExecuteAction(action, targetTabId) {
       status.style.color = 'var(--red)';
     } else {
       var label = action._serverId ? escHtml(action._serverId) : escHtml(action.title || action.type);
-      status.innerHTML = '&#10003; ' + escHtml(action.type) + ': <strong>' + label + '</strong>';
-      status.style.color = 'var(--green)';
+      status.innerHTML = '&#10003; ' + escHtml(action.type) + ': <strong>' + label + '</strong>' +
+        (action._serverDuplicate ? ' <span style="color:var(--orange)">already exists</span>' : '') +
+        (action._serverWarning ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escHtml(action._serverWarning) + '</div>' : '');
+      status.style.color = action._serverDuplicate ? 'var(--orange)' : 'var(--green)';
     }
     ccAddMessage('action', status.outerHTML, false, targetTabId);
     if (['dispatch','fix','implement','explore','review','test','create-meeting'].includes(action.type)) wakeEngine();
@@ -1285,9 +1330,18 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'create-pipeline': {
-        await _ccFetch('/api/pipelines', { id: action.id, title: action.title, stages: action.stages || [], trigger: action.trigger || null, stopWhen: action.stopWhen || null, monitoredResources: action.monitoredResources || null });
-        status.innerHTML = '&#10003; Pipeline created: <strong>' + escHtml(action.id) + '</strong>';
-        status.style.color = 'var(--green)';
+        try {
+          await _ccFetch('/api/pipelines', { id: action.id, title: action.title, stages: action.stages || [], trigger: action.trigger || null, stopWhen: action.stopWhen || null, monitoredResources: action.monitoredResources || null });
+          status.innerHTML = '&#10003; Pipeline created: <strong>' + escHtml(action.id) + '</strong>';
+          status.style.color = 'var(--green)';
+        } catch (e) {
+          if (e.status === 409) {
+            status.innerHTML = '&#10003; Pipeline already exists: <strong>' + escHtml(action.id) + '</strong>';
+            status.style.color = 'var(--orange)';
+          } else {
+            throw e;
+          }
+        }
         break;
       }
       case 'delete-pipeline': {

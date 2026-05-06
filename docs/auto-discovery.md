@@ -37,7 +37,7 @@ Before scanning, the engine materializes plans and specs into project work items
 | `_mergeConflict: true` | Route to author for conflict resolution | `fix` |
 Skips PRs where `status !== "active"`.
 
-Inside `discoverFromPrs()`, `evalLoop` / `evalMaxIterations` only gate the minion review loop: initial minion reviews, minion re-reviews, and minion review-feedback fixes. Human-feedback fixes are evaluated outside that gate, build failures use the separate `maxBuildFixAttempts` cap, and merge conflicts use the separate `autoFixConflicts` gate. Conflict fixes are additionally gated by `!fixDispatched`, so an earlier successful human/review/build fix dispatch in the same PR discovery pass suppresses the conflict fix until a later pass.
+Inside `discoverFromPrs()`, ADO and GitHub projects first resolve their own provider poll gate (`adoPollEnabled` or `ghPollEnabled`). PR-derived automation is inert when that provider's polling is off, so cached build, vote, conflict, and comment state cannot trigger new dispatches. The shared dispatch toggles (`autoReviewPrs`, `autoReReviewPrs`, `autoFixReviewFeedback`, `autoFixHumanComments`, `autoFixBuilds`, and `autoFixConflicts`) apply to both providers. `evalLoop` gates the minion review loop: initial minion reviews, minion re-reviews, and minion review-feedback fixes. Human-feedback fixes are evaluated outside `evalLoop`. Conflict fixes are additionally gated by `!fixDispatched`, so an earlier successful human/review/build fix dispatch in the same PR discovery pass suppresses the conflict fix until a later pass.
 
 ### Source 2: PRD Gap Analysis (via `materializePlansAsWorkItems`)
 

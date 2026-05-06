@@ -75,7 +75,7 @@ function renderAdoThrottleAlert(adoThrottle) {
     el.innerHTML = '';
     return;
   }
-  const resumeTime = new Date(adoThrottle.retryAfter).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const resumeTime = formatLocalTime(adoThrottle.retryAfter);
   el.innerHTML =
     '<span class="engine-alert-msg">&#x26A0;&#xFE0F; ADO rate-limited — resume ~' + resumeTime + ' (' + adoThrottle.consecutiveHits + ' consecutive hit' + (adoThrottle.consecutiveHits !== 1 ? 's' : '') + ')</span>';
   el.style.display = 'flex';
@@ -89,7 +89,7 @@ function renderGhThrottleAlert(ghThrottle) {
     el.innerHTML = '';
     return;
   }
-  const resumeTime = new Date(ghThrottle.retryAfter).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const resumeTime = formatLocalTime(ghThrottle.retryAfter);
   el.innerHTML =
     '<span class="engine-alert-msg">&#x26A0;&#xFE0F; GitHub rate-limited — resume ~' + resumeTime + ' (' + ghThrottle.consecutiveHits + ' consecutive hit' + (ghThrottle.consecutiveHits !== 1 ? 's' : '') + ')</span>';
   el.style.display = 'flex';
@@ -212,7 +212,7 @@ function renderEngineLog(log) {
 
 function shortTime(t) {
   if (!t) return '';
-  try { return new Date(t).toLocaleTimeString(); } catch { return t; }
+  return formatLocalTime(t);
 }
 
 async function showErrorDetails(agentId, reason, task) {

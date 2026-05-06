@@ -190,7 +190,7 @@ function normalizeAgentHints(agentHints, authorAgent = null, agents = null) {
 }
 
 function resolveAgent(workType, config, opts = {}) {
-  const { authorAgent = null, agentHints = null } = opts || {};
+  const { authorAgent = null, agentHints = null, dryRun = false } = opts || {};
   const route = routeForWorkType(workType);
   const agents = config.agents || {};
 
@@ -199,7 +199,7 @@ function resolveAgent(workType, config, opts = {}) {
   let fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
 
   const isAvailable = (id) => {
-    if (!agents[id] || !isAgentIdle(id) || _claimedAgents.has(id)) return false;
+    if (!agents[id] || !isAgentIdle(id) || (!dryRun && _claimedAgents.has(id))) return false;
     // Budget check — no budget means infinite (no limit)
     const budget = agents[id].monthlyBudgetUsd;
     if (budget && budget > 0) {
@@ -214,23 +214,23 @@ function resolveAgent(workType, config, opts = {}) {
     const idle = Object.keys(agents)
       .filter(id => !excludeSet.has(id) && isAvailable(id))
       .sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b));
-    if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
+    if (idle[0]) { if (!dryRun) _claimedAgents.add(idle[0]); return idle[0]; }
     return null;
   };
 
   const hintedAgents = normalizeAgentHints(agentHints, authorAgent, agents);
   if (hintedAgents.length > 0) {
     for (const id of hintedAgents) {
-      if (isAvailable(id)) { _claimedAgents.add(id); return id; }
+      if (isAvailable(id)) { if (!dryRun) _claimedAgents.add(id); return id; }
     }
   }
 
   // Resolve _any_ token — pick any available agent (#480)
   if (preferred === ANY_AGENT) { const pick = pickAnyIdle(); if (pick) return pick; }
-  else if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
+  else if (preferred && isAvailable(preferred)) { if (!dryRun) _claimedAgents.add(preferred); return preferred; }
 
   if (fallback === ANY_AGENT) { const pick = pickAnyIdle([preferred]); if (pick) return pick; }
-  else if (fallback && isAvailable(fallback)) { _claimedAgents.add(fallback); return fallback; }
+  else if (fallback && isAvailable(fallback)) { if (!dryRun) _claimedAgents.add(fallback); return fallback; }
 
   // Fall back to any idle agent, preferring lower error rates
   const anyIdle = pickAnyIdle([preferred, fallback]);
@@ -247,6 +247,7 @@ function resolveAgent(workType, config, opts = {}) {
       log('info', `Temp agent refused for ${workType} — per-tick budget exhausted (maxConcurrent reached)`);
       return null;
     }
+    if (dryRun) return 'temp-preview';
     _tempBudget--;
     const tempId = `temp-${shared.uid()}`;
     _claimedAgents.add(tempId);

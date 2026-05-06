@@ -97,25 +97,39 @@ function handleCommand(cmd, args) {
   } else {
     console.log(`Unknown command: ${cmd}`);
     console.log('Commands:');
-    console.log('  start [--cli R] [--model M]   Start engine daemon (R = registered runtime)');
-    console.log('  stop                          Stop engine');
-    console.log('  pause / resume                Pause/resume dispatching');
-    console.log('  status                        Show engine + agent state + fleet config');
-    console.log('  queue                         Show dispatch queue');
-    console.log('  sources                       Show work source status');
-    console.log('  discover                      Dry-run work discovery');
-    console.log('  dispatch                      Force a dispatch cycle');
-    console.log('  spawn <a> <p>                 Manually spawn agent with prompt');
-    console.log('  work <title> [o]              Add to work-items.json queue');
-    console.log('  plan <src> [p]                Generate PRD from a plan (file or text)');
-    console.log('  kill                          Kill all active agents, reset to pending');
-    console.log('  complete <id>                 Mark a dispatch as done');
-    console.log('  cleanup                       Clean temp files, worktrees, zombies');
-    console.log('  mcp-sync                      Sync MCP servers from ~/.claude.json');
-    console.log('  doctor                        Check prerequisites and runtime health');
-    console.log('  config set-cli <R> [--model M]  Persist defaultCli/defaultModel without starting');
+    for (const line of formatCliCommandHelpLines()) console.log(line);
     process.exit(1);
   }
+}
+
+// SoT for engine-CLI metadata: drives handleCommand's help text and the
+// CC preamble's CLI index in dashboard.js. Drift-checked against `commands`.
+const CLI_COMMAND_DOCS = Object.freeze({
+  start:    { args: '[--cli R] [--model M]', summary: 'Start engine daemon (R = registered runtime)' },
+  stop:     { args: '',                      summary: 'Stop engine' },
+  pause:    { args: '',                      summary: 'Pause dispatching' },
+  resume:   { args: '',                      summary: 'Resume dispatching' },
+  status:   { args: '',                      summary: 'Show engine + agent state + fleet config' },
+  queue:    { args: '',                      summary: 'Show dispatch queue' },
+  sources:  { args: '',                      summary: 'Show work source status per project' },
+  discover: { args: '',                      summary: 'Dry-run work discovery' },
+  dispatch: { args: '',                      summary: 'Force a dispatch cycle' },
+  spawn:    { args: '<agent> <prompt>',      summary: 'Manually spawn an agent with prompt' },
+  work:     { args: '<title> [opts]',        summary: 'Add to work-items.json queue' },
+  plan:     { args: '<file|text> [project]', summary: 'Generate PRD from a plan (file or text)' },
+  kill:       { args: '',                      summary: 'Kill all active agents, reset to pending' },
+  complete:   { args: '<dispatch-id>',         summary: 'Mark a dispatch as done' },
+  cleanup:    { args: '',                      summary: 'Clean temp files, worktrees, zombies' },
+  'mcp-sync': { args: '',                      summary: 'Sync MCP servers from ~/.claude.json' },
+  doctor:     { args: '',                      summary: 'Check prerequisites and runtime health' },
+  config:     { args: 'set-cli <R> [--model M]', summary: 'Persist defaultCli/defaultModel without starting' },
+});
+
+function formatCliCommandHelpLines() {
+  const entries = Object.entries(CLI_COMMAND_DOCS);
+  const lefts = entries.map(([name, { args }]) => '  ' + name + (args ? ' ' + args : ''));
+  const padTo = Math.max(...lefts.map(s => s.length)) + 2;
+  return entries.map(([, { summary }], i) => lefts[i].padEnd(padTo) + summary);
 }
 
 // ─── Runtime fleet flags (--cli / --model / --effort) ────────────────────────
@@ -745,6 +759,16 @@ const commands = {
     }
     watchForWorkChanges();
 
+    // Drain in-memory buffers (metrics, logs) before any process.exit. Logs
+    // a stderr line if a flush fails so a refactor mistake (typo, missing
+    // export) doesn't go silent.
+    function drainBuffers() {
+      try { require('./llm').flushMetricsBuffer(); }
+      catch (err) { try { console.error(`[shutdown] flushMetricsBuffer failed: ${err.message}`); } catch {} }
+      try { shared.flushLogs(); }
+      catch (err) { try { console.error(`[shutdown] flushLogs failed: ${err.message}`); } catch {} }
+    }
+
     // Graceful shutdown — wait for active agents before exiting
     let shuttingDown = false;
     function gracefulShutdown(signal) {
@@ -768,7 +792,7 @@ const commands = {
           e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
         }
         e.log('info', 'Graceful shutdown complete (no active agents)');
-        shared.flushLogs(); // drain buffered log entries before exit
+        drainBuffers();
         console.log('No active agents — stopped.');
         process.exit(0);
       }
@@ -785,7 +809,7 @@ const commands = {
             e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
           }
           e.log('info', 'Graceful shutdown complete (all agents finished)');
-          shared.flushLogs(); // drain buffered log entries before exit
+          drainBuffers();
           console.log('All agents finished — stopped.');
           process.exit(0);
         }
@@ -796,7 +820,7 @@ const commands = {
             e.log('warn', 'Graceful shutdown skipped control.json stopped transition; control file is owned by a different engine process');
           }
           e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
-          shared.flushLogs(); // drain buffered log entries before exit
+          drainBuffers();
           console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
           process.exit(1);
         }
@@ -811,7 +835,7 @@ const commands = {
       const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
       console.error(`[FATAL] Unhandled promise rejection: ${msg}`);
       try { shared.log('fatal', `Unhandled promise rejection: ${msg}`); } catch { /* best effort */ }
-      try { shared.flushLogs(); } catch { /* best effort */ }
+      drainBuffers();
       process.exit(1);
     });
 
@@ -819,7 +843,7 @@ const commands = {
       const msg = err instanceof Error ? err.stack || err.message : String(err);
       console.error(`[FATAL] Uncaught exception: ${msg}`);
       try { shared.log('fatal', `Uncaught exception: ${msg}`); } catch { /* best effort */ }
-      try { shared.flushLogs(); } catch { /* best effort */ }
+      drainBuffers();
       process.exit(1);
     });
   },
@@ -1181,8 +1205,9 @@ const commands = {
       project_name: targetProject.name || 'Unknown',
       project_path: targetProject.localPath || '',
       main_branch: targetProject.localPath ? shared.resolveMainBranch(targetProject.localPath, targetProject.mainBranch) : (targetProject.mainBranch || 'main'),
-      ado_org: targetProject.adoOrg || 'Unknown',
-      ado_project: targetProject.adoProject || 'Unknown',
+      ado_org: targetProject.repoHost === 'ado' ? (targetProject.adoOrg || 'Unknown') : '',
+      ado_project: targetProject.repoHost === 'ado' ? (targetProject.adoProject || 'Unknown') : '',
+      github_org: targetProject.repoHost === 'github' ? (targetProject.githubOrg || targetProject.adoOrg || '') : '',
       repo_name: targetProject.repoName || 'Unknown',
       team_root: MINIONS_DIR,
       date: e.dateStamp(),
@@ -1358,11 +1383,11 @@ const commands = {
     console.log(`\nDone: ${killed.length} dispatches killed, agents reset.`);
   },
 
-  cleanup() {
+  async cleanup() {
     const e = engine();
     const config = getConfig();
     console.log('\n=== Cleanup ===\n');
-    const result = e.runCleanup(config, true);
+    const result = await e.runCleanup(config, true);
     console.log(`\nDone: ${result.tempFiles} temp files, ${result.liveOutputs} live outputs, ${result.worktrees} worktrees, ${result.zombies} zombies cleaned.`);
   },
 
@@ -1450,7 +1475,11 @@ const commands = {
 
 module.exports = {
   handleCommand,
+  // exported for downstream indexing (dashboard CC preamble)
+  CLI_COMMAND_DOCS,
+  formatCliCommandHelpLines,
   // exported for testing
+  _listCommandKeys: () => Object.keys(commands),
   _parseRuntimeFlags,
   _modelLooksIncompatible,
   _applyRuntimeFlags,

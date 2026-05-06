@@ -498,7 +498,7 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
     modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planDelete(\'' + escapeHtml(normalizedFile) + '\')">Delete</button>';
   }
 
-  const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
+  const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + formatLocalDateTime(lastMod) + '</div>' : '';
   const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' + modalActions + '</div>';
 
   document.getElementById('modal-title').innerHTML = escapeHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escapeHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;

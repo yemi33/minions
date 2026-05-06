@@ -61,6 +61,26 @@ function _renderMonitoredResources(resources, options) {
   return '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px;align-items:center">' + heading + pills.join('') + '</div>';
 }
 
+function _getPipelineActiveRun(pipeline) {
+  return ((pipeline && pipeline.runs) || []).find(function(r) { return r.status === 'running' || r.status === 'paused'; });
+}
+
+function _getPipelineTriggerLabel(pipeline) {
+  return pipeline?.trigger?.cron ? _cronToHuman(pipeline.trigger.cron) : 'Manual trigger';
+}
+
+function _getPipelineStageLabel(pipeline) {
+  var count = ((pipeline && pipeline.stages) || []).length;
+  return count + ' stage' + (count === 1 ? '' : 's');
+}
+
+function _getPipelineEmptyRunCopy(pipeline) {
+  if (pipeline?.trigger?.cron) {
+    return 'No runs yet. Scheduled for ' + _cronToHuman(pipeline.trigger.cron) + ' (' + Intl.DateTimeFormat().resolvedOptions().timeZone + '). Use Run Now to start the first run immediately.';
+  }
+  return 'No runs yet. Use Run Now to start this pipeline.';
+}
+
 /**
  * Render clickable artifact links for a pipeline stage.
  * Each artifact type gets an icon and navigates to the relevant detail view.
@@ -233,18 +253,26 @@ function _buildNodeChain(stages, run, options) {
 
   html += '</div>';
 
-  // Loop indicator — only for pipelines with stopWhen or condition stages (repeat-until pattern)
+  // Repeat indicator — cron pipelines repeat on schedule; condition/stopWhen pipelines repeat until a terminal condition.
   var hasStopWhen = !!pipeline?.stopWhen;
   var hasConditionStage = (pipeline?.stages || []).some(function(s) { return s.type === 'condition'; });
-  if (hasStopWhen || hasConditionStage) {
+  var hasCron = !!pipeline?.trigger?.cron;
+  if (hasStopWhen || hasConditionStage || hasCron) {
     var runCount = (pipeline.runs || []).length;
     var cronLabel = pipeline?.trigger?.cron ? _cronToHuman(pipeline.trigger.cron) : 'until condition met';
-    html += '<div class="pl-node-loop">\u21BA Loop (' + escHtml(cronLabel) + ')';
+    html += '<div class="pl-node-loop">\u21BA ' + (hasCron ? 'Repeats' : 'Loop') + ' (' + escHtml(cronLabel) + ')';
     if (runCount > 0) html += ' \u00b7 Run ' + runCount;
     html += '</div>';
   }
 
   return html;
+}
+
+function _renderPipelineTriggerLabel(cron) {
+  if (!cron) return 'Manual trigger';
+  var human = _cronToHuman(cron);
+  var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return escHtml(human) + ' <span style="opacity:0.6">(' + escHtml(tz) + ')</span>';
 }
 
 function renderPipelines(pipelines) {
@@ -261,11 +289,11 @@ function renderPipelines(pipelines) {
   countEl.textContent = pipelines.length;
 
   el.innerHTML = pipelines.map(function(p) {
-    const activeRun = (p.runs || []).find(function(r) { return r.status === 'running'; });
+    const activeRun = _getPipelineActiveRun(p);
     const lastRun = (p.runs || []).slice(-1)[0];
     const statusColor = activeRun ? 'var(--blue)' : lastRun?.status === 'completed' ? 'var(--green)' : lastRun?.status === 'failed' ? 'var(--red)' : lastRun?.status === 'stopped' ? 'var(--yellow)' : 'var(--muted)';
-    const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status === 'stopped' ? 'Stopped' : lastRun.status) : 'Never run';
-    const trigger = p.trigger?.cron ? _cronToHuman(p.trigger.cron) : 'Manual';
+    const statusLabel = activeRun ? (activeRun.status === 'paused' ? 'Paused' : 'Running') : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status === 'stopped' ? 'Stopped' : lastRun.status) : 'Not run yet';
+    const trigger = _getPipelineTriggerLabel(p);
 
     // Build node chain (renders for all pipelines, even never-run)
     var progressHtml = '';
@@ -278,12 +306,18 @@ function renderPipelines(pipelines) {
     var allResources = _collectMonitoredResources(p);
     var resourcesHtml = _renderMonitoredResources(allResources, { compact: true });
 
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="if(shouldIgnoreSelectionClick(event))return;openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center">' +
-        '<strong style="font-size:13px">' + escHtml(p.title) + '</strong>' +
-        '<div style="display:flex;align-items:center;gap:8px">' +
-          '<span style="color:' + statusColor + ';font-size:11px;font-weight:600">' + statusLabel + '</span>' +
-          '<span style="font-size:10px;color:var(--muted)">' + escHtml(trigger) + '</span>' +
+    return '<div class="pipeline-card" onclick="if(shouldIgnoreSelectionClick(event))return;openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
+      '<div class="pipeline-card-header">' +
+        '<div class="pipeline-card-main">' +
+          '<strong class="pipeline-card-title">' + escHtml(p.title || p.id) + '</strong>' +
+          '<div class="pipeline-card-meta">' +
+            '<span>' + escHtml(p.id) + '</span>' +
+            '<span>' + escHtml(_getPipelineStageLabel(p)) + '</span>' +
+            '<span>' + escHtml(trigger) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="pipeline-card-badges">' +
+          '<span style="color:' + statusColor + ';font-size:11px;font-weight:600">' + escHtml(statusLabel) + '</span>' +
           (p.stopWhen ? '<span style="font-size:9px;color:var(--yellow)" title="Auto-stops when condition met: ' + escHtml(typeof p.stopWhen === 'string' ? p.stopWhen : (p.stopWhen.check || 'condition')) + '">STOP-WHEN</span>' : '') +
           (p.enabled === false ? '<span style="font-size:9px;color:var(--red)"' + (p._stopReason ? ' title="' + escHtml(p._stopReason) + '"' : '') + '>' + (p._stoppedBy ? 'AUTO-STOPPED' : 'DISABLED') + '</span>' : '') +
         '</div>' +
@@ -302,9 +336,9 @@ function openPipelineDetail(id) {
   var html = '<div style="display:flex;flex-direction:column;gap:12px">';
 
   // Status + actions
-  var activeRun = (p.runs || []).find(function(r) { return r.status === 'running'; });
+  var activeRun = _getPipelineActiveRun(p);
   html += '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span style="font-size:10px;color:var(--muted)">' + (p.trigger?.cron ? escHtml(_cronToHuman(p.trigger.cron)) + ' <span style="opacity:0.6">(' + escHtml(p.trigger.cron) + ', ' + escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone) + ')</span>' : 'Manual trigger') + '</span>' +
+    '<span style="font-size:10px;color:var(--muted)">' + _renderPipelineTriggerLabel(p.trigger?.cron) + ' · ' + escHtml(_getPipelineStageLabel(p)) + '</span>' +
     '<div style="display:flex;gap:6px">' +
       (activeRun
         ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_abortPipeline(\'' + escHtml(id) + '\',this)">Abort</button>' +
@@ -335,7 +369,7 @@ function openPipelineDetail(id) {
     var swLabel = typeof p.stopWhen === 'string' ? p.stopWhen : (p.stopWhen.check || JSON.stringify(p.stopWhen));
     html += '<div style="border:1px solid color-mix(in srgb, var(--yellow) 30%, transparent);border-radius:6px;padding:4px 10px;background:color-mix(in srgb, var(--yellow) 6%, transparent);font-size:11px">' +
       '<span style="color:var(--yellow);font-weight:600">Stop When:</span> <span style="color:var(--text)">' + escHtml(swLabel) + '</span>' +
-      (p._stoppedBy ? ' <span style="color:var(--green);font-size:10px">\u2714 triggered' + (p._stoppedAt ? ' at ' + escHtml(p._stoppedAt.slice(0, 16).replace('T', ' ')) : '') + '</span>' : '') +
+       (p._stoppedBy ? ' <span style="color:var(--green);font-size:10px">\u2714 triggered' + (p._stoppedAt ? ' at ' + escHtml(formatLocalDateTime(p._stoppedAt)) : '') + '</span>' : '') +
     '</div>';
   }
   if (p._stopReason && p.enabled === false) {
@@ -379,13 +413,15 @@ function openPipelineDetail(id) {
       html += '<div style="font-size:10px">' +
         '<div style="display:flex;gap:8px;align-items:center">' +
           '<span style="color:' + color + ';font-weight:600">' + r.status + '</span>' +
-          '<span style="color:var(--muted)">' + (r.startedAt ? new Date(r.startedAt).toLocaleString() : '') + '</span>' +
-          (r.completedAt ? '<span style="color:var(--muted)">\u2192 ' + new Date(r.completedAt).toLocaleString() + '</span>' : '') +
+          '<span style="color:var(--muted)">' + (r.startedAt ? formatLocalDateTime(r.startedAt) : '') + '</span>' +
+          (r.completedAt ? '<span style="color:var(--muted)">\u2192 ' + formatLocalDateTime(r.completedAt) + '</span>' : '') +
           (artifactCount > 0 ? '<span style="color:var(--blue);cursor:pointer;user-select:none" onclick="var el=document.getElementById(\'' + toggleId + '\');el.style.display=el.style.display===\'none\'?\'flex\':\'none\'" title="Toggle artifacts">' + artifactCount + ' artifact' + (artifactCount !== 1 ? 's' : '') + ' ▾</span>' : '') +
         '</div>' +
         (artifactCount > 0 ? '<div id="' + toggleId + '" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;margin-left:12px">' + _renderArtifactLinks(runArtifacts.merged, id) + '</div>' : '') +
       '</div>';
     });
+  } else {
+    html += '<div class="pipeline-empty-runs">' + escHtml(_getPipelineEmptyRunCopy(p)) + '</div>';
   }
 
   html += '</div>';

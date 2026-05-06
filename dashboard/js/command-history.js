@@ -38,7 +38,7 @@ function cmdShowHistory() {
           '<div class="cmd-history-item-meta">' +
             '<span class="chip" style="color:' + intentColor + '">' + intentLabel + '</span>' +
             '<span>' + ago + '</span>' +
-            '<span>' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '</span>' +
+            '<span>' + formatLocalDateTime(date) + '</span>' +
           '</div>' +
         '</div>' +
         '<button class="cmd-history-resubmit" onclick="cmdResubmit(' + i + ')">Resubmit</button>' +

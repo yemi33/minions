@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker, getProjectOrg } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -33,7 +33,7 @@ function isGitHub(project) {
 
 /** Get GitHub owner/repo slug from project config (e.g. "x3-design/Bebop_Workspaces") */
 function getRepoSlug(project) {
-  const org = project.adoOrg || '';
+  const org = getProjectOrg(project);
   const repo = project.repoName || '';
   if (!org || !repo) return null;
   return `${org}/${repo}`;
@@ -49,6 +49,42 @@ function _isAgentComment(c) {
   if (/\bMinions\s*\(/i.test(body)) return true;
   if (/\bby\s+Minions\b/i.test(body)) return true;
   if (/\[minions\]/i.test(body)) return true;
+  if (/\bMinions(?:\s+agent)?\s+triage\b/i.test(body)) return true;
+  return false;
+}
+
+function _isCiReportCommentBody(body) {
+  const text = String(body || '');
+  if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(text)) return true;
+  if (/!\[.*\]\(https?:\/\/.*badge/i.test(text)) return true;
+  return false;
+}
+
+function _isGitHubBotComment(c) {
+  const login = String(c?.user?.login || '');
+  const type = String(c?.user?.type || '');
+  return type.toLowerCase() === 'bot' || /\[bot\]$/i.test(login);
+}
+
+function _isPreviewStatusComment(c) {
+  if (!_isGitHubBotComment(c)) return false;
+  const body = String(c?.body || '');
+  if (_isCiReportCommentBody(body)) return true;
+  if (/^#{1,3}\s*(Firebase(?:\s+App\s+Distribution)?|Appetize|Preview|Deploy(?:ment)?|Status)\b/i.test(body)) return true;
+  if (/\bFirebase\s+App\s+Distribution\b/i.test(body)) return true;
+  if (/\bappdistribution\.firebase\b/i.test(body)) return true;
+  if (/\bappetize\.io\b/i.test(body)) return true;
+  if (/\b(?:deploy|deployment|preview)\s+(?:ready|available|succeeded|complete|completed)\b/i.test(body)) return true;
+  return false;
+}
+
+function _isNonActionableComment(c, config = {}) {
+  const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => String(a).toLowerCase()));
+  const login = String(c?.user?.login || '').toLowerCase();
+  if (ignoredAuthors.has(login)) return true;
+  if (_isAgentComment(c)) return true;
+  if (_isCiReportCommentBody(c?.body)) return true;
+  if (_isPreviewStatusComment(c)) return true;
   return false;
 }
 
@@ -372,6 +408,10 @@ async function pollPrStatus(config) {
       pr.lastPushedAt = ts();
       updated = true;
     }
+    if (prData.base?.sha && pr.baseSha !== prData.base.sha) {
+      pr.baseSha = prData.base.sha;
+      updated = true;
+    }
 
     if (pr.status !== newStatus) {
       log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
@@ -389,6 +429,7 @@ async function pollPrStatus(config) {
           delete pr.buildStatus;
           delete pr.buildFailReason;
           delete pr.buildErrorLog;
+          delete pr.buildFailureSignature;
           delete pr._buildFailNotified;
           delete pr.buildFixAttempts;
           delete pr.buildFixEscalated;
@@ -471,6 +512,7 @@ async function pollPrStatus(config) {
         const runs = checksData.check_runs;
         let buildStatus = 'none';
         let buildFailReason = '';
+        let buildFailureSignature = '';
 
         if (runs.length > 0) {
           const hasFailed = runs.some(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
@@ -481,6 +523,13 @@ async function pollPrStatus(config) {
             buildStatus = 'failing';
             const failed = runs.find(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
             buildFailReason = failed?.name || 'Check failed';
+            buildFailureSignature = shared.safeSlugComponent([
+              failed?.name,
+              failed?.conclusion,
+              failed?.output?.title,
+              failed?.output?.summary,
+              failed?.output?.text,
+            ].filter(Boolean).join('\n') || buildFailReason, 80);
           } else if (allDone && allPassed) {
             buildStatus = 'passing';
           } else {
@@ -493,6 +542,8 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
+          if (buildFailureSignature) pr.buildFailureSignature = buildFailureSignature;
+          else delete pr.buildFailureSignature;
           // Build transitioned — clear grace period and auto-complete flag
           delete pr._buildFixPushedAt;
           if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
@@ -504,6 +555,7 @@ async function pollPrStatus(config) {
             // while a queued build was still running.
             if (buildStatus === 'passing') {
               delete pr.buildErrorLog;
+              delete pr.buildFailureSignature;
               // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
               if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
             }
@@ -517,6 +569,16 @@ async function pollPrStatus(config) {
               const prFilePath = shared.projectPrPath(project);
               teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
             } catch {}
+          }
+        }
+        if (buildStatus === 'failing') {
+          if (buildFailReason && pr.buildFailReason !== buildFailReason) {
+            pr.buildFailReason = buildFailReason;
+            updated = true;
+          }
+          if (buildFailureSignature && pr.buildFailureSignature !== buildFailureSignature) {
+            pr.buildFailureSignature = buildFailureSignature;
+            updated = true;
           }
         }
       }
@@ -574,57 +636,48 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Separate: agent comments (included in context, don't trigger fix) vs actionable comments (trigger fix).
-    // Bot-authored comments are actionable unless explicitly ignored or clearly CI report noise.
-    const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
-    function _isIgnoredComment(c) {
-      const login = (c.user?.login || '').toLowerCase();
-      if (ignoredAuthors.has(login)) return true;
-      const body = c.body || '';
-      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
-      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
-      return false;
-    }
-    const actionableComments = allComments.filter(c => !_isIgnoredComment(c));
-
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
     const cutoffMs = new Date(cutoffStr).getTime() || 0;
 
-    // Collect ALL actionable comments for full context, track new ones for triggering
+    // Collect comments that should advance the cutoff separately from comments
+    // that should dispatch a fix. Informational bot/status comments and
+    // Minions-authored triage comments should be seen once, then ignored.
+    const allCommentDates = [];
     const allCommentEntries = [];
     const newComments = [];
 
-    for (const c of actionableComments) {
+    for (const c of allComments) {
       const date = c.created_at || c.updated_at || '';
-      const isAgent = _isAgentComment(c);
+      const dateMs = date ? new Date(date).getTime() : 0;
+      const isNonActionable = _isNonActionableComment(c, config);
+      if (dateMs) allCommentDates.push(date);
+      if (isNonActionable) continue;
       const entry = {
         commentId: c.id,
         author: c.user?.login || 'Human',
         content: c.body || '',
         date,
-        _isAgent: isAgent
+        _isAgent: false
       };
       allCommentEntries.push(entry);
 
-      // Only non-agent new comments trigger a fix (agent reviews trigger via vote, not comment)
-      const dateMs = date ? new Date(date).getTime() : 0;
-      if (dateMs && dateMs > cutoffMs && !isAgent) {
+      if (dateMs && dateMs > cutoffMs) {
         newComments.push(entry);
       }
     }
 
-    // Update cutoff even if only agent comments are new (so we don't re-scan them)
-    const allNewDates = allCommentEntries.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    // Update cutoff even if only non-actionable comments are new.
+    const allNewDates = allCommentDates.filter(date => (new Date(date).getTime() || 0) > cutoffMs);
     if (allNewDates.length > 0 && newComments.length === 0) {
       pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
-      return true; // agent comments only — persist cutoff without triggering fix
+      return true; // non-actionable comments only — persist cutoff without triggering fix
     }
     if (newComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent
     allCommentEntries.sort((a, b) => a.date.localeCompare(b.date));
     newComments.sort((a, b) => a.date.localeCompare(b.date));
-    const latestDate = newComments[newComments.length - 1].date;
+    const latestDate = allNewDates.sort().pop() || newComments[newComments.length - 1].date;
 
     // Provide ALL comments as context — the agent needs full thread context to fix properly
     const feedbackContent = allCommentEntries
@@ -636,6 +689,8 @@ async function pollPrHumanComments(config) {
 
     pr.humanFeedback = {
       lastProcessedCommentDate: latestDate,
+      lastProcessedCommentId: String(newComments[newComments.length - 1].commentId),
+      lastProcessedCommentKey: String(newComments[newComments.length - 1].commentId),
       pendingFix: true,
       feedbackContent
     };
@@ -915,4 +970,6 @@ module.exports = {
   GH_POLL_BACKOFF_MAX_MS, // exported for testing
   _hasMinionsReviewVerdict, // exported for testing
   _isAgentComment, // exported for testing
+  _isNonActionableComment, // exported for testing
+  _isPreviewStatusComment, // exported for testing
 };
