@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS, MINIONS_DIR } = shared;
+const { safeJson, safeJsonNoRestore, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS, MINIONS_DIR } = shared;
 const routing = require('./routing');
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
@@ -388,7 +388,9 @@ function _findExistingPrdForPlan(planFile, prdDir) {
   if (!fs.existsSync(prdDir)) return null;
   const prdFiles = safeReadDir(prdDir).filter(f => f.endsWith('.json'));
   for (const pf of prdFiles) {
-    const prd = safeJson(path.join(prdDir, pf));
+    // safeJsonNoRestore: PRDs are terminal artifacts — never restore archived
+    // PRDs from a stale .backup sidecar (W-mouptdh1000h9f39).
+    const prd = safeJsonNoRestore(path.join(prdDir, pf));
     if (prd?.source_plan === planFile) return pf;
   }
   return null;
@@ -709,7 +711,8 @@ function isStageComplete(stage, stageState, run, config) {
       const prdFiles = fs.existsSync(prdDir) ? safeReadDir(prdDir).filter(f => f.endsWith('.json')) : [];
       for (const planFile of plans) {
         for (const pf of prdFiles) {
-          const prd = safeJson(path.join(prdDir, pf));
+          // safeJsonNoRestore — see _findExistingPrdForPlan above (W-mouptdh1000h9f39).
+          const prd = safeJsonNoRestore(path.join(prdDir, pf));
           if (prd?.source_plan === planFile && !(artifacts.prds || []).includes(pf) && !discoveredPrds.includes(pf)) {
             discoveredPrds.push(pf);
           }

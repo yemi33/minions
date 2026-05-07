@@ -14769,6 +14769,59 @@ async function testSafeWriteBackupRestore() {
     fs.rmdirSync(fp);
   });
 
+  // ─── safeJsonNoRestore (W-mouptdh1000h9f39) ───────────────────────────────
+  // Sibling of safeJson for terminal-artifact reads (PRDs, archived plans)
+  // where restore-on-miss is actively harmful — see comment in shared.js.
+
+  await test('safeJsonNoRestore returns parsed JSON when primary exists', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'live.json');
+    fs.writeFileSync(fp, JSON.stringify({ ok: true, n: 42 }));
+    const result = shared.safeJsonNoRestore(fp);
+    assert.deepStrictEqual(result, { ok: true, n: 42 });
+  });
+
+  await test('safeJsonNoRestore returns null when primary is missing (no backup restore)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'gone.json');
+    // Plant a valid .backup — safeJson would restore from it, safeJsonNoRestore must not.
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ resurrected: true }));
+    const result = shared.safeJsonNoRestore(fp);
+    assert.strictEqual(result, null,
+      'safeJsonNoRestore must return null instead of restoring from .backup');
+    assert.ok(!fs.existsSync(fp),
+      'safeJsonNoRestore must NOT recreate the primary file from .backup');
+  });
+
+  await test('safeJsonNoRestore returns null on corrupt primary (no backup restore)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt.json');
+    fs.writeFileSync(fp, 'NOT JSON{{{');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ resurrected: true }));
+    const origErr = console.error;
+    let result;
+    try { console.error = () => {}; result = shared.safeJsonNoRestore(fp); }
+    finally { console.error = origErr; }
+    assert.strictEqual(result, null);
+    // Primary should remain corrupt — safeJsonNoRestore must NOT overwrite it from .backup
+    const after = fs.readFileSync(fp, 'utf8');
+    assert.strictEqual(after, 'NOT JSON{{{',
+      'safeJsonNoRestore must not rewrite the primary from .backup');
+  });
+
+  await test('safeJson restore-on-miss is preserved for live state files (regression guard)', () => {
+    // Confirms the W-mouptdh1000h9f39 fix did NOT change safeJson's restore-on-miss
+    // behavior — live state files (work-items.json, dispatch.json, etc.) still rely
+    // on it and should keep working.
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'live-state.json');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ live: true }));
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { live: true },
+      'safeJson must still auto-restore live state from .backup');
+    assert.ok(fs.existsSync(fp), 'safeJson must still recreate the primary from .backup');
+  });
+
   await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
     // Verify the source code: stale lock unlink is properly guarded
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
@@ -20402,6 +20455,7 @@ async function testCheckPlanCompletionIdempotency() {
   // Cleanup helper — removes all test artifacts
   function cleanup() {
     try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(path.join(prdDir, testPlanFile + '.backup')); } catch {}
     try { fs.unlinkSync(path.join(prdArchiveDir, testPlanFile)); } catch {}
     try { fs.unlinkSync(path.join(projectStateDir, 'work-items.json')); } catch {}
     try { fs.unlinkSync(path.join(projectStateDir, 'pull-requests.json')); } catch {}
@@ -20629,6 +20683,77 @@ async function testCheckPlanCompletionIdempotency() {
     assert.ok(prItems[0].description.includes('Untitled'),
       'Shared-branch PR WI description should contain "Untitled" fallback');
   }, cleanup);
+
+  // ── Regression (W-mouptdh1000h9f39): archived PRD must not be resurrected ──
+  // Mechanism: archived PRDs leave a `.backup` sidecar in `prd/`. When a stray
+  // completed work item still carries `sourcePlan: <archived-prd>.json`, the
+  // engine tick eventually calls checkPlanCompletion → safeJson(prd/<file>.json).
+  // The OLD safeJson auto-restored the .backup, recreating the active PRD and
+  // making it visible in the dashboard until the next 10-tick orphan sweep.
+  //
+  // Fix: PRD reads must NOT auto-restore from .backup — PRDs are terminal
+  // artifacts, restore-on-miss is appropriate only for live state files.
+  await test('checkPlanCompletion does NOT resurrect archived PRD from stale .backup sidecar (W-mouptdh1000h9f39)', () => {
+    cleanup();
+    // Set up the landmine: archived PRD lives in prd/archive/, .backup sidecar
+    // still sits in prd/ (pre-neutralize-era residue), no active prd/<file>.json.
+    const archivedPrd = makePrd({
+      status: 'completed',
+      _completionNotified: true,
+      archivedAt: '2026-01-01T00:00:00Z',
+    });
+    shared.safeWrite(path.join(prdArchiveDir, testPlanFile), archivedPrd);
+    fs.writeFileSync(path.join(prdDir, testPlanFile + '.backup'), JSON.stringify(archivedPrd));
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+    assert.ok(!fs.existsSync(path.join(prdDir, testPlanFile)),
+      'Pre-condition: no active PRD in prd/ before the call');
+
+    // Act: call checkPlanCompletion the same way the tick + lifecycle do.
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // Assert: PRIMARY assertion — the active PRD must NOT have been resurrected.
+    assert.ok(!fs.existsSync(path.join(prdDir, testPlanFile)),
+      'checkPlanCompletion must NOT auto-restore prd/<file>.json from .backup sidecar');
+  }, cleanup);
+
+  // ── Stale .backup sweep (W-mouptdh1000h9f39) ──
+  // Independent of MINIONS_TEST_DIR — the helper takes prdDir/prdArchiveDir
+  // as args and operates only on those, so we drive it with a throw-away dir.
+  await test('sweepStaleArchivedPrdBackups deletes .backup when archive exists and active is missing (W-mouptdh1000h9f39)', () => {
+    const engine = require('../engine.js');
+    const tmp = createTmpDir();
+    const prdDirT = path.join(tmp, 'prd');
+    const archDirT = path.join(prdDirT, 'archive');
+    fs.mkdirSync(archDirT, { recursive: true });
+
+    // Three archived PRDs to cover all three branches:
+    //  - foo  : active missing + .backup present  → MUST delete .backup
+    //  - bar  : active missing + no .backup       → no-op (nothing to clean)
+    //  - baz  : active present + .backup present  → MUST keep .backup
+    fs.writeFileSync(path.join(archDirT, 'foo.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'foo.json.backup'), '{}');
+    fs.writeFileSync(path.join(archDirT, 'bar.json'), '{}');
+    fs.writeFileSync(path.join(archDirT, 'baz.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'baz.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'baz.json.backup'), '{}');
+
+    const purged = engine.sweepStaleArchivedPrdBackups(prdDirT, archDirT);
+    assert.strictEqual(purged, 1, 'Exactly one .backup (foo) should be purged');
+    assert.ok(!fs.existsSync(path.join(prdDirT, 'foo.json.backup')),
+      'foo.json.backup must be deleted (active missing, archive exists)');
+    assert.ok(fs.existsSync(path.join(prdDirT, 'baz.json.backup')),
+      'baz.json.backup must NOT be deleted (active still exists — Pass 2 owns that case)');
+  });
+
+  await test('sweepStaleArchivedPrdBackups is idempotent and a no-op when archive dir is missing', () => {
+    const engine = require('../engine.js');
+    const tmp = createTmpDir();
+    const prdDirT = path.join(tmp, 'prd');
+    fs.mkdirSync(prdDirT, { recursive: true });
+    // No prd/archive/ at all
+    const purged = engine.sweepStaleArchivedPrdBackups(prdDirT, path.join(prdDirT, 'archive'));
+    assert.strictEqual(purged, 0, 'Missing archive dir → 0 purges, no throw');
+  });
 
   restore();
 }
