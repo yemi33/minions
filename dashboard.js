@@ -2060,7 +2060,7 @@ function createPipelineFromAction(action) {
 function _ccValidateAction(action) {
   if (!action || typeof action !== 'object' || !action.type) return 'action is missing required field: type';
   switch (action.type) {
-    case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test':
+    case 'dispatch': case 'fix': case 'explore': case 'review': case 'test':
       if (!action.title || typeof action.title !== 'string' || !action.title.trim()) return `${action.type} action missing required field: title`;
       return null;
     case 'build-and-test':
@@ -2107,7 +2107,7 @@ async function executeCCActions(actions) {
     }
     try {
       switch (action.type) {
-        case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {
+        case 'dispatch': case 'fix': case 'explore': case 'review': case 'test': {
           const workType = routing.normalizeWorkType(action.workType || (action.type !== 'dispatch' ? action.type : WORK_TYPE.IMPLEMENT), WORK_TYPE.IMPLEMENT);
           const id = 'W-' + shared.uid();
           const project = action.project || '';

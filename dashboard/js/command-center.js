@@ -1010,7 +1010,7 @@ async function ccExecuteAction(action, targetTabId) {
       status.style.color = action._serverDuplicate ? 'var(--orange)' : 'var(--green)';
     }
     ccAddMessage('action', status.outerHTML, false, targetTabId);
-    if (['dispatch','fix','implement','explore','review','test','create-meeting'].includes(action.type)) wakeEngine();
+    if (['dispatch','fix','explore','review','test','create-meeting'].includes(action.type)) wakeEngine();
     refresh();
     return;
   }
@@ -1019,7 +1019,6 @@ async function ccExecuteAction(action, targetTabId) {
     switch (action.type) {
       case 'dispatch':
       case 'fix':
-      case 'implement':
       case 'explore':
       case 'review':
       case 'test': {

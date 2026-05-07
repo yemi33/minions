@@ -33383,11 +33383,29 @@ async function testCcActionTypes() {
       'should have schedule, create-meeting, and set-config action types');
   });
 
+  await test('CC system prompt represents implementation as dispatch workType, not top-level implement', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('`type:"dispatch"` with `workType:"implement"`') || src.includes('`"type":"dispatch"`') && src.includes('`"workType":"implement"`'),
+      'prompt should tell CC to use dispatch as the action type for implementation work');
+    assert.ok(!/aliases:[^\n]*`implement`/.test(src),
+      'prompt must not document implement as a top-level action alias');
+  });
+
   await test('CC executor handles schedule, create-meeting, set-config', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
     assert.ok(src.includes("case 'schedule':"), 'should handle schedule action');
     assert.ok(src.includes("case 'create-meeting':"), 'should handle create-meeting action');
     assert.ok(src.includes("case 'set-config':"), 'should handle set-config action');
+  });
+
+  await test('CC client has no top-level implement action branch', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    const dispatchCase = src.slice(src.indexOf("case 'dispatch':"), src.indexOf("case 'note':"));
+    const serverExecutedBlock = src.slice(src.indexOf('if (action._serverExecuted)'), src.indexOf('try {', src.indexOf('if (action._serverExecuted)')));
+    assert.ok(dispatchCase.includes("case 'dispatch':"), 'client dispatch fallback should still handle canonical dispatch');
+    assert.ok(!dispatchCase.includes("case 'implement':"), 'client fallback must not accept implement as a first-class action type');
+    assert.ok(!serverExecutedBlock.includes("'implement'"), 'server-executed wake list must not treat implement as a top-level action type');
   });
 
   await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
@@ -33527,6 +33545,14 @@ async function testCcActionTypes() {
     assert.strictEqual(result.text, 'I will file that bug.', '```json fence must not block the action split');
     assert.strictEqual(result.actions.length, 1, '```json fence must not swallow the action JSON');
     assert.strictEqual(result.actions[0].type, 'file-bug', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions keeps implementation requests in canonical dispatch shape', () => {
+    const parseCCActions = getParseCCActions();
+    const result = parseCCActions('I will dispatch implementation work.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Implement dashboard fix","workType":"implement"}]');
+    assert.strictEqual(result.actions.length, 1, 'canonical implementation dispatch should parse one action');
+    assert.strictEqual(result.actions[0].type, 'dispatch');
+    assert.strictEqual(result.actions[0].workType, 'implement');
   });
 
   await test('parseCCActions recovers JSON wrapped in plain ``` fences (issue #1834)', () => {
@@ -35463,7 +35489,7 @@ async function testPrWriteRaceConditions() {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Anchor on the dispatch case OPEN BRACE to skip past the _ccValidateAction switch which
     // has the same `case 'dispatch': ... case 'test':` labels but no `{` body.
-    const start = dashSrc.indexOf("case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {");
+    const start = dashSrc.indexOf("case 'dispatch': case 'fix': case 'explore': case 'review': case 'test': {");
     assert.ok(start > 0, 'CC dispatch case body (with `{`) must exist in executeCCActions');
     const end = dashSrc.indexOf("case 'note':", start);
     assert.ok(end > start, 'CC note case must come after dispatch case');
@@ -51947,7 +51973,7 @@ async function testLoopToWatchInterception() {
 
   await test('CC system prompt stops after dispatch unless monitoring is explicit', () => {
     const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
-    assert.ok(prompt.includes('After emitting a dispatch, fix, or implement action'),
+    assert.ok(prompt.includes('After emitting a dispatch-like action'),
       'CC prompt should define post-dispatch behavior');
     assert.ok(prompt.includes('return immediately') && prompt.includes('do not poll, monitor, watch, wait, or check until completion'),
       'CC prompt should forbid implicit monitoring after dispatch');
@@ -57858,8 +57884,8 @@ async function testDashboardPureHelpers() {
     assert.ok(_ccValidateAction({ type: 'dispatch', title: '   ' }));
   });
 
-  await test('_ccValidateAction: fix/implement/explore/review/test all require title', () => {
-    for (const t of ['fix', 'implement', 'explore', 'review', 'test']) {
+  await test('_ccValidateAction: dispatch aliases except implement require title', () => {
+    for (const t of ['fix', 'explore', 'review', 'test']) {
       assert.ok(_ccValidateAction({ type: t }), `${t} must require title`);
       assert.strictEqual(_ccValidateAction({ type: t, title: 'x' }), null, `${t} with title must validate`);
     }
@@ -58003,6 +58029,26 @@ async function testDashboardPureHelpers() {
       assert.strictEqual(first[0].ok, true);
       assert.ok(second[0].error, 'different existing pipeline should require edit-pipeline instead of silent success');
       assert.ok(/different definition/i.test(second[0].error));
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions does not accept top-level implement action as a dispatch alias', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const results = await isolated.dashboard.executeCCActions([{
+        type: 'implement',
+        title: 'Implement alias should not dispatch',
+      }]);
+
+      assert.strictEqual(results.length, 1);
+      assert.strictEqual(results[0].type, 'implement');
+      assert.ok(!results[0].ok && !results[0].id,
+        'server should not create dispatch-shaped success for top-level implement');
+      assert.deepStrictEqual(isolated.shared.safeJson(wiPath) || [], [],
+        'rejected top-level implement must not create a work item');
     } finally {
       isolated.cleanup();
     }
