@@ -1298,13 +1298,113 @@ const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight 
 // captures no-op via the truthy guard.
 let _ccApiRoutesMeta = null;
 
+function _routePathForMeta(route) {
+  if (!route) return '';
+  if (typeof route.path === 'string') return route.path;
+  return route.template || route.pathTemplate || String(route.path);
+}
+
+function _parseRouteParamHint(paramHint, method) {
+  if (!paramHint || typeof paramHint !== 'string') return [];
+  const paramLocation = ['GET', 'HEAD', 'DELETE'].includes(String(method || '').toUpperCase()) ? 'query' : 'body';
+  const parts = [];
+  let current = '';
+  let parenDepth = 0;
+  for (const ch of paramHint) {
+    if (ch === '(') parenDepth++;
+    if (ch === ')' && parenDepth > 0) parenDepth--;
+    if (ch === ',' && parenDepth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts
+    .map(part => {
+      const raw = part.trim();
+      if (!raw) return null;
+      let text = raw;
+      let description = '';
+      text = text.replace(/\(([^)]*)\)/g, (_, desc) => {
+        description = desc.trim();
+        return '';
+      }).trim();
+      const required = !text.includes('?');
+      const array = text.includes('[]');
+      const name = text
+        .replace(/\?/g, '')
+        .replace(/\[\]/g, '')
+        .trim()
+        .split(/\s+/)[0];
+      if (!name) return null;
+      return {
+        name,
+        in: paramLocation,
+        required,
+        ...(description ? { description } : {}),
+        ...(array ? { type: 'array' } : {}),
+      };
+    })
+    .filter(Boolean);
+}
+
+function _routePathParams(pathTemplate) {
+  if (!pathTemplate || typeof pathTemplate !== 'string') return [];
+  const params = [];
+  for (const match of pathTemplate.matchAll(/:([A-Za-z][A-Za-z0-9_]*)/g)) {
+    params.push({ name: match[1], in: 'path', required: true });
+  }
+  return params;
+}
+
+function _routeParametersForMeta(route, pathTemplate) {
+  const seen = new Set();
+  const params = [..._routePathParams(pathTemplate), ..._parseRouteParamHint(route.params, route.method)];
+  return params.filter(param => {
+    const key = `${param.in}:${param.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function _routeReadOnly(route) {
+  if (typeof route.readOnly === 'boolean') return route.readOnly;
+  return ['GET', 'HEAD', 'OPTIONS'].includes(String(route.method || '').toUpperCase());
+}
+
+function _routeDestructive(route, pathTemplate, readOnly) {
+  if (typeof route.destructive === 'boolean') return route.destructive;
+  if (readOnly) return false;
+  if (String(route.method || '').toUpperCase() === 'DELETE') return true;
+  const haystack = `${pathTemplate || ''} ${route.desc || ''}`.toLowerCase();
+  return /\b(delete|remove|cancel|kill|reset|restart|archive|unarchive|abort|purge|reject|pause|unlink|clear)\b/.test(haystack);
+}
+
+function _routeGenericFallback(route, pathTemplate) {
+  if (typeof route.genericFallback === 'boolean') return route.genericFallback;
+  if (!pathTemplate || !pathTemplate.startsWith('/api/')) return false;
+  return String(route.method || '').toUpperCase() === 'POST';
+}
+
 function _routesAsMeta(routes) {
-  return routes.map(r => ({
-    method: r.method,
-    path: typeof r.path === 'string' ? r.path : String(r.path),
-    desc: r.desc || '',
-    params: r.params || null,
-  }));
+  return routes.map(r => {
+    const pathTemplate = _routePathForMeta(r);
+    const readOnly = _routeReadOnly(r);
+    const destructive = _routeDestructive(r, pathTemplate, readOnly);
+    return {
+      method: r.method,
+      path: pathTemplate,
+      desc: r.desc || '',
+      params: r.params || null,
+      parameters: _routeParametersForMeta(r, pathTemplate),
+      readOnly,
+      destructive,
+      genericFallback: _routeGenericFallback(r, pathTemplate),
+    };
+  });
 }
 
 function _captureApiRoutesMeta(routes) {
@@ -1318,7 +1418,13 @@ function _formatCcApiRoutesIndex() {
     .filter(r => r.path.startsWith('/api/'))
     .map(r => {
       const params = r.params ? ` — params: ${r.params}` : '';
-      return `- \`${r.method} ${r.path}\` — ${r.desc}${params}`;
+      const flags = [
+        r.readOnly ? 'read-only' : null,
+        r.destructive ? 'destructive' : null,
+        r.genericFallback ? 'generic-fallback' : null,
+      ].filter(Boolean);
+      const flagText = flags.length ? ` — flags: ${flags.join(', ')}` : '';
+      return `- \`${r.method} ${r.path}\` — ${r.desc}${params}${flagText}`;
     })
     .join('\n');
 }
@@ -1369,7 +1475,7 @@ ${apiIndex || '(routes not yet captured — first request still pending)'}
 ### CLI Index (auto-generated from engine/cli.js CLI_COMMAND_DOCS — single source of truth)
 ${cliIndex || '(unavailable)'}
 
-For any \`/api/...\` endpoint not covered by a named CC action, use the generic fallback:
+For \`POST /api/...\` endpoints marked \`generic-fallback\` and not covered by a named CC action, use the generic fallback:
 \`{"type":"<descriptive>","endpoint":"/api/...","params":{...}}\`.` : '';
 
   const result = `### Agents
@@ -7067,8 +7173,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/unarchive', desc: 'Restore a plan/PRD from archive', params: 'file', handler: handlePlansUnarchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
-    { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
-    { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
+    { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, template: '/api/plans/archive/:file', desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
+    { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, template: '/api/plans/:file', desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
 
     // PRD items
     { method: 'POST', path: '/api/prd-items', desc: 'Create a PRD item as a plan file in prd/ (auto-approved)', params: 'name, description?, priority?, estimated_complexity?, project?, id?', handler: handlePrdItemsCreate },
@@ -7227,12 +7333,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       });
     }},
     { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
-    { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
-    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
-    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
-    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
-    { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, desc: 'Get detailed agent info', handler: handleAgentDetail },
-    { method: 'GET', path: /^\/api\/dispatch\/([\w.-]+)\/completion-report$/, desc: 'Read structured completion report for a dispatch', handler: (req, res, match) => {
+    { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, template: '/api/agent/:id/kill', desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, template: '/api/agent/:id/live-stream', desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, template: '/api/agent/:id/live', desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, template: '/api/agent/:id/output', desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, template: '/api/agent/:id', desc: 'Get detailed agent info', handler: handleAgentDetail },
+    { method: 'GET', path: /^\/api\/dispatch\/([\w.-]+)\/completion-report$/, template: '/api/dispatch/:id/completion-report', desc: 'Read structured completion report for a dispatch', handler: (req, res, match) => {
       const id = match && match[1];
       const payload = queries.getDispatchCompletionReport(id);
       if (!payload) return jsonReply(res, 404, { error: 'completion report not found' }, req);
@@ -7268,7 +7374,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
     { method: 'POST', path: '/api/knowledge/sweep', desc: 'Trigger async KB sweep (returns 202)', handler: handleKnowledgeSweep },
     { method: 'GET', path: '/api/knowledge/sweep/status', desc: 'Poll KB sweep status', handler: handleKnowledgeSweepStatus },
-    { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
+    { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, template: '/api/knowledge/:category/:file', desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat
     { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
@@ -7299,7 +7405,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
     { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?', handler: handleCommandCenterStream },
     { method: 'GET', path: '/api/cc-sessions', desc: 'List CC session metadata for all tabs', handler: handleCCSessionsList },
-    { method: 'DELETE', path: /^\/api\/cc-sessions\/([\w-]+)$/, desc: 'Delete a CC session by tab ID', handler: handleCCSessionDelete },
+    { method: 'DELETE', path: /^\/api\/cc-sessions\/([\w-]+)$/, template: '/api/cc-sessions/:id', desc: 'Delete a CC session by tab ID', handler: handleCCSessionDelete },
 
     // Schedules
     { method: 'POST', path: '/api/schedules/parse-natural', desc: 'Parse natural language schedule text into cron expression', params: 'text', handler: handleSchedulesParseNatural },
@@ -7445,7 +7551,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { meetings: getMeetings() });
     }},
 
-    { method: 'GET', path: /^\/api\/meetings\/(MTG-[\w]+)$/, desc: 'Get meeting detail', handler: async (req, res, match) => {
+    { method: 'GET', path: /^\/api\/meetings\/(MTG-[\w]+)$/, template: '/api/meetings/:id', desc: 'Get meeting detail', handler: async (req, res, match) => {
       const { getMeeting } = require('./engine/meeting');
       const meeting = getMeeting(match[1]);
       if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
@@ -7520,7 +7626,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const md = require('./engine/model-discovery');
       return jsonReply(res, 200, { runtimes: md.listAllRuntimes() }, req);
     }},
-    { method: 'POST', path: /^\/api\/runtimes\/([\w-]+)\/models\/refresh$/, desc: 'Invalidate the models cache for a runtime and re-fetch', handler: async (req, res, match) => {
+    { method: 'POST', path: /^\/api\/runtimes\/([\w-]+)\/models\/refresh$/, template: '/api/runtimes/:runtime/models/refresh', desc: 'Invalidate the models cache for a runtime and re-fetch', handler: async (req, res, match) => {
       const md = require('./engine/model-discovery');
       const name = match[1];
       try {
@@ -7539,7 +7645,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
       return jsonReply(res, 200, payload, req);
     }},
-    { method: 'GET', path: /^\/api\/runtimes\/([\w-]+)\/models$/, desc: 'Get cached or fresh model list for a runtime', handler: async (req, res, match) => {
+    { method: 'GET', path: /^\/api\/runtimes\/([\w-]+)\/models$/, template: '/api/runtimes/:runtime/models', desc: 'Get cached or fresh model list for a runtime', handler: async (req, res, match) => {
       const md = require('./engine/model-discovery');
       const name = match[1];
       let payload;
@@ -7695,6 +7801,7 @@ module.exports = {
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
   buildCCStatePreamble,
+  _routesAsMeta,
   _captureApiRoutesMeta,
   _formatCcApiRoutesIndex,
   _formatCcCliCommandsIndex,

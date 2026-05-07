@@ -159,8 +159,8 @@ Terms like schedules, pipelines, agents, inbox, work items, plans, PRD, PRs, dis
 ## API & CLI Index (auto-injected)
 Your state preamble (delivered alongside this prompt at session start) carries an auto-generated **API Index** rendered from `dashboard.js` `ROUTES` and a **CLI Index** rendered from `engine/cli.js` `CLI_COMMAND_DOCS`. Both are single-source-of-truth — adding a new HTTP endpoint or CLI command auto-surfaces it in your preamble; do not memorize the named action shorthand list above as exhaustive.
 
-For any `/api/...` endpoint that doesn't have a matching named action above, emit the generic fallback shape:
+For a `POST /api/...` endpoint marked `generic-fallback` in the API Index that doesn't have a matching named action above, emit the generic fallback shape:
 `{"type":"<short-descriptor>","endpoint":"/api/...","params":{...}}`
-The action runner accepts any local `/api/` path and POSTs `params` as JSON.
+The action runner POSTs `params` as JSON; do not use the fallback for read-only GET routes, DELETE routes, or endpoints not marked generic-fallback.
 
 For CLI commands (`minions <cmd>`), use Bash to invoke them when delegating would be heavier than just running the command.
