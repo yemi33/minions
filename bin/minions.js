@@ -39,6 +39,7 @@ const os = require('os');
 const { spawn, spawnSync, execSync } = require('child_process');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
+const shared = require(path.join(PKG_ROOT, 'engine', 'shared'));
 const DASH_PORT = 7331;
 const DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS = 45000;
 
@@ -152,8 +153,6 @@ function spawnDashboard(suppressOpen) {
   return proc;
 }
 
-const DEFAULT_MINIONS_HOME = path.join(os.homedir(), '.minions');
-const ROOT_POINTER_PATH = path.join(os.homedir(), '.minions-root');
 const LEGACY_DEFAULT_SQUAD_HOME = path.join(os.homedir(), '.squad');
 const LEGACY_ROOT_POINTER_PATH = path.join(os.homedir(), '.squad-root');
 
@@ -171,13 +170,6 @@ function isLegacyInstalledRoot(dir) {
     fs.existsSync(path.join(dir, 'squad.js'));
 }
 
-function readRootPointer() {
-  try {
-    const p = fs.readFileSync(ROOT_POINTER_PATH, 'utf8').trim();
-    return p ? path.resolve(p) : null;
-  } catch { return null; }
-}
-
 function readLegacyRootPointer() {
   try {
     const p = fs.readFileSync(LEGACY_ROOT_POINTER_PATH, 'utf8').trim();
@@ -186,7 +178,7 @@ function readLegacyRootPointer() {
 }
 
 function saveRootPointer(root) {
-  try { fs.writeFileSync(ROOT_POINTER_PATH, root); } catch {}
+  shared.saveMinionsRootPointer(root);
 }
 
 function findLegacySquadRoot() {
@@ -254,17 +246,7 @@ function migrateLegacyInstallIfNeeded(targetHome) {
 }
 
 function resolveMinionsHome(forInit = false) {
-  const envHome = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : null;
-  if (envHome) return envHome;
-
-  if (forInit) return DEFAULT_MINIONS_HOME;
-
-  const pointerRoot = readRootPointer();
-  if (isInstalledRoot(pointerRoot)) return pointerRoot;
-
-  if (isInstalledRoot(DEFAULT_MINIONS_HOME)) return DEFAULT_MINIONS_HOME;
-
-  return DEFAULT_MINIONS_HOME;
+  return shared.resolveMinionsHome(forInit);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);

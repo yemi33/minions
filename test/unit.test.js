@@ -11952,14 +11952,19 @@ async function testConfigAndPlaybooks() {
 
   await test('bin/minions resolves runtime root from user home and pointer', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
-    assert.ok(src.includes('resolveMinionsHome('),
-      'bin/minions.js should resolve runtime root dynamically');
-    assert.ok(src.includes('if (forInit) return DEFAULT_MINIONS_HOME'),
-      'init should default runtime root to user-scoped ~/.minions');
-    assert.ok(src.includes(".minions-root"),
-      'bin/minions.js should persist/read runtime root pointer');
+    assert.ok(src.includes('shared.resolveMinionsHome('),
+      'bin/minions.js should resolve runtime root through shared canonical-home helper');
+    assert.ok(src.includes('shared.saveMinionsRootPointer('),
+      'bin/minions.js should persist runtime root pointers through shared canonical-home helper');
     assert.ok(!src.includes('if (localRoot) return localRoot'),
       'nearby project-local .minions installs must not become the runtime root');
+  });
+
+  await test('shared exports canonical-home helpers used by the wrapper', () => {
+    assert.strictEqual(typeof shared.resolveMinionsHome, 'function',
+      'shared.resolveMinionsHome must be exported for wrapper/runtime root selection');
+    assert.strictEqual(typeof shared.saveMinionsRootPointer, 'function',
+      'shared.saveMinionsRootPointer must be exported for init/update pointer persistence');
   });
 
   await test('bin/minions honors explicit MINIONS_HOME before canonical roots', () => {
@@ -12055,6 +12060,35 @@ async function testConfigAndPlaybooks() {
     });
     assert.strictEqual(result.status, 0, result.stderr || result.stdout);
     assert.strictEqual(path.resolve(result.stdout.trim()), path.resolve(home));
+  });
+
+  await test('shared runtime root ignores copied direct entrypoint when canonical home exists', () => {
+    const { spawnSync } = require('child_process');
+    const base = createTmpDir();
+    const home = path.join(base, 'home');
+    const canonical = path.join(home, '.minions');
+    const copied = path.join(base, 'project', '.minions');
+    for (const root of [canonical, copied]) {
+      fs.mkdirSync(path.join(root, 'engine'), { recursive: true });
+      for (const file of ['engine.js', 'dashboard.js', 'minions.js']) {
+        fs.writeFileSync(path.join(root, file), '');
+      }
+    }
+    fs.copyFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), path.join(copied, 'engine', 'shared.js'));
+    fs.writeFileSync(path.join(home, '.minions-root'), canonical);
+    const env = { ...process.env, HOME: home, USERPROFILE: home };
+    delete env.MINIONS_HOME;
+    delete env.MINIONS_TEST_DIR;
+    const result = spawnSync(process.execPath, ['-e', "console.log(require('./engine/shared').MINIONS_DIR)"], {
+      cwd: copied,
+      env,
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.strictEqual(path.resolve(result.stdout.trim()), path.resolve(canonical),
+      'direct engine/shared entrypoints must use the canonical root instead of the copied install root');
   });
 
   await test('publish workflow uses admin bypass for chore publish PR auto-merge', () => {
