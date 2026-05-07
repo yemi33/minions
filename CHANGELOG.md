@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1767 (2026-05-07)
+
+### Fixes
+- stop test fixtures leaking into live engine/log.json (#2154)
+
 ## 0.1.1765 (2026-05-07)
 
 ### Features
