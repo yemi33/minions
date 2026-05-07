@@ -3701,10 +3701,42 @@ async function testEngineDefaults() {
       'permissionMode is a stale config field; runtime adapters own bypass flags');
   });
 
-  await test('minions init strips stale claude.permissionMode when rewriting config defaults', () => {
+  await test('pruneDefaultClaudeConfig removes generated defaults and empty claude config', () => {
+    const config = {
+      claude: {
+        binary: shared.DEFAULT_CLAUDE.binary,
+        outputFormat: shared.DEFAULT_CLAUDE.outputFormat,
+        allowedTools: shared.DEFAULT_CLAUDE.allowedTools,
+        permissionMode: 'bypassPermissions',
+      },
+    };
+    assert.strictEqual(shared.pruneDefaultClaudeConfig(config), true);
+    assert.ok(!Object.prototype.hasOwnProperty.call(config, 'claude'),
+      'generated config.claude defaults should be removed from persisted config');
+  });
+
+  await test('pruneDefaultClaudeConfig preserves non-default legacy claude overrides', () => {
+    const config = {
+      claude: {
+        binary: '/custom/claude',
+        outputFormat: shared.DEFAULT_CLAUDE.outputFormat,
+        allowedTools: 'Read,Edit',
+        permissionMode: 'bypassPermissions',
+      },
+    };
+    assert.strictEqual(shared.pruneDefaultClaudeConfig(config), true);
+    assert.deepStrictEqual(config.claude, {
+      binary: '/custom/claude',
+      allowedTools: 'Read,Edit',
+    });
+  });
+
+  await test('minions init prunes generated claude defaults when rewriting config', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'minions.js'), 'utf8');
-    assert.ok(src.includes('delete config.claude.permissionMode'),
-      'init/upgrade config rewrite must not preserve legacy config.claude.permissionMode');
+    assert.ok(src.includes('shared.pruneDefaultClaudeConfig(config)'),
+      'init/upgrade config rewrite must remove generated deprecated config.claude defaults');
+    assert.ok(!src.includes('Object.entries(DEFAULT_CLAUDE)'),
+      'init/upgrade must not repopulate deprecated config.claude defaults');
   });
 
   await test('DEFAULT_AGENT_METRICS has all required metric fields', () => {
@@ -4182,6 +4214,12 @@ async function testRuntimeFleetHelpers() {
     assert.ok(dep[0].message.includes('binary'), 'message should name the deprecated subkey');
   });
 
+  await test('runtimeConfigWarnings: ignores generated config.claude defaults', () => {
+    const ws = shared.runtimeConfigWarnings({ claude: { ...shared.DEFAULT_CLAUDE } }, ['claude']);
+    assert.strictEqual(ws.filter(w => w.id === 'deprecated-config-claude').length, 0,
+      'old init-generated config.claude defaults should not emit a deprecation warning');
+  });
+
   await test('runtimeConfigWarnings: lists multiple deprecated subkeys in one warning', () => {
     const ws = shared.runtimeConfigWarnings({
       claude: { binary: '/x', outputFormat: 'json', allowedTools: 'all', permissionMode: 'auto' },
@@ -4404,7 +4442,7 @@ async function testRuntimeFleetHelpers() {
     }
   });
 
-  await test('dashboard settings do not expose or persist legacy claude.permissionMode', () => {
+  await test('dashboard settings do not expose or persist generated legacy claude config', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const readHelper = dashSrc.slice(
       dashSrc.indexOf('function settingsClaudeConfig'),
@@ -4418,10 +4456,16 @@ async function testRuntimeFleetHelpers() {
       'settings read must strip legacy claude.permissionMode before returning dashboard config');
     assert.ok(dashSrc.includes('claude: settingsClaudeConfig(config)'),
       'settings read must use the permissionMode-stripping helper');
-    assert.ok(updateHandler.includes('delete config.claude.permissionMode'),
-      'settings save must remove stale permissionMode from existing configs');
+    assert.ok(updateHandler.includes('shared.pruneDefaultClaudeConfig(config)'),
+      'settings save must remove generated deprecated config.claude defaults');
     assert.ok(!updateHandler.includes('body.claude.permissionMode'),
       'settings save must ignore permissionMode request payloads');
+    const resetHandler = dashSrc.slice(
+      dashSrc.indexOf('async function handleSettingsReset'),
+      dashSrc.indexOf('async function handleFeaturesList'),
+    );
+    assert.ok(resetHandler.includes('delete config.claude'),
+      'settings reset must not repopulate deprecated config.claude defaults');
 
     const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
     assert.ok(!settingsSrc.includes('set-permissionMode'),
@@ -11639,6 +11683,37 @@ async function testConfigAndPlaybooks() {
       'update should perform the single controlled restart after code sync');
     assert.ok(src.includes('isUpgrade && skipStart') && /isUpgrade && skipStart\)\s*return/.test(src),
       'init should support an internal skip-start mode (early return) for update while preserving direct init --force restart behavior');
+  });
+
+  await test('bin/minions restart suppresses dashboard auto-open only for a recent browser tab', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const restartBlock = src.slice(src.indexOf("} else if (cmd === 'restart')"), src.indexOf("} else if (cmd === 'nuke'"));
+    const initStart = src.indexOf('function init()');
+    const initEnd = src.indexOf('// ─── Version command', initStart);
+    const initBlock = initStart >= 0 && initEnd > initStart ? src.slice(initStart, initEnd) : '';
+    assert.ok(src.includes('function hasRecentDashboardBrowserTab'),
+      'CLI should check browser-tab presence separately from dashboard port liveness');
+    assert.ok(restartBlock.includes('const suppressDashboardOpen = dashWasUp && hasRecentDashboardBrowserTab(MINIONS_HOME)'),
+      'restart should suppress browser auto-open only when the old dashboard had a recent browser tab');
+    assert.ok(restartBlock.includes('spawnDashboard(suppressDashboardOpen)') && !restartBlock.includes('spawnDashboard(dashWasUp)'),
+      'restart should not treat a listening dashboard port by itself as an existing browser tab');
+    assert.ok(initBlock.includes('const suppressDashboardOpen = dashWasUp && hasRecentDashboardBrowserTab(MINIONS_HOME)') &&
+              initBlock.includes('spawnDashboard(suppressDashboardOpen)'),
+      'direct force-upgrade init should use the same cold-start dashboard behavior as restart/update');
+  });
+
+  await test('dashboard records browser tab presence from status polling for restart decisions', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const stateSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'state.js'), 'utf8');
+    assert.ok(dashboardSrc.includes('DASHBOARD_BROWSER_PRESENCE_PATH') &&
+              dashboardSrc.includes('_recordDashboardBrowserPresenceFromRequest(req)'),
+      'dashboard status requests should update the browser-presence state file');
+    assert.ok(dashboardSrc.includes("path: '/api/browser-presence'"),
+      'dashboard should expose browser-presence endpoints for close and diagnostic heartbeats');
+    assert.ok(stateSrc.includes('X-Minions-Dashboard-Tab') && stateSrc.includes('DASHBOARD_TAB_ID'),
+      'browser status polling should identify the active dashboard tab');
+    assert.ok(stateSrc.includes("window.addEventListener('pagehide'") && stateSrc.includes('_sendDashboardPresence(true)'),
+      'browser tab close/navigation should clear presence promptly');
   });
 
   await test('bin/minions update handles post-update init timeout without raw shell shim failure', () => {
@@ -38975,62 +39050,70 @@ async function testAutoRecoveryAndAtomicity() {
       'Flush should be wired to process signal or server close event');
   });
 
-  // ── TTL-based doc-session eviction (P-e4a6b9d3) ────────────────────────────
-  await test('DOC_SESSION_TTL_MS constant comes from ENGINE_DEFAULTS', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('DOC_SESSION_TTL_MS'), 'Should define DOC_SESSION_TTL_MS constant');
-    assert.ok(src.includes('shared.ENGINE_DEFAULTS.docSessionTtlMs'), 'TTL should come from shared ENGINE_DEFAULTS');
+  // ── Doc-chat sessions are non-expiring (parity with CC tabs) ──────────────
+  await test('docSessionTtlMs removed from ENGINE_DEFAULTS — doc sessions do not auto-expire', () => {
+    assert.ok(!('docSessionTtlMs' in shared.ENGINE_DEFAULTS),
+      'ENGINE_DEFAULTS.docSessionTtlMs should be removed — doc-chat sessions are non-expiring');
   });
 
-  await test('resolveSession evicts doc sessions older than TTL', () => {
+  await test('dashboard.js does not define a DOC_SESSION_TTL_MS constant', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(!src.includes('DOC_SESSION_TTL_MS'),
+      'DOC_SESSION_TTL_MS constant must not exist — doc-chat sessions are non-expiring');
+  });
+
+  await test('resolveSession only checks prompt-hash for doc sessions (no TTL, no turnCount cap)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
-    assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
-    assert.ok(resolveFn.includes('_sessionExpired'), 'resolveSession should use shared expiry helper');
-    assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+    assert.ok(resolveFn.includes('_promptHash'), 'resolveSession must still check prompt hash (correctness)');
+    assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should still drop sessions on prompt-hash mismatch');
+    assert.ok(!resolveFn.includes('_sessionExpired'),
+      'resolveSession must NOT call _sessionExpired for doc sessions — non-expiring');
+    assert.ok(!resolveFn.includes('CC_SESSION_MAX_TURNS'),
+      'resolveSession must NOT cap doc sessions by turnCount — non-expiring');
   });
 
-  await test('doc-session store prunes by TTL and max entries outside access path', () => {
+  await test('doc-session store keeps LRU cap and periodic prune (no TTL filter)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('DOC_SESSION_MAX_ENTRIES') && src.includes('shared.ENGINE_DEFAULTS.docSessionMaxEntries'),
-      'Doc sessions should have a configured max-entry cap');
+      'Doc sessions should still have a configured max-entry LRU cap');
     assert.ok(src.includes('function pruneDocSessions') && src.includes('_docSessionPruneTimer'),
-      'Doc sessions should be pruned periodically, not only when resolveSession touches a key');
+      'Doc sessions should still have a periodic prune sweep (prompt-hash + LRU only)');
     // CRLF-tolerant: dashboard.js may be checked out with either line ending.
     assert.ok(/pruneDocSessions\(\);\r?\n\s+const obj = \{\};/.test(src),
       'persistDocSessions should prune before serializing sessions to disk');
   });
 
-  await test('resolveSession TTL check comes after turnCount check', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
-    const turnIdx = resolveFn.indexOf('CC_SESSION_MAX_TURNS');
-    const ttlIdx = resolveFn.indexOf('DOC_SESSION_TTL_MS');
-    assert.ok(turnIdx > 0, 'Should have turnCount check');
-    assert.ok(ttlIdx > 0, 'Should have TTL check');
-    assert.ok(turnIdx < ttlIdx, 'turnCount check should come before TTL check');
-  });
-
-  await test('startup loading filters out expired doc sessions by TTL', () => {
+  await test('startup loader does not filter doc sessions by TTL or turnCount', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docLoadMatch = src.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
     assert.ok(docLoadMatch, 'Should have doc session startup loader');
-    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Startup loader should filter by TTL');
-    assert.ok(docLoadMatch[0].includes('lastActiveAt'), 'Startup loader should check lastActiveAt');
+    assert.ok(!docLoadMatch[0].includes('_sessionExpired'),
+      'Startup loader must NOT filter by TTL — non-expiring sessions');
+    assert.ok(!docLoadMatch[0].includes('CC_SESSION_MAX_TURNS'),
+      'Startup loader must NOT filter by turnCount cap — non-expiring sessions');
   });
 
-  await test('TTL eviction in resolveSession calls persistDocSessions directly (not debounced)', () => {
+  await test('prune timer no longer derives interval from TTL', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
-    // The eviction path should call persistDocSessions() directly for immediate consistency
-    assert.ok(resolveFn.includes('persistDocSessions()'), 'TTL eviction should call persistDocSessions() directly');
+    const timerMatch = src.match(/const _docSessionPruneTimer = setInterval[\s\S]*?\)\s*;/);
+    assert.ok(timerMatch, 'Should still have _docSessionPruneTimer');
+    assert.ok(!timerMatch[0].includes('DOC_SESSION_TTL_MS'),
+      'Prune timer must not reference DOC_SESSION_TTL_MS (constant is gone)');
   });
 
-  await test('sessions within TTL window are not evicted by resolveSession', () => {
+  await test('prompt-hash mismatch eviction in resolveSession persists immediately', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
-    assert.ok(resolveFn.includes('_sessionExpired'), 'Should delegate TTL calculation to the shared expiry helper');
-    assert.ok(resolveFn.includes('return s;'), 'Should return the active session record when still within TTL');
+    assert.ok(resolveFn.includes('persistDocSessions()'),
+      'Prompt-hash eviction should call persistDocSessions() directly for immediate consistency');
+  });
+
+  await test('valid doc sessions are returned by resolveSession', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    assert.ok(resolveFn.includes('return s;'),
+      'resolveSession should return the session record when prompt-hash matches');
   });
 
   // ── Skip disk re-read when client content is fresh (P-f7b3c5e1) ────────────
@@ -43830,13 +43913,15 @@ async function testCCMultiTab() {
       'ccSessionValid must NOT cap by turnCount — sessions live until user closes the tab');
   });
 
-  await test('resolveSession checks TTL for doc sessions but not CC sessions', () => {
+  await test('resolveSession does not check TTL for either CC or doc sessions', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
-    assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
-    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'resolveSession must not reference CC TTL constant');
+    assert.ok(!body.includes('DOC_SESSION_TTL_MS'), 'resolveSession must not reference doc TTL constant — non-expiring');
+    assert.ok(!body.includes('CC_SESSION_TTL_MS'), 'resolveSession must not reference CC TTL constant — non-expiring');
     assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
+    assert.ok(!body.includes('_sessionExpired'),
+      'resolveSession must not call _sessionExpired — both CC and doc sessions are non-expiring');
   });
 
   await test('CC session restored on startup without TTL filtering', () => {
@@ -43848,10 +43933,13 @@ async function testCCMultiTab() {
       'CC startup loader must NOT reference a TTL constant');
   });
 
-  await test('doc sessions restored on startup with TTL filtering', () => {
+  await test('doc sessions restored on startup without TTL filtering', () => {
     const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
     assert.ok(docLoadMatch, 'Should have doc session startup loader');
-    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Doc session loader should filter expired sessions by TTL');
+    assert.ok(!docLoadMatch[0].includes('_sessionExpired'),
+      'Doc session startup loader must NOT filter by TTL — sessions are non-expiring');
+    assert.ok(!docLoadMatch[0].includes('DOC_SESSION_TTL_MS'),
+      'Doc session startup loader must NOT reference DOC_SESSION_TTL_MS (constant is gone)');
   });
 
   await test('prompt hash stored with tab session for invalidation', () => {

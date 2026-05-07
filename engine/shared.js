@@ -1029,9 +1029,8 @@ const ENGINE_DEFAULTS = {
   mainBranchCacheMaxEntries: 100, // bound repo/branch detection cache in long-lived dashboard/engine processes
   removeWorktreeFailureTtlMs: 24 * 60 * 60 * 1000, // stale failed paths are forgotten after a day
   removeWorktreeFailureMaxEntries: 1000, // bound failed-worktree retry suppression cache
-  ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
-  docSessionTtlMs: 7 * 24 * 60 * 60 * 1000, // 7d — longer-lived doc sessions, still bounded
-  docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity
+  ccMaxTurns: 50, // max tool-use turns per CC/doc-chat call before CLI stops (per response, not per session)
+  docSessionMaxEntries: 200, // cap doc-chat session map/disk store by least-recent activity (LRU; sessions are non-expiring otherwise)
   ccLiveStreamMaxAgeMs: 30 * 60 * 1000, // hard cap reconnect buffers if abort/cleanup stalls
   metricsFlushIntervalMs: 10000, // batch trackEngineUsage writes to metrics.json — flushed every 10s instead of per-call to cut lock contention and dashboard mtime churn
   maxLlmRawBytes: 256 * 1024, // keep only a bounded stdout tail from direct Claude calls
