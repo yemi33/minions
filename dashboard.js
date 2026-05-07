@@ -7298,6 +7298,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-output(?:\?.*)?$/, desc: 'Tail live output for a working agent (alias for /live)', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, desc: 'Get detailed agent info', handler: handleAgentDetail },
     { method: 'GET', path: /^\/api\/dispatch\/([\w.-]+)\/completion-report$/, desc: 'Read structured completion report for a dispatch', handler: (req, res, match) => {

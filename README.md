@@ -127,21 +127,31 @@ minions work "Explore the codebase and document the architecture"
 | `minions init` | Bootstrap `~/.minions/` with default agents and config |
 | `minions update` | Update to latest version (npm update + apply) |
 | `minions version` | Show installed vs package version |
+| `minions doctor` | Check prerequisites and runtime health |
 | `minions scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
 | `minions add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
 | `minions remove <dir-or-name> [--keep-data \| --purge --force]` | Unlink a project: cancels pending work items, drains dispatch + kills active agents, cleans worktrees, disables linked schedules, archives `projects/<name>/` to `projects/.archived/<name>-YYYYMMDD/`. Use `--keep-data` to leave the data dir in place, or `--purge --force` to delete it. |
 | `minions list` | List all linked projects with descriptions |
+| `minions restart` | Start engine and dashboard together (recommended after reboot) |
 | `minions start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
 | `minions stop` | Stop the engine |
 | `minions status` | Show agents, projects, dispatch queue, quality metrics |
 | `minions pause` / `resume` | Pause/resume dispatching |
 | `minions dispatch` | Force a dispatch cycle |
 | `minions discover` | Dry-run work discovery |
+| `minions queue` | Show dispatch queue (pending, active, completed) |
+| `minions sources` | Show work source status per project |
 | `minions work <title> [opts]` | Add to central work queue |
 | `minions spawn <agent> <prompt>` | Manually spawn an agent |
 | `minions plan <file\|text> [proj]` | Run a plan |
+| `minions kill` | Kill all active agents and reset their dispatches to pending |
+| `minions complete <dispatch-id>` | Manually mark a dispatch as completed |
+| `minions config set-cli <R> [--model M]` | Persist the default runtime/model without starting the engine |
+| `minions mcp-sync` | Sync MCP servers from `~/.claude.json` |
 | `minions cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
 | `minions dash` | Open dashboard (starts if not already running, port 7331) |
+| `minions nuke --confirm` | Factory reset runtime state and reset config to defaults |
+| `minions uninstall --confirm` | Remove Minions state and uninstall the npm package |
 
 You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.minions/dashboard.js`, etc.
 
