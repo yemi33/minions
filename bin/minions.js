@@ -59,22 +59,18 @@ function readEnginePid(minionsHome) {
 }
 
 /**
- * Force-kill a process and its descendants by PID. The /T flag on taskkill
- * recurses into the process tree on Windows, which `process.kill()` does not.
- * On POSIX, walk pgrep first so spawned children die before the parent.
+ * Force-kill a single process by PID — does NOT recurse into children.
+ * This preserves the engine→agent invariant: agents are independent processes
+ * spawned as children of the engine, but they must survive engine restarts so
+ * they can be re-attached on next start (CLAUDE.md timeouts/liveness section).
+ * Tree-kill (`taskkill /T`, `pgrep -P` walk) would orphan in-flight work.
  */
-function killPidTree(pid) {
+function killPidOnly(pid) {
   if (!pid || pid === process.pid) return;
   try {
     if (process.platform === 'win32') {
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true });
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true });
     } else {
-      try {
-        const out = execSync(`pgrep -P ${pid}`, { encoding: 'utf8', timeout: 3000 });
-        for (const c of out.split(/\r?\n/).map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0)) {
-          try { process.kill(c, 'SIGKILL'); } catch {}
-        }
-      } catch {}
       try { process.kill(pid, 'SIGKILL'); } catch {}
     }
   } catch {}
@@ -644,8 +640,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   const oldEnginePid = readEnginePid(MINIONS_HOME);
   // 1. Graceful stop — short timeout so a hung engine can't block what follows.
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000, windowsHide: true }); } catch {}
-  // 2. Force-kill the recorded engine PID and its tree (most reliable — independent of cmdline matching).
-  killPidTree(oldEnginePid);
+  // 2. Force-kill the recorded engine PID (NOT the tree — agent children must
+  //    survive so the new engine can re-attach them via PID files).
+  killPidOnly(oldEnginePid);
   // 3. Free dashboard port (catches orphan dashboards with no recorded PID).
   killByPort(7331);
   // 4. Belt-and-suspenders cmdline match for anything still alive.
