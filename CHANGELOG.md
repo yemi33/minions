@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1762 (2026-05-07)
+
+### Fixes
+- detach agent process group so engine death never kills agents
+
 ## 0.1.1761 (2026-05-07)
 
 ### Fixes
