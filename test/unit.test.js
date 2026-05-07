@@ -34799,11 +34799,26 @@ async function testAuxModuleBugFixes() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveWorkItemsCreateTarget'), src.indexOf('function linkPullRequestForTracking'));
     const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
-    assert.ok(src.includes("No projects configured"), 'Should return error when no projects configured');
+    assert.ok(src.includes('formatUnknownProjectError'), 'Should share unknown-project error formatting');
     assert.ok(resolveFn.includes('projects.length === 1'),
       'project-less create should target the only configured project');
     assert.ok(createFn.includes('resolveWorkItemsCreateTarget(body.project)'),
       'create handler should use the shared target resolver');
+  });
+
+  await test('dashboard.js: handleWorkItemsCreate rejects unknown explicit project names', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const sharedLocal = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    const projects = [
+      { name: 'alpha', localPath: path.join(sharedLocal.MINIONS_DIR, 'alpha') },
+      { name: 'beta', localPath: path.join(sharedLocal.MINIONS_DIR, 'beta') },
+    ];
+    const target = dashboard._resolveWorkItemsCreateTarget('alpah', projects);
+    assert.ok(target.error, 'unknown explicit project should return an error');
+    assert.ok(/Project "alpah" not found/.test(target.error), 'error should identify the bad project name');
+    assert.ok(/Known projects: alpha, beta/.test(target.error), 'error should list known projects');
+    assert.ok(!target.project, 'unknown project must not fall back to the first configured project');
+    assert.ok(!target.wiPath, 'unknown project must not provide a write path');
   });
 
   await test('dashboard.js: trigger-verify handler uses safeJson for plan reading', () => {
@@ -49316,6 +49331,56 @@ async function testAdoManualPrLinkMetadataRace() {
     }
   });
 
+  await test('manual PR link helper rejects unknown explicit project names', () => {
+    const restore = createTestMinionsDir();
+    const dashboardPath = path.join(MINIONS_DIR, 'dashboard.js');
+    try {
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+      const dashboard = require('../dashboard');
+      const project = {
+        name: 'ado-demo',
+        repoHost: 'ado',
+        adoOrg: 'org',
+        adoProject: 'proj',
+        repoName: 'repo',
+        localPath: testDir,
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(testShared.projectPrPath(project), []);
+      const centralPrPath = path.join(testShared.MINIONS_DIR, 'pull-requests.json');
+      testShared.safeWrite(centralPrPath, []);
+
+      let error = null;
+      try {
+        dashboard._linkPullRequestForTracking({
+          url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/77',
+          project: 'ado-demoo',
+          autoObserve: true,
+        }, config);
+      } catch (e) {
+        error = e;
+      }
+
+      assert.ok(error, 'unknown explicit project should throw');
+      assert.strictEqual(error.statusCode, 400);
+      assert.ok(/Project "ado-demoo" not found/.test(error.message), 'error should identify the bad project name');
+      assert.ok(/Known projects: ado-demo/.test(error.message), 'error should list known projects');
+      assert.deepStrictEqual(testShared.safeJson(centralPrPath), [], 'unknown project must not fall back to central PR tracking');
+      assert.deepStrictEqual(testShared.safeJson(testShared.projectPrPath(project)), [], 'unknown project must not write any project PR file');
+    } finally {
+      restore();
+      try { delete require.cache[require.resolve(dashboardPath)]; } catch {}
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
   await test('ADO pollPrStatus self-heals placeholder manual-link metadata and missing branch gate', async () => {
     const restore = createTestMinionsDir();
     const origFetch = globalThis.fetch;
@@ -58641,11 +58706,12 @@ async function testDashboardPureHelpers() {
       'root fallback must point at work-items.json');
   });
 
-  await test('_resolveWorkItemsCreateTarget: zero projects + explicit name returns "No projects configured" error', () => {
+  await test('_resolveWorkItemsCreateTarget: zero projects + explicit name returns unknown-project error', () => {
     const { _resolveWorkItemsCreateTarget } = dashboard;
     const result = _resolveWorkItemsCreateTarget('ghost-project', []);
     assert.ok(result.error, 'must surface error when name supplied but no projects exist');
-    assert.ok(/No projects configured/i.test(result.error));
+    assert.ok(/Project "ghost-project" not found/.test(result.error));
+    assert.ok(/Known projects: \(none configured\)/.test(result.error));
   });
 
   await test('_resolveWorkItemsCreateTarget: single project + matching name resolves to that project', () => {
@@ -58690,19 +58756,18 @@ async function testDashboardPureHelpers() {
     assert.ok(result.wiPath.endsWith('work-items.json'));
   });
 
-  await test('_resolveWorkItemsCreateTarget: unknown name with projects falls back to projects[0]', () => {
+  await test('_resolveWorkItemsCreateTarget: unknown name with projects returns error', () => {
     const { _resolveWorkItemsCreateTarget } = dashboard;
-    // Documents actual behavior: when a project name is supplied but doesn't match,
-    // the helper currently falls back to projects[0] rather than returning an error.
-    // executeCCActions performs strict unknown-project rejection upstream.
     const projects = [
       { name: 'alpha', localPath: '/tmp/alpha' },
       { name: 'beta', localPath: '/tmp/beta' },
     ];
     const result = _resolveWorkItemsCreateTarget('does-not-exist', projects);
-    assert.strictEqual(result.project, projects[0],
-      'unknown name + non-empty projects falls back to projects[0]');
-    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(projects[0]));
+    assert.ok(result.error, 'unknown explicit project must be rejected');
+    assert.ok(/Project "does-not-exist" not found/.test(result.error));
+    assert.ok(/Known projects: alpha, beta/.test(result.error));
+    assert.ok(!result.project, 'unknown name must not fall back to projects[0]');
+    assert.ok(!result.wiPath, 'unknown name must not return a write path');
   });
 
   await test('_resolveWorkItemsCreateTarget: trims whitespace-only name as empty', () => {
