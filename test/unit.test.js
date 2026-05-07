@@ -47798,6 +47798,74 @@ async function testSyntheticProjectAndHardPinFallback() {
       }
     }
   });
+
+  await test('central plan-to-prd dispatch honors work item project for PRD filename (#2167)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const firstProjectPath = path.join(testDir, 'bohemia-marketplace');
+      const targetProjectPath = path.join(testDir, 'constellation');
+      fs.mkdirSync(firstProjectPath, { recursive: true });
+      fs.mkdirSync(targetProjectPath, { recursive: true });
+
+      fs.mkdirSync(path.join(testDir, 'playbooks'), { recursive: true });
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'plan-to-prd.md'),
+        'project={{project_name}}\npath={{project_path}}\nprd={{prd_filename}}\nlower={{project_name_lower}}');
+      fs.writeFileSync(path.join(testDir, 'playbooks', 'work-item.md'), 'fallback {{item_id}}');
+      fs.writeFileSync(path.join(testDir, 'plans', 'constellation-plan.md'), '# Constellation plan\n');
+      fs.writeFileSync(path.join(testDir, 'routing.md'), [
+        '# Work Routing',
+        '| Work Type | Preferred | Fallback |',
+        '|-----------|-----------|----------|',
+        '| plan-to-prd | lambert | lambert |',
+        '',
+      ].join('\n'));
+
+      fs.writeFileSync(path.join(testDir, 'work-items.json'), JSON.stringify([
+        {
+          id: 'W-target-project-plan',
+          status: 'pending',
+          type: 'plan-to-prd',
+          title: 'Generate constellation PRD',
+          project: 'constellation',
+          planFile: 'constellation-plan.md',
+        },
+      ]));
+
+      const config = {
+        projects: [
+          { name: 'bohemia-marketplace', localPath: firstProjectPath, repoHost: 'github', repoName: 'bohemia-marketplace' },
+          { name: 'constellation', localPath: targetProjectPath, repoHost: 'github', repoName: 'constellation' },
+        ],
+        agents: { lambert: { name: 'Lambert', role: 'Analyst' } },
+        engine: { allowTempAgents: false },
+      };
+      fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify(config));
+
+      const freshQueries = require(path.join(MINIONS_DIR, 'engine', 'queries.js'));
+      freshQueries.invalidateDispatchCache();
+
+      const engineModule = require(path.join(MINIONS_DIR, 'engine.js'));
+      const newWork = engineModule.discoverCentralWorkItems(config);
+
+      assert.strictEqual(newWork.length, 1, 'Should discover the targeted central plan-to-prd item');
+      assert.strictEqual(newWork[0].meta.project.name, 'constellation',
+        'dispatch meta should use the project requested by the work item');
+      assert.strictEqual(newWork[0].meta.project.localPath, targetProjectPath,
+        'dispatch meta should carry the requested project localPath');
+      assert.ok(newWork[0].prompt.includes('project=constellation'),
+        'prompt should render project vars from the requested project');
+      assert.ok(newWork[0].prompt.includes('prd=constellation-'),
+        'generated PRD filename should be prefixed by the requested project');
+      assert.ok(!newWork[0].prompt.includes('prd=bohemia-marketplace-'),
+        'generated PRD filename must not be prefixed by the first configured project');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/queries', '../engine/cooldown', '../engine/routing', '../engine/playbook', '../engine.js']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
 }
 
 
