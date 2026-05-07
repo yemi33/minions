@@ -66,7 +66,17 @@ function ensureConfiguredProjectStateFiles() {
     const root = p.localPath ? path.resolve(p.localPath) : null;
     if (!root || !fs.existsSync(root)) continue;
     try {
-      shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+      const state = shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+      if (state.migrated.length > 0 || state.removedLegacy.length > 0 || state.legacyDirRemoved) {
+        const parts = [];
+        if (state.migrated.length > 0) parts.push(`merged ${state.migrated.join(', ')}`);
+        if (state.removedLegacy.length > 0) parts.push(`removed ${state.removedLegacy.join(', ')}`);
+        if (state.legacyDirRemoved) parts.push(`removed legacy .minions dir`);
+        console.log(`[dashboard] migrated project state for "${p.name}" → projects/${p.name} (${parts.join('; ')})`);
+      }
+      if (state.legacyDirRemoveError) {
+        console.warn(`[dashboard] failed to remove legacy .minions dir for "${p.name}": ${state.legacyDirRemoveError}`);
+      }
     } catch (e) {
       console.warn(`[dashboard] project state migration failed for "${p.name}": ${e.message}`);
     }

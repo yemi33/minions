@@ -14442,6 +14442,8 @@ async function testProjectPathHelpers() {
       assert.ok(!fs.existsSync(path.join(repo, '.minions')), 'project-local .minions must not be created');
       assert.ok(result.created.includes('work-items.json'));
       assert.ok(result.created.includes('pull-requests.json'));
+      assert.strictEqual(result.legacyDirRemoved, false, 'no legacy dir → no removal');
+      assert.strictEqual(result.legacyDirRemoveError, null, 'no error when nothing to remove');
     } finally { restore(); }
   });
 
@@ -14472,6 +14474,7 @@ async function testProjectPathHelpers() {
       assert.ok(result.migrated.includes('work-items.json'));
       assert.ok(result.migrated.includes('pull-requests.json'));
       assert.strictEqual(result.legacyDirRemoved, true, 'legacy project-local .minions dir should be removed');
+      assert.strictEqual(result.legacyDirRemoveError, null, 'no error on successful removal');
       assert.ok(!fs.existsSync(legacyDir), 'legacy project-local .minions dir should be removed after known files move');
     } finally { restore(); }
   });

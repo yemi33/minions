@@ -1648,12 +1648,15 @@ function sameResolvedPath(a, b) {
 
 function removeLegacyProjectStateDir(project) {
   const dir = legacyProjectStateDir(project);
-  if (!dir) return false;
-  if (sameResolvedPath(dir, MINIONS_DIR)) return false;
+  if (!dir) return { removed: false, error: null };
+  if (sameResolvedPath(dir, MINIONS_DIR)) return { removed: false, error: null };
+  if (!fs.existsSync(dir)) return { removed: false, error: null };
   try {
     fs.rmSync(dir, { recursive: true, force: true });
-    return true;
-  } catch { return false; }
+    return { removed: true, error: null };
+  } catch (err) {
+    return { removed: false, error: err && err.message ? err.message : String(err) };
+  }
 }
 
 function ensureProjectStateFiles(project, options = {}) {
@@ -1663,7 +1666,7 @@ function ensureProjectStateFiles(project, options = {}) {
     { name: 'pull-requests.json', centralPath: projectPrPath(project) },
     { name: 'work-items.json', centralPath: projectWorkItemsPath(project) },
   ];
-  const result = { created: [], migrated: [], removedLegacy: [], legacyDirRemoved: false };
+  const result = { created: [], migrated: [], removedLegacy: [], legacyDirRemoved: false, legacyDirRemoveError: null };
 
   projectStateDirEnsure(project);
   for (const file of files) {
@@ -1696,7 +1699,11 @@ function ensureProjectStateFiles(project, options = {}) {
     }
   }
 
-  if (removeLegacy) result.legacyDirRemoved = removeLegacyProjectStateDir(project);
+  if (removeLegacy) {
+    const res = removeLegacyProjectStateDir(project);
+    result.legacyDirRemoved = res.removed;
+    result.legacyDirRemoveError = res.error;
+  }
   return result;
 }
 
