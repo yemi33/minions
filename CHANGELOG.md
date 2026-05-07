@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1764 (2026-05-07)
+
+### Other
+- Speed up meetings pagination
+
 ## 0.1.1762 (2026-05-07)
 
 ### Fixes
