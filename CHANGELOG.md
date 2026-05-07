@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1773 (2026-05-07)
+
+### Features
+- fix doc chat sticky scroll (#2176)
+- fix live output route and CLI docs (#2172)
+- make API project resolution strict (#2169)
+- fix copilot cc resume context (#2166)
+
 ## 0.1.1771 (2026-05-07)
 
 ### Features
