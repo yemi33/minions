@@ -103,15 +103,15 @@ function _ccActiveTab() {
 
 // Build a plain-text transcript from a tab's stored messages — sent on every
 // initial request so the server can carry it over if the session has to reset
-// (runtime switch, system-prompt change). Last 20 user/assistant turns only;
-// system/action rows are skipped because they're UI artifacts, not dialog.
+// (runtime switch, system-prompt change) or if the previous turn has local
+// action results the runtime session never saw.
 var CC_TRANSCRIPT_MAX_TURNS = 20;
 function _ccBuildTranscript(tab) {
   if (!tab || !Array.isArray(tab.messages) || tab.messages.length === 0) return [];
   var out = [];
   for (var i = 0; i < tab.messages.length; i++) {
     var m = tab.messages[i];
-    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    if (!m || (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'action' && m.role !== 'system')) continue;
     var html = typeof m.html === 'string' ? m.html : '';
     var tmp = document.createElement('div');
     tmp.innerHTML = html;
@@ -745,7 +745,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       if (!isReconnect && res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
         activeTab._429retries = (activeTab._429retries || 0) + 1;
         await new Promise(function(r) { setTimeout(r, 1500); });
-        return await _ccConsumeStream({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }, false);
+        return await _ccConsumeStream({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null, transcript: _ccBuildTranscript(activeTab) }, false);
       }
       activeTab._429retries = 0;
       var errText = await res.text();

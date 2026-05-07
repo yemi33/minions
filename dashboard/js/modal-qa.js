@@ -28,6 +28,7 @@ let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
 const QA_QUEUE_CAP = 10; // max queued messages
 const QA_STREAM_STALL_MS = 6 * 60 * 1000; // allow the full doc-chat timeout before treating heartbeat-only streams as stalled
+const QA_TRANSCRIPT_MAX_TURNS = 20;
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 
 const QA_STICKY_BOTTOM_PX = 80;
@@ -95,6 +96,40 @@ function _saveQaSessions() {
 
 function _qaCloneQueue(queue) {
   return Array.isArray(queue) ? queue.map(item => ({ ...item })) : [];
+}
+
+function _qaBuildTranscript(history, currentMessage) {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const current = typeof currentMessage === 'string' ? currentMessage.trim() : '';
+  const out = [];
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i];
+    if (!m || (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'action' && m.role !== 'system')) continue;
+    const text = typeof m.text === 'string' ? m.text.trim() : '';
+    if (!text) continue;
+    if (current && m.role === 'user' && text === current && i === history.length - 1) continue;
+    out.push({ role: m.role, text });
+  }
+  return out.slice(-QA_TRANSCRIPT_MAX_TURNS);
+}
+
+function _qaSummarizeActionContext(actions, actionResults) {
+  if (!Array.isArray(actions) || actions.length === 0) return '';
+  const lines = [];
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i] || {};
+    const result = Array.isArray(actionResults) ? actionResults[i] : null;
+    const type = action.type || 'action';
+    const subject = result?.id || action.id || action.title || action.file || action.target || action.endpoint || '';
+    if (result?.error) {
+      lines.push(`${type}${subject ? ' ' + subject : ''} failed: ${result.error}`);
+    } else if (result?.ok || action._serverExecuted) {
+      lines.push(`${type}${subject ? ' ' + subject : ''} completed${result?.duplicate ? ' (duplicate)' : ''}${result?.warning ? ': ' + result.warning : ''}`);
+    } else {
+      lines.push(`${type}${subject ? ' ' + subject : ''} emitted`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function _qaGetRuntime(key) {
@@ -609,6 +644,7 @@ async function _processQaMessage(message, selection, opts) {
         filePath: capturedFilePath || null,
         model: window._lastStatus?.autoMode?.ccModel || undefined,
         contentHash: capturedDocContext.content ? (function(s) { const m = Math.floor(s.length / 2); return s.length + ':' + s.charCodeAt(0) + ':' + s.charCodeAt(m) + ':' + s.charCodeAt(s.length - 1); })(capturedDocContext.content) : undefined,
+        transcript: _qaBuildTranscript(runtime.history, message),
       }),
     });
     let sessionDocContext = { ...capturedDocContext };
@@ -692,20 +728,21 @@ async function _processQaMessage(message, selection, opts) {
           if (rawErrorHtml) _qaInsertBeforeQueued(tmp, rawErrorHtml);
         });
 
-        runtime.history.push({ role: 'user', text: message });
-        runtime.history.push({ role: 'assistant', text: finalText || '' });
-        if (_qaIsActiveSession(sessionKey)) _qaHistory = runtime.history.slice();
-
         _qaNotifySidebar(capturedFilePath);
+        runtime.history.push({ role: 'user', text: message });
+        runtime.history.push({ role: 'assistant', text: bodyText || finalText || '' });
         if (evt.actions && evt.actions.length > 0) {
           if (evt.actionResults && typeof _tagServerExecuted === 'function') _tagServerExecuted(evt.actions, evt.actionResults);
           for (const action of evt.actions) await ccExecuteAction(action);
+          const actionContext = _qaSummarizeActionContext(evt.actions, evt.actionResults);
+          if (actionContext) runtime.history.push({ role: 'action', text: actionContext });
         } else if (evt.actionParseError) {
           const warning = '<div class="modal-qa-a" style="color:var(--red)">Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>';
           updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
             _qaInsertBeforeQueued(tmp, warning);
           });
         }
+        if (_qaIsActiveSession(sessionKey)) _qaHistory = runtime.history.slice();
 
         if (evt.edited && evt.content) {
           const display = evt.content.replace(/^---[\s\S]*?---\n*/m, '');

@@ -1279,10 +1279,36 @@ function _readCcTabSessions({ prune = true } = {}) {
 
 const CC_CARRYOVER_MAX_TURNS = 20;
 const CC_CARRYOVER_PER_MSG_CHARS = 2000;
+const CC_TRANSCRIPT_DIALOG_ROLES = new Set(['user', 'assistant']);
+const CC_TRANSCRIPT_CONTEXT_ROLES = new Set(['user', 'assistant', 'action', 'system']);
 
-function _buildTranscriptCarryover(transcript, { previousRuntime, currentMessage } = {}) {
+function _normalizeTranscriptRole(role) {
+  const value = String(role || '').toLowerCase();
+  return CC_TRANSCRIPT_CONTEXT_ROLES.has(value) ? value : null;
+}
+
+function _transcriptHasCarryoverContext(transcript, { outOfBandOnly = false, currentMessage } = {}) {
+  if (!Array.isArray(transcript)) return false;
+  const current = typeof currentMessage === 'string' ? currentMessage.trim() : '';
+  return transcript.some(m => {
+    const role = _normalizeTranscriptRole(m?.role);
+    if (!role || typeof m.text !== 'string' || !m.text.trim()) return false;
+    if (outOfBandOnly && CC_TRANSCRIPT_DIALOG_ROLES.has(role)) return false;
+    return !(current && role === 'user' && m.text.trim() === current);
+  });
+}
+
+function _buildTranscriptCarryover(transcript, { previousRuntime, currentMessage, outOfBandOnly = false } = {}) {
   if (!Array.isArray(transcript) || transcript.length === 0) return '';
-  let filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  let filtered = transcript
+    .map(m => {
+      const role = _normalizeTranscriptRole(m?.role);
+      return role && typeof m?.text === 'string' && m.text.trim()
+        ? { role, text: m.text }
+        : null;
+    })
+    .filter(Boolean);
+  if (outOfBandOnly) filtered = filtered.filter(m => !CC_TRANSCRIPT_DIALOG_ROLES.has(m.role));
   const current = typeof currentMessage === 'string' ? currentMessage.trim() : '';
   if (current && filtered.length > 0) {
     const last = filtered[filtered.length - 1];
@@ -1291,11 +1317,19 @@ function _buildTranscriptCarryover(transcript, { previousRuntime, currentMessage
   if (filtered.length === 0) return '';
   const recent = filtered.slice(-CC_CARRYOVER_MAX_TURNS);
   const truncated = filtered.length > recent.length;
-  const header = previousRuntime
-    ? `--- Previous conversation (carried over from ${previousRuntime} session) ---`
-    : `--- Previous conversation (carried over) ---`;
+  const header = outOfBandOnly
+    ? `--- Previous out-of-band UI/server events (carried over) ---`
+    : previousRuntime
+      ? `--- Previous conversation (carried over from ${previousRuntime} session) ---`
+      : `--- Previous conversation (carried over) ---`;
   const lines = recent.map(m => {
-    const who = m.role === 'user' ? 'User' : 'Assistant';
+    const who = m.role === 'user'
+      ? 'User'
+      : m.role === 'assistant'
+        ? 'Assistant'
+        : m.role === 'action'
+          ? 'Action result'
+          : 'System note';
     let text = m.text.trim();
     if (text.length > CC_CARRYOVER_PER_MSG_CHARS) text = text.slice(0, CC_CARRYOVER_PER_MSG_CHARS) + '… [truncated]';
     return `${who}: ${text}`;
@@ -2574,12 +2608,14 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
   const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
+  const resumeHasOutOfBandCarryover = !!sessionId && _transcriptHasCarryoverContext(transcript, { outOfBandOnly: true, currentMessage: message });
+  const freshNeedsCarryover = _transcriptHasCarryoverContext(transcript, { currentMessage: message });
 
-  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false, outOfBandOnly = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
     if (includeCarryover) {
-      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message, outOfBandOnly });
       if (carryover) parts.push(carryover);
     }
     parts.push(message);
@@ -2590,7 +2626,11 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLM(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
+    const p1 = llm.callLLM(buildPrompt({
+      includePreamble: false,
+      includeCarryover: resumeNeedsCarryover || resumeHasOutOfBandCarryover,
+      outOfBandOnly: !resumeNeedsCarryover,
+    }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
     });
@@ -2627,7 +2667,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   }
 
   // Attempt 2: fresh session (include preamble for full context)
-  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
+  const freshPrompt = buildPrompt({ includeCarryover: freshNeedsCarryover });
   const p2 = llm.callLLM(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -2675,12 +2715,14 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
   const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
+  const resumeHasOutOfBandCarryover = !!sessionId && _transcriptHasCarryoverContext(transcript, { outOfBandOnly: true, currentMessage: message });
+  const freshNeedsCarryover = _transcriptHasCarryoverContext(transcript, { currentMessage: message });
 
-  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false, outOfBandOnly = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
     if (includeCarryover) {
-      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message, outOfBandOnly });
       if (carryover) parts.push(carryover);
     }
     parts.push(message);
@@ -2690,7 +2732,11 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   let result;
 
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
+    const p1 = llm.callLLMStreaming(buildPrompt({
+      includePreamble: false,
+      includeCarryover: resumeNeedsCarryover || resumeHasOutOfBandCarryover,
+      outOfBandOnly: !resumeNeedsCarryover,
+    }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
       onChunk,
@@ -2727,7 +2773,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   }
 
   if (onRetry) onRetry(2);
-  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
+  const freshPrompt = buildPrompt({ includeCarryover: freshNeedsCarryover });
   const p2 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -3099,7 +3145,7 @@ function _makeDocChatStreamStripper(onChunk) {
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, transcript, onAbortReady }) {
   const sessionKey = filePath || title;
   const docSlice = String(document || '');
 
@@ -3126,6 +3172,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
       allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      transcript,
       ...(model ? { model } : {}),
       onAbortReady,
     });
@@ -3163,7 +3210,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   return _parseDocChatResultText(result.text);
 }
 
-async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady, onChunk, onToolUse, onRetry }) {
+async function ccDocCallStreaming({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, transcript, onAbortReady, onChunk, onToolUse, onRetry }) {
   const sessionKey = filePath || title;
   const docSlice = String(document || '');
   const streamStripper = _makeDocChatStreamStripper(onChunk);
@@ -3186,6 +3233,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
       allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
       skipStatePreamble: true,
       systemPrompt: DOC_CHAT_SYSTEM_PROMPT,
+      transcript,
       ...(model ? { model } : {}),
       onAbortReady,
       onChunk: streamStripper,
@@ -5346,6 +5394,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
         freshSession: !!body.freshSession,
+        transcript: body.transcript,
         onAbortReady: (abort) => { _docAbort = abort; },
       });
       const actionResults = await executeDocChatActions(actions);
@@ -5436,6 +5485,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           filePath: body.filePath, selection: body.selection, canEdit, isJson,
           model: body.model || undefined,
           freshSession: !!body.freshSession,
+          transcript: body.transcript,
           onAbortReady: (abort) => { _docAbort = abort; },
           onChunk: (text) => { writeDocEvent({ type: 'chunk', text }); },
           onToolUse: (name, input) => { writeDocEvent({ type: 'tool', name, input: _lightToolInput(input) }); },
@@ -6181,11 +6231,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
         const resumeNeedsCarryover = wasResume && _ccRuntimeNeedsResumeCarryover(currentRuntime);
+        const resumeHasOutOfBandCarryover = wasResume && _transcriptHasCarryoverContext(body.transcript, { outOfBandOnly: true, currentMessage: body.message });
         const preamble = wasResume ? '' : buildCCStatePreamble();
-        const carryover = (sessionReset || resumeNeedsCarryover)
+        const includeFullCarryover = sessionReset || resumeNeedsCarryover;
+        const carryover = (includeFullCarryover || resumeHasOutOfBandCarryover)
           ? _buildTranscriptCarryover(body.transcript, {
             previousRuntime: sessionReset ? previousRuntime : null,
             currentMessage: body.message,
+            outOfBandOnly: !includeFullCarryover,
           })
           : '';
         const prompt = _joinCcPromptParts(preamble, carryover, body.message);
@@ -7479,8 +7532,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, template: '/api/knowledge/:category/:file', desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat
-    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
-    { method: 'POST', path: '/api/doc-chat/stream', desc: 'Streaming doc chat — SSE with text chunks and tool progress', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChatStream },
+    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?, transcript?', handler: handleDocChat },
+    { method: 'POST', path: '/api/doc-chat/stream', desc: 'Streaming doc chat — SSE with text chunks and tool progress', params: 'message, document, title?, filePath?, selection?, contentHash?, transcript?', handler: handleDocChatStream },
 
     // Inbox
     { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },
@@ -7504,8 +7557,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
     { method: 'POST', path: '/api/command-center/abort', desc: 'Abort an in-flight CC request for a tab', params: 'tabId?', handler: handleCommandCenterAbort },
-    { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
-    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?', handler: handleCommandCenterStream },
+    { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, tabId?, sessionId?, transcript?', handler: handleCommandCenter },
+    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?, sessionId?, transcript?', handler: handleCommandCenterStream },
     { method: 'GET', path: '/api/cc-sessions', desc: 'List CC session metadata for all tabs', handler: handleCCSessionsList },
     { method: 'DELETE', path: /^\/api\/cc-sessions\/([\w-]+)$/, template: '/api/cc-sessions/:id', desc: 'Delete a CC session by tab ID', handler: handleCCSessionDelete },
 
@@ -7909,6 +7962,7 @@ module.exports = {
   buildCCStatePreamble,
   _routesAsMeta,
   _buildTranscriptCarryover,
+  _transcriptHasCarryoverContext,
   _ccRuntimeNeedsResumeCarryover,
   _joinCcPromptParts,
   _captureApiRoutesMeta,
