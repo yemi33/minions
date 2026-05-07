@@ -17,6 +17,7 @@
 | `capabilities.modelDiscovery` | **`true`** | `GET https://api.githubcopilot.com/models` with a `gh auth token` Bearer returns HTTP 200 + a 24-model JSON catalog. |
 | `capabilities.streaming` | **`true`** | `--stream on` (default) emits `assistant.message_delta` events incrementally; `--stream off` suppresses deltas but the final `assistant.message` always arrives. |
 | `capabilities.sessionResume` | **`true`** | `--resume <session-id>` documented, and every `result` event emits `sessionId`. |
+| `capabilities.resumePromptCarryover` | **`true`** | Command Center resume turns should prepend the browser's recent Q&A transcript because Copilot's session store is opaque to Minions and can resume without enough conversational context. |
 | `capabilities.systemPromptFile` | **`false`** | No `--system-prompt-file` flag exists. Inject system prompt via a `<system>` block prepended to stdin. |
 | `capabilities.effortLevels` | **`true`** | `--effort` accepts `low|medium|high|xhigh` (no `max`). Adapter must map `'max' → 'xhigh'`. |
 | `capabilities.costTracking` | **`false`** | `result.usage` contains `premiumRequests` (count, not USD), no token counts, no cost. |

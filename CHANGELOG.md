@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1772 (2026-05-07)
+
+### Features
+- fix copilot cc resume context (#2166)
+
+## 0.1.1771 (2026-05-07)
+
+### Features
+- clean merged pr local branches (#2165)
+
 ## 0.1.1770 (2026-05-07)
 
 ### Fixes

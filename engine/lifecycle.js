@@ -7,14 +7,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeJsonNoRestore, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks,
+const { safeRead, safeJson, safeJsonNoRestore, safeWrite, mutateJsonFileLocked, mutateWorkItems, execAsync, projectPrPath, getPrLinks,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const { resolveRuntime } = require('./runtimes');
 const queries = require('./queries');
 const { isBranchActive } = require('./cooldown');
-const { worktreeMatchesBranch, getWorktreeBranch } = require('./cleanup');
+const { worktreeMatchesBranch, getWorktreeBranch, cleanupMergedPrLocalBranch } = require('./cleanup');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
@@ -1838,6 +1838,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (pr.branch && project) {
     const root = path.resolve(project.localPath);
     const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+    let removedBranchWorktree = false;
     // Find worktrees matching this branch; compact Windows dirs require branch metadata.
     try {
       const dirs = require('fs').readdirSync(wtRoot);
@@ -1847,10 +1848,15 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (worktreeMatchesBranch(dirLower, pr.branch, getWorktreeBranch(wtPath)) || dir === pr.branch || dir === `bt-${prNum}`) {
           try {
             if (!require('fs').statSync(wtPath).isDirectory()) continue;
-            execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
-            log('info', `Post-merge cleanup: removed worktree ${dir}`);
+            if (shared.removeWorktree(wtPath, root, wtRoot)) {
+              removedBranchWorktree = true;
+              log('info', `Post-merge cleanup: removed worktree ${dir}`);
+            }
           } catch (err) { log('warn', `Failed to remove worktree ${dir}: ${err.message}`); }
         }
+      }
+      if (removedBranchWorktree && newStatus === PR_STATUS.MERGED) {
+        cleanupMergedPrLocalBranch(root, project, pr);
       }
     } catch (err) { log('warn', `Post-merge worktree cleanup: ${err.message}`); }
   }

@@ -10,6 +10,7 @@ const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const llm = require('./engine/llm');
+const { resolveRuntime } = require('./engine/runtimes');
 
 // Dashboard version stamp — captured at module load so it reflects the code actually running
 const _dashboardVersion = {
@@ -280,12 +281,23 @@ function createWorkItemWithDedup(wiPath, item, options = {}) {
   return result || { created: false, item: null };
 }
 
+function formatUnknownProjectError(projectName, projects = []) {
+  const known = projects.map(p => p.name).filter(Boolean).join(', ') || '(none configured)';
+  return `Project "${projectName}" not found. Known projects: ${known}`;
+}
+
+function findProjectByName(projects, projectName) {
+  const name = String(projectName || '').trim().toLowerCase();
+  if (!name) return null;
+  return projects.find(p => p.name?.toLowerCase() === name) || null;
+}
+
 function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
   const project = String(projectName || '').trim();
   let targetProject = null;
   if (project) {
-    targetProject = projects.find(p => p.name === project) || (projects.length > 0 ? projects[0] : null);
-    if (!targetProject) return { error: 'No projects configured' };
+    targetProject = findProjectByName(projects, project);
+    if (!targetProject) return { error: formatUnknownProjectError(project, projects) };
   } else if (projects.length === 1) {
     targetProject = projects[0];
   }
@@ -325,7 +337,13 @@ function linkPullRequestForTracking({ url, title, project: projectName, autoObse
     throw err;
   }
   const projects = shared.getProjects(config);
-  const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
+  const explicitProjectName = String(projectName || '').trim();
+  const targetProject = explicitProjectName ? findProjectByName(projects, explicitProjectName) : (projects[0] || null);
+  if (explicitProjectName && !targetProject) {
+    const err = new Error(formatUnknownProjectError(explicitProjectName, projects));
+    err.statusCode = 400;
+    throw err;
+  }
   const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
 
   const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
@@ -1262,9 +1280,14 @@ function _readCcTabSessions({ prune = true } = {}) {
 const CC_CARRYOVER_MAX_TURNS = 20;
 const CC_CARRYOVER_PER_MSG_CHARS = 2000;
 
-function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
+function _buildTranscriptCarryover(transcript, { previousRuntime, currentMessage } = {}) {
   if (!Array.isArray(transcript) || transcript.length === 0) return '';
-  const filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  let filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  const current = typeof currentMessage === 'string' ? currentMessage.trim() : '';
+  if (current && filtered.length > 0) {
+    const last = filtered[filtered.length - 1];
+    if (last.role === 'user' && last.text.trim() === current) filtered = filtered.slice(0, -1);
+  }
   if (filtered.length === 0) return '';
   const recent = filtered.slice(-CC_CARRYOVER_MAX_TURNS);
   const truncated = filtered.length > recent.length;
@@ -1279,6 +1302,19 @@ function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
   });
   const truncationNote = truncated ? `[earlier messages truncated — showing last ${recent.length} of ${filtered.length}]\n\n` : '';
   return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
+}
+
+function _ccRuntimeNeedsResumeCarryover(runtimeName) {
+  try {
+    const runtime = resolveRuntime(runtimeName);
+    return !!runtime?.capabilities?.resumePromptCarryover;
+  } catch {
+    return false;
+  }
+}
+
+function _joinCcPromptParts(...parts) {
+  return parts.filter(Boolean).join('\n\n---\n\n');
 }
 
 // Load persisted CC session on startup. CC chat sessions are non-expiring;
@@ -2524,7 +2560,7 @@ async function _preflightModelCheck({ runtime: cliOverride, model: modelOverride
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT, transcript } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2537,10 +2573,15 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
+  const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
 
-  function buildPrompt({ includePreamble = true } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
+    if (includeCarryover) {
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      if (carryover) parts.push(carryover);
+    }
     parts.push(message);
     return parts.join('\n\n---\n\n');
   }
@@ -2549,7 +2590,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
+    const p1 = llm.callLLM(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
     });
@@ -2586,7 +2627,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   }
 
   // Attempt 2: fresh session (include preamble for full context)
-  const freshPrompt = buildPrompt();
+  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
   const p2 = llm.callLLM(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -2620,7 +2661,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT, transcript } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2633,10 +2674,15 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
 
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
+  const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
 
-  function buildPrompt({ includePreamble = true } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
+    if (includeCarryover) {
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      if (carryover) parts.push(carryover);
+    }
     parts.push(message);
     return parts.join('\n\n---\n\n');
   }
@@ -2644,7 +2690,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   let result;
 
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
+    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
       onChunk,
@@ -2681,7 +2727,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   }
 
   if (onRetry) onRetry(2);
-  const freshPrompt = buildPrompt();
+  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
   const p2 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -5863,7 +5909,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const wasResume = !!(body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid());
 
-        const result = await ccCall(body.message, { store: 'cc' });
+        const result = await ccCall(body.message, { store: 'cc', transcript: body.transcript });
 
         // Non-zero exit with text = max_turns or partial success — still usable
         if (!result.text) {
@@ -6098,13 +6144,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             sessionReset = true;
             sessionResetReason = 'runtimeChanged';
             previousRuntime = tabEntry.runtime;
+          } else if (tabEntry.sessionId && tabEntry.sessionId !== tabSessionId) {
+            tabSessionId = tabEntry.sessionId;
           }
         }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
+        const resumeNeedsCarryover = wasResume && _ccRuntimeNeedsResumeCarryover(currentRuntime);
         const preamble = wasResume ? '' : buildCCStatePreamble();
-        const carryover = sessionReset ? _buildTranscriptCarryover(body.transcript, { previousRuntime }) : '';
-        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + (carryover ? carryover + '\n\n---\n\n' : '') + body.message;
+        const carryover = (sessionReset || resumeNeedsCarryover)
+          ? _buildTranscriptCarryover(body.transcript, {
+            previousRuntime: sessionReset ? previousRuntime : null,
+            currentMessage: body.message,
+          })
+          : '';
+        const prompt = _joinCcPromptParts(preamble, carryover, body.message);
 
         const { trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
@@ -6132,7 +6186,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
           console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
           const freshPreamble = buildCCStatePreamble();
-          const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
+          const freshCarryover = _buildTranscriptCarryover(body.transcript, { currentMessage: body.message });
+          const freshPrompt = _joinCcPromptParts(freshPreamble, freshCarryover, body.message);
           toolUses = []; // discard stale metadata from the failed resume attempt
           const retryPromise = _invokeCcStream({
             prompt: freshPrompt, sessionId: undefined, liveState, toolUses,
@@ -7192,6 +7247,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
       reloadConfig();
+      const explicitProjectName = String(body.project || '').trim();
+      if (explicitProjectName) {
+        const projects = shared.getProjects(CONFIG);
+        if (!findProjectByName(projects, explicitProjectName)) {
+          return jsonReply(res, 400, { error: formatUnknownProjectError(explicitProjectName, projects) }, req);
+        }
+      }
       const adoTarget = parseAdoPrMetadataTarget(url);
       let initialPrData = null;
       if (adoTarget) {
@@ -7201,7 +7263,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           shared.log('warn', `ADO PR link metadata fetch failed for ${url}: ${e.message}`);
         }
       }
-      const { id: prId, prPath, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData });
+      let linkResult;
+      try {
+        linkResult = linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData });
+      } catch (e) {
+        return jsonReply(res, e.statusCode || 400, { error: e.message }, req);
+      }
+      const { id: prId, prPath, prNum, created, linked } = linkResult;
       invalidateStatusCache();
       jsonReply(res, 200, { ok: true, id: prId, created, linked });
 
@@ -7339,6 +7407,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, template: '/api/agent/:id/kill', desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, template: '/api/agent/:id/live-stream', desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, template: '/api/agent/:id/live', desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-output(?:\?.*)?$/, template: '/api/agent/:id/live-output', desc: 'Tail live output for a working agent (alias for /live)', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, template: '/api/agent/:id/output', desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, template: '/api/agent/:id', desc: 'Get detailed agent info', handler: handleAgentDetail },
     { method: 'GET', path: /^\/api\/dispatch\/([\w.-]+)\/completion-report$/, template: '/api/dispatch/:id/completion-report', desc: 'Read structured completion report for a dispatch', handler: (req, res, match) => {
@@ -7805,6 +7874,9 @@ module.exports = {
   executeCCActions,
   buildCCStatePreamble,
   _routesAsMeta,
+  _buildTranscriptCarryover,
+  _ccRuntimeNeedsResumeCarryover,
+  _joinCcPromptParts,
   _captureApiRoutesMeta,
   _formatCcApiRoutesIndex,
   _formatCcCliCommandsIndex,

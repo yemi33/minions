@@ -897,6 +897,43 @@ async function testIsLiveCommandCenterPath() {
     assert.ok(src.includes('shared.renderCcSystemPrompt(raw, { liveRoot: MINIONS_DIR })'),
       'dashboard.js must use shared.renderCcSystemPrompt so prompt and path helper cannot drift');
   });
+
+  await test('dashboard route table serves live-output alias used by steering ack poll', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const liveStreamSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveStreamSrc.includes('/live-output'),
+      'steering acknowledgement poll should document the live-output endpoint it calls');
+    const routeTable = dashboardSrc.slice(
+      dashboardSrc.indexOf("{ method: 'POST', path: '/api/agents/charter'"),
+      dashboardSrc.indexOf("{ method: 'GET', path: '/api/agent-output'")
+    );
+    assert.ok(routeTable.includes('/live-output') && routeTable.includes('handler: handleAgentLive'),
+      'dashboard route table must map /api/agent/:id/live-output to handleAgentLive');
+  });
+
+  await test('README and package CLI help document supported command surface', () => {
+    const readme = fs.readFileSync(path.join(MINIONS_DIR, 'README.md'), 'utf8');
+    const binSrc = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const packageHelp = binSrc.slice(0, binSrc.indexOf('const fs = require'));
+    const runtimeHelp = binSrc.slice(binSrc.indexOf('Minions — Central AI dev team manager'), binSrc.indexOf('Runtime root: ${MINIONS_HOME}'));
+    const expectedCommands = [
+      'restart',
+      'queue',
+      'sources',
+      'kill',
+      'complete <dispatch-id>',
+      'doctor',
+      'config set-cli <R> [--model M]',
+      'nuke --confirm',
+      'uninstall --confirm',
+      'mcp-sync',
+    ];
+    for (const command of expectedCommands) {
+      assert.ok(readme.includes('`minions ' + command + '`'), `README must document minions ${command}`);
+      assert.ok(packageHelp.includes('minions ' + command), `package CLI header must document minions ${command}`);
+      assert.ok(runtimeHelp.includes('minions ' + command), `minions help output must document minions ${command}`);
+    }
+  });
 }
 
 async function testValidatePid() {
@@ -11440,6 +11477,138 @@ async function testWorktreeManagement() {
       'Post-merge cleanup should use the shared branch-aware helper instead of fuzzy substring matching');
     assert.ok(src.includes('readdirSync(wtRoot)'),
       'Post-merge cleanup should scan worktree directory');
+  });
+
+  await test('Post-merge cleanup deletes the tracked merged PR local branch after removing its worktree', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedIsolated = require('../engine/shared');
+      const originalRemove = sharedIsolated.removeWorktree;
+      const originalExecSilent = sharedIsolated.execSilent;
+      const projectRoot = createTmpDir();
+      const wtRoot = path.join(createTmpDir(), 'worktrees');
+      const wtPath = path.join(wtRoot, 'bt-4242');
+      fs.mkdirSync(wtPath, { recursive: true });
+
+      const commands = [];
+      sharedIsolated.removeWorktree = (candidatePath) => candidatePath === wtPath;
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-merged-cleanup"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-merged-cleanup"')) return '';
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const lifecycle = require('../engine/lifecycle');
+        await lifecycle.handlePostMerge(
+          {
+            id: 'github:octo/demo#4242',
+            prNumber: 4242,
+            status: sharedIsolated.PR_STATUS.MERGED,
+            branch: 'feat/W-merged-cleanup',
+            headSha: 'abc123',
+          },
+          { name: 'demo', localPath: projectRoot, mainBranch: 'master' },
+          { projects: [], agents: {}, engine: { worktreeRoot: wtRoot } },
+          sharedIsolated.PR_STATUS.MERGED,
+        );
+      } finally {
+        sharedIsolated.removeWorktree = originalRemove;
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(commands.some(cmd => cmd.includes('branch -d -- "feat/W-merged-cleanup"')),
+        `expected safe local branch delete after worktree removal; commands: ${commands.join(' | ')}`);
+      assert.ok(!commands.some(cmd => cmd.includes('branch -D')),
+        'post-merge cleanup should prefer non-force local branch deletion when possible');
+    } finally { restore(); }
+  });
+
+  await test('Post-merge cleanup force-deletes only when the local branch tip matches merged PR metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cleanup = require('../engine/cleanup');
+      const sharedIsolated = require('../engine/shared');
+      const originalExecSilent = sharedIsolated.execSilent;
+      const commands = [];
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-squash-merged"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-squash-merged"')) throw new Error('not fully merged');
+        if (cmd.includes('branch -D -- "feat/W-squash-merged"')) return '';
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const result = cleanup.cleanupMergedPrLocalBranch(
+          createTmpDir(),
+          { name: 'demo', mainBranch: 'master' },
+          {
+            id: 'github:octo/demo#4243',
+            status: sharedIsolated.PR_STATUS.MERGED,
+            branch: 'feat/W-squash-merged',
+            headSha: 'abc123',
+          },
+        );
+        assert.deepStrictEqual(
+          { deleted: result.deleted, forced: result.forced },
+          { deleted: true, forced: true },
+        );
+      } finally {
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(commands.some(cmd => cmd.includes('branch -D -- "feat/W-squash-merged"')),
+        `expected force delete only after matching PR head proof; commands: ${commands.join(' | ')}`);
+    } finally { restore(); }
+  });
+
+  await test('Post-merge branch cleanup skips unmerged, protected, or unproven branches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cleanup = require('../engine/cleanup');
+      const sharedIsolated = require('../engine/shared');
+      const originalExecSilent = sharedIsolated.execSilent;
+      const commands = [];
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-unproven"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-unproven"')) throw new Error('not fully merged');
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const root = createTmpDir();
+        assert.strictEqual(cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.ACTIVE, branch: 'feat/W-open', headSha: 'abc123' },
+        ).deleted, false, 'open PR branch must not be deleted');
+        assert.strictEqual(cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.MERGED, branch: 'master', headSha: 'abc123' },
+        ).deleted, false, 'default branch must not be deleted');
+        const unproven = cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.MERGED, branch: 'feat/W-unproven', headSha: 'different' },
+        );
+        assert.strictEqual(unproven.deleted, false, 'unproven squash-merge branch must not be force-deleted');
+      } finally {
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(!commands.some(cmd => cmd.includes('branch -D')),
+        `protected/unproven branches must not be force-deleted; commands: ${commands.join(' | ')}`);
+    } finally { restore(); }
   });
 
   await test('All plan worktrees cleaned on plan completion', () => {
@@ -34751,11 +34920,26 @@ async function testAuxModuleBugFixes() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const resolveFn = src.slice(src.indexOf('function resolveWorkItemsCreateTarget'), src.indexOf('function linkPullRequestForTracking'));
     const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
-    assert.ok(src.includes("No projects configured"), 'Should return error when no projects configured');
+    assert.ok(src.includes('formatUnknownProjectError'), 'Should share unknown-project error formatting');
     assert.ok(resolveFn.includes('projects.length === 1'),
       'project-less create should target the only configured project');
     assert.ok(createFn.includes('resolveWorkItemsCreateTarget(body.project)'),
       'create handler should use the shared target resolver');
+  });
+
+  await test('dashboard.js: handleWorkItemsCreate rejects unknown explicit project names', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const sharedLocal = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    const projects = [
+      { name: 'alpha', localPath: path.join(sharedLocal.MINIONS_DIR, 'alpha') },
+      { name: 'beta', localPath: path.join(sharedLocal.MINIONS_DIR, 'beta') },
+    ];
+    const target = dashboard._resolveWorkItemsCreateTarget('alpah', projects);
+    assert.ok(target.error, 'unknown explicit project should return an error');
+    assert.ok(/Project "alpah" not found/.test(target.error), 'error should identify the bad project name');
+    assert.ok(/Known projects: alpha, beta/.test(target.error), 'error should list known projects');
+    assert.ok(!target.project, 'unknown project must not fall back to the first configured project');
+    assert.ok(!target.wiPath, 'unknown project must not provide a write path');
   });
 
   await test('dashboard.js: trigger-verify handler uses safeJson for plan reading', () => {
@@ -41266,6 +41450,41 @@ async function testDashboardResilience() {
       'Doc chat should centralize collapsed-state detection and toggling');
   });
 
+  await test('doc-chat streaming updates use sticky-bottom scroll behavior', () => {
+    const helperStart = modalQaSrc.indexOf('const QA_STICKY_BOTTOM_PX');
+    assert.ok(helperStart >= 0, 'modal-qa.js should define a sticky-bottom threshold');
+    const helperEnd = modalQaSrc.indexOf('function _qaInsertBeforeQueued', helperStart);
+    assert.ok(helperEnd > helperStart, 'sticky-bottom helpers should live before thread insertion helpers');
+    const helpers = new Function(`${modalQaSrc.slice(helperStart, helperEnd)}
+      return {
+        _qaIsNearThreadBottom,
+        _qaShouldFollowThread,
+        _qaScrollThreadToBottom,
+        setFollow(v) { _qaThreadShouldFollow = v; },
+        getFollow() { return _qaThreadShouldFollow; },
+      };
+    `)();
+    assert.strictEqual(helpers._qaIsNearThreadBottom({ scrollHeight: 1000, scrollTop: 620, clientHeight: 320 }), true,
+      'within the sticky threshold should count as near bottom');
+    assert.strictEqual(helpers._qaIsNearThreadBottom({ scrollHeight: 1000, scrollTop: 400, clientHeight: 320 }), false,
+      'reading older messages should count as away from bottom');
+    helpers.setFollow(false);
+    assert.strictEqual(helpers._qaShouldFollowThread({ scrollHeight: 1000, scrollTop: 620, clientHeight: 320 }), false,
+      'manual scroll-up state should suppress auto-follow even if a later layout is near bottom');
+    const thread = { scrollHeight: 1200, scrollTop: 0, clientHeight: 320 };
+    helpers._qaScrollThreadToBottom(thread);
+    assert.strictEqual(thread.scrollTop, 1200, 'explicit user actions can still force-scroll to newest message');
+    assert.strictEqual(helpers.getFollow(), true, 'explicit bottom scroll should re-enable following');
+
+    const mutateFn = modalQaSrc.slice(modalQaSrc.indexOf('function _qaMutateThreadHtml'), modalQaSrc.indexOf('\nfunction _qaResumeQueuedMessages'));
+    assert.ok(mutateFn.includes('const shouldFollow = _qaShouldFollowThread(thread)'),
+      'streaming DOM updates should capture sticky-bottom state before mutating thread HTML');
+    assert.ok(mutateFn.includes('_qaMaybeScrollThreadToBottom(thread, shouldFollow)'),
+      'streaming DOM updates should only scroll when the thread was already following');
+    assert.ok(!/thread\.scrollTop\s*=\s*thread\.scrollHeight/.test(mutateFn),
+      'streaming DOM updates must not unconditionally jump to the bottom');
+  });
+
   await test('doc-chat clears processing badge when processing completes', () => {
     assert.ok(modalQaSrc.includes('clearNotifBadge(doneCard)'),
       '_processQaMessage must clear badge when done (no more queued messages)');
@@ -44078,8 +44297,53 @@ async function testCCMultiTab() {
       'Should cap carryover at a constant');
     assert.ok(dashSrc.includes('Previous conversation'),
       'Carryover header should mark prior dialogue clearly');
-    assert.ok(dashSrc.includes('sessionReset ? _buildTranscriptCarryover'),
-      'Carryover should fire only when session resets');
+    assert.ok(/sessionReset\s*\|\|\s*resumeNeedsCarryover/.test(dashSrc),
+      'Carryover should fire when a session resets or the selected runtime needs explicit resume context');
+  });
+
+  await test('transcript carryover omits the current user turn to avoid duplicate prompts', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+    assert.strictEqual(typeof dashboard._buildTranscriptCarryover, 'function',
+      '_buildTranscriptCarryover should be exported for regression coverage');
+    const carryover = dashboard._buildTranscriptCarryover([
+      { role: 'user', text: 'Remember the project codename is Zephyr.' },
+      { role: 'assistant', text: 'Got it — Zephyr.' },
+      { role: 'user', text: 'What codename did I give you?' },
+    ], { currentMessage: 'What codename did I give you?' });
+    assert.ok(carryover.includes('User: Remember the project codename is Zephyr.'),
+      'previous user turn should be carried over');
+    assert.ok(carryover.includes('Assistant: Got it'),
+      'previous assistant turn should be carried over');
+    assert.ok(!carryover.includes('What codename did I give you?'),
+      'current user message should be appended once by the caller, not duplicated in carryover');
+  });
+
+  await test('Copilot CC resume requests prepend same-tab transcript carryover', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    assert.strictEqual(copilot.capabilities.resumePromptCarryover, true,
+      'Copilot-managed resumes need explicit recent Q&A carryover in the prompt');
+    assert.strictEqual(claude.capabilities.resumePromptCarryover, false,
+      'Claude resumes should continue relying on native session context');
+    const streamHandler = dashSrc.slice(
+      dashSrc.indexOf('async function handleCommandCenterStream('),
+      dashSrc.indexOf('async function handleSchedulesList')
+    );
+    assert.ok(streamHandler.includes('resumeNeedsCarryover'),
+      'stream handler should decide whether the selected runtime needs resume carryover');
+    assert.ok(/sessionReset\s*\|\|\s*resumeNeedsCarryover/.test(streamHandler),
+      'carryover should be included on reset and on Copilot-style resume');
+    assert.ok(dashSrc.includes('includeCarryover: resumeNeedsCarryover'),
+      'shared non-streaming CC call helpers should include carryover on runtimes that need it');
+  });
+
+  await test('CC stream resume uses persisted tab session over request sessionId', () => {
+    const streamHandler = dashSrc.slice(
+      dashSrc.indexOf('async function handleCommandCenterStream('),
+      dashSrc.indexOf('async function handleSchedulesList')
+    );
+    assert.ok(streamHandler.includes('tabEntry.sessionId') && streamHandler.includes('tabSessionId = tabEntry.sessionId'),
+      'server must not trust a request sessionId that differs from the persisted tab session');
   });
 
   await test('frontend sends transcript and renders runtime-aware reset notice', () => {
@@ -49214,6 +49478,56 @@ async function testAdoManualPrLinkMetadataRace() {
       assert.strictEqual(stored.agent, 'Ada Lovelace');
       assert.ok(!stored._branchResolutionError, 'sync metadata should avoid seeding stale branch-resolution errors');
       assert.ok(!stored._pendingReason, 'sync metadata should avoid missing_pr_branch pending state');
+    } finally {
+      restore();
+      try { delete require.cache[require.resolve(dashboardPath)]; } catch {}
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('manual PR link helper rejects unknown explicit project names', () => {
+    const restore = createTestMinionsDir();
+    const dashboardPath = path.join(MINIONS_DIR, 'dashboard.js');
+    try {
+      for (const mod of ['../dashboard', '../engine/shared', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(testDir, 'dashboard'), { recursive: true });
+      const dashboard = require('../dashboard');
+      const project = {
+        name: 'ado-demo',
+        repoHost: 'ado',
+        adoOrg: 'org',
+        adoProject: 'proj',
+        repoName: 'repo',
+        localPath: testDir,
+      };
+      const config = { projects: [project], agents: {}, engine: {} };
+      testShared.safeWrite(testShared.projectPrPath(project), []);
+      const centralPrPath = path.join(testShared.MINIONS_DIR, 'pull-requests.json');
+      testShared.safeWrite(centralPrPath, []);
+
+      let error = null;
+      try {
+        dashboard._linkPullRequestForTracking({
+          url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/77',
+          project: 'ado-demoo',
+          autoObserve: true,
+        }, config);
+      } catch (e) {
+        error = e;
+      }
+
+      assert.ok(error, 'unknown explicit project should throw');
+      assert.strictEqual(error.statusCode, 400);
+      assert.ok(/Project "ado-demoo" not found/.test(error.message), 'error should identify the bad project name');
+      assert.ok(/Known projects: ado-demo/.test(error.message), 'error should list known projects');
+      assert.deepStrictEqual(testShared.safeJson(centralPrPath), [], 'unknown project must not fall back to central PR tracking');
+      assert.deepStrictEqual(testShared.safeJson(testShared.projectPrPath(project)), [], 'unknown project must not write any project PR file');
     } finally {
       restore();
       try { delete require.cache[require.resolve(dashboardPath)]; } catch {}
@@ -58548,11 +58862,12 @@ async function testDashboardPureHelpers() {
       'root fallback must point at work-items.json');
   });
 
-  await test('_resolveWorkItemsCreateTarget: zero projects + explicit name returns "No projects configured" error', () => {
+  await test('_resolveWorkItemsCreateTarget: zero projects + explicit name returns unknown-project error', () => {
     const { _resolveWorkItemsCreateTarget } = dashboard;
     const result = _resolveWorkItemsCreateTarget('ghost-project', []);
     assert.ok(result.error, 'must surface error when name supplied but no projects exist');
-    assert.ok(/No projects configured/i.test(result.error));
+    assert.ok(/Project "ghost-project" not found/.test(result.error));
+    assert.ok(/Known projects: \(none configured\)/.test(result.error));
   });
 
   await test('_resolveWorkItemsCreateTarget: single project + matching name resolves to that project', () => {
@@ -58597,19 +58912,18 @@ async function testDashboardPureHelpers() {
     assert.ok(result.wiPath.endsWith('work-items.json'));
   });
 
-  await test('_resolveWorkItemsCreateTarget: unknown name with projects falls back to projects[0]', () => {
+  await test('_resolveWorkItemsCreateTarget: unknown name with projects returns error', () => {
     const { _resolveWorkItemsCreateTarget } = dashboard;
-    // Documents actual behavior: when a project name is supplied but doesn't match,
-    // the helper currently falls back to projects[0] rather than returning an error.
-    // executeCCActions performs strict unknown-project rejection upstream.
     const projects = [
       { name: 'alpha', localPath: '/tmp/alpha' },
       { name: 'beta', localPath: '/tmp/beta' },
     ];
     const result = _resolveWorkItemsCreateTarget('does-not-exist', projects);
-    assert.strictEqual(result.project, projects[0],
-      'unknown name + non-empty projects falls back to projects[0]');
-    assert.strictEqual(result.wiPath, shared.projectWorkItemsPath(projects[0]));
+    assert.ok(result.error, 'unknown explicit project must be rejected');
+    assert.ok(/Project "does-not-exist" not found/.test(result.error));
+    assert.ok(/Known projects: alpha, beta/.test(result.error));
+    assert.ok(!result.project, 'unknown name must not fall back to projects[0]');
+    assert.ok(!result.wiPath, 'unknown name must not return a write path');
   });
 
   await test('_resolveWorkItemsCreateTarget: trims whitespace-only name as empty', () => {

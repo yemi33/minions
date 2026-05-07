@@ -30,6 +30,32 @@ const QA_QUEUE_CAP = 10; // max queued messages
 const QA_STREAM_STALL_MS = 6 * 60 * 1000; // allow the full doc-chat timeout before treating heartbeat-only streams as stalled
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 
+const QA_STICKY_BOTTOM_PX = 80;
+let _qaThreadShouldFollow = true;
+
+function _qaIsNearThreadBottom(thread) {
+  if (!thread) return true;
+  return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= QA_STICKY_BOTTOM_PX;
+}
+
+function _qaShouldFollowThread(thread) {
+  return _qaThreadShouldFollow && _qaIsNearThreadBottom(thread);
+}
+
+function _qaSetThreadFollowFromScroll(thread) {
+  _qaThreadShouldFollow = _qaIsNearThreadBottom(thread);
+}
+
+function _qaScrollThreadToBottom(thread) {
+  if (!thread) return;
+  thread.scrollTop = thread.scrollHeight;
+  _qaThreadShouldFollow = true;
+}
+
+function _qaMaybeScrollThreadToBottom(thread, shouldFollow) {
+  if (shouldFollow) _qaScrollThreadToBottom(thread);
+}
+
 // Insert html at the bottom of the thread but above any pending "Queued: ..."
 // strips, so queued messages always remain visually below the active progress
 // UX / answer / errors.
@@ -47,7 +73,7 @@ function _renderQaUserMessage(thread, message, selection) {
   }
   qHtml += '</div>';
   _qaInsertBeforeQueued(thread, qHtml);
-  thread.scrollTop = thread.scrollHeight;
+  _qaScrollThreadToBottom(thread);
   _showThreadWrap();
 }
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
@@ -90,6 +116,10 @@ function _qaGetRuntime(key) {
 function _qaThreadEl() {
   return document.getElementById('modal-qa-thread');
 }
+
+document.addEventListener('scroll', function(e) {
+  if (e.target && e.target.id === 'modal-qa-thread') _qaSetThreadFollowFromScroll(e.target);
+}, true);
 
 function _qaThreadHtml() {
   return (_qaThreadEl() || {}).innerHTML || '';
@@ -308,8 +338,9 @@ function _qaMutateThreadHtml(key, mutate) {
     const wasCollapsed = _qaIsThreadCollapsed();
     const thread = _qaThreadEl();
     if (thread) {
+      const shouldFollow = _qaShouldFollowThread(thread);
       thread.innerHTML = html;
-      thread.scrollTop = thread.scrollHeight;
+      _qaMaybeScrollThreadToBottom(thread, shouldFollow);
     }
     if (wasCollapsed) _setQaThreadCollapsed(true);
     else _showThreadWrap();
@@ -386,7 +417,7 @@ function _initQaSession() {
     _showThreadWrap();
     requestAnimationFrame(function() {
       var thread = document.getElementById('modal-qa-thread');
-      if (thread) thread.scrollTop = thread.scrollHeight;
+      _qaScrollThreadToBottom(thread);
     });
     if (_qaQueue.length > 0 && !_qaProcessing) {
       setTimeout(_qaResumeQueuedMessages, 0);
@@ -394,6 +425,7 @@ function _initQaSession() {
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
+    _qaThreadShouldFollow = true;
     var wrap = document.getElementById('modal-qa-thread-wrap');
     var expandBar = document.getElementById('qa-expand-bar');
     if (wrap) wrap.style.display = 'none';
@@ -410,6 +442,7 @@ function clearQaConversation() {
   _qaProcessing = false;
   _qaAbortController = null;
   document.getElementById('modal-qa-thread').innerHTML = '';
+  _qaThreadShouldFollow = true;
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
   if (wrap) wrap.style.display = 'none';
@@ -455,7 +488,7 @@ function modalSend() {
     }
     _qaQueue.push({ message, selection });
     thread.insertAdjacentHTML('beforeend', _qaBuildQueuedHtml(message));
-    thread.scrollTop = thread.scrollHeight;
+    _qaScrollThreadToBottom(thread);
     _showThreadWrap();
     _qaSaveActiveSessionState();
     return;
