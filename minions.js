@@ -17,7 +17,7 @@ const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
 const shared = require('./engine/shared');
-const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = shared;
+const { ENGINE_DEFAULTS, DEFAULT_AGENTS } = shared;
 const projectDiscovery = require('./engine/project-discovery');
 
 const MINIONS_HOME = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : __dirname;
@@ -385,11 +385,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
     if (k === 'defaultCli') continue;
     if (config.engine[k] === undefined) config.engine[k] = v;
   }
-  if (!config.claude) config.claude = {};
-  delete config.claude.permissionMode;
-  for (const [k, v] of Object.entries(DEFAULT_CLAUDE)) {
-    if (config.claude[k] === undefined) config.claude[k] = v;
-  }
+  shared.pruneDefaultClaudeConfig(config);
   if (!config.agents || Object.keys(config.agents).length === 0) {
     config.agents = { ...DEFAULT_AGENTS };
   }

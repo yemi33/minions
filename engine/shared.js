@@ -1243,7 +1243,7 @@ function _resetLegacyCcModelMigrationFlag() {
  * Warnings emitted:
  *   - Unknown CLI: any `cli` value (per-agent, ccCli, defaultCli) not in
  *     `registeredRuntimes`. Each unknown value produces one entry.
- *   - Deprecated `config.claude.*` fields: presence of any field in
+ *   - Deprecated `config.claude.*` overrides: non-default fields listed in
  *     `ENGINE_DEFAULTS._deprecatedConfigClaudeFields` under `config.claude`.
  *   - Bare-mode misconfig: `engine.claudeBareMode === true` paired with
  *     CC running on the Claude runtime (resolved via `resolveCcCli`) and no
@@ -1282,11 +1282,15 @@ function runtimeConfigWarnings(config, registeredRuntimes) {
     if (agent && typeof agent === 'object') checkCli(`agents.${agentId}.cli`, agent.cli);
   }
 
-  // 2. Deprecated `config.claude.*` fields.
+  // 2. Deprecated `config.claude.*` overrides. Generated defaults from older
+  // init versions are ignored here and pruned the next time config is saved.
   const claude = config.claude;
   if (claude && typeof claude === 'object') {
     const deprecatedKeys = ENGINE_DEFAULTS._deprecatedConfigClaudeFields || [];
-    const present = deprecatedKeys.filter(k => Object.prototype.hasOwnProperty.call(claude, k));
+    const present = deprecatedKeys.filter(k => {
+      if (!Object.prototype.hasOwnProperty.call(claude, k)) return false;
+      return !(Object.prototype.hasOwnProperty.call(DEFAULT_CLAUDE, k) && claude[k] === DEFAULT_CLAUDE[k]);
+    });
     if (present.length > 0) {
       warnings.push({
         id: 'deprecated-config-claude',
@@ -1571,6 +1575,37 @@ const DEFAULT_CLAUDE = {
   outputFormat: 'stream-json',
   allowedTools: 'Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch',
 };
+
+function pruneDefaultClaudeConfig(config) {
+  if (!config || typeof config !== 'object') return false;
+  const claude = config.claude;
+  if (claude === undefined || claude === null) return false;
+  if (typeof claude !== 'object' || Array.isArray(claude)) {
+    delete config.claude;
+    return true;
+  }
+
+  let changed = false;
+  const removeKey = (key) => {
+    if (Object.prototype.hasOwnProperty.call(claude, key)) {
+      delete claude[key];
+      changed = true;
+    }
+  };
+
+  removeKey('permissionMode');
+  for (const key of ['binary', 'outputFormat', 'allowedTools']) {
+    if (Object.prototype.hasOwnProperty.call(claude, key) && claude[key] === DEFAULT_CLAUDE[key]) {
+      removeKey(key);
+    }
+  }
+
+  if (Object.keys(claude).length === 0) {
+    delete config.claude;
+    changed = true;
+  }
+  return changed;
+}
 
 // ── Project Helpers ──────────────────────────────────────────────────────────
 
@@ -3067,6 +3102,7 @@ module.exports = {
   DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
+  pruneDefaultClaudeConfig,
   getProjects,
   projectRoot,
   projectStateDir,
