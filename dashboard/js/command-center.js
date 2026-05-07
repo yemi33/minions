@@ -963,8 +963,25 @@ function ccRetryLast(tabId, retryId) {
   });
 }
 
-async function _ccFetch(url, body) {
-  var res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function _ccFetch(url, body, method) {
+  method = (method || 'POST').toUpperCase();
+  var fetchUrl = url;
+  var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+  if (method === 'GET') {
+    var qs = new URLSearchParams();
+    Object.entries(body || {}).forEach(function(entry) {
+      var key = entry[0], value = entry[1];
+      if (value === undefined || value === null) return;
+      if (Array.isArray(value)) value.forEach(function(v) { qs.append(key, String(v)); });
+      else if (typeof value === 'object') qs.append(key, JSON.stringify(value));
+      else qs.append(key, String(value));
+    });
+    var text = qs.toString();
+    if (text) fetchUrl += (fetchUrl.includes('?') ? '&' : '?') + text;
+  } else {
+    opts.body = JSON.stringify(body || {});
+  }
+  var res = await fetch(fetchUrl, opts);
   if (!res.ok) {
     var d = await res.json().catch(function() { return {}; });
     var err = new Error(d.error || 'Request failed (' + res.status + ')');
@@ -1050,22 +1067,25 @@ async function ccExecuteAction(action, targetTabId) {
         if (notePageLink && !notePageLink.querySelector('.notif-badge')) { var noteCurPage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page'); if (noteCurPage !== 'inbox') showNotifBadge(notePageLink); }
         break;
       }
-      case 'pin': {
+      case 'pin':
+      case 'pin-to-pinned': {
         await _ccFetch('/api/pinned', { title: action.title, content: action.content || action.description, level: action.level || '' });
         status.innerHTML = '&#x1F4CC; Pinned: <strong>' + escHtml(action.title) + '</strong> — visible to all agents';
         status.style.color = 'var(--green)';
         break;
       }
       case 'plan': {
-        await _ccFetch('/api/plan', { title: action.title, description: action.description, project: action.project, branchStrategy: action.branchStrategy || 'parallel' });
+        var branchStrategy = action.branch_strategy || action.branchStrategy || 'parallel';
+        await _ccFetch('/api/plan', { title: action.title, description: action.description, project: action.project, branch_strategy: branchStrategy, branchStrategy: branchStrategy });
         status.innerHTML = '&#10003; Plan queued: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
         wakeEngine();
         break;
       }
       case 'cancel': {
-        await _ccFetch('/api/agents/cancel', { agentId: action.agent, reason: action.reason || 'Cancelled via command center' });
-        status.innerHTML = '&#10003; Cancelled agent: <strong>' + escHtml(action.agent) + '</strong>';
+        var cancelAgent = action.agent || action.agentId || '';
+        await _ccFetch('/api/agents/cancel', { agent: cancelAgent, agentId: cancelAgent, task: action.task || action.cancelTask || '', reason: action.reason || 'Cancelled via command center' });
+        status.innerHTML = '&#10003; Cancelled agent: <strong>' + escHtml(cancelAgent || action.task || action.cancelTask || '') + '</strong>';
         status.style.color = 'var(--orange)';
         break;
       }
@@ -1457,8 +1477,9 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'add-project': {
-        await _ccFetch('/api/projects/add', { localPath: action.localPath, name: action.name || '', repoHost: action.repoHost || 'github' });
-        status.innerHTML = '&#10003; Project added: <strong>' + escHtml(action.name || action.localPath) + '</strong>';
+        var projectPath = action.path || action.localPath;
+        await _ccFetch('/api/projects/add', { path: projectPath, localPath: projectPath, name: action.name || '', repoHost: action.repoHost || 'github', allowNonRepo: action.allowNonRepo, confirmToken: action.confirmToken });
+        status.innerHTML = '&#10003; Project added: <strong>' + escHtml(action.name || projectPath) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
@@ -1489,7 +1510,7 @@ async function ccExecuteAction(action, targetTabId) {
       default: {
         // Generic fallback: if action has an `endpoint` field, call it directly (local API only)
         if (action.endpoint && action.endpoint.startsWith('/api/') && !action.endpoint.includes('..') && !/\%2e/i.test(action.endpoint)) {
-          var genRes = await _ccFetch(action.endpoint, action.params || {});
+          var genRes = await _ccFetch(action.endpoint, action.params || {}, action.method || 'POST');
           var genData = await genRes.json().catch(function() { return {}; });
           status.innerHTML = '&#10003; ' + escHtml(action.type) + ': ' + escHtml(genData.message || genData.id || 'done');
           status.style.color = 'var(--green)';

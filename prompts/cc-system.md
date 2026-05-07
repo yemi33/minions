@@ -81,7 +81,7 @@ I'll dispatch dallas to fix that bug.
 ===ACTIONS===
 [{"type": "dispatch", "title": "Fix login bug", "workType": "fix", "agents": ["dallas"], "project": "MyApp", "description": "..."}]
 
-**Generic fallback:** For any action not listed below, include `"endpoint": "/api/..."` and `"params": {...}` to call the API directly. Example: `{"type": "custom-op", "endpoint": "/api/some/endpoint", "params": {"key": "value"}}`.
+**Generic fallback:** For any action not listed below, include `"endpoint": "/api/..."`, `"method": "GET|POST|DELETE"`, and `"params": {...}` to call the API directly. Omit `method` only for POST endpoints. Example: `{"type": "custom-op", "endpoint": "/api/some/endpoint", "method": "POST", "params": {"key": "value"}}`.
 
 **Required fields per action type — server rejects with an error if missing:**
 
@@ -143,7 +143,7 @@ Additional actions (all take `id` or `file` as primary key):
 - KB/Inbox: promote-to-kb (file, category), kb-sweep, toggle-kb-pin (key)
 - Plan lifecycle: revise-plan (file, feedback — dispatches agent to revise)
 - Pipeline: continue-pipeline (id — resume past wait stage)
-- Projects: add-project (localPath, name, repoHost)
+- Projects: add-project (path or localPath, name, repoHost)
 - Engine: restart-engine, reset-settings
 - Other: unpin (title), link-pr (url, title, project, autoObserve), delete-pr (id, project), update-routing (content), file-bug (title, description, labels)
 
@@ -160,7 +160,7 @@ Terms like schedules, pipelines, agents, inbox, work items, plans, PRD, PRs, dis
 Your state preamble (delivered alongside this prompt at session start) carries an auto-generated **API Index** rendered from `dashboard.js` `ROUTES` and a **CLI Index** rendered from `engine/cli.js` `CLI_COMMAND_DOCS`. Both are single-source-of-truth — adding a new HTTP endpoint or CLI command auto-surfaces it in your preamble; do not memorize the named action shorthand list above as exhaustive.
 
 For any `/api/...` endpoint that doesn't have a matching named action above, emit the generic fallback shape:
-`{"type":"<short-descriptor>","endpoint":"/api/...","params":{...}}`
-The action runner accepts any local `/api/` path and POSTs `params` as JSON.
+`{"type":"<short-descriptor>","endpoint":"/api/...","method":"GET|POST|DELETE","params":{...}}`
+The action runner accepts safe local `/api/` paths only, enforces the endpoint method from the API index when available, sends GET params as query strings, and sends POST/DELETE params as JSON.
 
 For CLI commands (`minions <cmd>`), use Bash to invoke them when delegating would be heavier than just running the command.

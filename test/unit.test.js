@@ -29644,6 +29644,131 @@ async function testMeetingsIsolatedGaps() {
     }
   });
 
+  await test('dashboard executeCCActions maps documented browser-only actions to local API calls', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      const calls = [];
+      dashboard._resetCcApiRoutesMetaForTest();
+      dashboard._captureApiRoutesMeta([
+        { method: 'POST', path: '/api/pinned', desc: 'Add pinned note' },
+        { method: 'POST', path: '/api/plan', desc: 'Create plan' },
+        { method: 'POST', path: '/api/projects/add', desc: 'Add project' },
+        { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel agent' },
+        { method: 'GET', path: '/api/routes', desc: 'List routes' },
+      ]);
+      dashboard._setCcLocalApiInvokerForTest(async (request) => {
+        calls.push(request);
+        return { status: 200, data: { ok: true, id: `ok-${calls.length}` } };
+      });
+
+      const results = await dashboard.executeCCActions([
+        { type: 'pin-to-pinned', title: 'Critical rule', content: 'Always test', level: 'critical' },
+        { type: 'plan', title: 'New plan', description: 'Do it', project: 'minions', branchStrategy: 'shared-branch' },
+        { type: 'add-project', localPath: 'C:\\repo\\app', name: 'app', repoHost: 'github' },
+        { type: 'cancel', agentId: 'ripley', reason: 'No longer needed' },
+        { type: 'route-list', endpoint: '/api/routes', method: 'GET', params: { verbose: '1' } },
+      ]);
+
+      assert.deepStrictEqual(results.map(r => r.ok), [true, true, true, true, true],
+        'mapped and generic actions should all execute through the server-side local API invoker');
+      assert.deepStrictEqual(calls.map(c => `${c.method} ${c.endpoint}`), [
+        'POST /api/pinned',
+        'POST /api/plan',
+        'POST /api/projects/add',
+        'POST /api/agents/cancel',
+        'GET /api/routes',
+      ]);
+      assert.deepStrictEqual(calls[0].params, { title: 'Critical rule', content: 'Always test', level: 'critical' });
+      assert.strictEqual(calls[1].params.branch_strategy, 'shared-branch',
+        'plan actions must preserve documented camelCase branchStrategy by mapping it to API branch_strategy');
+      assert.strictEqual(calls[2].params.path, 'C:\\repo\\app',
+        'add-project must map documented localPath to /api/projects/add path');
+      assert.strictEqual(calls[3].params.agent, 'ripley',
+        'cancel must map documented agentId to /api/agents/cancel agent');
+      assert.deepStrictEqual(calls[4].params, { verbose: '1' },
+        'GET fallback should preserve params for query-string invocation');
+    } finally {
+      try {
+        const dashboard = require('../dashboard.js');
+        dashboard._setCcLocalApiInvokerForTest(null);
+        dashboard._resetCcApiRoutesMetaForTest();
+      } catch {}
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
+      restore();
+    }
+  });
+
+  await test('dashboard executeCCActions rejects unsafe or method-mismatched generic API fallback actions', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      let calls = 0;
+      dashboard._resetCcApiRoutesMetaForTest();
+      dashboard._captureApiRoutesMeta([{ method: 'GET', path: '/api/routes', desc: 'List routes' }]);
+      dashboard._setCcLocalApiInvokerForTest(async () => {
+        calls += 1;
+        throw new Error('unsafe fallback should not invoke local API');
+      });
+
+      const results = await dashboard.executeCCActions([
+        { type: 'external', endpoint: 'https://example.com/api/routes', params: {} },
+        { type: 'traversal', endpoint: '/api/../settings', params: {} },
+        { type: 'wrong-method', endpoint: '/api/routes', method: 'POST', params: {} },
+      ]);
+
+      assert.strictEqual(calls, 0, 'invalid generic fallback actions must be rejected before invocation');
+      assert.ok(results[0].error.includes('local /api/ path'), 'absolute URLs must be rejected');
+      assert.ok(results[1].error.includes('unsafe'), 'path traversal must be rejected');
+      assert.ok(results[2].error.includes('does not allow POST'), 'route metadata must enforce the requested method');
+    } finally {
+      try {
+        const dashboard = require('../dashboard.js');
+        dashboard._setCcLocalApiInvokerForTest(null);
+        dashboard._resetCcApiRoutesMetaForTest();
+      } catch {}
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
+      restore();
+    }
+  });
+
+  await test('dashboard executeDocChatActions executes generic API fallback server-side', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      fs.cpSync(path.join(MINIONS_DIR, 'dashboard'), path.join(process.env.MINIONS_TEST_DIR, 'dashboard'), { recursive: true });
+      delete require.cache[require.resolve('../dashboard.js')];
+      const dashboard = require('../dashboard.js');
+      const calls = [];
+      dashboard._resetCcApiRoutesMetaForTest();
+      dashboard._captureApiRoutesMeta([{ method: 'POST', path: '/api/inbox/promote-kb', desc: 'Promote inbox note' }]);
+      dashboard._setCcLocalApiInvokerForTest(async (request) => {
+        calls.push(request);
+        return { status: 200, data: { ok: true } };
+      });
+
+      const results = await dashboard.executeDocChatActions([
+        { type: 'promote-note', endpoint: '/api/inbox/promote-kb', params: { name: 'note.md', category: 'project-notes' } },
+      ]);
+
+      assert.strictEqual(results[0].ok, true, 'doc-chat actions must execute the same server fallback as CC actions');
+      assert.strictEqual(calls.length, 1, 'doc-chat must not rely on browser ccExecuteAction for API-only actions');
+      assert.strictEqual(calls[0].endpoint, '/api/inbox/promote-kb');
+      assert.deepStrictEqual(calls[0].params, { name: 'note.md', category: 'project-notes' });
+    } finally {
+      try {
+        const dashboard = require('../dashboard.js');
+        dashboard._setCcLocalApiInvokerForTest(null);
+        dashboard._resetCcApiRoutesMetaForTest();
+      } catch {}
+      try { delete require.cache[require.resolve('../dashboard.js')]; } catch {}
+      restore();
+    }
+  });
+
   await test('deleteMeeting returns false (and does not touch dispatch) when meeting file is absent', () => {
     const restore = createTestMinionsDir();
     try {
