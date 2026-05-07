@@ -56557,6 +56557,7 @@ async function testDashboardPureHelpers() {
   const { getMcpServers, _filterCcTabSessions, _getVersionCheckInterval,
           _parseWatchInterval, parsePinnedEntries, _parseDocChatResultText,
           _formatDocChatContext,
+          _buildDocChatActionFeedback,
           _docChatErrorMessage, _docChatPartialWarning,
           _docChatFailureResponse, _recoverPartialDocChatResponse,
           _resolveSkillReadPath, DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
@@ -56677,6 +56678,64 @@ async function testDashboardPureHelpers() {
     assert.deepStrictEqual(parsed.actions, []);
     assert.ok(parsed.actionParseError,
       'doc-chat callers must be able to warn when action JSON was emitted but dropped');
+  });
+
+  await test('_buildDocChatActionFeedback exposes dispatched work item ids for doc-chat', () => {
+    const feedback = _buildDocChatActionFeedback(
+      [{ type: 'dispatch', title: 'Fix bug' }],
+      [{ type: 'dispatch', id: 'W-test123', ok: true }]
+    );
+    assert.deepStrictEqual(feedback, [{
+      type: 'dispatch',
+      id: 'W-test123',
+      ok: true,
+    }], 'doc-chat feedback must include the action type and work item id users need to find the dispatch');
+  });
+
+  await test('_buildDocChatActionFeedback preserves duplicate and error dispatch outcomes', () => {
+    const feedback = _buildDocChatActionFeedback(
+      [
+        { type: 'fix', title: 'Existing fix' },
+        { type: 'dispatch', title: '' },
+        { type: 'note', title: 'Not a work item' },
+      ],
+      [
+        { type: 'fix', id: 'W-existing', ok: true, duplicate: true, duplicateOf: 'W-existing', warning: 'Already queued.' },
+        { type: 'dispatch', error: 'dispatch action missing required field: title' },
+        { type: 'note', ok: true },
+      ]
+    );
+    assert.deepStrictEqual(feedback, [
+      { type: 'fix', id: 'W-existing', ok: true, duplicate: true, duplicateOf: 'W-existing', warning: 'Already queued.' },
+      { type: 'dispatch', error: 'dispatch action missing required field: title' },
+    ], 'doc-chat feedback should surface work-item duplicates/errors without adding unrelated action noise');
+  });
+
+  await test('doc-chat endpoints forward actionFeedback for non-streaming and streaming replies', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handlerBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
+    assert.ok((handlerBlock.match(/_buildDocChatActionFeedback\(actions,\s*actionResults\)/g) || []).length >= 2,
+      'both /api/doc-chat and /api/doc-chat/stream must build doc-chat action feedback from actionResults');
+    assert.ok((handlerBlock.match(/actionFeedback\.length \? \{ actionFeedback \} : \{\}/g) || []).length >= 2,
+      'both doc-chat response shapes must include actionFeedback when dispatch results exist');
+  });
+
+  await test('modal doc-chat renders dispatch feedback inside the QA thread', () => {
+    const qaSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const handledSideEffects = qaSrc.slice(
+      qaSrc.indexOf('function _qaRunHandledActionSideEffects'),
+      qaSrc.indexOf('function _qaBuildActionFeedbackHtml')
+    );
+    assert.ok(qaSrc.includes('function _qaBuildActionFeedbackHtml'),
+      'modal QA should have a dedicated action-feedback renderer instead of relying on Command Center messages');
+    assert.ok(qaSrc.includes('evt.actionFeedback') && qaSrc.includes('_qaBuildActionFeedbackHtml(evt.actionFeedback)'),
+      'streaming doc-chat must render backend actionFeedback in the modal thread');
+    assert.ok(qaSrc.includes('_qaActionFeedbackHandled(action, actionResult)'),
+      'server-executed dispatch actions should not be routed through ccExecuteAction into Command Center');
+    assert.ok(qaSrc.includes('_qaRunHandledActionSideEffects(action, actionResult)'),
+      'handled server-executed dispatch actions must still run wake/refresh side effects');
+    assert.ok(handledSideEffects.includes('wakeEngine()') && handledSideEffects.includes('refresh()'),
+      'handled doc-chat work-item feedback must wake the engine and refresh the dashboard after server dispatch');
   });
 
   await test('dashboard.js no longer exports the regex-based orchestration gate', () => {

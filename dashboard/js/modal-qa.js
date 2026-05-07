@@ -266,9 +266,38 @@ function _qaBuildAssistantHtml(text, opts) {
   const pad = opts?.isError ? '' : 'padding-right:24px;';
   return '<div class="modal-qa-a" style="' + style + '">' +
     (opts?.isError ? '' : llmCopyBtn()) +
-     body +
-     '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;' + pad + '">' + opts.elapsed + 's</div>' +
-     '</div>';
+    body +
+    '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;' + pad + '">' + opts.elapsed + 's</div>' +
+    '</div>';
+}
+
+const QA_WORK_ITEM_ACTION_TYPES = new Set(['dispatch', 'fix', 'implement', 'explore', 'review', 'test']);
+
+function _qaActionFeedbackHandled(action, actionResult) {
+  const type = String(actionResult?.type || action?.type || '');
+  return QA_WORK_ITEM_ACTION_TYPES.has(type) && !!(actionResult?.ok || actionResult?.error);
+}
+
+function _qaRunHandledActionSideEffects(action, actionResult) {
+  const type = String(actionResult?.type || action?.type || '');
+  if (!QA_WORK_ITEM_ACTION_TYPES.has(type)) return;
+  if (typeof wakeEngine === 'function') wakeEngine();
+  if (typeof refresh === 'function') refresh();
+}
+
+function _qaBuildActionFeedbackHtml(actionFeedback) {
+  if (!Array.isArray(actionFeedback) || actionFeedback.length === 0) return '';
+  return actionFeedback.map(function(item) {
+    const type = escHtml(item.type || 'dispatch');
+    const baseStyle = 'padding:4px 10px;border-radius:4px;font-size:10px;align-self:flex-start;border:1px dashed var(--border);margin:4px 0;';
+    if (item.error) {
+      return '<div class="modal-qa-action-feedback" style="' + baseStyle + 'color:var(--red)">&#10007; ' + type + ' failed: ' + escHtml(item.error) + '</div>';
+    }
+    const label = escHtml(item.id || item.duplicateOf || '');
+    const duplicate = item.duplicate ? ' <span style="color:var(--orange)">already exists</span>' : '';
+    const warning = item.warning ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escHtml(item.warning) + '</div>' : '';
+    return '<div class="modal-qa-action-feedback" style="' + baseStyle + 'color:' + (item.duplicate ? 'var(--orange)' : 'var(--green)') + '">&#10003; ' + type + ': <strong>' + label + '</strong>' + duplicate + warning + '</div>';
+  }).join('');
 }
 
 function _qaBuildLiveProgressHtml(loadingId, label, elapsedSeconds, streamedText, toolsUsed, queueCount) {
@@ -649,6 +678,7 @@ async function _processQaMessage(message, selection, opts) {
           bodyText += '\n\n_Tools that ran before the failure: ' + names + more + ' \u2014 files or state may have been modified._';
         }
         const answerHtml = _qaBuildAssistantHtml(bodyText, { borderColor, elapsed: qaElapsed });
+        const actionFeedbackHtml = _qaBuildActionFeedbackHtml(evt.actionFeedback);
         // On any runtime failure, surface the raw error so users can debug it
         // directly instead of guessing what the friendly summary was hiding.
         const rawErrorHtml = evt.error ? _qaBuildRawErrorHtml(evt.error) : '';
@@ -656,6 +686,7 @@ async function _processQaMessage(message, selection, opts) {
           const loadingEl = tmp.querySelector('#' + loadingId);
           if (loadingEl) loadingEl.remove();
           _qaInsertBeforeQueued(tmp, answerHtml);
+          if (actionFeedbackHtml) _qaInsertBeforeQueued(tmp, actionFeedbackHtml);
           if (rawErrorHtml) _qaInsertBeforeQueued(tmp, rawErrorHtml);
         });
 
@@ -665,8 +696,17 @@ async function _processQaMessage(message, selection, opts) {
 
         _qaNotifySidebar(capturedFilePath);
         if (evt.actions && evt.actions.length > 0) {
+          const actionResults = Array.isArray(evt.actionResults) ? evt.actionResults : [];
           if (evt.actionResults && typeof _tagServerExecuted === 'function') _tagServerExecuted(evt.actions, evt.actionResults);
-          for (const action of evt.actions) await ccExecuteAction(action);
+          for (let ai = 0; ai < evt.actions.length; ai++) {
+            const action = evt.actions[ai];
+            const actionResult = actionResults[ai];
+            if (_qaActionFeedbackHandled(action, actionResult)) {
+              _qaRunHandledActionSideEffects(action, actionResult);
+              continue;
+            }
+            await ccExecuteAction(action);
+          }
         } else if (evt.actionParseError) {
           const warning = '<div class="modal-qa-a" style="color:var(--red)">Actions block emitted but JSON could not be parsed — no actions were executed. Resend or rephrase. (' + escHtml(String(evt.actionParseError).slice(0, 200)) + ')</div>';
           updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
