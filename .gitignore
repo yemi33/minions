@@ -13,6 +13,7 @@ engine/kb-sweep-pid-*.pid
 engine/cc-session.json
 engine/cc-sessions.json
 engine/kb-pins.json
+engine/dashboard-browser.json
 engine/metrics.json
 engine/cooldowns.json
 engine/schedule-runs.json

@@ -4,6 +4,17 @@ let inboxData = [];
 let agentData = [];
 let currentAgentId = null;
 let currentTab = 'thought-process';
+const DASHBOARD_TAB_ID = (function() {
+  try {
+    var existing = sessionStorage.getItem('minions-dashboard-tab-id');
+    if (existing) return existing;
+    var id = 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem('minions-dashboard-tab-id', id);
+    return id;
+  } catch {
+    return 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+})();
 
 // Sidebar page navigation — URL-routed
 function getPageFromUrl() {
@@ -87,6 +98,37 @@ function prunePrdRequeueState(workItems) {
   }
 }
 
+function _dashboardPresencePayload(closed) {
+  return JSON.stringify({
+    tabId: DASHBOARD_TAB_ID,
+    closed: !!closed,
+    url: location.pathname + location.search + location.hash,
+    visibility: document.visibilityState || '',
+  });
+}
+
+function _sendDashboardPresence(closed) {
+  var payload = _dashboardPresencePayload(closed);
+  try {
+    if (navigator.sendBeacon) {
+      var blob = new Blob([payload], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/browser-presence', blob)) return;
+    }
+  } catch {}
+  try {
+    fetch('/api/browser-presence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(function() {});
+  } catch {}
+}
+
+window.addEventListener('pagehide', function() { _sendDashboardPresence(true); });
+window.addEventListener('beforeunload', function() { _sendDashboardPresence(true); });
+document.addEventListener('visibilitychange', function() { _sendDashboardPresence(false); });
+
 function rerenderPrdFromCache() {
   if (!window._lastStatus || !window._lastStatus.prdProgress) return;
   renderPrdProgress(window._lastStatus.prdProgress);
@@ -100,6 +142,13 @@ function safeFetch(url, opts) {
   var controller = new AbortController();
   var timer = setTimeout(function() { controller.abort(); }, timeout);
   var fetchOpts = Object.assign({}, opts, { signal: controller.signal });
+  if (typeof url === 'string' && url.indexOf('/api/') === 0) {
+    var headers = Object.assign({}, fetchOpts.headers || {});
+    headers['X-Minions-Dashboard-Tab'] = DASHBOARD_TAB_ID;
+    headers['X-Minions-Dashboard-Url'] = location.pathname + location.search + location.hash;
+    headers['X-Minions-Dashboard-Visibility'] = document.visibilityState || '';
+    fetchOpts.headers = headers;
+  }
   delete fetchOpts.timeout;
   return fetch(url, fetchOpts).finally(function() { clearTimeout(timer); });
 }

@@ -29,6 +29,7 @@ const { spawn, spawnSync, execSync } = require('child_process');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 const DASH_PORT = 7331;
+const DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS = 45000;
 
 /** Returns PIDs (as strings) of processes LISTENING on `port`. Empty on no match
  *  or when the platform tool (netstat/findstr/lsof) is unavailable. */
@@ -59,6 +60,18 @@ function killByPort(port) {
 }
 
 const isPortListening = (port) => getListeningPids(port).length > 0;
+
+function hasRecentDashboardBrowserTab(minionsHome, now = Date.now()) {
+  try {
+    const fp = path.join(minionsHome, 'engine', 'dashboard-browser.json');
+    const state = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    const tabs = state && state.tabs && typeof state.tabs === 'object' ? state.tabs : {};
+    return Object.values(tabs).some(tab => {
+      const lastSeen = Number(tab && tab.lastSeen);
+      return Number.isFinite(lastSeen) && now - lastSeen <= DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS;
+    });
+  } catch { return false; }
+}
 
 /**
  * Read the engine's recorded PID from engine/control.json. Returns null if
@@ -118,7 +131,7 @@ function killMinionsProcesses(patterns) {
 }
 
 /** Spawn a detached dashboard. When `suppressOpen` is true, the new dashboard
- *  skips its auto-open of the browser — the existing tab will SSE-reconnect. */
+ *  skips its auto-open of the browser — the existing tab will reconnect. */
 function spawnDashboard(suppressOpen) {
   const env = suppressOpen ? { ...process.env, MINIONS_NO_AUTO_OPEN: '1' } : process.env;
   const proc = spawn(process.execPath, [path.join(MINIONS_HOME, 'dashboard.js')], {
@@ -397,9 +410,11 @@ function init() {
   if (isUpgrade && skipStart) return;
 
   // Auto-start on fresh install; direct force-upgrade restarts automatically.
-  // Probe before kill so we can suppress the new dashboard's auto-open when an
-  // existing tab is already live (it'll SSE-reconnect to the new dashboard).
+  // Probe before kill so we suppress browser auto-open only when a browser tab
+  // was recently polling the dashboard. A bare/orphan dashboard process on the
+  // port is not enough; cold starts should still open the UI.
   const dashWasUp = isPortListening(DASH_PORT);
+  const suppressDashboardOpen = dashWasUp && hasRecentDashboardBrowserTab(MINIONS_HOME);
   if (isUpgrade) {
     try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000, windowsHide: true }); } catch {}
     // Free the dashboard port too — without this the new dashboard EADDRINUSE-dies
@@ -415,7 +430,7 @@ function init() {
   engineProc.unref();
   console.log(`  Engine started (PID: ${engineProc.pid})`);
 
-  const dashProc = spawnDashboard(dashWasUp);
+  const dashProc = spawnDashboard(suppressDashboardOpen);
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
   console.log(`  Dashboard: http://localhost:${DASH_PORT}`);
 
@@ -670,9 +685,11 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   // `--cli` / `--model` flags forward to `engine.js start` so the runtime
   // fleet flips before the daemon spawns (P-6b3f9c2e AC: works on restart).
   ensureInstalled();
-  // Probe before kill so we can suppress the new dashboard's auto-open when an
-  // existing tab is already live (it'll SSE-reconnect to the new dashboard).
+  // Probe before kill so we suppress browser auto-open only when a browser tab
+  // was recently polling the dashboard. A bare/orphan dashboard process on the
+  // port is not enough; cold starts should still open the UI.
   const dashWasUp = isPortListening(DASH_PORT);
+  const suppressDashboardOpen = dashWasUp && hasRecentDashboardBrowserTab(MINIONS_HOME);
   // Layered kill — each step is best-effort, layered so the next still runs if
   // one fails. Goal: the old engine is gone before we spawn a new one, even if
   // PowerShell is unavailable, the engine is hung, or its cmdline doesn't match.
@@ -691,7 +708,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   });
   engineProc.unref();
   console.log(`\n  Engine started (PID: ${engineProc.pid})`);
-  const dashProc = spawnDashboard(dashWasUp);
+  const dashProc = spawnDashboard(suppressDashboardOpen);
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
   console.log(`  Dashboard: http://localhost:${DASH_PORT}\n`);
 } else if (cmd === 'nuke') {
