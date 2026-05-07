@@ -372,6 +372,27 @@ function safeWrite(p, data) {
   }
 }
 
+function mutateTextFileLocked(filePath, mutateFn, {
+  defaultValue = '',
+  lockRetries,
+  lockRetryBackoffMs,
+  skipWriteIfUnchanged = false
+} = {}) {
+  const lockPath = `${filePath}.lock`;
+  const retries = lockRetries ?? ENGINE_DEFAULTS.lockRetries;
+  const retryBackoffMs = lockRetryBackoffMs ?? ENGINE_DEFAULTS.lockRetryBackoffMs;
+  return withFileLock(lockPath, () => {
+    const fileExists = fs.existsSync(filePath);
+    const before = fileExists ? safeRead(filePath) : String(defaultValue || '');
+    const next = mutateFn(before);
+    const finalText = next === undefined ? before : String(next);
+    if (!skipWriteIfUnchanged || finalText !== before) {
+      safeWrite(filePath, finalText);
+    }
+    return finalText;
+  }, { retries, retryBackoffMs });
+}
+
 function safeUnlink(p) {
   try { fs.unlinkSync(p); } catch { /* cleanup */ }
 }
@@ -3054,6 +3075,7 @@ module.exports = {
   safeReadDir,
   safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore,
   safeWrite,
+  mutateTextFileLocked,
   safeUnlink,
   neutralizeJsonBackupSidecar,
   PROMPT_CONTEXTS_DIR,

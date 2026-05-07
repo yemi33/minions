@@ -253,6 +253,20 @@ async function testSharedUtilities() {
     assert.strictEqual(shared.safeRead(fp), 'hello world');
   });
 
+  await test('mutateTextFileLocked performs text read-modify-write under a file lock', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'pinned.md');
+    shared.safeWrite(fp, '# Pinned Context');
+    assert.strictEqual(typeof shared.mutateTextFileLocked, 'function',
+      'shared.mutateTextFileLocked should be available for locked markdown/text state updates');
+
+    const result = shared.mutateTextFileLocked(fp, text => text + '\n\n### One\n\nBody');
+
+    assert.strictEqual(result, '# Pinned Context\n\n### One\n\nBody');
+    assert.strictEqual(shared.safeRead(fp), result);
+    assert.ok(!fs.existsSync(fp + '.lock'), 'lock sidecar should be cleaned up after mutation');
+  });
+
   await test('safeWrite creates parent directories', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'a', 'b', 'c', 'deep.json');
@@ -35665,7 +35679,8 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handleProjectsAdd');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
+    assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj') || fnBody.includes('mutateDashboardConfig'),
+      'handleProjectsAdd must null-guard config from safeJson, use safeJsonObj, or route config access through mutateDashboardConfig');
   });
 
   await test('dashboard.js: project git metadata uses shared discovery and add invalidates status cache', () => {
@@ -35885,6 +35900,43 @@ async function testDashboardAuditXss() {
     const remBlock = src.slice(remIdx, remIdx + 1000);
     assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(remBlock),
       'POST /api/pinned/remove must call invalidateStatusCache({ includeSlow: true }) so unpin is immediate');
+  });
+
+  await test('dashboard config and pin state mutations are routed through lock helpers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const scheduleBlock = src.slice(src.indexOf('async function handleSchedulesCreate'), src.indexOf('async function handleSchedulesRunNow'));
+    const projectsBlock = src.slice(src.indexOf('async function handleProjectsAdd'), src.indexOf('async function handleProjectsRemove'));
+    assert.ok(projectsBlock.includes('mutateDashboardConfig'),
+      'project add must mutate config.json via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*(?:configPath|CONFIG_PATH)/.test(projectsBlock),
+      'project add must not bare safeWrite config.json');
+
+    assert.ok(scheduleBlock.includes('mutateDashboardConfig'),
+      'schedule create/update/delete must mutate config.json via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*path\.join\(MINIONS_DIR,\s*'config\.json'\)/.test(scheduleBlock),
+      'schedule handlers must not bare safeWrite config.json');
+
+    const settingsBlock = src.slice(src.indexOf('async function handleSettingsUpdate'), src.indexOf('async function handleSettingsRouting'));
+    assert.ok(settingsBlock.includes('mutateDashboardConfig'),
+      'settings save must merge config updates via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*configPath\s*,/.test(settingsBlock),
+      'settings save must not bare safeWrite config.json');
+
+    const pinnedHelperBlock = src.slice(src.indexOf('function addPinnedEntryLocked'), src.indexOf('function setKbPinsLocked'));
+    const pinnedBlock = src.slice(src.indexOf("'POST', path: '/api/pinned'"), src.indexOf('// KB pin state'));
+    assert.ok(pinnedHelperBlock.includes('mutateTextFileLocked'),
+      'pinned.md add/remove helper must read and write under the text lock helper');
+    assert.ok(pinnedBlock.includes('addPinnedEntryLocked') && pinnedBlock.includes('removePinnedEntryLocked'),
+      'pinned.md routes must delegate to the locked pinned helpers');
+
+    const kbPinsHelperBlock = src.slice(src.indexOf('function setKbPinsLocked'), src.indexOf('function getWorkItemIdFromPrLinkContext'));
+    const kbPinsBlock = src.slice(src.indexOf("'POST', path: '/api/kb-pins'"), src.indexOf('// Notes'));
+    assert.ok(kbPinsHelperBlock.includes('mutateJsonFileLocked'),
+      'KB pin helper must update engine/kb-pins.json through mutateJsonFileLocked');
+    assert.ok(kbPinsBlock.includes('setKbPinsLocked') && kbPinsBlock.includes('toggleKbPinLocked'),
+      'KB pin routes must delegate to the locked KB pin helpers');
+    assert.ok(!/safeWrite\s*\(\s*(?:path\.join\(MINIONS_DIR,\s*'engine',\s*'kb-pins\.json'\)|pinsPath)/.test(kbPinsBlock),
+      'KB pin handlers must not bare safeWrite engine/kb-pins.json');
   });
 
   await test('invalidateStatusCache supports includeSlow option for user mutations of slow-state data', () => {
