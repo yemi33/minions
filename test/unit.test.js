@@ -30990,6 +30990,9 @@ async function main() {
     await testCancelDispatchesOnPrClose();
     await testDispatchQueueHelpers();
 
+    // W-movk94xd000d3571: engine/dispatch.js dedup/lock-key + retry helpers
+    await testDispatchDedupAndRetryHelpers();
+
     // W-8eobrosn: GitHub poller maxBuffer fix
     await testGhMaxBuffer();
 
@@ -52144,6 +52147,488 @@ async function testDispatchQueueHelpers() {
       assert.strictEqual(entry.workerStateDetail, 'ready for spawn');
       assert.deepStrictEqual(afterUnknown, beforeUnknown, 'Unknown dispatch ID should leave dispatch.json unchanged');
     } finally { restore(); }
+  });
+}
+
+// ─── W-movk94xd000d3571 — engine/dispatch.js dedup/lock-key + retry helpers ──
+
+async function testDispatchDedupAndRetryHelpers() {
+  console.log('\n── W-movk94xd000d3571 — dispatch dedup/lock-key + retry helpers ──');
+
+  const dispatch = require(path.join(MINIONS_DIR, 'engine', 'dispatch'));
+  const { WORK_TYPE, WI_STATUS, FAILURE_CLASS } = shared;
+
+  // ── getDispatchProjectKey ──
+
+  await test('getDispatchProjectKey: project.name wins over localPath', () => {
+    assert.strictEqual(
+      dispatch.getDispatchProjectKey({ name: 'Minions', localPath: '/some/path' }),
+      'Minions',
+    );
+  });
+
+  await test('getDispatchProjectKey: falls through to lowercase resolved localPath when name missing', () => {
+    const expected = path.resolve('/some/repo').toLowerCase();
+    assert.strictEqual(
+      dispatch.getDispatchProjectKey({ localPath: '/some/repo' }),
+      expected,
+    );
+  });
+
+  await test('getDispatchProjectKey: returns "" for null/undefined/empty project', () => {
+    assert.strictEqual(dispatch.getDispatchProjectKey(null), '');
+    assert.strictEqual(dispatch.getDispatchProjectKey(undefined), '');
+    assert.strictEqual(dispatch.getDispatchProjectKey({}), '');
+    assert.strictEqual(dispatch.getDispatchProjectKey({ name: '', localPath: '' }), '');
+  });
+
+  // ── getPrDispatchTargetKey ──
+
+  await test('getPrDispatchTargetKey: composes <projectKey>:<canonicalPrId> for GitHub-shaped pr', () => {
+    const entry = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions', repoHost: 'github' },
+        pr: { id: 'github:yemi33/minions#42', url: 'https://github.com/yemi33/minions/pull/42' },
+      },
+    };
+    assert.strictEqual(
+      dispatch.getPrDispatchTargetKey(entry),
+      'Minions:github:yemi33/minions#42',
+    );
+  });
+
+  await test('getPrDispatchTargetKey: composes target key for ADO-shaped pr via canonical id', () => {
+    const entry = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'AdoProj', repoHost: 'ado', adoOrg: 'org', adoProject: 'proj', repoName: 'repo' },
+        pr: { id: 'ado:org/proj/repo#7', url: 'https://dev.azure.com/org/proj/_git/repo/pullrequest/7' },
+      },
+    };
+    assert.strictEqual(
+      dispatch.getPrDispatchTargetKey(entry),
+      'AdoProj:ado:org/proj/repo#7',
+    );
+  });
+
+  await test('getPrDispatchTargetKey: falls through to localPath when project.name missing', () => {
+    const entry = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { localPath: '/Repo/Path', repoHost: 'github' },
+        pr: { id: 'github:owner/repo#1' },
+      },
+    };
+    const expectedKey = path.resolve('/Repo/Path').toLowerCase();
+    assert.strictEqual(
+      dispatch.getPrDispatchTargetKey(entry),
+      `${expectedKey}:github:owner/repo#1`,
+    );
+  });
+
+  await test('getPrDispatchTargetKey: returns null when meta.pr is missing', () => {
+    assert.strictEqual(
+      dispatch.getPrDispatchTargetKey({ type: WORK_TYPE.FIX, meta: { project: { name: 'Minions' } } }),
+      null,
+    );
+  });
+
+  await test('getPrDispatchTargetKey: returns null when meta.project is missing', () => {
+    assert.strictEqual(
+      dispatch.getPrDispatchTargetKey({ type: WORK_TYPE.FIX, meta: { pr: { id: 'github:owner/repo#1' } } }),
+      null,
+    );
+  });
+
+  await test('getPrDispatchTargetKey: returns null when projectKey is empty', () => {
+    const entry = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: '', localPath: '' },
+        pr: { id: 'github:owner/repo#1' },
+      },
+    };
+    assert.strictEqual(dispatch.getPrDispatchTargetKey(entry), null);
+  });
+
+  await test('getPrDispatchTargetKey: returns null on null/undefined entry', () => {
+    assert.strictEqual(dispatch.getPrDispatchTargetKey(null), null);
+    assert.strictEqual(dispatch.getPrDispatchTargetKey(undefined), null);
+    assert.strictEqual(dispatch.getPrDispatchTargetKey({}), null);
+  });
+
+  // ── getPrDispatchDedupeKey ──
+
+  await test('getPrDispatchDedupeKey: appends type to PR target key', () => {
+    const baseMeta = {
+      project: { name: 'Minions', repoHost: 'github' },
+      pr: { id: 'github:owner/repo#5' },
+    };
+    const fixKey = dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.FIX, meta: baseMeta });
+    const reviewKey = dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.REVIEW, meta: baseMeta });
+    const verifyKey = dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.VERIFY, meta: baseMeta });
+    assert.strictEqual(fixKey, 'Minions:github:owner/repo#5:fix');
+    assert.strictEqual(reviewKey, 'Minions:github:owner/repo#5:review');
+    assert.strictEqual(verifyKey, 'Minions:github:owner/repo#5:verify');
+    // Distinct keys → different work types must not collide
+    assert.notStrictEqual(fixKey, reviewKey);
+    assert.notStrictEqual(fixKey, verifyKey);
+    assert.notStrictEqual(reviewKey, verifyKey);
+  });
+
+  await test('getPrDispatchDedupeKey: fix entries dedupe against other fix entries on the same PR', () => {
+    const meta = {
+      project: { name: 'Minions', repoHost: 'github' },
+      pr: { id: 'github:owner/repo#9' },
+    };
+    const a = dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.FIX, meta });
+    const b = dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.FIX, meta });
+    assert.strictEqual(a, b);
+    assert.strictEqual(a, 'Minions:github:owner/repo#9:fix');
+  });
+
+  await test('getPrDispatchDedupeKey: returns null when type is missing', () => {
+    const meta = {
+      project: { name: 'Minions', repoHost: 'github' },
+      pr: { id: 'github:owner/repo#1' },
+    };
+    assert.strictEqual(dispatch.getPrDispatchDedupeKey({ meta }), null);
+    assert.strictEqual(dispatch.getPrDispatchDedupeKey({ type: '', meta }), null);
+  });
+
+  await test('getPrDispatchDedupeKey: returns null for non-PR entry', () => {
+    assert.strictEqual(
+      dispatch.getPrDispatchDedupeKey({ type: WORK_TYPE.FIX, meta: { project: { name: 'Minions' } } }),
+      null,
+    );
+    assert.strictEqual(dispatch.getPrDispatchDedupeKey(null), null);
+  });
+
+  // ── getBranchDispatchLockKey ──
+
+  await test('getBranchDispatchLockKey: meta.branch wins over meta.pr.branch', () => {
+    const entry = {
+      meta: {
+        project: { name: 'Minions' },
+        branch: 'work/W-abc123',
+        pr: { branch: 'should-not-be-used' },
+      },
+    };
+    assert.strictEqual(
+      dispatch.getBranchDispatchLockKey(entry),
+      'Minions:work/W-abc123',
+    );
+  });
+
+  await test('getBranchDispatchLockKey: falls back to meta.pr.branch when meta.branch missing', () => {
+    const entry = {
+      meta: {
+        project: { name: 'Minions' },
+        pr: { branch: 'feat/foo' },
+      },
+    };
+    assert.strictEqual(
+      dispatch.getBranchDispatchLockKey(entry),
+      'Minions:feat/foo',
+    );
+  });
+
+  await test('getBranchDispatchLockKey: sanitizes special characters in branch name', () => {
+    const entry = {
+      meta: {
+        project: { name: 'Minions' },
+        branch: 'feat/bar baz?weird*chars',
+      },
+    };
+    const sanitized = shared.sanitizeBranch('feat/bar baz?weird*chars');
+    assert.strictEqual(
+      dispatch.getBranchDispatchLockKey(entry),
+      `Minions:${sanitized}`,
+    );
+    // Forward slashes are preserved by sanitizeBranch
+    assert.ok(sanitized.startsWith('feat/bar'),
+      `sanitized branch should preserve forward slash, got ${sanitized}`);
+  });
+
+  await test('getBranchDispatchLockKey: returns null when no branch is present', () => {
+    assert.strictEqual(
+      dispatch.getBranchDispatchLockKey({ meta: { project: { name: 'Minions' } } }),
+      null,
+    );
+    assert.strictEqual(dispatch.getBranchDispatchLockKey(null), null);
+    assert.strictEqual(dispatch.getBranchDispatchLockKey({}), null);
+  });
+
+  await test('getBranchDispatchLockKey: defaults projectKey to "default" when project is missing', () => {
+    const entry = { meta: { branch: 'work/W-orphan' } };
+    assert.strictEqual(
+      dispatch.getBranchDispatchLockKey(entry),
+      'default:work/W-orphan',
+    );
+  });
+
+  // ── findActivePrOrBranchLock ──
+
+  await test('findActivePrOrBranchLock: returns null for non-FIX item even when matching active dispatch exists', () => {
+    const activeFix = {
+      id: 'D-active-fix',
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        pr: { id: 'github:owner/repo#11' },
+      },
+    };
+    const dp = { pending: [], active: [activeFix] };
+
+    for (const nonFixType of [WORK_TYPE.IMPLEMENT, WORK_TYPE.REVIEW, WORK_TYPE.VERIFY]) {
+      const candidate = {
+        type: nonFixType,
+        meta: {
+          project: { name: 'Minions' },
+          pr: { id: 'github:owner/repo#11' },
+        },
+      };
+      assert.strictEqual(
+        dispatch.findActivePrOrBranchLock(dp, candidate),
+        null,
+        `${nonFixType} should never lock against active FIX dispatch`,
+      );
+    }
+  });
+
+  await test('findActivePrOrBranchLock: returns existing entry when fix item matches PR target key', () => {
+    const existing = {
+      id: 'D-existing-fix',
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        pr: { id: 'github:owner/repo#21' },
+      },
+    };
+    const dp = { pending: [], active: [existing] };
+    const candidate = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        pr: { id: 'github:owner/repo#21' },
+        branch: 'work/different-branch',
+      },
+    };
+    const result = dispatch.findActivePrOrBranchLock(dp, candidate);
+    assert.ok(result, 'Should find a lock');
+    assert.strictEqual(result.existing, existing);
+    assert.ok(/^active PR dispatch /.test(result.reason),
+      `reason should mention PR target, got ${result.reason}`);
+    assert.ok(result.reason.includes('github:owner/repo#21'),
+      `reason should include canonical PR id, got ${result.reason}`);
+  });
+
+  await test('findActivePrOrBranchLock: returns existing entry when fix item matches only on branch lock', () => {
+    const existing = {
+      id: 'D-branch-fix',
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        branch: 'work/W-shared',
+      },
+    };
+    const dp = { pending: [], active: [existing] };
+    const candidate = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        branch: 'work/W-shared',
+      },
+    };
+    const result = dispatch.findActivePrOrBranchLock(dp, candidate);
+    assert.ok(result, 'Should find a lock');
+    assert.strictEqual(result.existing, existing);
+    assert.ok(/^active branch dispatch /.test(result.reason),
+      `reason should mention branch dispatch, got ${result.reason}`);
+    assert.ok(result.reason.includes('work/W-shared'),
+      `reason should mention branch name, got ${result.reason}`);
+  });
+
+  await test('findActivePrOrBranchLock: returns null when fix item has no matching active dispatch', () => {
+    const dp = {
+      pending: [],
+      active: [{
+        id: 'D-other',
+        type: WORK_TYPE.FIX,
+        meta: {
+          project: { name: 'OtherProject' },
+          pr: { id: 'github:owner/other-repo#1' },
+        },
+      }],
+    };
+    const candidate = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        pr: { id: 'github:owner/repo#99' },
+        branch: 'work/W-fresh',
+      },
+    };
+    assert.strictEqual(dispatch.findActivePrOrBranchLock(dp, candidate), null);
+  });
+
+  await test('findActivePrOrBranchLock: returns null when active list is empty', () => {
+    const candidate = {
+      type: WORK_TYPE.FIX,
+      meta: {
+        project: { name: 'Minions' },
+        pr: { id: 'github:owner/repo#1' },
+        branch: 'work/W-x',
+      },
+    };
+    assert.strictEqual(dispatch.findActivePrOrBranchLock({ pending: [], active: [] }, candidate), null);
+    // Tolerates missing active list
+    assert.strictEqual(dispatch.findActivePrOrBranchLock({ pending: [] }, candidate), null);
+  });
+
+  // ── isRetryableFailureReason — gap-fill cases not covered by existing tests ──
+
+  await test('isRetryableFailureReason: case-insensitive match on "Authentication Failed"', () => {
+    assert.strictEqual(dispatch.isRetryableFailureReason('Authentication Failed'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('AUTHENTICATION FAILURE'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('Unauthorized'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('Invalid API Key'), false);
+  });
+
+  await test('isRetryableFailureReason: empty/missing reason without failureClass is retryable', () => {
+    assert.strictEqual(dispatch.isRetryableFailureReason(), true);
+    assert.strictEqual(dispatch.isRetryableFailureReason(null), true);
+    assert.strictEqual(dispatch.isRetryableFailureReason(undefined, undefined), true);
+  });
+
+  await test('isRetryableFailureReason: PERMISSION_BLOCKED short-circuits even with retryable-looking reason', () => {
+    // A reason that would otherwise be retryable becomes non-retryable under PERMISSION_BLOCKED
+    assert.strictEqual(
+      dispatch.isRetryableFailureReason('agent timed out', FAILURE_CLASS.PERMISSION_BLOCKED),
+      false,
+    );
+  });
+
+  await test('isRetryableFailureReason: budget cap reasons are non-retryable', () => {
+    assert.strictEqual(dispatch.isRetryableFailureReason('budget exceeded'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('budget cap exceeded'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('max-budget-usd reached'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('cost limit reached'), false);
+  });
+
+  // ── normalizeRetryableDecision ──
+
+  await test('normalizeRetryableDecision: passes through booleans verbatim', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision(true), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(false), false);
+  });
+
+  await test('normalizeRetryableDecision: accepts case-insensitive "true"/"yes"/"1" strings', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision('true'), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('TRUE'), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('True'), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('yes'), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('YES'), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('1'), true);
+  });
+
+  await test('normalizeRetryableDecision: accepts case-insensitive "false"/"no"/"0" strings', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision('false'), false);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('FALSE'), false);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('no'), false);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('NO'), false);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('0'), false);
+  });
+
+  await test('normalizeRetryableDecision: trims whitespace before normalising', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision('  true  '), true);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('\tfalse\n'), false);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(' YES '), true);
+  });
+
+  await test('normalizeRetryableDecision: returns undefined for unrecognised strings', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision('maybe'), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(''), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision('2'), undefined);
+  });
+
+  await test('normalizeRetryableDecision: returns undefined for non-boolean / non-string inputs', () => {
+    assert.strictEqual(dispatch.normalizeRetryableDecision(undefined), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(null), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(0), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision(1), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision({}), undefined);
+    assert.strictEqual(dispatch.normalizeRetryableDecision([]), undefined);
+  });
+
+  // ── isCompletedWorkItemForFailure ──
+
+  await test('isCompletedWorkItemForFailure: WI_STATUS.DONE alone is sufficient', () => {
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({ id: 'W-1', status: WI_STATUS.DONE }),
+      true,
+    );
+  });
+
+  await test('isCompletedWorkItemForFailure: completedAt + _pr is sufficient', () => {
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({
+        id: 'W-2',
+        status: WI_STATUS.PENDING,
+        completedAt: '2026-05-07T12:00:00Z',
+        _pr: 'github:owner/repo#42',
+      }),
+      true,
+    );
+  });
+
+  await test('isCompletedWorkItemForFailure: completedAt + _prUrl is sufficient', () => {
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({
+        id: 'W-3',
+        status: WI_STATUS.PENDING,
+        completedAt: '2026-05-07T12:00:00Z',
+        _prUrl: 'https://github.com/owner/repo/pull/42',
+      }),
+      true,
+    );
+  });
+
+  await test('isCompletedWorkItemForFailure: completedAt without PR metadata returns false', () => {
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({
+        id: 'W-4',
+        status: WI_STATUS.PENDING,
+        completedAt: '2026-05-07T12:00:00Z',
+      }),
+      false,
+    );
+  });
+
+  await test('isCompletedWorkItemForFailure: PR metadata without completedAt returns false', () => {
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({
+        id: 'W-5',
+        status: WI_STATUS.PENDING,
+        _pr: 'github:owner/repo#42',
+      }),
+      false,
+    );
+    assert.strictEqual(
+      dispatch.isCompletedWorkItemForFailure({
+        id: 'W-6',
+        status: WI_STATUS.PENDING,
+        _prUrl: 'https://github.com/owner/repo/pull/42',
+      }),
+      false,
+    );
+  });
+
+  await test('isCompletedWorkItemForFailure: null/undefined item returns false', () => {
+    assert.strictEqual(dispatch.isCompletedWorkItemForFailure(null), false);
+    assert.strictEqual(dispatch.isCompletedWorkItemForFailure(undefined), false);
+    assert.strictEqual(dispatch.isCompletedWorkItemForFailure({}), false);
   });
 }
 
