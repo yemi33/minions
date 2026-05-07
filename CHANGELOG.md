@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1769 (2026-05-07)
+
+### Fixes
+- drop /T from engine taskkill so agents survive restart
+
 ## 0.1.1767 (2026-05-07)
 
 ### Fixes
