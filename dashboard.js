@@ -3083,12 +3083,17 @@ function spawnEngine() {
   return engineProc.pid;
 }
 
+// Force-kill the engine process WITHOUT /T — agents are spawned as the engine's
+// children with `detached: true` and must survive an engine restart so the new
+// engine can re-attach via PID files + live-output.log mtimes (engine.js:1102,
+// engine/cli.js re-attach). Tree-kill would orphan in-flight work. Mirrors
+// bin/minions.js:killPidOnly.
 function killEnginePid(pid) {
   const { execFileSync } = require('child_process');
   try {
     const safePid = shared.validatePid(pid);
     if (process.platform === 'win32') {
-      execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+      execFileSync('taskkill', ['/PID', String(safePid), '/F'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
     } else {
       process.kill(safePid, 'SIGKILL');
     }
