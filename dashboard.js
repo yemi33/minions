@@ -2706,7 +2706,8 @@ function _docChatResultHasVisibleError(result) {
   if (!result) return false;
   if (result.errorClass) return true;
   if (typeof result.errorMessage === 'string' && result.errorMessage.trim()) return true;
-  if (typeof result.stderr === 'string' && result.stderr.trim()) return true;
+  // stderr without a classified/runtime error is often CLI diagnostics; hard
+  // failures with no answer still surface stderr through _docChatFailureResponse.
   return false;
 }
 

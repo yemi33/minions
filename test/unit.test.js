@@ -56692,6 +56692,18 @@ async function testDashboardPureHelpers() {
     assert.strictEqual(_docChatResultLooksSuccessful(benign), true,
       'non-zero Copilot exits with answer text and no error signal should not render a failure');
 
+    const stderrOnly = {
+      text: 'The answer completed successfully despite a noisy runtime exit.',
+      code: 1,
+      errorClass: null,
+      errorMessage: null,
+      stderr: 'non-actionable runtime diagnostic',
+    };
+    assert.strictEqual(_docChatResultHasVisibleError(stderrOnly), false,
+      'unclassified stderr by itself is too noisy to show on recovered answers');
+    assert.strictEqual(_docChatResultLooksSuccessful(stderrOnly), true,
+      'parseable answers with only unclassified stderr should not render a partial warning');
+
     const realError = {
       text: 'Partial answer landed before failure.',
       code: 1,
