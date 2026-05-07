@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1761 (2026-05-07)
+
+### Fixes
+- kill engine PID only, not its tree, to preserve in-flight agents
+
 ## 0.1.1760 (2026-05-07)
 
 ### Fixes
