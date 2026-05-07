@@ -22460,6 +22460,131 @@ async function testSessionResume() {
     assert.strictEqual(sessionId, null,
       'stale-by-age path must keep working alongside runtime-mismatch path');
   });
+
+  // Stale-resume-target invalidation (W-mouugzow00068741): when session.json
+  // points at a UUID whose ~/.claude/projects/<cwd-hash>/<uuid>.jsonl was never
+  // written (agent died before checkpoint), --resume X always fails with "No
+  // conversation found", burning every retry slot. The pre-spawn resume path
+  // must detect the missing jsonl and clear session.json so the next dispatch
+  // starts fresh. Claude-only — Copilot manages its own session storage.
+  await test('claude.getResumeSessionId clears session.json when conversation jsonl missing', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const fakeHome = createTmpDir();
+    const fakeCwd = createTmpDir(); // arbitrary path; Claude derives the project hash dir from this
+    const agentId = 'lambert';
+    const branch = 'work/W-mouugzow00068741';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: '00000000-1111-2222-3333-deadbeefcafe',
+      dispatchId: 'd-stale',
+      savedAt: new Date().toISOString(),  // fresh — only missing jsonl should invalidate
+      branch,
+      runtime: 'claude',
+    }));
+    // Note: deliberately do NOT create ~/.claude/projects/<hash>/<sessionId>.jsonl
+
+    const logs = [];
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      cwd: fakeCwd,
+      homeDir: fakeHome,
+      logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]) },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'getResumeSessionId must return null when the conversation jsonl is missing');
+    assert.strictEqual(fs.existsSync(sessionPath), false,
+      'session.json must be cleared so subsequent retries start fresh (otherwise the stale UUID loops forever)');
+    const staleLog = logs.find(([, m]) => /no conversation jsonl|conversation not persisted|stale resume target/i.test(m));
+    assert.ok(staleLog,
+      'a log line must explain the stale-jsonl reason (distinguishable from age/runtime-mismatch)');
+  });
+
+  await test('claude.getResumeSessionId resumes when conversation jsonl exists', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const fakeHome = createTmpDir();
+    const fakeCwd = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    const goodSessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: goodSessionId,
+      dispatchId: 'd-good',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+    // Create the conversation jsonl that Claude would have persisted on checkpoint
+    const projectHashDir = path.join(fakeHome, '.claude', 'projects', fakeCwd.replace(/[^a-zA-Z0-9-]/g, '-'));
+    fs.mkdirSync(projectHashDir, { recursive: true });
+    fs.writeFileSync(path.join(projectHashDir, `${goodSessionId}.jsonl`), '{"type":"checkpoint"}\n');
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      cwd: fakeCwd,
+      homeDir: fakeHome,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, goodSessionId,
+      'happy path: when the jsonl exists, --resume must still be passed so multi-turn workflows keep working');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'session.json must NOT be cleared on the happy path');
+  });
+
+  await test('claude.getResumeSessionId leaves session.json alone when cwd not provided (back-compat)', () => {
+    // Callers that don't yet supply cwd (e.g. older test paths) should keep the
+    // pre-fix behavior — runtime/age checks only, no jsonl probe.
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-legacy-no-cwd',
+      dispatchId: 'd-legacy',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      // cwd intentionally omitted
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-legacy-no-cwd',
+      'when cwd is not provided, the jsonl probe is skipped and the old behavior is preserved');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'session.json must NOT be cleared when cwd is not provided');
+  });
+
+  await test('engine.js passes cwd into runtime.getResumeSessionId so the jsonl probe runs in production', () => {
+    // Source-level guard: the wiring at engine.js around the spawnAgent resume
+    // lookup must include `cwd` (and ideally `homeDir`) in the call so the
+    // adapter can probe ~/.claude/projects/<hash>/<id>.jsonl. Without this, the
+    // adapter-level fix is dead code in production.
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const resumeCallMatch = engineSrc.match(/runtime\.getResumeSessionId\(\s*\{[\s\S]*?\}\s*\)/);
+    assert.ok(resumeCallMatch,
+      'engine.js must call runtime.getResumeSessionId with an options object');
+    const callBody = resumeCallMatch[0];
+    assert.ok(/\bcwd\b/.test(callBody),
+      'engine.js must pass cwd into runtime.getResumeSessionId so claude.js can probe the conversation jsonl');
+  });
 }
 
 // ─── Wakeup Coalescing Tests ────────────────────────────────────────────────

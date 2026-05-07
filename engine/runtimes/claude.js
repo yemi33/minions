@@ -294,7 +294,40 @@ function getSkillWriteTargets({ homeDir = os.homedir(), project = null } = {}) {
 // engine.js:1195 fires. See W-mot9fwya000d09cb.
 const RUNTIME_NAME = 'claude';
 
-function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
+/**
+ * Compute the directory Claude CLI uses to persist a project's conversation
+ * jsonl files: `~/.claude/projects/<dashed-cwd>/`. The hash algorithm replaces
+ * any character outside `[a-zA-Z0-9-]` with `-` (verified empirically against
+ * existing project dirs on multiple platforms — preserves dashes, dashes out
+ * separators, drive letters, dots, and spaces).
+ */
+function _claudeProjectHashDir(cwd, homeDir) {
+  if (!cwd || !homeDir) return null;
+  const dashed = String(cwd).replace(/[^a-zA-Z0-9-]/g, '-');
+  return path.join(homeDir, '.claude', 'projects', dashed);
+}
+
+/**
+ * Pre-spawn resume lookup. Returns the session ID to pass to `--resume`, or
+ * null when the cached session is unusable (stale by age, runtime mismatch,
+ * or — see W-mouugzow00068741 — references a UUID Claude never persisted to
+ * its on-disk conversation log).
+ *
+ * Stale-resume-target case (the W-mouugzow00068741 bug): the engine writes
+ * `session.json` as soon as Claude emits its first session_id, but Claude only
+ * persists the conversation to `~/.claude/projects/<hash>/<uuid>.jsonl` on a
+ * stable checkpoint. If the agent dies before checkpoint, session.json holds
+ * a UUID that no jsonl file backs. On retry, `--resume <uuid>` fails with
+ * "No conversation found", the retry burns instantly, and (because the failed
+ * retry never reaches saveSession) session.json never gets overwritten — so
+ * every subsequent retry hits the same dead UUID until the 2h TTL kicks in.
+ *
+ * Fix: when `cwd` is provided, probe for the jsonl. If it's absent, treat the
+ * session as never-persisted, clear session.json, and return null so the
+ * caller spawns fresh. The probe is opt-in (cwd-gated) — older callers that
+ * don't pass cwd keep the pre-fix behavior unchanged.
+ */
+function getResumeSessionId({ agentId, branchName, agentsDir, cwd = null, homeDir = os.homedir(), maxAgeMs = 2 * 60 * 60 * 1000, logger = console } = {}) {
   if (!agentId || agentId.startsWith('temp-') || !agentsDir) return null;
   const sessionPath = path.join(agentsDir, agentId, 'session.json');
   try {
@@ -312,6 +345,23 @@ function getResumeSessionId({ agentId, branchName, agentsDir, maxAgeMs = 2 * 60 
       }
       try { fs.unlinkSync(sessionPath); } catch {}
       return null;
+    }
+
+    // Stale-resume-target invalidation (W-mouugzow00068741). Claude only writes
+    // the jsonl on stable checkpoint; a session ID stamped before checkpoint
+    // dies with the agent. Probe for the jsonl and clear session.json when
+    // it's missing so the next dispatch spawns fresh instead of looping
+    // through `--resume <dead-uuid>` failures.
+    if (cwd) {
+      const projectDir = _claudeProjectHashDir(cwd, homeDir);
+      const jsonlPath = projectDir ? path.join(projectDir, `${sessionFile.sessionId}.jsonl`) : null;
+      if (jsonlPath && !fs.existsSync(jsonlPath)) {
+        if (logger && typeof logger.info === 'function') {
+          logger.info(`Skipping resume for ${agentId}: no conversation jsonl at ${jsonlPath} (stale resume target — agent died before checkpoint) — clearing session.json`);
+        }
+        try { fs.unlinkSync(sessionPath); } catch {}
+        return null;
+      }
     }
 
     const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
