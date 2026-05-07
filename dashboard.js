@@ -7630,18 +7630,24 @@ if (require.main === module) {
     console.log(`  Projects:   ${PROJECTS.map(p => `${p.name} (${p.localPath})`).join(', ')}`);
     console.log(`\n  Auto-refreshes every 4s. Ctrl+C to stop.\n`);
 
-    const { exec } = require('child_process');
-    try {
-      if (process.platform === 'win32') {
-        exec(`start "" "http://localhost:${PORT}"`);
-      } else if (process.platform === 'darwin') {
-        exec(`open http://localhost:${PORT}`);
-      } else {
-        exec(`xdg-open http://localhost:${PORT}`);
+    // Auto-open the browser unless suppressed. `minions restart` and the
+    // upgrade path set MINIONS_NO_AUTO_OPEN=1 when the previous dashboard was
+    // already listening — the existing tab will SSE-reconnect, so a new tab
+    // would just be a duplicate.
+    if (!process.env.MINIONS_NO_AUTO_OPEN) {
+      const { exec } = require('child_process');
+      try {
+        if (process.platform === 'win32') {
+          exec(`start "" "http://localhost:${PORT}"`);
+        } else if (process.platform === 'darwin') {
+          exec(`open http://localhost:${PORT}`);
+        } else {
+          exec(`xdg-open http://localhost:${PORT}`);
+        }
+      } catch (e) {
+        console.log(`  Could not auto-open browser: ${e.message}`);
+        console.log(`  Please open http://localhost:${PORT} manually.`);
       }
-    } catch (e) {
-      console.log(`  Could not auto-open browser: ${e.message}`);
-      console.log(`  Please open http://localhost:${PORT} manually.`);
     }
 
     // ─── Engine Watchdog ─────────────────────────────────────────────────────
