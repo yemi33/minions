@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1774 (2026-05-07)
+
+### Features
+- suppress stale doc-chat model errors
+
+### Fixes
+- yemi33/minions#2168
+
 ## 0.1.1772 (2026-05-07)
 
 ### Features
