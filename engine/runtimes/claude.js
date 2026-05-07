@@ -717,6 +717,8 @@ const capabilities = {
   fallbackModel: true,
   // Engine controls session persistence (writes session.json on completion)
   sessionPersistenceControl: true,
+  // Claude resume reliably restores prior turns; do not duplicate browser transcript.
+  resumePromptCarryover: false,
   // Adapter implements createStreamConsumer(ctx) — required by llm.js accumulator
   streamConsumer: true,
 };

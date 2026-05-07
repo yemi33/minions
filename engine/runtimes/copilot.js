@@ -874,6 +874,9 @@ const capabilities = {
   fallbackModel: false,
   // Copilot manages session state internally in ~/.copilot/session-state/
   sessionPersistenceControl: false,
+  // CC resumes should include recent visible Q&A in stdin because Minions cannot
+  // inspect or repair Copilot's opaque session-state store when it drops context.
+  resumePromptCarryover: true,
   // Adapter implements createStreamConsumer(ctx) — required by llm.js accumulator
   streamConsumer: true,
 };
