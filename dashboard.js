@@ -10,6 +10,7 @@ const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const llm = require('./engine/llm');
+const { resolveRuntime } = require('./engine/runtimes');
 
 // Dashboard version stamp — captured at module load so it reflects the code actually running
 const _dashboardVersion = {
@@ -1262,9 +1263,14 @@ function _readCcTabSessions({ prune = true } = {}) {
 const CC_CARRYOVER_MAX_TURNS = 20;
 const CC_CARRYOVER_PER_MSG_CHARS = 2000;
 
-function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
+function _buildTranscriptCarryover(transcript, { previousRuntime, currentMessage } = {}) {
   if (!Array.isArray(transcript) || transcript.length === 0) return '';
-  const filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  let filtered = transcript.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim());
+  const current = typeof currentMessage === 'string' ? currentMessage.trim() : '';
+  if (current && filtered.length > 0) {
+    const last = filtered[filtered.length - 1];
+    if (last.role === 'user' && last.text.trim() === current) filtered = filtered.slice(0, -1);
+  }
   if (filtered.length === 0) return '';
   const recent = filtered.slice(-CC_CARRYOVER_MAX_TURNS);
   const truncated = filtered.length > recent.length;
@@ -1279,6 +1285,19 @@ function _buildTranscriptCarryover(transcript, { previousRuntime } = {}) {
   });
   const truncationNote = truncated ? `[earlier messages truncated — showing last ${recent.length} of ${filtered.length}]\n\n` : '';
   return `${header}\n\n${truncationNote}${lines.join('\n\n')}\n\n--- Current message follows ---`;
+}
+
+function _ccRuntimeNeedsResumeCarryover(runtimeName) {
+  try {
+    const runtime = resolveRuntime(runtimeName);
+    return !!runtime?.capabilities?.resumePromptCarryover;
+  } catch {
+    return false;
+  }
+}
+
+function _joinCcPromptParts(...parts) {
+  return parts.filter(Boolean).join('\n\n---\n\n');
 }
 
 // Load persisted CC session on startup. CC chat sessions are non-expiring;
@@ -2415,7 +2434,7 @@ async function _preflightModelCheck({ runtime: cliOverride, model: modelOverride
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, systemPrompt = CC_STATIC_SYSTEM_PROMPT, transcript } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2428,10 +2447,15 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
+  const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
 
-  function buildPrompt({ includePreamble = true } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
+    if (includeCarryover) {
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      if (carryover) parts.push(carryover);
+    }
     parts.push(message);
     return parts.join('\n\n---\n\n');
   }
@@ -2440,7 +2464,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
+    const p1 = llm.callLLM(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
     });
@@ -2477,7 +2501,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   }
 
   // Attempt 2: fresh session (include preamble for full context)
-  const freshPrompt = buildPrompt();
+  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
   const p2 = llm.callLLM(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -2511,7 +2535,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
-async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT } = {}) {
+async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = CC_CALL_TIMEOUT_MS, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady, onChunk, onToolUse, onRetry, systemPrompt = CC_STATIC_SYSTEM_PROMPT, transcript } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -2524,10 +2548,15 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
 
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
+  const resumeNeedsCarryover = !!sessionId && _ccRuntimeNeedsResumeCarryover(shared.resolveCcCli(CONFIG.engine));
 
-  function buildPrompt({ includePreamble = true } = {}) {
+  function buildPrompt({ includePreamble = true, includeCarryover = false } = {}) {
     const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
     if (extraContext) parts.push(extraContext);
+    if (includeCarryover) {
+      const carryover = _buildTranscriptCarryover(transcript, { currentMessage: message });
+      if (carryover) parts.push(carryover);
+    }
     parts.push(message);
     return parts.join('\n\n---\n\n');
   }
@@ -2535,7 +2564,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   let result;
 
   if (sessionId && maxTurns > 1) {
-    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false }), '', {
+    const p1 = llm.callLLMStreaming(buildPrompt({ includePreamble: false, includeCarryover: resumeNeedsCarryover }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
       engineConfig: CONFIG.engine,
       onChunk,
@@ -2572,7 +2601,7 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   }
 
   if (onRetry) onRetry(2);
-  const freshPrompt = buildPrompt();
+  const freshPrompt = buildPrompt({ includeCarryover: resumeNeedsCarryover });
   const p2 = llm.callLLMStreaming(freshPrompt, systemPrompt, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
     engineConfig: CONFIG.engine,
@@ -5754,7 +5783,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const wasResume = !!(body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid());
 
-        const result = await ccCall(body.message, { store: 'cc' });
+        const result = await ccCall(body.message, { store: 'cc', transcript: body.transcript });
 
         // Non-zero exit with text = max_turns or partial success — still usable
         if (!result.text) {
@@ -5989,13 +6018,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             sessionReset = true;
             sessionResetReason = 'runtimeChanged';
             previousRuntime = tabEntry.runtime;
+          } else if (tabEntry.sessionId && tabEntry.sessionId !== tabSessionId) {
+            tabSessionId = tabEntry.sessionId;
           }
         }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
+        const resumeNeedsCarryover = wasResume && _ccRuntimeNeedsResumeCarryover(currentRuntime);
         const preamble = wasResume ? '' : buildCCStatePreamble();
-        const carryover = sessionReset ? _buildTranscriptCarryover(body.transcript, { previousRuntime }) : '';
-        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + (carryover ? carryover + '\n\n---\n\n' : '') + body.message;
+        const carryover = (sessionReset || resumeNeedsCarryover)
+          ? _buildTranscriptCarryover(body.transcript, {
+            previousRuntime: sessionReset ? previousRuntime : null,
+            currentMessage: body.message,
+          })
+          : '';
+        const prompt = _joinCcPromptParts(preamble, carryover, body.message);
 
         const { trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
@@ -6023,7 +6060,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
           console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
           const freshPreamble = buildCCStatePreamble();
-          const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
+          const freshCarryover = _buildTranscriptCarryover(body.transcript, { currentMessage: body.message });
+          const freshPrompt = _joinCcPromptParts(freshPreamble, freshCarryover, body.message);
           toolUses = []; // discard stale metadata from the failed resume attempt
           const retryPromise = _invokeCcStream({
             prompt: freshPrompt, sessionId: undefined, liveState, toolUses,
@@ -7695,6 +7733,9 @@ module.exports = {
   _createPipelineFromAction: createPipelineFromAction,
   executeCCActions,
   buildCCStatePreamble,
+  _buildTranscriptCarryover,
+  _ccRuntimeNeedsResumeCarryover,
+  _joinCcPromptParts,
   _captureApiRoutesMeta,
   _formatCcApiRoutesIndex,
   _formatCcCliCommandsIndex,

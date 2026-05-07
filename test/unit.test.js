@@ -43994,8 +43994,53 @@ async function testCCMultiTab() {
       'Should cap carryover at a constant');
     assert.ok(dashSrc.includes('Previous conversation'),
       'Carryover header should mark prior dialogue clearly');
-    assert.ok(dashSrc.includes('sessionReset ? _buildTranscriptCarryover'),
-      'Carryover should fire only when session resets');
+    assert.ok(/sessionReset\s*\|\|\s*resumeNeedsCarryover/.test(dashSrc),
+      'Carryover should fire when a session resets or the selected runtime needs explicit resume context');
+  });
+
+  await test('transcript carryover omits the current user turn to avoid duplicate prompts', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+    assert.strictEqual(typeof dashboard._buildTranscriptCarryover, 'function',
+      '_buildTranscriptCarryover should be exported for regression coverage');
+    const carryover = dashboard._buildTranscriptCarryover([
+      { role: 'user', text: 'Remember the project codename is Zephyr.' },
+      { role: 'assistant', text: 'Got it — Zephyr.' },
+      { role: 'user', text: 'What codename did I give you?' },
+    ], { currentMessage: 'What codename did I give you?' });
+    assert.ok(carryover.includes('User: Remember the project codename is Zephyr.'),
+      'previous user turn should be carried over');
+    assert.ok(carryover.includes('Assistant: Got it'),
+      'previous assistant turn should be carried over');
+    assert.ok(!carryover.includes('What codename did I give you?'),
+      'current user message should be appended once by the caller, not duplicated in carryover');
+  });
+
+  await test('Copilot CC resume requests prepend same-tab transcript carryover', () => {
+    const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    assert.strictEqual(copilot.capabilities.resumePromptCarryover, true,
+      'Copilot-managed resumes need explicit recent Q&A carryover in the prompt');
+    assert.strictEqual(claude.capabilities.resumePromptCarryover, false,
+      'Claude resumes should continue relying on native session context');
+    const streamHandler = dashSrc.slice(
+      dashSrc.indexOf('async function handleCommandCenterStream('),
+      dashSrc.indexOf('async function handleSchedulesList')
+    );
+    assert.ok(streamHandler.includes('resumeNeedsCarryover'),
+      'stream handler should decide whether the selected runtime needs resume carryover');
+    assert.ok(/sessionReset\s*\|\|\s*resumeNeedsCarryover/.test(streamHandler),
+      'carryover should be included on reset and on Copilot-style resume');
+    assert.ok(dashSrc.includes('includeCarryover: resumeNeedsCarryover'),
+      'shared non-streaming CC call helpers should include carryover on runtimes that need it');
+  });
+
+  await test('CC stream resume uses persisted tab session over request sessionId', () => {
+    const streamHandler = dashSrc.slice(
+      dashSrc.indexOf('async function handleCommandCenterStream('),
+      dashSrc.indexOf('async function handleSchedulesList')
+    );
+    assert.ok(streamHandler.includes('tabEntry.sessionId') && streamHandler.includes('tabSessionId = tabEntry.sessionId'),
+      'server must not trust a request sessionId that differs from the persisted tab session');
   });
 
   await test('frontend sends transcript and renders runtime-aware reset notice', () => {
