@@ -3543,6 +3543,7 @@ function discoverCentralWorkItems(config) {
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const dispatchProjects = getCentralDispatchProjects(projects);
+  const projectsByName = new Map(dispatchProjects.map(p => [p.name, p]));
   const newWork = [];
   // Collect mutations to apply atomically inside lock callback (avoids TOCTOU)
   const mutations = new Map(); // item.id → { field: value, ... }
@@ -3673,6 +3674,8 @@ function discoverCentralWorkItems(config) {
       const agentName = config.agents[agentId]?.name || agentId;
       const agentRole = config.agents[agentId]?.role || 'Agent';
       const firstProject = dispatchProjects[0];
+      const requestedProjectName = typeof item.project === 'string' ? item.project : item.project?.name;
+      const targetProject = (requestedProjectName && projectsByName.get(requestedProjectName)) || firstProject;
 
       // Branch mutex: skip if target branch is locked by an active dispatch
       const centralBranch = item.branch || item.featureBranch || `work/${item.id}`;
@@ -3683,7 +3686,7 @@ function discoverCentralWorkItems(config) {
       }
 
       const vars = {
-        ...buildBaseVars(agentId, config, firstProject),
+        ...buildBaseVars(agentId, config, targetProject),
         item_id: item.id,
         item_name: item.title || item.id,
         item_priority: item.priority || 'medium',
@@ -3694,11 +3697,11 @@ function discoverCentralWorkItems(config) {
         work_type: workType,
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
         scope_section: buildProjectContext(dispatchProjects, null, false, agentName, agentRole),
-        project_path: firstProject?.localPath || '',
+        project_path: targetProject?.localPath || '',
         branch_name: centralBranch,
       };
-      const centralWtPath = firstProject?.localPath
-        ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
+      const centralWtPath = targetProject?.localPath
+        ? path.resolve(targetProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
         : '';
       const cpResult = buildWorkItemDispatchVars(item, vars, config, {
         worktreePath: centralWtPath || undefined,
@@ -3749,7 +3752,7 @@ function discoverCentralWorkItems(config) {
         }
         vars.plan_summary = (item.title || item.planFile).substring(0, 80);
         vars.plan_file = item.planFile || '';
-        vars.project_name_lower = (firstProject?.name || 'project').toLowerCase();
+        vars.project_name_lower = (targetProject?.name || 'project').toLowerCase();
         // Default empty string so the {{existing_prd_json}} token always resolves —
         // playbook treats empty as "no existing PRD, fresh run". Without this default
         // the renderPlaybook pass logs an "unresolved template variables" warning
@@ -3804,7 +3807,7 @@ function discoverCentralWorkItems(config) {
         agentRole,
         task: item.title || item.description?.slice(0, 80) || item.id,
         prompt,
-        meta: { dispatchKey: key, source: 'central-work-item', item: { ...item, ...mutations.get(item.id) }, planFileName: item.planFile || mutations.get(item.id)?._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}`, project: { name: firstProject.name, localPath: firstProject.localPath } }
+        meta: { dispatchKey: key, source: 'central-work-item', item: { ...item, ...mutations.get(item.id) }, planFileName: item.planFile || mutations.get(item.id)?._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}`, project: { name: targetProject.name, localPath: targetProject.localPath } }
       });
 
       setCooldown(key);
