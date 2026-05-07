@@ -41366,6 +41366,41 @@ async function testDashboardResilience() {
       'Doc chat should centralize collapsed-state detection and toggling');
   });
 
+  await test('doc-chat streaming updates use sticky-bottom scroll behavior', () => {
+    const helperStart = modalQaSrc.indexOf('const QA_STICKY_BOTTOM_PX');
+    assert.ok(helperStart >= 0, 'modal-qa.js should define a sticky-bottom threshold');
+    const helperEnd = modalQaSrc.indexOf('function _qaInsertBeforeQueued', helperStart);
+    assert.ok(helperEnd > helperStart, 'sticky-bottom helpers should live before thread insertion helpers');
+    const helpers = new Function(`${modalQaSrc.slice(helperStart, helperEnd)}
+      return {
+        _qaIsNearThreadBottom,
+        _qaShouldFollowThread,
+        _qaScrollThreadToBottom,
+        setFollow(v) { _qaThreadShouldFollow = v; },
+        getFollow() { return _qaThreadShouldFollow; },
+      };
+    `)();
+    assert.strictEqual(helpers._qaIsNearThreadBottom({ scrollHeight: 1000, scrollTop: 620, clientHeight: 320 }), true,
+      'within the sticky threshold should count as near bottom');
+    assert.strictEqual(helpers._qaIsNearThreadBottom({ scrollHeight: 1000, scrollTop: 400, clientHeight: 320 }), false,
+      'reading older messages should count as away from bottom');
+    helpers.setFollow(false);
+    assert.strictEqual(helpers._qaShouldFollowThread({ scrollHeight: 1000, scrollTop: 620, clientHeight: 320 }), false,
+      'manual scroll-up state should suppress auto-follow even if a later layout is near bottom');
+    const thread = { scrollHeight: 1200, scrollTop: 0, clientHeight: 320 };
+    helpers._qaScrollThreadToBottom(thread);
+    assert.strictEqual(thread.scrollTop, 1200, 'explicit user actions can still force-scroll to newest message');
+    assert.strictEqual(helpers.getFollow(), true, 'explicit bottom scroll should re-enable following');
+
+    const mutateFn = modalQaSrc.slice(modalQaSrc.indexOf('function _qaMutateThreadHtml'), modalQaSrc.indexOf('\nfunction _qaResumeQueuedMessages'));
+    assert.ok(mutateFn.includes('const shouldFollow = _qaShouldFollowThread(thread)'),
+      'streaming DOM updates should capture sticky-bottom state before mutating thread HTML');
+    assert.ok(mutateFn.includes('_qaMaybeScrollThreadToBottom(thread, shouldFollow)'),
+      'streaming DOM updates should only scroll when the thread was already following');
+    assert.ok(!/thread\.scrollTop\s*=\s*thread\.scrollHeight/.test(mutateFn),
+      'streaming DOM updates must not unconditionally jump to the bottom');
+  });
+
   await test('doc-chat clears processing badge when processing completes', () => {
     assert.ok(modalQaSrc.includes('clearNotifBadge(doneCard)'),
       '_processQaMessage must clear badge when done (no more queued messages)');
