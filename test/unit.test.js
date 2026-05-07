@@ -34331,6 +34331,56 @@ async function testDashboardBugFixes() {
     assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
     assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
   });
+
+  await test('doc-chat successful edit suppresses stale Copilot unknown-model raw error', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const payload = dashboard._buildDocChatResponsePayload({
+      answer: 'Copilot rejected the requested model.',
+      actions: [],
+      ccError: {
+        code: 1,
+        stderr: 'Copilot rejected the requested model',
+        errorClass: 'unknown-model',
+        errorMessage: 'Copilot rejected the requested model',
+        runtime: 'copilot',
+      },
+      partial: false,
+      warning: undefined,
+      toolUses: [{ name: 'Edit' }],
+      finalize: { edited: true, content: '# patched', answerSuffix: '' },
+    });
+
+    assert.strictEqual(payload.ok, true, 'saved doc-chat edits should be reported as successful');
+    assert.strictEqual(payload.error, undefined, 'stale Copilot unknown-model raw error must not be surfaced after a saved edit');
+    assert.strictEqual(payload.partial, undefined, 'suppressed stale errors should not force an orange partial state');
+    assert.strictEqual(payload.answer, 'Updated the document.', 'hard-failure copy should be replaced with success copy');
+    assert.strictEqual(payload.edited, true);
+    assert.strictEqual(payload.content, '# patched');
+  });
+
+  await test('doc-chat does not suppress Copilot unknown-model error when no edit was saved', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const ccError = {
+      code: 1,
+      stderr: 'Copilot rejected the requested model',
+      errorClass: 'unknown-model',
+      errorMessage: 'Copilot rejected the requested model',
+      runtime: 'copilot',
+    };
+    const payload = dashboard._buildDocChatResponsePayload({
+      answer: 'Copilot rejected the requested model.',
+      actions: [],
+      ccError,
+      partial: false,
+      warning: undefined,
+      toolUses: [],
+      finalize: { edited: false, content: null, answerSuffix: '' },
+    });
+
+    assert.strictEqual(payload.ok, false);
+    assert.strictEqual(payload.error, ccError, 'model errors before any edit should remain visible and actionable');
+    assert.strictEqual(payload.answer, 'Copilot rejected the requested model.');
+  });
 }
 
 // ─── P-c1read-7b3c: readBody overflow guard (aborted flag + req.destroy()) ──
@@ -56670,10 +56720,12 @@ async function testDashboardPureHelpers() {
     const handlerBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
     assert.ok(/partial,\s*warning,\s*toolUses/.test(handlerBlock),
       'doc-chat handlers must destructure partial/warning/toolUses from ccDocCall result');
-    assert.ok(handlerBlock.includes("partial: true, warning"),
-      'baseReply / donePayload must spread partial+warning when partial is set');
-    assert.ok(/toolUses\?\.length|toolUses\.length/.test(handlerBlock),
-      'handlers must conditionally include toolUses in the reply');
+    assert.ok(handlerBlock.includes('_buildDocChatResponsePayload'),
+      'doc-chat handlers must build replies through the shared response payload helper');
+    assert.ok(src.includes("partial && !suppressPostPatchError ? { partial: true, warning } : {}"),
+      'response payload helper must spread partial+warning when partial is set');
+    assert.ok(src.includes('Array.isArray(toolUses) && toolUses.length'),
+      'response payload helper must conditionally include toolUses in the reply');
   });
 
   await test('ccDocCall and ccDocCallStreaming attempt partial recovery before returning failure (audit fix A)', () => {

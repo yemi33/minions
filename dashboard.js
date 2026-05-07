@@ -2792,6 +2792,41 @@ function _recoverPartialDocChatResponse(result, sessionKey) {
   };
 }
 
+function _shouldSuppressDocChatPostPatchError(ccError, finalize) {
+  if (!finalize || finalize.edited !== true) return false;
+  if (!ccError || ccError.errorClass !== 'unknown-model') return false;
+  return String(ccError.runtime || '').toLowerCase() === 'copilot';
+}
+
+function _buildDocChatResponsePayload({
+  answer,
+  actions,
+  actionResults,
+  actionParseError,
+  ccError,
+  partial,
+  warning,
+  toolUses,
+  finalize,
+} = {}) {
+  const final = finalize || { edited: false, content: null, answerSuffix: '' };
+  const suppressPostPatchError = _shouldSuppressDocChatPostPatchError(ccError, final);
+  const visibleAnswer = suppressPostPatchError && !partial ? 'Updated the document.' : answer;
+  const finalAnswer = final.answerSuffix ? visibleAnswer + final.answerSuffix : visibleAnswer;
+  return {
+    ok: !(ccError && !suppressPostPatchError),
+    answer: finalAnswer,
+    actions,
+    ...(actionResults ? { actionResults } : {}),
+    ...(actionParseError ? { actionParseError } : {}),
+    ...(ccError && !suppressPostPatchError ? { error: ccError } : {}),
+    ...(partial && !suppressPostPatchError ? { partial: true, warning } : {}),
+    ...(Array.isArray(toolUses) && toolUses.length ? { toolUses } : {}),
+    edited: final.edited,
+    ...(final.edited && final.content !== null ? { content: final.content } : {}),
+  };
+}
+
 
 // True when the file is a meeting JSON whose status forbids edits. Loaded
 // fresh on each call because meeting status can change while a doc-chat is
@@ -5155,20 +5190,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         filePath: body.filePath, fullPath, isJson, canEdit,
         originalContent: currentContent, delimiterContent: content,
       });
-      const finalAnswer = finalize.answerSuffix ? answer + finalize.answerSuffix : answer;
-      _docDone = true;
-      return jsonReply(res, 200, {
-        ok: !ccError,
-        answer: finalAnswer,
-        actions,
-        ...(actionResults ? { actionResults } : {}),
-        ...(actionParseError ? { actionParseError } : {}),
-        ...(ccError ? { error: ccError } : {}),
-        ...(partial ? { partial: true, warning } : {}),
-        ...(Array.isArray(toolUses) && toolUses.length ? { toolUses } : {}),
-        edited: finalize.edited,
-        ...(finalize.edited && finalize.content !== null ? { content: finalize.content } : {}),
+      const payload = _buildDocChatResponsePayload({
+        answer, actions, actionResults, actionParseError, ccError, partial, warning, toolUses, finalize,
       });
+      _docDone = true;
+      return jsonReply(res, 200, payload);
       } finally { _docAbort = null; _docDone = true; docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, e.statusCode || 500, { error: e.message }); }
   }
@@ -5257,18 +5283,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           filePath: body.filePath, fullPath, isJson, canEdit,
           originalContent: currentContent, delimiterContent: content,
         });
-        const finalAnswer = finalize.answerSuffix ? answer + finalize.answerSuffix : answer;
+        const payload = _buildDocChatResponsePayload({
+          answer, actions, actionResults, actionParseError, ccError, partial, warning, toolUses, finalize,
+        });
+        const { answer: finalAnswer, ...donePayload } = payload;
         writeDocEvent({
           type: 'done',
           text: finalAnswer,
-          actions,
-          ...(actionResults ? { actionResults } : {}),
-          ...(actionParseError ? { actionParseError } : {}),
-          ...(ccError ? { error: ccError } : {}),
-          ...(partial ? { partial: true, warning } : {}),
-          ...(Array.isArray(toolUses) && toolUses.length ? { toolUses } : {}),
-          edited: finalize.edited,
-          ...(finalize.edited && finalize.content !== null ? { content: finalize.content } : {}),
+          ...donePayload,
         });
         _docStreamEnded = true;
         res.end();
@@ -7684,6 +7706,8 @@ module.exports = {
   _docChatPartialWarning,
   _docChatFailureResponse,
   _recoverPartialDocChatResponse,
+  _shouldSuppressDocChatPostPatchError,
+  _buildDocChatResponsePayload,
   _linkPullRequestForTracking: linkPullRequestForTracking,
   _resolveSkillReadPath,
   DOC_CHAT_DOCUMENT_DELIMITER,
