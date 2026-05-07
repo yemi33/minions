@@ -12594,6 +12594,48 @@ async function testPreflightModule() {
     assert.ok(claudeCheck, 'Missing "Runtime: claude" check — runPreflight must call adapter.resolveBinary()');
   });
 
+  await test('runPreflight with includeAllRegistered probes every registered runtime', () => {
+    // CLI preflight (minions init / minions doctor) sets includeAllRegistered:
+    // true so the user sees both claude AND copilot availability without
+    // having to configure both up front.
+    const { results: r } = preflight.runPreflight({ includeAllRegistered: true });
+    const claudeCheck = r.find(c => c.name === 'Runtime: claude');
+    const copilotCheck = r.find(c => c.name === 'Runtime: copilot');
+    assert.ok(claudeCheck, 'includeAllRegistered preflight must include Runtime: claude');
+    assert.ok(copilotCheck, 'includeAllRegistered preflight must include Runtime: copilot');
+  });
+
+  await test('runPreflight surfaces non-configured registered runtimes as optional (warn, not fail)', () => {
+    // No config means nothing is "configured" — both claude and copilot are
+    // optional from the preflight's perspective. A missing one must NOT make
+    // the whole preflight fail; users frequently install only one runtime.
+    const { results: r } = preflight.runPreflight({ includeAllRegistered: true });
+    const copilotCheck = r.find(c => c.name === 'Runtime: copilot');
+    assert.ok(copilotCheck, 'sanity: copilot check exists');
+    if (copilotCheck.ok !== true) {
+      assert.strictEqual(copilotCheck.ok, 'warn',
+        'when copilot binary is absent, optional probe must return warn — not false');
+      assert.ok(/optional/i.test(copilotCheck.message),
+        'optional missing-runtime message should label itself as optional');
+    }
+  });
+
+  await test('runPreflight treats configured runtimes as required (false, not warn) when missing', () => {
+    // When a runtime IS in the user's config, missing it is a real failure —
+    // dispatch will fail at runtime. The optional flag must not leak across.
+    const config = {
+      engine: { defaultCli: 'claude' },
+      agents: { x: { cli: 'copilot' } }, // copilot is configured here
+    };
+    const { results: r } = preflight.runPreflight({ config, includeAllRegistered: true });
+    const copilotCheck = r.find(c => c.name === 'Runtime: copilot');
+    assert.ok(copilotCheck, 'copilot check exists when configured');
+    if (copilotCheck.ok !== true) {
+      assert.strictEqual(copilotCheck.ok, false,
+        'configured-but-missing runtime must surface as critical fail (false), not warn');
+    }
+  });
+
   await test('runPreflight does not check Anthropic auth (handled by Claude Code)', () => {
     const { results: r } = preflight.runPreflight();
     const authCheck = r.find(c => c.name === 'Anthropic auth');

@@ -109,8 +109,13 @@ function _distinctRuntimes(config) {
  * Try to resolve a runtime's binary via the registry. Returns a preflight
  * result entry — never throws. Unknown-runtime errors collapse to a single
  * warn entry so the rest of the loop keeps running.
+ *
+ * When `optional` is true, a missing binary surfaces as `ok: 'warn'` instead
+ * of `ok: false`. Used for runtimes the user hasn't configured but that are
+ * registered in the adapter registry — surfacing availability without making
+ * the check itself fail when the user only uses one runtime.
  */
-function _checkRuntimeBinary(runtimeName) {
+function _checkRuntimeBinary(runtimeName, { optional = false } = {}) {
   let adapter;
   try {
     adapter = require('./runtimes').resolveRuntime(runtimeName);
@@ -139,8 +144,10 @@ function _checkRuntimeBinary(runtimeName) {
     : `${runtimeName} CLI binary not found on PATH`;
   return {
     name: `Runtime: ${runtimeName}`,
-    ok: false,
-    message: `not found — ${hint}`,
+    ok: optional ? 'warn' : false,
+    message: optional
+      ? `not installed (optional) — ${hint}`
+      : `not found — ${hint}`,
   };
 }
 
@@ -172,6 +179,11 @@ function _warmModelCache(runtimeName, config) {
  *   - warnOnly: if true, missing items don't cause passed=false (for init)
  *   - verbose: include extra detail in messages
  *   - config:  fleet config for runtime checks + runtime-config warnings
+ *   - includeAllRegistered: when true, every adapter registered in the runtime
+ *                           registry is probed even if the user hasn't
+ *                           configured it. Configured runtimes still fail
+ *                           critically when missing; non-configured ones
+ *                           surface as warn-level "not installed (optional)".
  */
 function runPreflight(opts = {}) {
   const results = [];
@@ -198,10 +210,20 @@ function runPreflight(opts = {}) {
 
   // 3. Per-runtime binary check (P-9e8a3f1d). Legacy single-runtime callers
   //    (no config passed) still get exactly one entry — for `claude` — so the
-  //    historical "3 results" shape is preserved.
-  const runtimes = _distinctRuntimes(opts.config);
+  //    historical "3 results" shape is preserved. With includeAllRegistered,
+  //    add every registered adapter (e.g. copilot) as an optional probe so the
+  //    CLI surfaces availability without forcing the user to configure it.
+  const configuredRuntimes = _distinctRuntimes(opts.config);
+  let runtimes = configuredRuntimes;
+  if (opts.includeAllRegistered) {
+    let registered = [];
+    try { registered = require('./runtimes').listRuntimes(); }
+    catch { /* registry may be missing during partial installs */ }
+    runtimes = Array.from(new Set([...configuredRuntimes, ...registered])).sort();
+  }
+  const configuredSet = new Set(configuredRuntimes);
   for (const runtimeName of runtimes) {
-    const r = _checkRuntimeBinary(runtimeName);
+    const r = _checkRuntimeBinary(runtimeName, { optional: !configuredSet.has(runtimeName) });
     if (r.ok === false) allOk = false;
     results.push(r);
     // Warm the model cache in the background — silent no-op when the

@@ -353,10 +353,17 @@ function init() {
     showChangelog(installedVersion);
   }
 
-  // Run preflight checks (warn only — don't block init)
+  // Run preflight checks (warn only — don't block init).
+  // includeAllRegistered: probe every registered runtime adapter (claude AND
+  // copilot today) so the user sees availability of both, even if their
+  // current config only references one. Missing optional runtimes surface as
+  // warns, not failures.
   try {
     const { runPreflight, printPreflight } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
-    const { results } = runPreflight();
+    let preflightConfig = null;
+    try { preflightConfig = JSON.parse(fs.readFileSync(path.join(MINIONS_HOME, 'config.json'), 'utf8')); }
+    catch { /* config may not exist on first init — fine, preflight handles null */ }
+    const { results } = runPreflight({ config: preflightConfig, includeAllRegistered: true });
     printPreflight(results, { label: 'Preflight checks' });
   } catch {}
 
