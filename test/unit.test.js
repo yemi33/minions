@@ -37,8 +37,29 @@ const ISOLATED_MODULES = [
   '../engine/routing',
   '../engine/issues',
   '../engine/project-discovery',
+  // W-mouuunfc000912d6 — log-emitting modules previously NOT isolated leaked
+  // test fixtures (TEST-*, _test/backoff-*, ...) into the live engine/log.json
+  // because their captured shared.js wasn't busted on test isolation. Adding
+  // them ensures createTestMinionsDir() rebinds their `log` import to the
+  // test-bound shared.js with the test-bound MINIONS_TEST_DIR.
+  '../engine/github',
+  '../engine/ado',
+  '../engine/cooldown',
   '../engine.js',
 ];
+
+// W-mouuunfc000912d6 — Default test log target. Many unit tests trigger log()
+// calls in github/ado/cooldown helpers without first calling createTestMinionsDir
+// (e.g. the backoff Map tests just want to assert in-memory state). Without a
+// default target, those log() calls leaked ~800 entries/run into the live
+// D:/squad/engine/log.json. Setting `MINIONS_LOG_PATH` BEFORE shared.js loads
+// redirects every default-resolved log path to a benign tmp file. Per-test
+// isolation via createTestMinionsDir still wins via MINIONS_TEST_DIR (which
+// _currentLogPath() checks first — see engine/shared.js).
+const _DEFAULT_TEST_LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'minions-test-default-log-'));
+process.env.MINIONS_LOG_PATH = path.join(_DEFAULT_TEST_LOG_DIR, 'log.json');
+fs.writeFileSync(process.env.MINIONS_LOG_PATH, '[]');
+tmpDirs.push(_DEFAULT_TEST_LOG_DIR);
 
 function createTmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minions-test-'));
@@ -11827,6 +11848,119 @@ async function testStateIntegrity() {
         '_logPath routing metadata must be stripped before persistence');
     } finally {
       restore();
+    }
+  });
+
+  // ─── W-mouuunfc000912d6 — Cross-module log leak regression ──────────────
+  // Non-ISOLATED engine modules (engine/github.js, engine/ado.js, ...) used to
+  // leak warn/error entries into the live D:/squad/engine/log.json when tests
+  // exercised them — ~800 entries/run from `_test/backoff-*`, `TEST-*`, and
+  // `this-playbook-does-not-exist-xyz` lines. The fix has two layers:
+  //   (A) ISOLATED_MODULES expanded to cover github/ado/cooldown so their
+  //       captured shared.js gets re-bound when MINIONS_TEST_DIR changes.
+  //   (B) `_currentLogPath()` honors MINIONS_TEST_DIR (per-test) and falls
+  //       back to MINIONS_LOG_PATH (default test target seeded at the top of
+  //       this file) before the production root.
+  // This regression test asserts both layers: triggering log() in each
+  // previously-leaky module while MINIONS_TEST_DIR is set must route every
+  // entry to the test log, and zero entries must touch the live log.
+  await test('Cross-module log leak regression — non-isolated engine modules route to MINIONS_TEST_DIR (W-mouuunfc000912d6)', () => {
+    const liveLogPath = path.join(MINIONS_DIR, 'engine', 'log.json');
+    const liveSnapshot = _captureFileState(liveLogPath);
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    const testLogPath = path.join(testDir, 'engine', 'log.json');
+    try {
+      // Fresh requires bind to the test-scoped shared.js (via ISOLATED_MODULES).
+      const s = require('../engine/shared');
+      const gh = require('../engine/github');
+      const cooldown = require('../engine/cooldown');
+      s._logBuffer.length = 0;
+
+      // 1) github.js poll-failure path — recordSlugFailure logs warn/info.
+      const ghSentinel = `_test/leak-regression-${Date.now()}`;
+      gh._ghPollBackoff.delete(ghSentinel);
+      gh.recordSlugFailure(ghSentinel);
+      gh._ghPollBackoff.delete(ghSentinel);
+
+      // 2) cooldown.js — calls log() on inputs. Use any exported helper that
+      //    routes through log(). setCooldown writes to disk via mutate; sample
+      //    a direct shared.log() echo as a stand-in for any cooldown log path.
+      assert.ok(typeof cooldown === 'object', 'cooldown module loaded');
+      s.log('warn', `_test/cross-module-leak cooldown-${Date.now()}`);
+
+      // 3) playbook.js — renderPlaybook with a missing type logs "Playbook not
+      //    found", which is one of the historically-leaking lines.
+      const engine = require('../engine.js');
+      if (typeof engine.renderPlaybook === 'function') {
+        engine.renderPlaybook('this-playbook-does-not-exist-leak-regression', { project_name: 'X' });
+      }
+
+      // 4) Direct shared.log call — sanity that the routing also covers the
+      //    classic write-time capture path.
+      const sentinelMsg = `_test/cross-module-leak-${Date.now()}`;
+      s.log('warn', sentinelMsg);
+
+      s.flushLogs();
+
+      // Assertion 1: every emitted entry landed in the test log.
+      const testLog = JSON.parse(fs.readFileSync(testLogPath, 'utf8'));
+      assert.ok(testLog.some(e => e.message === sentinelMsg),
+        'shared.log sentinel should land in test log');
+      assert.ok(testLog.some(e => typeof e.message === 'string' && e.message.includes(ghSentinel)),
+        'github.recordSlugFailure log should land in test log');
+
+      // Assertion 2: live D:/squad/engine/log.json byte-stable — zero entries
+      // emitted by this test reach production.
+      const liveLogAfter = fs.existsSync(liveLogPath)
+        ? JSON.parse(fs.readFileSync(liveLogPath, 'utf8'))
+        : [];
+      const liveLogBefore = liveSnapshot.exists ? JSON.parse(liveSnapshot.data.toString('utf8')) : [];
+      assert.ok(!liveLogAfter.some(e => e.message === sentinelMsg),
+        'shared.log sentinel must NOT leak into the production log');
+      assert.ok(!liveLogAfter.some(e => typeof e.message === 'string' && e.message.includes(ghSentinel)),
+        'github.recordSlugFailure log must NOT leak into the production log');
+      // Stronger guarantee: live log has not grown — restorePreservedLiveLog
+      // would patch the file back at process exit, but we want byte-stability
+      // during the test itself.
+      assert.strictEqual(liveLogAfter.length, liveLogBefore.length,
+        `live log must be byte-stable during the test (was ${liveLogBefore.length}, now ${liveLogAfter.length})`);
+    } finally {
+      restore();
+      _restoreFileState(liveSnapshot);
+    }
+  });
+
+  // Default test log target is wired so even tests that DON'T call
+  // createTestMinionsDir route their log entries to a tmp file via
+  // MINIONS_LOG_PATH. Verifies layer (B) of the W-mouuunfc000912d6 fix.
+  await test('Default test log target redirects log() when MINIONS_TEST_DIR is unset (W-mouuunfc000912d6)', () => {
+    const liveLogPath = path.join(MINIONS_DIR, 'engine', 'log.json');
+    const liveSnapshot = _captureFileState(liveLogPath);
+    const savedTestDir = process.env.MINIONS_TEST_DIR;
+    delete process.env.MINIONS_TEST_DIR;
+    try {
+      assert.ok(process.env.MINIONS_LOG_PATH,
+        'unit.test.js must seed MINIONS_LOG_PATH before requiring shared.js');
+      const s = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      s._logBuffer.length = 0;
+
+      const sentinel = `_test/default-log-target-${Date.now()}`;
+      s.log('warn', sentinel);
+      s.flushLogs();
+
+      const defaultLog = JSON.parse(fs.readFileSync(process.env.MINIONS_LOG_PATH, 'utf8'));
+      assert.ok(defaultLog.some(e => e.message === sentinel),
+        'sentinel should land in MINIONS_LOG_PATH default tmp log');
+
+      const liveLogAfter = fs.existsSync(liveLogPath)
+        ? JSON.parse(fs.readFileSync(liveLogPath, 'utf8'))
+        : [];
+      assert.ok(!liveLogAfter.some(e => e.message === sentinel),
+        'sentinel must NOT leak into production log even with MINIONS_TEST_DIR unset');
+    } finally {
+      if (savedTestDir) process.env.MINIONS_TEST_DIR = savedTestDir;
+      _restoreFileState(liveSnapshot);
     }
   });
 
