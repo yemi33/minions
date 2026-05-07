@@ -60,6 +60,8 @@ const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);
+const DASHBOARD_BROWSER_PRESENCE_PATH = path.join(ENGINE_DIR, 'dashboard-browser.json');
+const DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS = 45000;
 
 function ensureConfiguredProjectStateFiles() {
   for (const p of PROJECTS) {
@@ -571,6 +573,66 @@ function _trackSseClient(clientSet, req, res, { heartbeatMs = SSE_CLIENT_HEARTBE
   return cleanup;
 }
 
+function _normalizeDashboardTabId(value) {
+  const id = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z0-9._:-]{1,96}$/.test(id) ? id : null;
+}
+
+function _pruneDashboardBrowserTabs(tabs, now = Date.now()) {
+  for (const [id, tab] of Object.entries(tabs || {})) {
+    const lastSeen = Number(tab && tab.lastSeen);
+    if (!Number.isFinite(lastSeen) || now - lastSeen > DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS) delete tabs[id];
+  }
+}
+
+function _recordDashboardBrowserPresence(tabId, { closed = false, url = '', visibility = '' } = {}) {
+  const id = _normalizeDashboardTabId(tabId);
+  if (!id) return false;
+  const now = Date.now();
+  mutateJsonFileLocked(DASHBOARD_BROWSER_PRESENCE_PATH, (state) => {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) state = {};
+    if (!state.tabs || typeof state.tabs !== 'object' || Array.isArray(state.tabs)) state.tabs = {};
+    _pruneDashboardBrowserTabs(state.tabs, now);
+    if (closed) {
+      delete state.tabs[id];
+    } else {
+      state.tabs[id] = {
+        id,
+        lastSeen: now,
+        lastSeenAt: new Date(now).toISOString(),
+        url: typeof url === 'string' ? url.slice(0, 512) : '',
+        visibility: typeof visibility === 'string' ? visibility.slice(0, 32) : '',
+      };
+    }
+    state.updatedAt = new Date(now).toISOString();
+    return state;
+  }, { defaultValue: { tabs: {} } });
+  return true;
+}
+
+function _recordDashboardBrowserPresenceFromRequest(req) {
+  const tabId = req && req.headers && req.headers['x-minions-dashboard-tab'];
+  if (!tabId) return;
+  try {
+    _recordDashboardBrowserPresence(tabId, {
+      url: req.headers['x-minions-dashboard-url'] || '',
+      visibility: req.headers['x-minions-dashboard-visibility'] || '',
+    });
+  } catch (e) {
+    shared.log('warn', `Dashboard browser presence update failed: ${e.message}`);
+  }
+}
+
+function _getDashboardBrowserPresence(now = Date.now()) {
+  const state = safeJsonObj(DASHBOARD_BROWSER_PRESENCE_PATH);
+  const tabs = state.tabs && typeof state.tabs === 'object' && !Array.isArray(state.tabs) ? state.tabs : {};
+  const activeTabs = Object.values(tabs).filter(tab => {
+    const lastSeen = Number(tab && tab.lastSeen);
+    return Number.isFinite(lastSeen) && now - lastSeen <= DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS;
+  });
+  return { active: activeTabs.length > 0, activeTabs: activeTabs.length, maxAgeMs: DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS };
+}
+
 // Hot-reload: watch dashboard/ directory for changes, rebuild, and push reload to browsers
 const _hotReloadClients = new Set();
 
@@ -989,12 +1051,7 @@ setInterval(() => {
 
 // CC chat sessions do NOT auto-expire. A tab is removed only via explicit user
 // deletion (DELETE /api/cc-sessions/:id, wired from ccCloseTab). Doc-chat
-// sessions keep their own TTL (DOC_SESSION_TTL_MS) — that's a separate store.
-//
-// CC_SESSION_MAX_TURNS is reused by the doc-chat session pruner to cap
-// per-session turn growth there; CC chat sessions are not capped because
-// users are expected to keep long-running tabs alive indefinitely.
-const CC_SESSION_MAX_TURNS = shared.ENGINE_DEFAULTS.ccMaxTurns;
+// sessions follow the same policy — see DOC_SESSIONS section below.
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
@@ -2177,11 +2234,14 @@ async function executeDocChatActions(actions) {
 
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
-// Session store for doc modals — keyed by filePath or title, persisted to disk
+// Session store for doc modals — keyed by filePath or title, persisted to disk.
+// Doc-chat sessions do NOT auto-expire (parity with CC tabs). The only
+// invalidation paths are prompt-hash mismatch (correctness — a stale system
+// prompt would carry the old persona/rules into resume turns) and the
+// LRU cap below (storage hygiene). Users can resume a doc-chat any time.
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
 const CC_SESSION_PATH = path.join(ENGINE_DIR, 'cc-session.json');
-const DOC_SESSION_TTL_MS = shared.ENGINE_DEFAULTS.docSessionTtlMs;
 const DOC_SESSION_MAX_ENTRIES = shared.ENGINE_DEFAULTS.docSessionMaxEntries;
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
@@ -2193,9 +2253,7 @@ function _docSessionLastActiveMs(session) {
 function pruneDocSessions() {
   let changed = false;
   for (const [key, s] of docSessions.entries()) {
-    if (!s || (s.turnCount || 0) >= CC_SESSION_MAX_TURNS ||
-        _sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS) ||
-        s._promptHash !== _docChatPromptHash) {
+    if (!s || s._promptHash !== _docChatPromptHash) {
       docSessions.delete(key);
       changed = true;
     }
@@ -2212,13 +2270,12 @@ function pruneDocSessions() {
   return changed;
 }
 
-// Load persisted doc sessions on startup
+// Load persisted doc sessions on startup — no TTL/turn filtering, sessions
+// are non-expiring. Stale prompt-hash entries are dropped by pruneDocSessions.
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
     for (const [key, s] of Object.entries(saved)) {
-      if (s.turnCount >= CC_SESSION_MAX_TURNS) continue;
-      if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) continue;
       docSessions.set(key, s);
     }
     pruneDocSessions();
@@ -2233,9 +2290,11 @@ function persistDocSessions() {
   mutateJsonFileLocked(DOC_SESSIONS_PATH, () => obj, { defaultValue: {} });
 }
 
+// Hourly hygiene sweep — drops prompt-hash mismatches and trims the LRU cap.
+// No TTL involved; sessions live until explicitly evicted by these two policies.
 const _docSessionPruneTimer = setInterval(() => {
   if (pruneDocSessions()) persistDocSessions();
-}, Math.min(DOC_SESSION_TTL_MS, 60 * 60 * 1000));
+}, 60 * 60 * 1000);
 if (_docSessionPruneTimer.unref) _docSessionPruneTimer.unref();
 
 // Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
@@ -2266,16 +2325,6 @@ function resolveSession(store, key) {
   const s = docSessions.get(key);
   if (!s) return null;
   if (s._promptHash !== _docChatPromptHash) {
-    docSessions.delete(key);
-    persistDocSessions();
-    return null;
-  }
-  if (s.turnCount >= CC_SESSION_MAX_TURNS) {
-    docSessions.delete(key);
-    persistDocSessions();
-    return null;
-  }
-  if (_sessionExpired(s.lastActiveAt || s.createdAt, DOC_SESSION_TTL_MS)) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -6348,9 +6397,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const configPath = path.join(MINIONS_DIR, 'config.json');
       const config = safeJson(configPath) || {};
       if (!config.engine) config.engine = {};
-      if (!config.claude) config.claude = {};
       if (!config.agents) config.agents = {};
-      delete config.claude.permissionMode;
+      shared.pruneDefaultClaudeConfig(config);
 
       const _clamped = [];
       const _engineModelDiscovery = require('./engine/model-discovery');
@@ -6518,9 +6566,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       if (body.claude) {
+        if (!config.claude) config.claude = {};
         for (const key of ['allowedTools', 'outputFormat']) {
           if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
         }
+        shared.pruneDefaultClaudeConfig(config);
       }
 
       if (body.agents) {
@@ -6647,6 +6697,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
 
+      shared.pruneDefaultClaudeConfig(config);
       safeWrite(configPath, config);
       // Refresh in-memory CONFIG so subsequent reads see the update
       reloadConfig();
@@ -6672,7 +6723,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const config = queries.getConfig();
       config.engine = { ...shared.ENGINE_DEFAULTS };
-      config.claude = { ...shared.DEFAULT_CLAUDE };
+      delete config.claude;
       config.agents = { ...shared.DEFAULT_AGENTS };
       safeWrite(path.join(MINIONS_DIR, 'config.json'), config);
       reloadConfig();
@@ -6737,6 +6788,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleStatus(req, res) {
     try {
+      _recordDashboardBrowserPresenceFromRequest(req);
       // Use pre-serialized JSON and pre-computed gzip buffer — zero per-request compression
       const json = getStatusJson();
       res.setHeader('Content-Type', 'application/json');
@@ -6876,6 +6928,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Status & health
     { method: 'GET', path: '/api/status', desc: 'Full dashboard status snapshot (agents, PRDs, work items, dispatch, etc.)', handler: handleStatus },
+    { method: 'GET', path: '/api/browser-presence', desc: 'Whether a dashboard browser tab was recently active', handler: (req, res) => {
+      return jsonReply(res, 200, _getDashboardBrowserPresence(), req);
+    }},
+    { method: 'POST', path: '/api/browser-presence', desc: 'Record dashboard browser tab heartbeat or close', params: 'tabId, closed?, url?, visibility?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const tabId = _normalizeDashboardTabId(body.tabId);
+      if (!tabId) return jsonReply(res, 400, { error: 'valid tabId required' }, req);
+      _recordDashboardBrowserPresence(tabId, {
+        closed: !!body.closed,
+        url: body.url || '',
+        visibility: body.visibility || '',
+      });
+      return jsonReply(res, 200, { ok: true }, req);
+    }},
     { method: 'GET', path: '/api/status-stream', desc: 'SSE stream of real-time status updates', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       res.write('data: ' + getStatusJson() + '\n\n');
@@ -7517,14 +7583,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (route.path === '/api/skill') {
         if (!req.url.startsWith('/api/skill?') && req.url !== '/api/skill') continue;
         const _result = await route.handler(req, res, {});
-        if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+        if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream') && !pathname.includes('/browser-presence')) {
           console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
         }
         return _result;
       }
       if (pathname !== route.path) continue;
       const _result = await route.handler(req, res, {});
-      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream') && !pathname.includes('/browser-presence')) {
         console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
       }
       return _result;
@@ -7532,7 +7598,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const m = pathname.match(route.path);
     if (m) {
       const _result = await route.handler(req, res, m);
-      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream') && !pathname.includes('/browser-presence')) {
         console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
       }
       return _result;
@@ -7654,9 +7720,8 @@ if (require.main === module) {
     console.log(`\n  Auto-refreshes every 4s. Ctrl+C to stop.\n`);
 
     // Auto-open the browser unless suppressed. `minions restart` and the
-    // upgrade path set MINIONS_NO_AUTO_OPEN=1 when the previous dashboard was
-    // already listening — the existing tab will SSE-reconnect, so a new tab
-    // would just be a duplicate.
+    // upgrade path set MINIONS_NO_AUTO_OPEN=1 only when a browser tab was
+    // recently polling the old dashboard, so a new tab would just be a duplicate.
     if (!process.env.MINIONS_NO_AUTO_OPEN) {
       const { exec } = require('child_process');
       try {
