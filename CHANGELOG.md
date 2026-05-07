@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1765 (2026-05-07)
+
+### Features
+- suppress duplicate browser tabs on restart/update
+-  pre-flight model compat check for ccCall/ccCallStreaming + Copilot resolveModel
+- probe every registered runtime adapter, not just claude
+
+### Fixes
+- close remaining test isolation leaks + add end-of-run regression guard (#2152)
+- surface legacy .minions dir removal in logs
+- clear session.json when conversation jsonl missing (W-mouugzow00068741) (#2153)
+- stop archived PRDs from resurrecting via safeJson .backup restore (#2144)
+
 ## 0.1.1764 (2026-05-07)
 
 ### Other
