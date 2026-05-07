@@ -634,12 +634,64 @@ function parseStreamChunk(line) {
 
 // ── Error Normalization ─────────────────────────────────────────────────────
 
-function parseError(rawOutput) {
+function _collectErrorSignal(rawOutput) {
   const text = rawOutput == null ? '' : String(rawOutput);
+  if (!text) return '';
+
+  const signals = [];
+  let sawJsonLine = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (!line.startsWith('{')) {
+      signals.push(line);
+      continue;
+    }
+
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    sawJsonLine = true;
+
+    const type = String(obj.type || '');
+    const subtype = String(obj.subtype || '');
+    const eventType = String(obj.event?.type || '');
+    const isErrorEvent = type === 'error'
+      || eventType === 'error'
+      || subtype.startsWith('error')
+      || obj.is_error === true
+      || obj.error != null
+      || obj.data?.error != null;
+    if (!isErrorEvent) continue;
+
+    for (const value of [
+      subtype,
+      obj.error,
+      obj.message,
+      obj.stderr,
+      obj.result,
+      obj.data?.error,
+      obj.data?.message,
+      obj.data?.stderr,
+      obj.event?.error,
+      obj.event?.message,
+    ]) {
+      if (typeof value === 'string' && value.trim()) signals.push(value.trim());
+    }
+  }
+
+  if (signals.length > 0) return signals.join('\n');
+  return sawJsonLine ? '' : text;
+}
+
+function parseError(rawOutput) {
+  const text = _collectErrorSignal(rawOutput);
   if (!text) return { message: '', code: null, retriable: true };
   const lower = text.toLowerCase();
 
-  if (/not authenticated|copilot login|please.*log.*in|401|403 forbidden|unauthorized/i.test(text)) {
+  const hasExplicitAuthFailure = /not authenticated|copilot login|please.*log.*in|\bunauthorized\b/i.test(text);
+  const hasAuthStatusCode = /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s+code)?|statuscode|response(?:\s+status)?|api(?:\s+(?:error|response|status))?)\s*[:=]?\s*(?:401|403)\b|\b(?:401\s+unauthorized|403\s+forbidden)\b/i.test(text);
+  if (hasExplicitAuthFailure || hasAuthStatusCode) {
     return { message: 'Copilot/GitHub authentication failed. Run `gh auth login` or provide GH_TOKEN/COPILOT_GITHUB_TOKEN with Copilot access.', code: 'auth-failure', retriable: false };
   }
   if (/rate limit|too many requests|\b429\b/i.test(text)) {

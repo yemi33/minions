@@ -2348,6 +2348,26 @@ async function testCopilotAdapter() {
     }
   });
 
+  await test('copilot.parseError ignores benign JSONL assistant answers that mention auth/model terms', () => {
+    const raw = [
+      JSON.stringify({ type: 'assistant.message', data: { content: 'A GitHub 403 Forbidden response usually means an authorization policy denied the request.' } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: 'The phrase "unknown model" can refer to a catalog mismatch, but this is just explanatory Q&A.' } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-benign', usage: {} }),
+    ].join('\n');
+
+    const r = copilot.parseError(raw);
+    assert.strictEqual(r.code, null, 'assistant answer text in JSONL stdout must not be classified as a runtime failure');
+    assert.strictEqual(r.retriable, true);
+  });
+
+  await test('copilot.parseError still detects structured JSONL runtime error events', () => {
+    const auth = copilot.parseError(JSON.stringify({ type: 'error', message: 'HTTP 401 Unauthorized' }));
+    assert.strictEqual(auth.code, 'auth-failure');
+
+    const model = copilot.parseError(JSON.stringify({ type: 'error', data: { error: 'Unknown model: banana' } }));
+    assert.strictEqual(model.code, 'unknown-model');
+  });
+
   await test('copilot.parseError detects rate-limit (retriable)', () => {
     for (const c of ['rate limit exceeded', 'too many requests', 'HTTP 429: throttled']) {
       const r = copilot.parseError(c);
