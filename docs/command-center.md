@@ -93,6 +93,8 @@ When you ask CC to *do* something, it includes structured action blocks in its r
 | `remove-prd-item` | Remove a PRD item | "Remove P011 from the plan" |
 | `delete-work-item` | Delete a work item | "Delete work item W025" |
 
+For endpoints without a named action, CC may emit a local API fallback action with `endpoint`, `method`, and `params`. The server only invokes safe local `/api/...` paths, validates the requested method against the route index when available, sends GET params as query strings, and rejects streaming/recursive CC/doc-chat endpoints.
+
 ## Error Handling
 
 - **Frontend timeout**: 10-minute `AbortSignal` on the fetch — prevents infinite "thinking" spinner
@@ -155,4 +157,3 @@ Frontend
 ## Command Bar
 
 The command bar at the top of the dashboard routes all input to the CC panel. Typing in the command bar opens the CC drawer and sends the message as a CC turn.
-

@@ -1292,6 +1292,13 @@ try {
 let _preambleCache = null;
 let _preambleCacheTs = 0;
 const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight orientation, not real-time data
+const CC_API_FALLBACK_TIMEOUT_MS = 15000;
+const CC_API_FALLBACK_METHODS = new Set(['GET', 'POST', 'DELETE']);
+const CC_API_FALLBACK_BLOCKED_PREFIXES = [
+  '/api/command-center',
+  '/api/doc-chat',
+  '/api/bot',
+];
 
 // SoT for CC's runtime API index. Captured lazily on the first HTTP request
 // because ROUTES is closed over inside the request handler. Subsequent
@@ -1309,13 +1316,20 @@ function _routesAsMeta(routes) {
 
 function _captureApiRoutesMeta(routes) {
   if (_ccApiRoutesMeta || !Array.isArray(routes)) return;
-  _ccApiRoutesMeta = _routesAsMeta(routes);
+  _ccApiRoutesMeta = routes.map(r => ({
+    ..._routesAsMeta([r])[0],
+    _pathRegex: r.path instanceof RegExp ? r.path : null,
+  }));
+}
+
+function _resetCcApiRoutesMetaForTest() {
+  _ccApiRoutesMeta = null;
 }
 
 function _formatCcApiRoutesIndex() {
   if (!Array.isArray(_ccApiRoutesMeta) || _ccApiRoutesMeta.length === 0) return '';
   return _ccApiRoutesMeta
-    .filter(r => r.path.startsWith('/api/'))
+    .filter(r => r.path.startsWith('/api/') || r.path.startsWith('/^\\/api'))
     .map(r => {
       const params = r.params ? ` — params: ${r.params}` : '';
       return `- \`${r.method} ${r.path}\` — ${r.desc}${params}`;
@@ -1370,7 +1384,7 @@ ${apiIndex || '(routes not yet captured — first request still pending)'}
 ${cliIndex || '(unavailable)'}
 
 For any \`/api/...\` endpoint not covered by a named CC action, use the generic fallback:
-\`{"type":"<descriptive>","endpoint":"/api/...","params":{...}}\`.` : '';
+\`{"type":"<descriptive>","endpoint":"/api/...","method":"GET|POST|DELETE","params":{...}}\`.` : '';
 
   const result = `### Agents
 ${agents}
@@ -1952,6 +1966,292 @@ function _ccValidateAction(action) {
   }
 }
 
+let _ccLocalApiInvokerForTest = null;
+
+function _setCcLocalApiInvokerForTest(fn) {
+  _ccLocalApiInvokerForTest = typeof fn === 'function' ? fn : null;
+}
+
+function _ccRouteMethodsForPath(pathname) {
+  if (!Array.isArray(_ccApiRoutesMeta) || _ccApiRoutesMeta.length === 0) return null;
+  const methods = new Set();
+  for (const route of _ccApiRoutesMeta) {
+    if (route._pathRegex instanceof RegExp) {
+      route._pathRegex.lastIndex = 0;
+      if (route._pathRegex.test(pathname)) methods.add(String(route.method || '').toUpperCase());
+    } else if (route.path === pathname) {
+      methods.add(String(route.method || '').toUpperCase());
+    }
+  }
+  return methods;
+}
+
+function _ccValidateLocalApiFallback(endpoint, method) {
+  if (typeof endpoint !== 'string' || !endpoint.trim()) return 'generic API fallback requires endpoint';
+  const raw = endpoint.trim();
+  if (!(raw === '/api' || raw.startsWith('/api/'))) return 'generic API fallback endpoint must be a local /api/ path';
+  if (/[\0\r\n\\]/.test(raw) || raw.includes('..') || /%2e/i.test(raw) || /%5c/i.test(raw)) {
+    return 'generic API fallback endpoint is unsafe';
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw, 'http://127.0.0.1');
+  } catch {
+    return 'generic API fallback endpoint is invalid';
+  }
+  if (parsed.origin !== 'http://127.0.0.1' || !(parsed.pathname === '/api' || parsed.pathname.startsWith('/api/'))) {
+    return 'generic API fallback endpoint must be a local /api/ path';
+  }
+  if (CC_API_FALLBACK_BLOCKED_PREFIXES.some(prefix => parsed.pathname === prefix || parsed.pathname.startsWith(prefix + '/'))) {
+    return 'generic API fallback cannot call Command Center, doc-chat, or bot endpoints';
+  }
+  if (/stream/i.test(parsed.pathname) || parsed.pathname === '/api/hot-reload') {
+    return 'generic API fallback cannot call streaming endpoints';
+  }
+  const normalizedMethod = String(method || 'POST').toUpperCase();
+  if (!CC_API_FALLBACK_METHODS.has(normalizedMethod)) {
+    return `generic API fallback method ${normalizedMethod} is not allowed`;
+  }
+  const routeMethods = _ccRouteMethodsForPath(parsed.pathname);
+  if (routeMethods && routeMethods.size > 0 && !routeMethods.has(normalizedMethod)) {
+    return `API endpoint ${parsed.pathname} does not allow ${normalizedMethod}; allowed methods: ${[...routeMethods].join(', ')}`;
+  }
+  if (routeMethods && routeMethods.size === 0) {
+    return `API endpoint ${parsed.pathname} is not in the local API index`;
+  }
+  return null;
+}
+
+function _ccBuildQueryString(params) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return '';
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) search.append(key, String(item));
+    } else if (typeof value === 'object') {
+      search.append(key, JSON.stringify(value));
+    } else {
+      search.append(key, String(value));
+    }
+  }
+  const text = search.toString();
+  return text ? '?' + text : '';
+}
+
+function _ccRequestPath(endpoint, method, params) {
+  const parsed = new URL(endpoint, 'http://127.0.0.1');
+  if (method === 'GET') {
+    const extra = _ccBuildQueryString(params);
+    if (extra) {
+      const glue = parsed.search ? '&' : '?';
+      return parsed.pathname + parsed.search + glue + extra.slice(1);
+    }
+  }
+  return parsed.pathname + parsed.search;
+}
+
+async function _ccInvokeLocalApi({ method, endpoint, params }) {
+  if (_ccLocalApiInvokerForTest) return _ccLocalApiInvokerForTest({ method, endpoint, params });
+  const requestPath = _ccRequestPath(endpoint, method, params);
+  return new Promise((resolve, reject) => {
+    const body = method === 'GET' ? null : JSON.stringify(params || {});
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: PORT,
+      method,
+      path: requestPath,
+      timeout: CC_API_FALLBACK_TIMEOUT_MS,
+      headers: body ? {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      } : {},
+    }, res => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { text += chunk; });
+      res.on('end', () => {
+        let data = text;
+        try { data = text ? JSON.parse(text) : {}; } catch { /* non-JSON API response */ }
+        resolve({ status: res.statusCode || 0, data });
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error(`local API fallback timed out after ${CC_API_FALLBACK_TIMEOUT_MS}ms`));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function _ccApiRequest(endpoint, params = {}, method = 'POST') {
+  return { endpoint, params, method };
+}
+
+function _ccMappedApiRequests(action) {
+  switch (action.type) {
+    case 'pin':
+    case 'pin-to-pinned':
+      return _ccApiRequest('/api/pinned', { title: action.title, content: action.content || action.description, level: action.level || '' });
+    case 'plan': {
+      const branchStrategy = action.branch_strategy || action.branchStrategy || 'parallel';
+      return _ccApiRequest('/api/plan', {
+        title: action.title, description: action.description || '', priority: action.priority,
+        project: action.project, agent: action.agent, branch_strategy: branchStrategy,
+      });
+    }
+    case 'cancel':
+      return _ccApiRequest('/api/agents/cancel', {
+        agent: action.agent || action.agentId,
+        task: action.task || action.cancelTask,
+        reason: action.reason || 'Cancelled via command center',
+      });
+    case 'retry':
+      return (action.ids || []).map(id => _ccApiRequest('/api/work-items/retry', { id, source: action.source || '' }));
+    case 'pause-plan':
+      return _ccApiRequest('/api/plans/pause', { file: action.file });
+    case 'approve-plan':
+      return _ccApiRequest('/api/plans/approve', { file: action.file });
+    case 'reject-plan':
+      return _ccApiRequest('/api/plans/reject', { file: action.file, reason: action.reason || '' });
+    case 'archive-plan':
+      return _ccApiRequest('/api/plans/archive', { file: action.file });
+    case 'unarchive-plan':
+      return _ccApiRequest('/api/plans/unarchive', { file: action.file });
+    case 'execute-plan':
+      return _ccApiRequest('/api/plans/execute', { file: action.file, project: action.project || '' });
+    case 'trigger-verify':
+      return _ccApiRequest('/api/plans/trigger-verify', { file: action.file });
+    case 'regenerate-plan':
+      return _ccApiRequest('/api/plans/approve', { file: action.file, forceRegen: true });
+    case 'revise-plan':
+      return _ccApiRequest('/api/plans/revise', { file: action.file, feedback: action.feedback || action.description, requestedBy: 'command-center' });
+    case 'edit-prd-item':
+      return _ccApiRequest('/api/prd-items/update', {
+        source: action.source, itemId: action.itemId, name: action.name, description: action.description,
+        priority: action.priority, estimated_complexity: action.estimated_complexity || action.complexity,
+      });
+    case 'remove-prd-item':
+      return _ccApiRequest('/api/prd-items/remove', { source: action.source, itemId: action.itemId });
+    case 'reopen-prd-item':
+      return _ccApiRequest('/api/prd-items/update', { source: action.file, itemId: action.id, status: 'updated' });
+    case 'delete-work-item':
+      return _ccApiRequest('/api/work-items/delete', { id: action.id, source: action.source || '' });
+    case 'cancel-work-item':
+      return _ccApiRequest('/api/work-items/cancel', { id: action.id, source: action.source || '', reason: action.reason || 'cc' });
+    case 'archive-work-item':
+      return _ccApiRequest('/api/work-items/archive', { id: action.id });
+    case 'work-item-feedback':
+      return _ccApiRequest('/api/work-items/feedback', { id: action.id, rating: action.rating || 'up', comment: action.comment || '' });
+    case 'schedule':
+      return _ccApiRequest(action._update ? '/api/schedules/update' : '/api/schedules', {
+        id: action.id, title: action.title, cron: action.cron, type: action.workType || 'implement',
+        project: action.project, agent: action.agent, description: action.description,
+        priority: action.priority, enabled: action.enabled !== false,
+      });
+    case 'delete-schedule':
+      return _ccApiRequest('/api/schedules/delete', { id: action.id });
+    case 'edit-pipeline':
+      return _ccApiRequest('/api/pipelines/update', {
+        id: action.id, title: action.title, stages: action.stages,
+        trigger: action.trigger, enabled: action.enabled, stopWhen: action.stopWhen,
+        monitoredResources: action.monitoredResources,
+      });
+    case 'delete-pipeline':
+      return _ccApiRequest('/api/pipelines/delete', { id: action.id });
+    case 'trigger-pipeline':
+      return _ccApiRequest('/api/pipelines/trigger', { id: action.id });
+    case 'continue-pipeline':
+      return _ccApiRequest('/api/pipelines/continue', { id: action.id, stageId: action.stageId });
+    case 'abort-pipeline':
+      return _ccApiRequest('/api/pipelines/abort', { id: action.id });
+    case 'retrigger-pipeline':
+      return _ccApiRequest('/api/pipelines/retrigger', { id: action.id });
+    case 'add-meeting-note':
+      return _ccApiRequest('/api/meetings/note', { id: action.id, note: action.note || action.content });
+    case 'advance-meeting':
+      return _ccApiRequest('/api/meetings/advance', { id: action.id });
+    case 'end-meeting':
+      return _ccApiRequest('/api/meetings/end', { id: action.id });
+    case 'archive-meeting':
+      return _ccApiRequest('/api/meetings/archive', { id: action.id });
+    case 'unarchive-meeting':
+      return _ccApiRequest('/api/meetings/unarchive', { id: action.id });
+    case 'delete-meeting':
+      return _ccApiRequest('/api/meetings/delete', { id: action.id });
+    case 'set-config':
+      return _ccApiRequest('/api/settings', { engine: { [action.setting]: action.value } });
+    case 'update-routing':
+      return _ccApiRequest('/api/settings/routing', { content: action.content });
+    case 'steer-agent':
+      return _ccApiRequest('/api/agents/steer', { agent: action.agent, message: action.message || action.content });
+    case 'link-pr':
+      return _ccApiRequest('/api/pull-requests/link', { url: action.url, title: action.title || '', project: action.project || '', autoObserve: action.autoObserve !== false });
+    case 'delete-pr':
+      return _ccApiRequest('/api/pull-requests/delete', { id: action.id, project: action.project || '' });
+    case 'file-bug':
+      return _ccApiRequest('/api/issues/create', { title: action.title, description: action.description, labels: action.labels });
+    case 'promote-to-kb':
+      return _ccApiRequest('/api/inbox/promote-kb', { name: action.file, category: action.category || 'project-notes' });
+    case 'kb-sweep':
+      return _ccApiRequest('/api/knowledge/sweep', {});
+    case 'toggle-kb-pin':
+      return _ccApiRequest('/api/kb-pins/toggle', { key: action.key });
+    case 'unpin':
+      return _ccApiRequest('/api/pinned' + '/remove', { title: action.title });
+    case 'add-project':
+      return _ccApiRequest('/api/projects/add', {
+        path: action.path || action.localPath, name: action.name || '',
+        repoHost: action.repoHost || 'github', allowNonRepo: action.allowNonRepo,
+        confirmToken: action.confirmToken,
+      });
+    case 'restart-engine':
+      return _ccApiRequest('/api/engine/restart', {});
+    case 'reset-settings':
+      return _ccApiRequest('/api/settings/reset', {});
+    default:
+      if (action.endpoint) return _ccApiRequest(action.endpoint, action.params || {}, action.method || 'POST');
+      return null;
+  }
+}
+
+async function _ccExecuteLocalApiAction(action) {
+  const mapped = _ccMappedApiRequests(action);
+  if (!mapped) return null;
+  const requests = Array.isArray(mapped) ? mapped : [mapped];
+  if (requests.length === 0) throw new Error(`${action.type} action has no API requests to execute`);
+  const apiResults = [];
+  for (const request of requests) {
+    const method = String(request.method || 'POST').toUpperCase();
+    const endpoint = String(request.endpoint || '').trim();
+    const params = request.params || {};
+    const validationError = _ccValidateLocalApiFallback(endpoint, method);
+    if (validationError) throw new Error(validationError);
+    const response = await _ccInvokeLocalApi({ method, endpoint, params });
+    const status = Number(response?.status) || 0;
+    const data = response?.data === undefined ? {} : response.data;
+    if (status < 200 || status >= 300) {
+      const detail = data && typeof data === 'object' && data.error ? data.error : `HTTP ${status}`;
+      throw new Error(`${method} ${endpoint} failed: ${detail}`);
+    }
+    if (data && typeof data === 'object' && data.error) throw new Error(`${method} ${endpoint} failed: ${data.error}`);
+    apiResults.push({ status, data, endpoint, method });
+  }
+  const firstData = apiResults[0]?.data && typeof apiResults[0].data === 'object' ? apiResults[0].data : {};
+  return {
+    type: action.type,
+    ok: true,
+    endpoint: apiResults[0]?.endpoint,
+    method: apiResults[0]?.method,
+    status: apiResults[0]?.status,
+    ...(firstData.id ? { id: firstData.id } : {}),
+    ...(firstData.file ? { file: firstData.file } : {}),
+    ...(firstData.message ? { message: firstData.message } : {}),
+    ...(apiResults.length > 1 ? { count: apiResults.length, results: apiResults.map(r => r.data) } : { data: firstData }),
+  };
+}
+
 async function executeCCActions(actions) {
   const results = [];
   for (const action of actions) {
@@ -2215,10 +2515,16 @@ async function executeCCActions(actions) {
           results.push({ type: 'resume-watch', id: action.id, ok: !!resumed });
           break;
         }
-        default:
-          // Server didn't handle — frontend must execute
-          results.push({ type: action.type });
+        default: {
+          const apiResult = await _ccExecuteLocalApiAction(action);
+          if (apiResult) {
+            results.push(apiResult);
+          } else {
+            // Server didn't handle — frontend must execute.
+            results.push({ type: action.type });
+          }
           break;
+        }
       }
     } catch (e) {
       results.push({ type: action.type, error: e.message });
@@ -3825,7 +4131,7 @@ const server = http.createServer(async (req, res) => {
         id, title: body.title, type: 'plan',
         priority: body.priority || 'high', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
-        branchStrategy: body.branch_strategy || 'parallel',
+        branchStrategy: body.branch_strategy || body.branchStrategy || 'parallel',
       };
       if (body.project) item.project = body.project;
       if (body.agent) item.agent = body.agent;
@@ -4028,14 +4334,17 @@ const server = http.createServer(async (req, res) => {
   async function handleAgentsCancel(req, res) {
     try {
       const body = await readBody(req);
+      const requestedAgent = body.agent || body.agentId;
+      const requestedTask = body.task || body.cancelTask;
+      if (!requestedAgent && !requestedTask) return jsonReply(res, 400, { error: 'agent or task required' });
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const dispatch = safeJsonObj(dispatchPath);
       const active = dispatch.active || [];
       const cancelled = [];
 
       for (const d of active) {
-        const matchAgent = body.agent && d.agent === body.agent;
-        const matchTask = body.task && (d.task || '').toLowerCase().includes((body.task || '').toLowerCase());
+        const matchAgent = requestedAgent && d.agent === requestedAgent;
+        const matchTask = requestedTask && (d.task || '').toLowerCase().includes(String(requestedTask).toLowerCase());
         if (!matchAgent && !matchTask) continue;
 
         // Kill agent process
@@ -7054,7 +7363,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/notes-save', desc: 'Save edited notes.md content', params: 'content, file?', handler: handleNotesSave },
 
     // Plans
-    { method: 'POST', path: '/api/plan', desc: 'Create a plan work item that chains to PRD on completion', params: 'title, description?, priority?, project?, agent?, branch_strategy?', handler: handlePlanCreate },
+    { method: 'POST', path: '/api/plan', desc: 'Create a plan work item that chains to PRD on completion', params: 'title, description?, priority?, project?, agent?, branch_strategy? or branchStrategy?', handler: handlePlanCreate },
     { method: 'GET', path: '/api/plans', desc: 'List plan files (.md drafts + .json PRDs)', handler: handlePlansList },
     { method: 'POST', path: '/api/plans/trigger-verify', desc: 'Manually trigger verification for a completed plan', params: 'file', handler: handlePlansTriggerVerify },
     { method: 'POST', path: '/api/plans/approve', desc: 'Approve a plan for execution', params: 'file, approvedBy?', handler: handlePlansApprove },
@@ -7226,7 +7535,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         inboxCount: steering.listUnreadSteeringMessages(agentId).length,
       });
     }},
-    { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
+    { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent? or agentId?, task?', handler: handleAgentsCancel },
     { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
@@ -7693,7 +8002,11 @@ module.exports = {
   _resolveWorkItemsCreateTarget: resolveWorkItemsCreateTarget,
   _collectArchivedWorkItems: collectArchivedWorkItems,
   _createPipelineFromAction: createPipelineFromAction,
+  _setCcLocalApiInvokerForTest,
+  _resetCcApiRoutesMetaForTest,
+  _ccValidateLocalApiFallback,
   executeCCActions,
+  executeDocChatActions,
   buildCCStatePreamble,
   _captureApiRoutesMeta,
   _formatCcApiRoutesIndex,
