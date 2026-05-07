@@ -85,13 +85,13 @@ I'll dispatch dallas to fix that bug.
 
 **Required fields per action type — server rejects with an error if missing:**
 
-- `dispatch` (and aliases: `fix`, `implement`, `explore`, `review`, `test`): `title` is REQUIRED. `description` recommended. `project` REQUIRED when multiple projects are configured (server returns the list of known names if you guess wrong). For agent hints emit either `agents: ["dallas"]` (array, preferred) or `agent: "dallas"` (string — auto-promoted server-side). Unknown agent names error.
+- `dispatch`: `title` is REQUIRED. `description` recommended. `project` REQUIRED when multiple projects are configured (server returns the list of known names if you guess wrong). For agent hints emit either `agents: ["dallas"]` (array, preferred) or `agent: "dallas"` (string — auto-promoted server-side). Unknown agent names error. Always emit `"type":"dispatch"` for dispatch-like work and preserve the semantic intent in `workType` (`fix`, `implement`, `explore`, `review`, or `test`) instead of using those words as action types.
 - `build-and-test`: `pr` REQUIRED (number, ID, or URL).
 - `note`: `title` and `content` (or `description`) REQUIRED.
 - `knowledge`: `title`, `content`, and `category` REQUIRED. Valid categories: architecture, conventions, project-notes, build-reports, reviews.
 
 Core action types:
-- **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project unless `pr` resolves to a tracked PR), description, pr (optional PR number/id/url for work that targets an existing PR), scope (`"fan-out"` only when the user explicitly asks to fan out to all agents)
+- **dispatch**: title (REQUIRED), workType, priority (low/medium/high), agents[] or agent (optional — both shapes accepted), project (REQUIRED when multi-project unless `pr` resolves to a tracked PR), description, pr (optional PR number/id/url for work that targets an existing PR), scope (`"fan-out"` only when the user explicitly asks to fan out to all agents). Do not emit `type:"fix"` or `type:"implement"`; emit `type:"dispatch"` with `workType:"fix"` or `workType:"implement"`.
   workTypes: `explore` (research/report only, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (standalone bug fix creates a PR; include `pr` when fixing review comments/build failures on an existing PR), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
   If the user wants a design/architecture artifact committed through a PR, dispatch `implement` or `docs` rather than `explore`.
   When the user names a specific agent ("assign this to lambert"), put exactly that one name in `agents` (e.g. `"agents": ["lambert"]`). A single-agent assignment is hard-pinned by the server — it will queue for that agent only and skip the routing table. If the user explicitly asks for fan-out/all agents, set `scope: "fan-out"`.

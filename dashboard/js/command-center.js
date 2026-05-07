@@ -141,6 +141,23 @@ function _ccMergeStreamText(prev, incoming) {
   return current + '\n\n' + next;
 }
 
+var CC_DISPATCH_ACTION_ALIASES = ['fix', 'implement', 'explore', 'review', 'test'];
+function _ccNormalizeDispatchAction(action) {
+  if (!action || typeof action !== 'object' || typeof action.type !== 'string') return action;
+  var type = action.type.trim().toLowerCase();
+  if (type === 'dispatch') {
+    if (action.type === 'dispatch') return action;
+    var dispatchAction = Object.assign({}, action);
+    dispatchAction.type = 'dispatch';
+    return dispatchAction;
+  }
+  if (CC_DISPATCH_ACTION_ALIASES.indexOf(type) < 0) return action;
+  var normalized = Object.assign({}, action);
+  normalized.type = 'dispatch';
+  if (!normalized.workType) normalized.workType = type;
+  return normalized;
+}
+
 async function _ccDashboardHealth() {
   var controller = new AbortController();
   var timer = setTimeout(function() { controller.abort(); }, 3000);
@@ -994,6 +1011,7 @@ function _tagServerExecuted(actions, actionResults) {
 }
 
 async function ccExecuteAction(action, targetTabId) {
+  action = _ccNormalizeDispatchAction(action);
   var status = document.createElement('div');
   status.style.cssText = 'padding:4px 10px;border-radius:4px;font-size:10px;align-self:flex-start;border:1px dashed var(--border);color:var(--muted)';
 
@@ -1010,7 +1028,7 @@ async function ccExecuteAction(action, targetTabId) {
       status.style.color = action._serverDuplicate ? 'var(--orange)' : 'var(--green)';
     }
     ccAddMessage('action', status.outerHTML, false, targetTabId);
-    if (['dispatch','fix','implement','explore','review','test','create-meeting'].includes(action.type)) wakeEngine();
+    if (['dispatch','create-meeting'].includes(action.type)) wakeEngine();
     refresh();
     return;
   }
@@ -1023,7 +1041,7 @@ async function ccExecuteAction(action, targetTabId) {
       case 'explore':
       case 'review':
       case 'test': {
-        var workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
+        var workType = action.workType || 'implement';
         // Forward both singular (`agent`) and plural (`agents`) hint shapes —
         // the LLM emits either depending on phrasing ("assign to lambert" vs
         // "dispatch to dallas, ralph"). The server-side handler promotes a

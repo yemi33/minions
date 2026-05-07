@@ -33383,6 +33383,15 @@ async function testCcActionTypes() {
       'should have schedule, create-meeting, and set-config action types');
   });
 
+  await test('CC system prompt requires dispatch action type for dispatch-like work', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('Always emit `"type":"dispatch"`'),
+      'prompt should tell CC to use dispatch as the action type');
+    assert.ok(src.includes('semantic intent in `workType`'),
+      'prompt should preserve fix/implement/review intent in workType');
+  });
+
   await test('CC executor handles schedule, create-meeting, set-config', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
     assert.ok(src.includes("case 'schedule':"), 'should handle schedule action');
@@ -33527,6 +33536,22 @@ async function testCcActionTypes() {
     assert.strictEqual(result.text, 'I will file that bug.', '```json fence must not block the action split');
     assert.strictEqual(result.actions.length, 1, '```json fence must not swallow the action JSON');
     assert.strictEqual(result.actions[0].type, 'file-bug', 'action body must be parsed correctly through the fence');
+  });
+
+  await test('parseCCActions normalizes dispatch action aliases to type=dispatch with workType', () => {
+    const parseCCActions = getParseCCActions();
+    const cases = [
+      { label: 'dispatch wording', input: { type: 'dispatch', title: 'Dispatch this fix', workType: 'fix' }, workType: 'fix' },
+      { label: 'fix wording', input: { type: 'fix', title: 'Fix the dashboard bug' }, workType: 'fix' },
+      { label: 'implement wording', input: { type: 'implement', title: 'Implement the dashboard feature' }, workType: 'implement' },
+    ];
+
+    for (const c of cases) {
+      const result = parseCCActions('Queued.\n\n===ACTIONS===\n' + JSON.stringify([c.input]));
+      assert.strictEqual(result.actions.length, 1, `${c.label} should parse one action`);
+      assert.strictEqual(result.actions[0].type, 'dispatch', `${c.label} should normalize action.type`);
+      assert.strictEqual(result.actions[0].workType, c.workType, `${c.label} should preserve semantic workType`);
+    }
   });
 
   await test('parseCCActions recovers JSON wrapped in plain ``` fences (issue #1834)', () => {
@@ -58085,6 +58110,29 @@ async function testDashboardPureHelpers() {
       const projectItems = isolated.shared.safeJson(projectPath) || [];
       assert.strictEqual(projectItems.length, 1, 'CC plus API fallback must leave one project work item');
       assert.strictEqual(projectItems[0].id, ccResults[0].id);
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
+  await test('executeCCActions normalizes dispatch aliases while preserving work item type', async () => {
+    const isolated = loadIsolatedDashboardForDedup();
+    try {
+      const wiPath = path.join(isolated.dir, 'work-items.json');
+      const actions = [
+        { type: 'dispatch', workType: 'fix', title: 'Dispatch this fix from CC' },
+        { type: 'fix', title: 'Fix alias from CC' },
+        { type: 'implement', title: 'Implement alias from CC' },
+      ];
+
+      const results = await isolated.dashboard.executeCCActions(actions);
+
+      assert.deepStrictEqual(results.map(r => r.type), ['dispatch', 'dispatch', 'dispatch'],
+        'server results should expose canonical dispatch action type');
+      assert.ok(results.every(r => r.ok && r.id), 'all normalized dispatch actions should create work items');
+      const items = isolated.shared.safeJson(wiPath) || [];
+      assert.deepStrictEqual(items.map(i => i.type), ['fix', 'fix', 'implement'],
+        'semantic work type should still drive created work items');
     } finally {
       isolated.cleanup();
     }
