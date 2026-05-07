@@ -26336,6 +26336,22 @@ async function testMeetings() {
       'Should have meeting creation modal and detail view');
   });
 
+  await test('render-meetings pagination rerenders cached meetings without full refresh', () => {
+    const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const prevFn = renderSrc.match(/function _mtgPrev\(\)[\s\S]*?^}/m);
+    const nextFn = renderSrc.match(/function _mtgNext\(\)[\s\S]*?^}/m);
+    const toggleFn = renderSrc.match(/function _toggleArchivedMeetings\(\)[\s\S]*?^}/m);
+    assert.ok(renderSrc.includes('let _lastMeetingsForPaging = []'), 'meetings pagination should cache the last rendered list');
+    assert.ok(renderSrc.includes('function _rerenderMeetingPageFromCache()'), 'meetings pagination should have a cache rerender helper');
+    assert.ok(prevFn && nextFn && toggleFn, 'meetings pagination functions should exist');
+    assert.ok(prevFn[0].includes('_rerenderMeetingPageFromCache()') && !prevFn[0].includes('refresh()'),
+      'Prev should rerender from cached meetings without fetching /api/status');
+    assert.ok(nextFn[0].includes('_rerenderMeetingPageFromCache()') && !nextFn[0].includes('refresh()'),
+      'Next should rerender from cached meetings without fetching /api/status');
+    assert.ok(toggleFn[0].includes('_rerenderMeetingPageFromCache()') && !toggleFn[0].includes('refresh()'),
+      'Archived toggle should rerender from cached meetings without fetching /api/status');
+  });
+
   await test('meeting routing exists', () => {
     const routing = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
     assert.ok(routing.includes('meeting'), 'routing.md should have meeting work type');

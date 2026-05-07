@@ -4,15 +4,19 @@ let _showArchived = false;
 const MTG_PER_PAGE = 10;
 let _mtgPage = 0;
 let _lastMeetingHash = '';
+let _lastMeetingsForPaging = [];
+let _mtgTotalPages = 1;
 
 function renderMeetings(meetings) {
   meetings = (meetings || []).filter(function(m) { return !isDeleted('mtg:' + m.id); });
   meetings.sort((a, b) => (b.createdAt || b.completedAt || '').localeCompare(a.createdAt || a.completedAt || ''));
+  _lastMeetingsForPaging = meetings;
   const el = document.getElementById('meetings-content');
   const countEl = document.getElementById('meetings-count');
   if (!meetings || meetings.length === 0) {
     countEl.textContent = '0';
     el.innerHTML = '<p class="empty">No meetings yet. Start one to have agents investigate, debate, and conclude on a topic.</p>';
+    _mtgTotalPages = 1;
     return;
   }
 
@@ -27,10 +31,12 @@ function renderMeetings(meetings) {
   if (visible.length === 0) {
     el.innerHTML = '<p class="empty">No active meetings.</p>';
     if (archived.length) el.insertAdjacentHTML('beforeend', '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">Show ' + archived.length + ' archived</button></div>');
+    _mtgTotalPages = 1;
     return;
   }
 
   const totalPages = Math.ceil(visible.length / MTG_PER_PAGE);
+  _mtgTotalPages = totalPages;
   if (_mtgPage >= totalPages) _mtgPage = totalPages - 1;
   const start = _mtgPage * MTG_PER_PAGE;
   const pageItems = visible.slice(start, start + MTG_PER_PAGE);
@@ -81,13 +87,26 @@ function renderMeetings(meetings) {
   restoreNotifBadges();
 }
 
-function _mtgPrev() { if (_mtgPage > 0) { _mtgPage--; refresh(); } }
-function _mtgNext() { _mtgPage++; refresh(); }
+function _rerenderMeetingPageFromCache() {
+  renderMeetings(_lastMeetingsForPaging || []);
+}
+function _mtgPrev() {
+  if (_mtgPage > 0) {
+    _mtgPage--;
+    _rerenderMeetingPageFromCache();
+  }
+}
+function _mtgNext() {
+  if (_mtgPage < _mtgTotalPages - 1) {
+    _mtgPage++;
+    _rerenderMeetingPageFromCache();
+  }
+}
 
 function _toggleArchivedMeetings() {
   _showArchived = !_showArchived;
   _mtgPage = 0;
-  refresh();
+  _rerenderMeetingPageFromCache();
 }
 
 let _meetingPollInterval = null;
