@@ -91,6 +91,7 @@ const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, project
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
 const safeJson = shared.safeJson;
+const safeJsonNoRestore = shared.safeJsonNoRestore;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const safeUnlink = shared.safeUnlink;
@@ -1015,6 +1016,10 @@ async function spawnAgent(dispatchItem, config) {
       agentId,
       branchName,
       agentsDir: AGENTS_DIR,
+      // Pass the working directory so the Claude adapter can probe for the
+      // conversation jsonl and avoid `--resume <dead-uuid>` retry loops when
+      // the agent died before checkpoint (W-mouugzow00068741).
+      cwd,
       logger: _runtimeLogger(),
     });
   }
@@ -1697,9 +1702,12 @@ function areDependenciesMet(item, config) {
   for (const depId of deps) {
     const depItem = allWorkItems.find(w => w.id === depId);
     if (!depItem) {
-      // Fallback: check PRD JSON — plan-to-prd agents may pre-set items to done
+      // Fallback: check PRD JSON — plan-to-prd agents may pre-set items to done.
+      // safeJsonNoRestore — if the PRD has been archived, treat the dep as
+      // unmet rather than resurrecting the active PRD from .backup
+      // (W-mouptdh1000h9f39).
       try {
-        const plan = safeJson(path.join(PRD_DIR, sourcePlan));
+        const plan = safeJsonNoRestore(path.join(PRD_DIR, sourcePlan));
         const prdItem = (plan?.missing_features || []).find(f => f.id === depId);
         if (prdItem && PRD_MET_STATUSES.has(prdItem.status)) continue; // PRD says done — treat as met
       } catch (e) { log('warn', 'check PRD dep status: ' + e.message); }
@@ -1951,7 +1959,10 @@ function materializePlansAsWorkItems(config) {
   const SEQUENTIAL_ID_RE = /^P-?\d+$/;
 
   for (const file of planFiles) {
-    let plan = safeJson(path.join(PRD_DIR, file));
+    // safeJsonNoRestore — if a PRD was archived between readdir and this
+    // read, do not auto-resurrect it from a stale .backup sidecar
+    // (W-mouptdh1000h9f39).
+    let plan = safeJsonNoRestore(path.join(PRD_DIR, file));
     if (!plan?.missing_features) continue;
 
     // ID collision prevention: remap sequential IDs (P-001, P-002) to globally unique P-<uid> IDs.
@@ -3772,6 +3783,39 @@ function discoverCentralWorkItems(config) {
 
 
 /**
+ * Sweep stale `.backup` sidecars in `prd/` whose archived counterpart already
+ * lives in `prd/archive/<name>.json` and the active `prd/<name>.json` is
+ * absent. Pre-neutralize-era archives left these sidecars behind; without this
+ * sweep, any caller that touched `prd/<name>.json` with the restore-enabled
+ * `safeJson` would resurrect the archived PRD as active (W-mouptdh1000h9f39).
+ *
+ * Idempotent and best-effort: readdir / existsSync / unlink failures are
+ * swallowed so a single weird filesystem state never blocks the discovery
+ * tick. Returns the number of sidecars purged (for tests / logging).
+ */
+function sweepStaleArchivedPrdBackups(prdDir, prdArchiveDir) {
+  let purged = 0;
+  if (!fs.existsSync(prdArchiveDir)) return purged;
+  let archivedNames;
+  try { archivedNames = fs.readdirSync(prdArchiveDir).filter(f => f.endsWith('.json')); }
+  catch { return purged; }
+  for (const f of archivedNames) {
+    const activePath = path.join(prdDir, f);
+    const backupPath = activePath + '.backup';
+    // Active PRD wins — the dedicated ghost-PRD purge in discoverWork handles
+    // the case where both active.json and active.json.backup are present.
+    if (fs.existsSync(activePath)) continue;
+    if (!fs.existsSync(backupPath)) continue;
+    try {
+      fs.unlinkSync(backupPath);
+      purged++;
+      log('info', `Purged stale .backup sidecar for archived PRD: ${f}`);
+    } catch { /* best-effort */ }
+  }
+  return purged;
+}
+
+/**
  * Run all work discovery sources and queue new items
  * Priority: fix (0) > ask (1) > review (1) > implement (2) > work-items (3) > central (4)
  */
@@ -3865,17 +3909,29 @@ async function discoverWork(config) {
     try {
       const lifecycle = require('./engine/lifecycle');
       const prdDir = path.join(MINIONS_DIR, 'prd');
+      const prdArchiveDir = path.join(prdDir, 'archive');
       if (fs.existsSync(prdDir)) {
+        // Pass 1 — Burn the landmine: stale .backup sidecars whose archived
+        // counterpart already lives in prd/archive/ but no active prd/<f>.json.
+        // Without this, any future safeJson(prd/<f>.json) (or stray legacy
+        // call) would auto-restore the .backup and resurrect the archived PRD
+        // (W-mouptdh1000h9f39). Idempotent and fast — readdir + existsSync.
+        sweepStaleArchivedPrdBackups(prdDir, prdArchiveDir);
+
+        // Pass 2 — Existing orphan ghost-PRD purge + completion sweep.
         for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
           if (completedPlanCache.has(f)) continue;
-          if (fs.existsSync(path.join(prdDir, 'archive', f))) {
+          if (fs.existsSync(path.join(prdArchiveDir, f))) {
             // Orphaned backup restore — plan is already archived. Purge the ghost copy.
             try { fs.unlinkSync(path.join(prdDir, f)); } catch { }
             try { fs.unlinkSync(path.join(prdDir, f + '.backup')); } catch { }
             completedPlanCache.add(f);
             continue;
           }
-          const plan = safeJson(path.join(prdDir, f));
+          // safeJsonNoRestore — defense in depth: if the file vanished between
+          // readdir and read (e.g. concurrent archive), do not resurrect it
+          // from a stale .backup sidecar (W-mouptdh1000h9f39).
+          const plan = safeJsonNoRestore(path.join(prdDir, f));
           if (!plan?.missing_features || plan.status === 'completed') {
             if (plan?.status === 'completed') completedPlanCache.add(f);
             continue;
@@ -4605,6 +4661,7 @@ module.exports = {
   // Discovery
   discoverWork, discoverFromPrs, discoverFromWorkItems, discoverCentralWorkItems,
   materializePlansAsWorkItems,
+  sweepStaleArchivedPrdBackups, // exported for testing
 
   // Shared helpers (used by lifecycle.js and tests)
   reconcileItemsWithPrs, detectDependencyCycles,

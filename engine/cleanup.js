@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { exec, execAsync, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
-const { safeJson, safeWrite, safeReadDir, mutateCooldowns, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
+const { safeJson, safeJsonNoRestore, safeWrite, safeReadDir, mutateCooldowns, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
 
@@ -688,7 +688,10 @@ async function runCleanup(config, verbose = false) {
       const prdPath = path.join(PRD_DIR, pf);
       let migrated = 0;
       shared.withFileLock(`${prdPath}.lock`, () => {
-        const prd = safeJson(prdPath);
+        // safeJsonNoRestore: PRDs are terminal artifacts. If the active PRD
+        // was archived but a stale .backup sidecar remains, never resurrect
+        // it during a routine migration sweep (W-mouptdh1000h9f39).
+        const prd = safeJsonNoRestore(prdPath);
         if (!prd?.missing_features) return;
         for (const feat of prd.missing_features) {
           if (LEGACY_DONE_ALIASES.has(feat.status)) {
@@ -725,7 +728,9 @@ async function runCleanup(config, verbose = false) {
     catch { orphanPrdEntries = []; }
     for (const pf of orphanPrdEntries) {
       const prdPath = path.join(PRD_DIR, pf);
-      const peek = safeJson(prdPath);
+      // safeJsonNoRestore — peek must not auto-restore archived PRDs
+      // from a stale .backup sidecar (W-mouptdh1000h9f39).
+      const peek = safeJsonNoRestore(prdPath);
       if (!peek?.missing_features) continue;
       let reset = 0;
       mutateJsonFileLocked(prdPath, (prd) => {

@@ -28,9 +28,11 @@ const os = require('os');
 const { spawn, spawnSync, execSync } = require('child_process');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
+const DASH_PORT = 7331;
 
-/** Kill process(es) listening on a given port. Works cross-platform. */
-function killByPort(port) {
+/** Returns PIDs (as strings) of processes LISTENING on `port`. Empty on no match
+ *  or when the platform tool (netstat/findstr/lsof) is unavailable. */
+function getListeningPids(port) {
   try {
     if (process.platform === 'win32') {
       const out = execSync(`netstat -ano | findstr ":${port} " | findstr LISTENING`, { encoding: 'utf8', timeout: 5000, windowsHide: true });
@@ -39,12 +41,24 @@ function killByPort(port) {
         const pid = line.trim().split(/\s+/).pop();
         if (pid && /^\d+$/.test(pid) && pid !== '0' && pid !== String(process.pid)) pids.add(pid);
       }
-      for (const pid of pids) try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
-    } else {
-      execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { timeout: 5000 });
+      return [...pids];
     }
-  } catch {}
+    const out = execSync(`lsof -ti:${port}`, { encoding: 'utf8', timeout: 5000 });
+    return out.split('\n').map(s => s.trim()).filter(Boolean);
+  } catch { return []; }
 }
+
+/** Kill process(es) listening on a given port. Works cross-platform. */
+function killByPort(port) {
+  const pids = getListeningPids(port);
+  if (process.platform === 'win32') {
+    for (const pid of pids) try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
+  } else {
+    for (const pid of pids) try { process.kill(Number(pid), 'SIGKILL'); } catch {}
+  }
+}
+
+const isPortListening = (port) => getListeningPids(port).length > 0;
 
 /**
  * Read the engine's recorded PID from engine/control.json. Returns null if
@@ -102,6 +116,18 @@ function killMinionsProcesses(patterns) {
     }
   } catch {}
 }
+
+/** Spawn a detached dashboard. When `suppressOpen` is true, the new dashboard
+ *  skips its auto-open of the browser — the existing tab will SSE-reconnect. */
+function spawnDashboard(suppressOpen) {
+  const env = suppressOpen ? { ...process.env, MINIONS_NO_AUTO_OPEN: '1' } : process.env;
+  const proc = spawn(process.execPath, [path.join(MINIONS_HOME, 'dashboard.js')], {
+    cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true, env
+  });
+  proc.unref();
+  return proc;
+}
+
 const DEFAULT_MINIONS_HOME = path.join(os.homedir(), '.minions');
 const ROOT_POINTER_PATH = path.join(os.homedir(), '.minions-root');
 const LEGACY_DEFAULT_SQUAD_HOME = path.join(os.homedir(), '.squad');
@@ -371,8 +397,14 @@ function init() {
   if (isUpgrade && skipStart) return;
 
   // Auto-start on fresh install; direct force-upgrade restarts automatically.
+  // Probe before kill so we can suppress the new dashboard's auto-open when an
+  // existing tab is already live (it'll SSE-reconnect to the new dashboard).
+  const dashWasUp = isPortListening(DASH_PORT);
   if (isUpgrade) {
     try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000, windowsHide: true }); } catch {}
+    // Free the dashboard port too — without this the new dashboard EADDRINUSE-dies
+    // silently and the user keeps running stale code from the old dashboard process.
+    killByPort(DASH_PORT);
   }
   console.log(isUpgrade
     ? `\n  Upgrade complete (${pkgVersion}). Restarting engine and dashboard...\n`
@@ -383,12 +415,9 @@ function init() {
   engineProc.unref();
   console.log(`  Engine started (PID: ${engineProc.pid})`);
 
-  const dashProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'dashboard.js')], {
-    cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
-  });
-  dashProc.unref();
+  const dashProc = spawnDashboard(dashWasUp);
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
-  console.log('  Dashboard: http://localhost:7331');
+  console.log(`  Dashboard: http://localhost:${DASH_PORT}`);
 
   // Next steps guidance
   console.log(`
@@ -641,6 +670,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   // `--cli` / `--model` flags forward to `engine.js start` so the runtime
   // fleet flips before the daemon spawns (P-6b3f9c2e AC: works on restart).
   ensureInstalled();
+  // Probe before kill so we can suppress the new dashboard's auto-open when an
+  // existing tab is already live (it'll SSE-reconnect to the new dashboard).
+  const dashWasUp = isPortListening(DASH_PORT);
   // Layered kill — each step is best-effort, layered so the next still runs if
   // one fails. Goal: the old engine is gone before we spawn a new one, even if
   // PowerShell is unavailable, the engine is hung, or its cmdline doesn't match.
@@ -651,7 +683,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   //    survive so the new engine can re-attach them via PID files).
   killPidOnly(oldEnginePid);
   // 3. Free dashboard port (catches orphan dashboards with no recorded PID).
-  killByPort(7331);
+  killByPort(DASH_PORT);
   // 4. Belt-and-suspenders cmdline match for anything still alive.
   killMinionsProcesses(['engine.js', 'dashboard.js']);
   const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start', ...rest], {
@@ -659,12 +691,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   });
   engineProc.unref();
   console.log(`\n  Engine started (PID: ${engineProc.pid})`);
-  const dashProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'dashboard.js')], {
-    cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
-  });
-  dashProc.unref();
+  const dashProc = spawnDashboard(dashWasUp);
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
-  console.log('  Dashboard: http://localhost:7331\n');
+  console.log(`  Dashboard: http://localhost:${DASH_PORT}\n`);
 } else if (cmd === 'nuke') {
   ensureInstalled();
   if (!rest.includes('--confirm')) {
@@ -695,7 +724,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   // 1. Kill all processes
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
-  killByPort(7331);
+  killByPort(DASH_PORT);
   killMinionsProcesses(['engine.js', 'dashboard.js', 'spawn-agent.js']);
   console.log('  Killed all processes');
 
@@ -781,7 +810,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   // 1. Kill all processes
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000 }); } catch {}
-  killByPort(7331);
+  killByPort(DASH_PORT);
   killMinionsProcesses(['engine.js', 'dashboard.js', 'spawn-agent.js']);
   console.log('  Killed all processes');
 
@@ -823,7 +852,6 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   ensureInstalled();
   // If dashboard is already running, just open the browser
   const net = require('net');
-  const dashPort = 7331;
   const sock = new net.Socket();
   let handled = false;
   sock.setTimeout(1000);
@@ -831,7 +859,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     sock.destroy();
     if (handled) return;
     handled = true;
-    const url = `http://localhost:${dashPort}`;
+    const url = `http://localhost:${DASH_PORT}`;
     console.log(`\n  Dashboard already running: ${url}\n`);
     try {
       const openCmd = process.platform === 'win32' ? `start ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
@@ -850,7 +878,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     handled = true;
     delegate('dashboard.js', rest);
   });
-  sock.connect(dashPort, '127.0.0.1');
+  sock.connect(DASH_PORT, '127.0.0.1');
 } else if (engineCmds.has(cmd)) {
   delegate('engine.js', [cmd, ...rest]);
 } else {
