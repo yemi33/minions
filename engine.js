@@ -1692,6 +1692,10 @@ async function spawnAgent(dispatchItem, config) {
     }
     return dispatch;
   });
+  // Also stamp the local ref — mutateDispatch re-reads from disk, so `item`
+  // above is a different object than the `dispatchItem` parameter. updateMetrics
+  // reads dispatchItem.started_at for runtimeMs. (W-moux9nwn0008f923)
+  dispatchItem.started_at = startedAt;
 
   // Atomically stamp dispatched_to/dispatched_at on the originating work item (#402)
   // The discover phase sets these via safeWrite which can race with concurrent writes;

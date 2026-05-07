@@ -44220,6 +44220,74 @@ async function testMetricsEnrichment() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
     assert.ok(src.includes('timedCalls') && src.includes('m.timedTasks'), 'Should use timed counters for avg');
   });
+
+  // Regression: W-moux9nwn0008f923 — agent-dispatch timedCalls undercounted
+  // because spawnAgent stamped started_at on a freshly-loaded dispatch item
+  // inside mutateDispatch but never on the local dispatchItem reference passed
+  // through to runPostCompletionHooks → updateMetrics. ~76% of dispatches had
+  // started_at = undefined when updateMetrics ran, so runtimeMs was 0 and
+  // timedCalls/timedTasks never incremented.
+  await test('spawnAgent stamps started_at on local dispatchItem reference', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('async function spawnAgent(');
+    assert.ok(fnStart > 0, 'spawnAgent should be defined');
+    // Use a balanced bracket-end heuristic: spawnAgent ends right before the
+    // next top-level `async function` or `function` declaration.
+    const nextFn = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, nextFn > 0 ? nextFn : src.length);
+    assert.ok(fnBody.includes('dispatchItem.started_at = startedAt'),
+      'spawnAgent must stamp dispatchItem.started_at = startedAt so the local closure-captured reference passed to runPostCompletionHooks/updateMetrics has the timestamp (mutateDispatch updates a fresh disk-loaded copy, not the parameter)');
+  });
+
+  await test('updateMetrics increments timedTasks/timedCalls when started_at is set', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const metricsPath = path.join(testShared.MINIONS_DIR, 'engine', 'metrics.json');
+      fs.writeFileSync(metricsPath, '{}');
+
+      const dispatchItem = {
+        id: 'W-test-runtime-stamp',
+        type: 'fix',
+        agent: 'dallas',
+        task: 'test',
+        started_at: new Date(Date.now() - 5000).toISOString(),
+      };
+      lifecycle.updateMetrics('dallas', dispatchItem, testShared.DISPATCH_RESULT.SUCCESS, null, 0, null);
+
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      assert.strictEqual(m.dallas.timedTasks, 1, 'timedTasks should increment when started_at is set');
+      assert.ok(m.dallas.totalRuntimeMs > 0, 'totalRuntimeMs should be > 0 when started_at is in the past');
+      assert.strictEqual(m._engine['agent-dispatch'].timedCalls, 1, '_engine.agent-dispatch.timedCalls should increment when started_at is set');
+      assert.strictEqual(m._engine['agent-dispatch'].calls, 1, 'calls should also increment');
+    } finally { restore(); }
+  });
+
+  await test('updateMetrics does NOT increment timed counters when started_at missing', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const testShared = require('../engine/shared');
+      const metricsPath = path.join(testShared.MINIONS_DIR, 'engine', 'metrics.json');
+      fs.writeFileSync(metricsPath, '{}');
+
+      const dispatchItem = {
+        id: 'W-test-no-start',
+        type: 'fix',
+        agent: 'dallas',
+        task: 'test',
+        // no started_at — simulates the pre-fix bug condition
+      };
+      lifecycle.updateMetrics('dallas', dispatchItem, testShared.DISPATCH_RESULT.SUCCESS, null, 0, null);
+
+      const m = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      // calls should still increment — runtime gate is independent
+      assert.strictEqual(m._engine['agent-dispatch'].calls, 1, 'calls should still increment even without started_at');
+      assert.ok(!m._engine['agent-dispatch'].timedCalls, 'timedCalls should NOT increment without started_at');
+      assert.ok(!m.dallas.timedTasks, 'timedTasks should NOT increment without started_at');
+    } finally { restore(); }
+  });
 }
 
 async function testDashboardButtonConsistency() {
