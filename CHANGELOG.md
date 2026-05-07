@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1759 (2026-05-07)
+
+### Fixes
+- isolate meeting tests, kill rename-live-dir antipattern (#2142)
+- honor no-op completions in PR attachment contract (#2141)
+
 ## 0.1.1757 (2026-05-06)
 
 ### Other
