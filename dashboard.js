@@ -104,9 +104,14 @@ function mutateDashboardConfig(mutator) {
   }, { defaultValue: { projects: [], agents: {}, engine: {} }, skipWriteIfUnchanged: true });
 }
 
-function mergeSettingsConfigUpdate(current, candidate, body) {
+function mergeSettingsConfigUpdate(current, candidate, body, patch = {}) {
   if (!current || typeof current !== 'object' || Array.isArray(current)) current = {};
-  if (body.engine) current.engine = candidate.engine || {};
+  if (body.engine) {
+    if (!current.engine || typeof current.engine !== 'object' || Array.isArray(current.engine)) current.engine = {};
+    const enginePatch = patch.engine || {};
+    for (const key of enginePatch.delete || []) delete current.engine[key];
+    for (const [key, value] of Object.entries(enginePatch.set || {})) current.engine[key] = value;
+  }
   if (body.claude) {
     if (candidate.claude) current.claude = candidate.claude;
     else delete current.claude;
@@ -6512,6 +6517,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const _clamped = [];
       const _engineModelDiscovery = require('./engine/model-discovery');
       const _engineRuntimes = require('./engine/runtimes');
+      const _configPatch = { engine: { set: {}, delete: new Set() } };
+      function _setEngineConfig(key, value) {
+        config.engine[key] = value;
+        _configPatch.engine.set[key] = value;
+        _configPatch.engine.delete.delete(key);
+      }
+      function _deleteEngineConfig(key) {
+        delete config.engine[key];
+        delete _configPatch.engine.set[key];
+        _configPatch.engine.delete.add(key);
+      }
       function _resolveModelForRuntime(modelStr, runtimeName) {
         try {
           const adapter = _engineRuntimes.resolveRuntime(runtimeName);
@@ -6545,13 +6561,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
             if (val !== raw) _clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
-            config.engine[key] = val;
+            _setEngineConfig(key, val);
           }
         }
-        delete config.engine.adoPollStatusEvery;
-        delete config.engine.adoPollCommentsEvery;
+        _deleteEngineConfig('adoPollStatusEvery');
+        _deleteEngineConfig('adoPollCommentsEvery');
         // String fields
-        if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
+        if (e.worktreeRoot !== undefined) _setEngineConfig('worktreeRoot', String(e.worktreeRoot || D.worktreeRoot));
 
         // ── Runtime fleet (P-7a5c1f8e) ─────────────────────────────────────
         // Empty string clears the override — the dashboard's "Default (CLI
@@ -6568,13 +6584,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           return _registeredCliNames.length === 0 || _registeredCliNames.includes(String(name));
         };
         if (e.defaultCli !== undefined) {
-          if (_isClear(e.defaultCli)) delete config.engine.defaultCli;
-          else if (_validCli(e.defaultCli)) config.engine.defaultCli = String(e.defaultCli);
+          if (_isClear(e.defaultCli)) _deleteEngineConfig('defaultCli');
+          else if (_validCli(e.defaultCli)) _setEngineConfig('defaultCli', String(e.defaultCli));
           else _clamped.push(`defaultCli: "${e.defaultCli}" not registered (kept previous value)`);
         }
         if (e.ccCli !== undefined) {
-          if (_isClear(e.ccCli)) delete config.engine.ccCli;
-          else if (_validCli(e.ccCli)) config.engine.ccCli = String(e.ccCli);
+          if (_isClear(e.ccCli)) _deleteEngineConfig('ccCli');
+          else if (_validCli(e.ccCli)) _setEngineConfig('ccCli', String(e.ccCli));
           else _clamped.push(`ccCli: "${e.ccCli}" not registered (kept previous value)`);
         }
         // Validate fleet-level model assignments against the resolved runtime.
@@ -6610,47 +6626,47 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           return null;
         }
         if (e.defaultModel !== undefined) {
-          if (_isClear(e.defaultModel)) delete config.engine.defaultModel;
+          if (_isClear(e.defaultModel)) _deleteEngineConfig('defaultModel');
           else {
             const candidate = String(e.defaultModel);
             const resolvedCli = config.engine.defaultCli || 'claude';
             const rejection = await _validateFleetModel(candidate, resolvedCli);
             if (rejection) _clamped.push(`engine.defaultModel: "${candidate}" ${rejection} — kept previous value`);
-            else config.engine.defaultModel = candidate;
+            else _setEngineConfig('defaultModel', candidate);
           }
         }
         if (e.ccModel !== undefined) {
-          if (_isClear(e.ccModel)) delete config.engine.ccModel;
+          if (_isClear(e.ccModel)) _deleteEngineConfig('ccModel');
           else {
             const candidate = String(e.ccModel);
             const resolvedCli = config.engine.ccCli || config.engine.defaultCli || 'claude';
             const rejection = await _validateFleetModel(candidate, resolvedCli);
             if (rejection) _clamped.push(`engine.ccModel: "${candidate}" ${rejection} — kept previous value`);
-            else config.engine.ccModel = candidate;
+            else _setEngineConfig('ccModel', candidate);
           }
         }
         if (e.claudeFallbackModel !== undefined) {
-          if (_isClear(e.claudeFallbackModel)) delete config.engine.claudeFallbackModel;
-          else config.engine.claudeFallbackModel = String(e.claudeFallbackModel);
+          if (_isClear(e.claudeFallbackModel)) _deleteEngineConfig('claudeFallbackModel');
+          else _setEngineConfig('claudeFallbackModel', String(e.claudeFallbackModel));
         }
         if (e.copilotStreamMode !== undefined) {
           const valid = ['on', 'off'];
-          if (_isClear(e.copilotStreamMode)) delete config.engine.copilotStreamMode;
-          else if (valid.includes(e.copilotStreamMode)) config.engine.copilotStreamMode = e.copilotStreamMode;
+          if (_isClear(e.copilotStreamMode)) _deleteEngineConfig('copilotStreamMode');
+          else if (valid.includes(e.copilotStreamMode)) _setEngineConfig('copilotStreamMode', e.copilotStreamMode);
           else _clamped.push(`copilotStreamMode: "${e.copilotStreamMode}" not in [on, off] (kept previous value)`);
         }
         // maxBudgetUsd uses ?? semantics — 0 is a valid cap (read-only / dry-run agents).
         if (e.maxBudgetUsd !== undefined) {
-          if (_isClear(e.maxBudgetUsd)) delete config.engine.maxBudgetUsd;
+          if (_isClear(e.maxBudgetUsd)) _deleteEngineConfig('maxBudgetUsd');
           else {
             const n = Number(e.maxBudgetUsd);
-            if (Number.isFinite(n) && n >= 0) config.engine.maxBudgetUsd = n;
+            if (Number.isFinite(n) && n >= 0) _setEngineConfig('maxBudgetUsd', n);
             else _clamped.push(`maxBudgetUsd: "${e.maxBudgetUsd}" must be ≥ 0 (kept previous value)`);
           }
         }
         if (e.ccEffort !== undefined) {
           const valid = [null, 'low', 'medium', 'high'];
-          config.engine.ccEffort = valid.includes(e.ccEffort) ? e.ccEffort : null;
+          _setEngineConfig('ccEffort', valid.includes(e.ccEffort) ? e.ccEffort : null);
         }
         // Per-type max turns
         if (e.maxTurnsByType !== undefined && typeof e.maxTurnsByType === 'object') {
@@ -6659,18 +6675,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             const n = Number(val);
             if (n && n >= 5 && n <= 500) mbt[type] = n;
           }
-          config.engine.maxTurnsByType = mbt;
+          _setEngineConfig('maxTurnsByType', mbt);
         }
         // Boolean fields
         const booleanFields = Object.keys(shared.ENGINE_DEFAULTS).filter(k => typeof shared.ENGINE_DEFAULTS[k] === 'boolean');
         for (const key of booleanFields) {
-          if (e[key] !== undefined) config.engine[key] = !!e[key];
+          if (e[key] !== undefined) _setEngineConfig(key, !!e[key]);
         }
         // Eval loop settings
-        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
-        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        if (e.evalMaxIterations !== undefined) _setEngineConfig('evalMaxIterations', Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations)));
+        if (e.evalMaxCost !== undefined) _setEngineConfig('evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0));
         if (e.ignoredCommentAuthors !== undefined) {
-          config.engine.ignoredCommentAuthors = String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+          _setEngineConfig('ignoredCommentAuthors', String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
         }
       }
 
@@ -6807,7 +6823,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       shared.pruneDefaultClaudeConfig(config);
-      mutateDashboardConfig(current => mergeSettingsConfigUpdate(current, config, body));
+      mutateDashboardConfig(current => mergeSettingsConfigUpdate(current, config, body, _configPatch));
       // Refresh in-memory CONFIG so subsequent reads see the update
       reloadConfig();
       invalidateStatusCache();
@@ -7797,6 +7813,7 @@ module.exports = {
   _formatCcCliCommandsIndex,
   _resetPreambleCache,
   _installCrashHandlers,
+  _mergeSettingsConfigUpdate: mergeSettingsConfigUpdate,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).

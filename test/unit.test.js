@@ -4523,7 +4523,7 @@ async function testRuntimeFleetHelpers() {
       'fleet model validation must compare the adapter-resolved model ID against known model IDs');
     assert.ok(handler.includes('_resolveModelForRuntime(candidate, resolvedCli)') && handler.includes('knownModels.has(runtimeModelStr)'),
       'per-agent model validation must compare adapter-resolved model IDs against known model IDs');
-    assert.ok(handler.includes('config.agents[id].model = candidate') && handler.includes('config.engine.defaultModel = candidate'),
+    assert.ok(handler.includes('config.agents[id].model = candidate') && handler.includes("_setEngineConfig('defaultModel', candidate)"),
       'settings must still store the user-provided model string after validation');
   });
 
@@ -4536,9 +4536,9 @@ async function testRuntimeFleetHelpers() {
     // "Default (CLI chooses)" submits empty string. The handler must DELETE the
     // key from config.engine — leaving the value as an empty string would
     // override the runtime adapter's own default and crash --model "".
-    assert.ok(/delete config\.engine\.defaultModel/.test(handler),
+    assert.ok(/_deleteEngineConfig\('defaultModel'\)/.test(handler),
       'empty-string defaultModel must DELETE the key, not persist as ""');
-    assert.ok(/delete config\.engine\.defaultCli/.test(handler),
+    assert.ok(/_deleteEngineConfig\('defaultCli'\)/.test(handler),
       'empty-string defaultCli must DELETE the key so the runtime falls back to its built-in default');
   });
 
@@ -4567,6 +4567,36 @@ async function testRuntimeFleetHelpers() {
     // numeric-validity check (keeps 0) as a real bug class — see P-3b8e5f1d.
     assert.ok(/n >= 0/.test(handler),
       'maxBudgetUsd validation must allow 0 — `||` would silently drop a literal cap of $0');
+  });
+
+  await test('dashboard settings locked merge preserves concurrent partial engine updates', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    assert.strictEqual(typeof dashboard._mergeSettingsConfigUpdate, 'function',
+      'dashboard.js must export the settings merge helper for regression coverage');
+    const lockedCurrent = {
+      engine: {
+        tickInterval: 10000,
+        maxConcurrent: 7,
+        defaultCli: 'copilot',
+      },
+    };
+    const staleCandidate = {
+      engine: {
+        tickInterval: 20000,
+        maxConcurrent: 3,
+      },
+    };
+    dashboard._mergeSettingsConfigUpdate(
+      lockedCurrent,
+      staleCandidate,
+      { engine: { tickInterval: 20000, defaultCli: '' } },
+      { engine: { set: { tickInterval: 20000 }, delete: new Set(['defaultCli']) } },
+    );
+
+    assert.deepStrictEqual(lockedCurrent.engine, {
+      tickInterval: 20000,
+      maxConcurrent: 7,
+    }, 'partial /api/settings updates must not replace current.engine with a stale pre-lock snapshot');
   });
 
   await test('settings UI Runtime section includes the unified default CLI / Model controls (P-7a5c1f8e)', () => {
@@ -46922,9 +46952,9 @@ async function testAdoThrottleTickGuards() {
       'handleSettingsRead should expose prPollStatusEvery from deprecated adoPollStatusEvery');
     assert.ok(dashSrc.includes('e.prPollStatusEvery === undefined && e.adoPollStatusEvery !== undefined'),
       'handleSettingsUpdate should accept deprecated adoPollStatusEvery input');
-    assert.ok(dashSrc.includes('delete config.engine.adoPollStatusEvery'),
+    assert.ok(dashSrc.includes("_deleteEngineConfig('adoPollStatusEvery')"),
       'handleSettingsUpdate should remove deprecated adoPollStatusEvery when saving');
-    assert.ok(dashSrc.includes('delete config.engine.adoPollCommentsEvery'),
+    assert.ok(dashSrc.includes("_deleteEngineConfig('adoPollCommentsEvery')"),
       'handleSettingsUpdate should remove deprecated adoPollCommentsEvery when saving');
   });
 }
