@@ -431,6 +431,45 @@ function resolveDependencyBranches(depIds, sourcePlan, project, config) {
   return results;
 }
 
+/**
+ * Sync an existing worktree from origin on reuse: probe with
+ * `git ls-remote --exit-code --heads origin <branch>` first so that locally
+ * created branches whose first attempt died before push (agent timeout / orphan
+ * retry) skip fetch+pull silently instead of emitting a warn-level
+ * "couldn't find remote ref" pair on every reuse.
+ *
+ * Genuine fetch/pull failures (network, auth, conflict) still surface as warn.
+ * Never throws — the dispatch must continue regardless of sync outcome.
+ *
+ * Exported for testing; production callers ignore the return value.
+ *
+ * @returns {Promise<{skipped: boolean, reason?: string}>}
+ */
+async function syncReusedWorktree(rootDir, worktreePath, branchName, gitOpts = {}) {
+  // ls-remote --exit-code returns 2 when no matching refs are found on the
+  // remote. The probe only lists refs (no object transfer), so it's cheap
+  // even on slow links.
+  let onOrigin = true;
+  try {
+    await execAsync(
+      `git ls-remote --exit-code --heads origin "${branchName}"`,
+      { ...gitOpts, cwd: rootDir, timeout: 5000 },
+    );
+  } catch (e) {
+    // Exit code 2 = ref not on remote (the noisy case we want to silence).
+    // Any other failure (network, auth, timeout) we let pass through so the
+    // subsequent fetch surfaces a real warn with its native error message.
+    if (e && e.code === 2) onOrigin = false;
+  }
+  if (!onOrigin) {
+    log('info', `Branch ${branchName} not on origin yet — first push pending; skipping fetch/pull`);
+    return { skipped: true, reason: 'no-upstream' };
+  }
+  try { await execAsync(`git fetch origin "${branchName}"`, { ...gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+  try { await execAsync(`git pull origin "${branchName}"`, { ...gitOpts, cwd: worktreePath }); } catch (e) { log('warn', 'git: ' + e.message); }
+  return { skipped: false };
+}
+
 // Find an existing worktree already checked out on a given branch
 async function findExistingWorktree(repoDir, branchName) {
   try {
@@ -592,8 +631,10 @@ async function spawnAgent(dispatchItem, config) {
     if (existingWt) {
       worktreePath = existingWt;
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
-      try { await execAsync(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
-      try { await execAsync(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch (e) { log('warn', 'git: ' + e.message); }
+      // Probe origin first — locally-created branches that were never pushed
+      // (orphan/timeout retry before first push) would otherwise emit a
+      // "couldn't find remote ref" warn pair on every reuse.
+      await syncReusedWorktree(rootDir, existingWt, branchName, _gitOpts);
     } else if (['meeting', 'ask', 'explore', 'plan-to-prd', 'plan'].includes(type)) {
       // Read-only tasks — no worktree needed, run in rootDir
       log('info', `${type}: read-only task, no worktree needed — running in rootDir`);
@@ -4666,7 +4707,7 @@ module.exports = {
   // Shared helpers (used by lifecycle.js and tests)
   reconcileItemsWithPrs, detectDependencyCycles,
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
-  isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
+  isWorktreeRetryableError, removeStaleIndexLock, syncReusedWorktree, // exported for testing
   _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, _classifyAgentFailure, // exported for testing
 
   // Playbooks
