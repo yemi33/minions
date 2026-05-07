@@ -33725,6 +33725,7 @@ async function testApiRoutesInCcPreamble() {
   await test('dashboard exposes preamble + index helpers for testing', () => {
     assert.ok(typeof dashboard.buildCCStatePreamble === 'function');
     assert.ok(typeof dashboard._captureApiRoutesMeta === 'function');
+    assert.ok(typeof dashboard._routesAsMeta === 'function');
     assert.ok(typeof dashboard._formatCcApiRoutesIndex === 'function');
     assert.ok(typeof dashboard._formatCcCliCommandsIndex === 'function');
     assert.ok(typeof dashboard._resetPreambleCache === 'function');
@@ -33732,6 +33733,18 @@ async function testApiRoutesInCcPreamble() {
 
   await test('_formatCcApiRoutesIndex returns a string regardless of capture state', () => {
     assert.ok(typeof dashboard._formatCcApiRoutesIndex() === 'string');
+  });
+
+  await test('_formatCcApiRoutesIndex includes templated regex API routes after capture', () => {
+    seedRoutes([
+      { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, template: '/api/plans/:file', desc: 'Read a full plan' },
+      { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title' },
+    ]);
+    const out = dashboard._formatCcApiRoutesIndex();
+    assert.ok(out.includes('GET /api/plans/:file'),
+      'rendered API index must include templated regex routes');
+    assert.ok(out.includes('flags: read-only'),
+      'rendered API index must surface read-only metadata');
   });
 
   await test('_formatCcApiRoutesIndex includes a sample API path after capture', () => {
@@ -33743,6 +33756,77 @@ async function testApiRoutesInCcPreamble() {
       'rendered API index must include endpoint description');
     assert.ok(out.includes('params: title'),
       'rendered API index must surface params hint');
+  });
+
+  await test('_routesAsMeta normalizes regex routes to templates with structured parameters', () => {
+    const out = dashboard._routesAsMeta([
+      {
+        method: 'GET',
+        path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/,
+        template: '/api/agent/:id/live',
+        desc: 'Tail live output for a working agent',
+        params: 'tail? (bytes, default 8192)',
+      },
+      {
+        method: 'GET',
+        path: /^\/api\/runtimes\/([\w-]+)\/models$/,
+        template: '/api/runtimes/:runtime/models',
+        desc: 'Get cached or fresh model list for a runtime',
+      },
+    ]);
+    assert.strictEqual(out[0].path, '/api/agent/:id/live');
+    assert.strictEqual(out[0].readOnly, true);
+    assert.strictEqual(out[0].destructive, false);
+    assert.strictEqual(out[0].genericFallback, false,
+      'GET routes are not suitable for the POST-only CC generic fallback');
+    assert.deepStrictEqual(out[0].parameters, [
+      { name: 'id', in: 'path', required: true },
+      { name: 'tail', in: 'query', required: false, description: 'bytes, default 8192' },
+    ]);
+    assert.strictEqual(out[1].path, '/api/runtimes/:runtime/models');
+    assert.deepStrictEqual(out[1].parameters, [
+      { name: 'runtime', in: 'path', required: true },
+    ]);
+  });
+
+  await test('_routesAsMeta reports method-aware body params and destructive generic fallback metadata', () => {
+    const [route] = dashboard._routesAsMeta([
+      {
+        method: 'POST',
+        path: '/api/work-items/delete',
+        desc: 'Remove a work item, kill agent, clear dispatch',
+        params: 'id, source?',
+      },
+    ]);
+    assert.strictEqual(route.readOnly, false);
+    assert.strictEqual(route.destructive, true);
+    assert.strictEqual(route.genericFallback, true,
+      'POST JSON endpoints are mechanically suitable for the CC generic fallback');
+    assert.deepStrictEqual(route.parameters, [
+      { name: 'id', in: 'body', required: true },
+      { name: 'source', in: 'body', required: false },
+    ]);
+  });
+
+  await test('_routesAsMeta does not mark SSE streaming POST endpoints as generic fallback suitable', () => {
+    const routes = dashboard._routesAsMeta([
+      {
+        method: 'POST',
+        path: '/api/doc-chat/stream',
+        desc: 'Streaming doc chat — SSE with text chunks and tool progress',
+        params: 'message, document',
+      },
+      {
+        method: 'POST',
+        path: '/api/command-center/stream',
+        desc: 'Streaming CC — SSE with text chunks as they arrive',
+        params: 'message, tabId?',
+      },
+    ]);
+    assert.deepStrictEqual(routes.map(r => ({ path: r.path, genericFallback: r.genericFallback })), [
+      { path: '/api/doc-chat/stream', genericFallback: false },
+      { path: '/api/command-center/stream', genericFallback: false },
+    ]);
   });
 
   await test('_formatCcCliCommandsIndex renders the CLI fleet from CLI_COMMAND_DOCS', () => {
