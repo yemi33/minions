@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1770 (2026-05-07)
+
+### Fixes
+- open dashboard on update cold start
+- silence generated Claude defaults warning
+- drop TTL and turn-count cap so users can resume any time
+
 ## 0.1.1769 (2026-05-07)
 
 ### Fixes
