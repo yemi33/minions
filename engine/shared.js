@@ -2121,6 +2121,49 @@ function buildWorktreeDirName({
   return `${projectSlug}-${sanitizeBranch(branchName || 'worktree')}-${suffix}`;
 }
 
+/**
+ * True when `childPath` is the same as or nested within `parentPath`. Uses
+ * `path.relative` so it's cross-platform and resilient to mixed separators
+ * (Windows worktree paths often arrive with forward slashes from git output).
+ * Returns false when paths refer to different roots/drives or `childPath`
+ * escapes via `..`.
+ *
+ * Why this helper exists: a git worktree placed inside the parent repo's
+ * working tree causes glob/grep tools running with `cwd = projectRoot` to
+ * match BOTH copies of every file. A single Edit/MultiEdit then writes the
+ * same change to both locations, producing the "mirror dirty file" pattern.
+ * Worktrees must always be siblings/cousins of the project root, never
+ * descendants.
+ */
+function isPathInsideOrEqual(childPath, parentPath) {
+  if (!childPath || !parentPath) return false;
+  const childAbs = path.resolve(String(childPath));
+  const parentAbs = path.resolve(String(parentPath));
+  const rel = path.relative(parentAbs, childAbs);
+  if (rel === '') return true;
+  if (rel.startsWith('..')) return false;
+  if (path.isAbsolute(rel)) return false;
+  return true;
+}
+
+/**
+ * Throws when `worktreePath` would land inside (or equal) `projectRoot`.
+ * Called by the engine spawn path before `git worktree add`, and by the
+ * cleanup sweep that audits already-registered worktrees per linked project.
+ * The thrown Error has `code: 'WORKTREE_NESTED_IN_PROJECT'` so callers can
+ * branch on it without parsing the message.
+ */
+function assertWorktreeOutsideProject(worktreePath, projectRoot) {
+  if (!isPathInsideOrEqual(worktreePath, projectRoot)) return;
+  const err = new Error(
+    `Refusing to use worktree path "${worktreePath}" — it is inside project root "${projectRoot}". ` +
+    `A worktree nested in its parent project causes glob/grep tools to match both copies and ` +
+    `produces "mirror" dirty files. Place worktrees outside the project (engine.worktreeRoot default: "../worktrees").`
+  );
+  err.code = 'WORKTREE_NESTED_IN_PROJECT';
+  throw err;
+}
+
 // ── HTTP Origin Allowlist & Security Headers ─────────────────────────────────
 // Pure helpers used by dashboard.js to gate mutating requests against an
 // explicit allowlist of local origins and to attach uniform security response
@@ -3192,6 +3235,8 @@ module.exports = {
   sanitizePath,
   sanitizeBranch,
   buildWorktreeDirName, // exported for testing
+  isPathInsideOrEqual,
+  assertWorktreeOutsideProject,
   isLiveCommandCenterPath,
   describeCcProtectedPaths,
   renderCcSystemPrompt,

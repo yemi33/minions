@@ -366,6 +366,31 @@ async function runCleanup(config, verbose = false) {
     }
   }
 
+  // 2b. Detect git worktrees registered inside any linked project's working tree.
+  // Nested worktrees cause glob/grep tools running with cwd=projectRoot to match
+  // BOTH copies of every file; a single Edit/MultiEdit then writes the same
+  // change to both locations, producing "mirror dirty file" leaks (W-cc-doc-chat-continuity).
+  // We only WARN here — removing someone else's worktree without consent could
+  // destroy in-flight work. The operator runs `git worktree remove <path>`.
+  cleaned.nestedWorktrees = 0;
+  for (const project of projects) {
+    const root = project.localPath ? path.resolve(project.localPath) : null;
+    if (!root || !fs.existsSync(root)) continue;
+    let raw;
+    try {
+      raw = String(shared.execSilent('git worktree list --porcelain', { cwd: root, timeout: 10000, windowsHide: true }) || '');
+    } catch (e) { log('warn', `nested-worktree scan for ${project.name || root}: ${e.message}`); continue; }
+    for (const line of raw.split('\n')) {
+      if (!line.startsWith('worktree ')) continue;
+      const wt = line.slice('worktree '.length).trim();
+      if (!wt) continue;
+      if (path.resolve(wt) === root) continue; // main worktree — expected
+      if (!shared.isPathInsideOrEqual(wt, root)) continue;
+      cleaned.nestedWorktrees++;
+      log('warn', `Nested worktree in project "${project.name || root}": "${wt}" is inside "${root}". This causes glob tools to match both copies and produces mirror writes. Run: git worktree remove "${wt}"`);
+    }
+  }
+
   // 3. Clean git worktrees for merged/abandoned PRs
   const _attemptedWorktreePaths = new Set(); // dedup across projects sharing a worktreeRoot
   for (const project of projects) {
@@ -664,8 +689,8 @@ async function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'prune orphaned dispatches: ' + e.message); }
 
-  if (cleaned.tempFiles + cleaned.liveOutputs + cleaned.worktrees + cleaned.zombies + (cleaned.files || 0) + cleaned.orphanedDispatches > 0) {
-    log('info', `Cleanup: ${cleaned.tempFiles} temp, ${cleaned.liveOutputs} live outputs, ${cleaned.worktrees} worktrees, ${cleaned.zombies} zombies, ${cleaned.files || 0} archives, ${cleaned.orphanedDispatches} orphaned dispatches`);
+  if (cleaned.tempFiles + cleaned.liveOutputs + cleaned.worktrees + cleaned.zombies + (cleaned.files || 0) + cleaned.orphanedDispatches + (cleaned.nestedWorktrees || 0) > 0) {
+    log('info', `Cleanup: ${cleaned.tempFiles} temp, ${cleaned.liveOutputs} live outputs, ${cleaned.worktrees} worktrees, ${cleaned.zombies} zombies, ${cleaned.files || 0} archives, ${cleaned.orphanedDispatches} orphaned dispatches, ${cleaned.nestedWorktrees || 0} nested worktrees flagged`);
   }
 
   // 8. Clean swept KB files older than 7 days

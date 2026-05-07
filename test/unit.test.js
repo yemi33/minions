@@ -565,6 +565,75 @@ async function testBranchSanitization() {
 
     assert.strictEqual(dir, 'minions-work/W-morhwytr00036c70-morhx3ac0005422c');
   });
+
+  // ── isPathInsideOrEqual / assertWorktreeOutsideProject ─────────────────────
+  // Guards the engine spawn path against creating a worktree nested inside a
+  // project root, which causes glob/grep to match both copies of every file
+  // and produces the "mirror dirty file" leak (W-cc-doc-chat-continuity).
+  await test('isPathInsideOrEqual: equal paths are inside', () => {
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo', '/repo'), true);
+  });
+
+  await test('isPathInsideOrEqual: nested child is inside', () => {
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo/agents/W-bad', '/repo'), true);
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo/sub/dir', '/repo'), true);
+  });
+
+  await test('isPathInsideOrEqual: sibling is NOT inside', () => {
+    assert.strictEqual(shared.isPathInsideOrEqual('/worktrees/W-ok', '/repo'), false);
+  });
+
+  await test('isPathInsideOrEqual: parent is NOT inside child', () => {
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo', '/repo/sub'), false);
+  });
+
+  await test('isPathInsideOrEqual: empty/null returns false', () => {
+    assert.strictEqual(shared.isPathInsideOrEqual('', '/repo'), false);
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo', ''), false);
+    assert.strictEqual(shared.isPathInsideOrEqual(null, '/repo'), false);
+  });
+
+  await test('isPathInsideOrEqual: prefix-not-segment-boundary is NOT inside', () => {
+    // '/repo-other' shares a prefix with '/repo' but is not a child.
+    assert.strictEqual(shared.isPathInsideOrEqual('/repo-other/file', '/repo'), false);
+  });
+
+  await test('assertWorktreeOutsideProject: accepts sibling worktree', () => {
+    assert.doesNotThrow(() => shared.assertWorktreeOutsideProject('/worktrees/W-x', '/repo'));
+  });
+
+  await test('assertWorktreeOutsideProject: throws on path inside project root', () => {
+    let err = null;
+    try { shared.assertWorktreeOutsideProject('/repo/agents/W-bad', '/repo'); } catch (e) { err = e; }
+    assert.ok(err, 'expected throw');
+    assert.strictEqual(err.code, 'WORKTREE_NESTED_IN_PROJECT', `expected WORKTREE_NESTED_IN_PROJECT, got ${err.code}`);
+    assert.ok(/inside project root/.test(err.message), `expected "inside project root" in message, got: ${err.message}`);
+  });
+
+  await test('assertWorktreeOutsideProject: throws when worktree path equals project root', () => {
+    assert.throws(() => shared.assertWorktreeOutsideProject('/repo', '/repo'), { code: 'WORKTREE_NESTED_IN_PROJECT' });
+  });
+
+  await test('engine.js spawnAgent calls assertWorktreeOutsideProject before worktree ops', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const matches = (src.match(/shared\.assertWorktreeOutsideProject\(/g) || []).length;
+    assert.ok(matches >= 2,
+      `engine.js spawnAgent should call assertWorktreeOutsideProject for both new and reused worktree paths; found ${matches} call(s)`);
+  });
+
+  await test('engine/cleanup.js detects nested worktrees and warns operator', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('git worktree list --porcelain'),
+      'cleanup should query git worktree list to enumerate registered worktrees');
+    assert.ok(src.includes('isPathInsideOrEqual'),
+      'cleanup should use the shared isPathInsideOrEqual helper for the nested check');
+    assert.ok(src.includes('cleaned.nestedWorktrees'),
+      'cleanup should track nested-worktree count in the cleaned summary');
+    assert.ok(/Nested worktree in project/.test(src),
+      'cleanup should emit a clear warn message naming the project and offending path');
+    assert.ok(src.includes('git worktree remove'),
+      'cleanup warn should include the remediation command');
+  });
 }
 
 async function testIsAllowedOrigin() {

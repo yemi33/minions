@@ -625,10 +625,18 @@ async function spawnAgent(dispatchItem, config) {
       branchName,
     });
     worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', wtDirName);
+    // Refuse to spawn into a worktree path that's inside the project root —
+    // nested worktrees cause glob/grep to match both copies (mirror writes).
+    // Throws on violation; caught by the outer try/catch which fails dispatch.
+    shared.assertWorktreeOutsideProject(worktreePath, rootDir);
 
     // If branch is already checked out in an existing worktree, reuse it
     const existingWt = await findExistingWorktree(rootDir, branchName);
     if (existingWt) {
+      // Same guard for reuse — a previously-created bad worktree must not
+      // be silently reused either; the cleanup sweep flags these so the
+      // operator can remove them.
+      shared.assertWorktreeOutsideProject(existingWt, rootDir);
       worktreePath = existingWt;
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
       // Probe origin first — locally-created branches that were never pushed
