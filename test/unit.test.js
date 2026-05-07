@@ -9455,6 +9455,20 @@ process.stdout.write(Object.prototype.hasOwnProperty.call(responses, endpoint) ?
     github._ghPollBackoff.clear();
   });
 
+  await test('recordSlugFailure logs first failure at warn but escalations at info (no spam)', () => {
+    // Source-level: a 12-step exponential backoff over a long outage produces
+    // 12 escalation lines per repo. Only the first is genuinely actionable;
+    // the rest are deterministic backoff math and belong at info.
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const idx = ghSrc.indexOf("if (failures === 1)");
+    assert.ok(idx > -1, 'recordSlugFailure should branch on first-vs-subsequent failure');
+    const branchSlice = ghSrc.slice(idx, idx + 800);
+    assert.ok(/log\(['"]warn['"], `GitHub poll: repo \$\{slug\} failed — will retry/.test(branchSlice),
+      'first failure must remain at warn — operator needs to know the repo is unreachable');
+    assert.ok(/log\(['"]info['"], `GitHub poll: repo \$\{slug\} failed \$\{failures\} times — backoff/.test(branchSlice),
+      'subsequent backoff escalations must drop to info — already-warned signal, no new info per escalation');
+  });
+
   await test('GitHub throttle wrappers expose initial and transition state snapshots', () => {
     github._ghThrottle._reset();
     assert.strictEqual(github.isGhThrottled(), false);
@@ -11673,6 +11687,72 @@ async function testStateIntegrity() {
       const testDir = process.env.MINIONS_TEST_DIR;
       assert.strictEqual(s.LOG_PATH, path.join(testDir, 'engine', 'log.json'),
         'LOG_PATH should use MINIONS_DIR (respects MINIONS_TEST_DIR) not __dirname');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('Log buffer captures target path at write-time so flush after MINIONS_TEST_DIR is cleared still routes to the test log', () => {
+    // REGRESSION GUARD: the test runner historically polluted engine/log.json
+    // with TEST-EXT-*, _test/backoff-*, this-playbook-does-not-exist-xyz noise
+    // because the buffer flushed *after* the test cleared MINIONS_TEST_DIR,
+    // sending entries to the production log. Each entry must remember its
+    // intended target file at log() time.
+    const liveLogPath = path.join(MINIONS_DIR, 'engine', 'log.json');
+    const liveSnapshot = _captureFileState(liveLogPath);
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    const testLogPath = path.join(testDir, 'engine', 'log.json');
+    try {
+      const s = require('../engine/shared');
+      s._logBuffer.length = 0;
+
+      // Log a uniquely-tagged entry while MINIONS_TEST_DIR is set.
+      const sentinel = `WRITE-TIME-PATH-CAPTURE-${Date.now()}`;
+      s.log('warn', sentinel);
+      assert.ok(s._logBuffer.some(e => e.message === sentinel),
+        'entry should be in buffer before flush');
+
+      // Simulate the post-test race: clear MINIONS_TEST_DIR *before* flushing,
+      // exactly as the runner does when tests cleanup runs ahead of the
+      // periodic flush timer.
+      delete process.env.MINIONS_TEST_DIR;
+      s.flushLogs();
+
+      // Restore the env var so cleanup logic still works.
+      process.env.MINIONS_TEST_DIR = testDir;
+
+      // The sentinel must be in the TEST log, not the production log.
+      const testLog = JSON.parse(fs.readFileSync(testLogPath, 'utf8'));
+      assert.ok(testLog.some(e => e.message === sentinel),
+        'sentinel must land in the test-scoped log file');
+
+      const liveLog = fs.existsSync(liveLogPath)
+        ? JSON.parse(fs.readFileSync(liveLogPath, 'utf8'))
+        : [];
+      assert.ok(!liveLog.some(e => e.message === sentinel),
+        'sentinel must NOT leak into the production engine/log.json');
+    } finally {
+      restore();
+      _restoreFileState(liveSnapshot);
+    }
+  });
+
+  await test('Persisted log entries do not retain the _logPath routing field', () => {
+    // _logPath is a routing-only marker; persisting it would bloat log.json
+    // and leak local filesystem paths into operator-visible state.
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const testLogPath = path.join(testDir, 'engine', 'log.json');
+      s._logBuffer.length = 0;
+      s.log('info', 'logpath-strip-check');
+      s.flushLogs();
+      const persisted = JSON.parse(fs.readFileSync(testLogPath, 'utf8'));
+      assert.ok(persisted.length > 0, 'should have written at least one entry');
+      assert.ok(persisted.every(e => !('_logPath' in e)),
+        '_logPath routing metadata must be stripped before persistence');
     } finally {
       restore();
     }
@@ -20925,7 +21005,30 @@ async function testLifecycleUncoveredFns() {
 
   // ───────────── checkForLearnings ─────────────
 
-  await test('checkForLearnings: warns when agent wrote no learnings today', () => {
+  await test('Post-completion worktree cleanup: ENOENT on missing worktree root is silent (debug, not warn)', () => {
+    // Cleanup-trying-to-scan-a-directory-that-doesn't-exist is not an error;
+    // it just means there are no worktrees to clean. Other errors still warn.
+    const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(/err && err\.code === ['"]ENOENT['"]/.test(lifecycleSrc),
+      'post-completion cleanup must distinguish ENOENT from other failures');
+    assert.ok(/log\(['"]debug['"], `Post-completion worktree cleanup: no worktree root yet/.test(lifecycleSrc),
+      'ENOENT path must log at debug — nothing to clean is not actionable');
+    assert.ok(/log\(['"]warn['"], `Post-completion worktree cleanup error/.test(lifecycleSrc),
+      'non-ENOENT errors still warn — operator should know about real cleanup failures');
+  });
+
+  await test('Throttle tracker logs retry housekeeping at info, not warn', () => {
+    // The underlying API rate-limit error already warns upstream. The "retry
+    // after Ns, consecutive hits: N" line is purely deterministic backoff
+    // restate — info, not a second warn per hit.
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(/log\(['"]info['"], `\[\$\{label\}\] Throttled — retry after \$\{Math\.round\(waitMs/.test(sharedSrc),
+      'createThrottleTracker.recordThrottle should log at info — pure backoff bookkeeping');
+    assert.ok(!/log\(['"]warn['"], `\[\$\{label\}\] Throttled — retry after/.test(sharedSrc),
+      'createThrottleTracker.recordThrottle must NOT log at warn — duplicates upstream rate-limit warning');
+  });
+
+  await test('checkForLearnings: notes when agent wrote no learnings today (info, not warn)', () => {
     const restore = createTestMinionsDir();
     try {
       const lifecycle = require('../engine/lifecycle');
@@ -20933,9 +21036,13 @@ async function testLifecycleUncoveredFns() {
         lifecycle.checkForLearnings('nolearn-agent', { name: 'NoLearn' }, 'some task');
       });
       assert.ok(logs.some(l => l.includes("didn't write learnings")),
-        `expected warn log about missing learnings; got: ${logs.join(' | ')}`);
+        `expected log line about missing learnings; got: ${logs.join(' | ')}`);
       assert.ok(logs.some(l => l.includes('NoLearn')),
         'should use the display name from agentInfo.name');
+      // Source-level: should be info, not warn — non-actionable signal.
+      const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+      assert.ok(/log\(['"]info['"], `\$\{agentInfo\?\.name \|\| agentId\} didn't write learnings/.test(lifecycleSrc),
+        "missing-learnings log must be at 'info' level, not 'warn' (non-actionable noise)");
     } finally { restore(); }
   });
 
@@ -26802,6 +26909,63 @@ async function testMeetingsBehavioral() {
       assert.strictEqual(forThis.length, 1);
       assert.ok(forThis[0].task.includes('Sprint Retro'), 'Task label should include meeting title');
       assert.ok(forThis[0].task.includes('Round 1'), 'Task label should include round number');
+    });
+  });
+
+  // Regression: a meeting with missing/empty agenda must not spam log.json
+  // every tick with "missing required template variables: agenda". Discovery
+  // should skip the meeting silently after the first tick, dedup'd by id.
+  await test('discoverMeetingWork skips meetings with missing agenda and warns once per id', () => {
+    withIsolatedMeeting((meetingMod) => {
+      const testId = 'TEST-discover-no-agenda-' + Date.now();
+      meetingMod._resetMissingAgendaWarnings();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Missing Agenda', agenda: '',
+        status: 'investigating', round: 1, participants: ['p1'],
+        findings: {}, debate: {}, humanNotes: [], transcript: [],
+      });
+      const sharedMod = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+      const beforeBuf = sharedMod._logBuffer.length;
+      try {
+        const config = { agents: { p1: { name: 'P1', role: 'E' } } };
+        // First discovery: emits one warn for this meetingId
+        const work1 = meetingMod.discoverMeetingWork(config);
+        assert.strictEqual(work1.filter(w => w.meta?.meetingId === testId).length, 0,
+          'Should not enqueue work for an agenda-less meeting');
+        const afterFirst = sharedMod._logBuffer.length;
+        const firstWarn = sharedMod._logBuffer.slice(beforeBuf, afterFirst)
+          .find(e => /Meeting .*: skipping discovery — agenda is missing/.test(e.message || ''));
+        assert.ok(firstWarn, 'First discovery should emit one missing-agenda warn');
+        // Second + third discovery: no new entries for the same meetingId
+        meetingMod.discoverMeetingWork(config);
+        meetingMod.discoverMeetingWork(config);
+        const dupWarns = sharedMod._logBuffer.slice(afterFirst)
+          .filter(e => (e.message || '').includes(testId));
+        assert.strictEqual(dupWarns.length, 0,
+          'Subsequent ticks must NOT re-log the same missing-agenda meeting');
+      } finally {
+        meetingMod._resetMissingAgendaWarnings();
+      }
+    });
+  });
+
+  await test('discoverMeetingWork treats whitespace-only agenda as missing', () => {
+    withIsolatedMeeting((meetingMod) => {
+      const testId = 'TEST-discover-ws-agenda-' + Date.now();
+      meetingMod._resetMissingAgendaWarnings();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Whitespace Agenda', agenda: '   \n  ',
+        status: 'investigating', round: 1, participants: ['p1'],
+        findings: {}, debate: {}, humanNotes: [], transcript: [],
+      });
+      try {
+        const config = { agents: { p1: { name: 'P1', role: 'E' } } };
+        const work = meetingMod.discoverMeetingWork(config);
+        assert.strictEqual(work.filter(w => w.meta?.meetingId === testId).length, 0,
+          'Whitespace-only agenda should be treated as missing');
+      } finally {
+        meetingMod._resetMissingAgendaWarnings();
+      }
     });
   });
 }
@@ -32823,6 +32987,75 @@ async function testCheckpointResume() {
       'PRD migration should assign readdirSync to variable for individual error handling');
     assert.ok(src.includes('migrate PRD statuses: failed to read'),
       'PRD migration should log warning on readdirSync failure');
+  });
+
+  // Regression: tests that don't honor MINIONS_TEST_DIR leak meeting fixture
+  // JSON + .backup sidecars into the live `meetings/` directory. Each leaked
+  // file gets re-discovered every tick and emits a "missing required template
+  // variables: agenda" error, polluting log.json. cleanup must sweep these.
+  await test('cleanup.js source includes leaked-test-meeting sweep', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('leakedTestMeetings'),
+      'runCleanup should track leakedTestMeetings count');
+    assert.ok(src.includes('sweepLeakedTestMeetings'),
+      'cleanup should expose sweepLeakedTestMeetings helper');
+    assert.ok(/\.backup`|\.backup'|\.backup"/.test(src),
+      'cleanup should also remove .backup sidecars to prevent safeJson resurrection');
+  });
+
+  // Behavioral: sweepLeakedTestMeetings only deletes TEST-* files with no
+  // agenda; legitimate (MTG-*) and TEST-* with valid agenda survive.
+  await test('sweepLeakedTestMeetings deletes only TEST-* files with no agenda', () => {
+    const cleanup = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+    const tmp = createTmpDir();
+    const meetingsDir = path.join(tmp, 'meetings');
+    fs.mkdirSync(meetingsDir, { recursive: true });
+
+    // Case 1: TEST- with empty agenda → delete (both .json and .json.backup)
+    fs.writeFileSync(path.join(meetingsDir, 'TEST-leaked-1.json'),
+      JSON.stringify({ id: 'TEST-leaked-1', title: 'leaked', agenda: '', participants: ['a'] }));
+    fs.writeFileSync(path.join(meetingsDir, 'TEST-leaked-1.json.backup'),
+      JSON.stringify({ id: 'TEST-leaked-1', title: 'leaked', agenda: '', participants: ['a'] }));
+
+    // Case 2: TEST- with whitespace agenda → delete
+    fs.writeFileSync(path.join(meetingsDir, 'TEST-leaked-2.json'),
+      JSON.stringify({ id: 'TEST-leaked-2', title: 'ws', agenda: '   \n  ', participants: ['a'] }));
+
+    // Case 3: TEST- with valid agenda → KEEP (not a leak — the test owns it)
+    fs.writeFileSync(path.join(meetingsDir, 'TEST-keep-1.json'),
+      JSON.stringify({ id: 'TEST-keep-1', title: 'keep', agenda: 'real agenda', participants: ['a'] }));
+
+    // Case 4: production MTG- meeting → KEEP (out of scope)
+    fs.writeFileSync(path.join(meetingsDir, 'MTG-prod-1.json'),
+      JSON.stringify({ id: 'MTG-prod-1', title: 'prod', agenda: '', participants: ['a'] }));
+
+    // Case 5: orphan .backup with no live file → still delete
+    fs.writeFileSync(path.join(meetingsDir, 'TEST-orphan-3.json.backup'),
+      JSON.stringify({ id: 'TEST-orphan-3', agenda: '' }));
+
+    const removed = cleanup.sweepLeakedTestMeetings(meetingsDir);
+
+    assert.ok(removed >= 4,
+      `Should delete leaked-1 (.json + .backup), leaked-2 (.json), and orphan-3 (.backup) — got ${removed}`);
+    assert.ok(!fs.existsSync(path.join(meetingsDir, 'TEST-leaked-1.json')),
+      'Leaked .json deleted');
+    assert.ok(!fs.existsSync(path.join(meetingsDir, 'TEST-leaked-1.json.backup')),
+      'Leaked .json.backup deleted (prevents safeJson resurrection)');
+    assert.ok(!fs.existsSync(path.join(meetingsDir, 'TEST-leaked-2.json')),
+      'Whitespace-agenda fixture deleted');
+    assert.ok(fs.existsSync(path.join(meetingsDir, 'TEST-keep-1.json')),
+      'TEST-* with valid agenda preserved');
+    assert.ok(fs.existsSync(path.join(meetingsDir, 'MTG-prod-1.json')),
+      'Production MTG-* file preserved (filter is scoped to TEST-*)');
+    assert.ok(!fs.existsSync(path.join(meetingsDir, 'TEST-orphan-3.json.backup')),
+      'Orphan .backup deleted');
+  });
+
+  await test('sweepLeakedTestMeetings is a no-op on missing meetings/ dir', () => {
+    const cleanup = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+    const tmp = createTmpDir();
+    const removed = cleanup.sweepLeakedTestMeetings(path.join(tmp, 'no-meetings'));
+    assert.strictEqual(removed, 0, 'Missing dir should return 0, not throw');
   });
 }
 

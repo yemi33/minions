@@ -48,6 +48,67 @@ function worktreeMatchesBranch(dirLower, branch, actualBranch = '') {
   return worktreeBranchMatches(actualBranch, branch) || worktreeDirMatchesBranch(dirLower, branch);
 }
 
+/**
+ * Sweep leaked test-fixture meetings from a `meetings/` directory.
+ *
+ * Meeting unit/integration tests don't all honor MINIONS_TEST_DIR
+ * (engine/meeting.js is in ISOLATED_MODULES, but tests that load it after the
+ * env var is unset, or that fail before cleanup, leave `.json` + `.json.backup`
+ * sidecars behind). The engine's tick loop then re-discovers these fixtures
+ * every tick, fails playbook validation ("missing required template variables:
+ * agenda"), and spams log.json with the same error.
+ *
+ * Filter is conservative: only files whose ID begins with `TEST-` AND whose
+ * JSON either lacks an `agenda` or has an empty/whitespace-only one. Both the
+ * live `.json` and any `.json.backup` sidecar (which would otherwise
+ * auto-restore the file via safeJson on next read) are removed together.
+ *
+ * Returns the number of files unlinked.
+ */
+function sweepLeakedTestMeetings(meetingsDir) {
+  let cleaned = 0;
+  try {
+    if (!fs.existsSync(meetingsDir)) return 0;
+    const candidates = new Set();
+    for (const f of fs.readdirSync(meetingsDir)) {
+      if (!f.startsWith('TEST-')) continue;
+      // Match "<id>.json" or "<id>.json.backup" — both belong to the same fixture
+      const idMatch = f.match(/^(TEST-[^/]+?)\.json(\.backup)?$/);
+      if (!idMatch) continue;
+      candidates.add(idMatch[1]);
+    }
+    for (const id of candidates) {
+      const livePath = path.join(meetingsDir, `${id}.json`);
+      const backupPath = `${livePath}.backup`;
+      // Decide whether to delete based on the live file's contents, falling
+      // back to the .backup sidecar if the live file is missing/corrupt.
+      let agendaPresent = false;
+      let saw = false;
+      for (const candidatePath of [livePath, backupPath]) {
+        try {
+          const data = JSON.parse(fs.readFileSync(candidatePath, 'utf8'));
+          saw = true;
+          if (data && typeof data.agenda === 'string' && data.agenda.trim()) {
+            agendaPresent = true;
+            break;
+          }
+        } catch { /* missing or corrupt — try next candidate */ }
+      }
+      // Delete only when we confirmed the fixture exists AND has no usable
+      // agenda. If neither file parses (saw=false), the directory entry is
+      // already useless; unlink both so safeJson can't resurrect it.
+      if (saw && agendaPresent) continue;
+      for (const target of [livePath, backupPath]) {
+        try { fs.unlinkSync(target); cleaned++; } catch { /* not present */ }
+      }
+    }
+    if (cleaned > 0) {
+      log('info', `Cleaned ${cleaned} leaked test-fixture meeting file(s) from ${meetingsDir}`);
+    }
+  } catch (e) { log('warn', 'cleanup leaked test meetings: ' + e.message); }
+  return cleaned;
+}
+
 function getWorktreeBranch(wtPath) {
   try {
     return exec(`git -C "${wtPath}" branch --show-current`, { encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true }).trim();
@@ -417,6 +478,9 @@ async function runCleanup(config, verbose = false) {
 
   // 5. Clean spawn-debug.log
   try { fs.unlinkSync(path.join(ENGINE_DIR, 'spawn-debug.log')); } catch { /* cleanup */ }
+
+  // 5b. Sweep leaked test-fixture meetings from the live `meetings/` directory.
+  cleaned.leakedTestMeetings = sweepLeakedTestMeetings(path.join(MINIONS_DIR, 'meetings'));
 
   // 6. Prune old output archive files (keep last 30 per agent)
   for (const agentId of Object.keys(config.agents || {})) {
@@ -862,6 +926,7 @@ function scrubStaleMetrics() {
 module.exports = {
   runCleanup,
   scrubStaleMetrics,
+  sweepLeakedTestMeetings,   // exported for testing
   worktreeDirMatchesBranch,  // exported for testing
   worktreeMatchesBranch,     // exported for testing
   getWorktreeBranch,         // exported for lifecycle cleanup

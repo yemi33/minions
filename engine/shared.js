@@ -128,6 +128,18 @@ function log(level, msg, meta = {}) {
   // Console output remains immediate (also redacted)
   console.log(`[${logTs()}] [${level}] ${safeMsg}`);
 
+  // Capture the resolved log file path AT WRITE TIME (not flush time).
+  // Stops test pollution: a test sets MINIONS_TEST_DIR, calls log(), the test
+  // ends and clears MINIONS_TEST_DIR, then the buffer flushes — without
+  // capture-at-write-time the entry would land in the production log.json.
+  // Stripped before persisting (see _flushLogBuffer).
+  Object.defineProperty(entry, '_logPath', {
+    value: _currentLogPath(),
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+
   _logBuffer.push(entry);
 
   // Start the flush timer lazily on first buffered entry
@@ -167,17 +179,33 @@ function _currentLogPath() {
 
 function _flushLogBuffer() {
   if (_logBuffer.length === 0) return;
-  // SEC-09 defense-in-depth: redact again at flush time so any direct
-  // `_logBuffer.push(entry)` callers (tests, future paths) can't leak secrets.
-  const entries = _logBuffer.splice(0).map(redactSecrets);
-  try {
-    mutateJsonFileLocked(_currentLogPath(), (logData) => {
-      if (!Array.isArray(logData)) logData = logData?.entries || [];
-      logData.push(...entries);
-      if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
-      return logData;
-    }, { defaultValue: [] });
-  } catch { /* logging should never crash the caller */ }
+  const drained = _logBuffer.splice(0);
+  // Group entries by their captured _logPath so test-originated entries always
+  // land in the test dir's log.json even if MINIONS_TEST_DIR has been cleared
+  // by the time we flush. Entries without _logPath fall back to current path
+  // (eg. direct _logBuffer.push() from tests).
+  const fallbackPath = _currentLogPath();
+  const byPath = new Map();
+  for (const raw of drained) {
+    const target = raw._logPath || fallbackPath;
+    // SEC-09 defense-in-depth: redact again at flush time so any direct
+    // `_logBuffer.push(entry)` callers (tests, future paths) can't leak secrets.
+    const entry = redactSecrets(raw);
+    // Strip the routing-only metadata before persisting.
+    delete entry._logPath;
+    if (!byPath.has(target)) byPath.set(target, []);
+    byPath.get(target).push(entry);
+  }
+  for (const [target, entries] of byPath) {
+    try {
+      mutateJsonFileLocked(target, (logData) => {
+        if (!Array.isArray(logData)) logData = logData?.entries || [];
+        logData.push(...entries);
+        if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
+        return logData;
+      }, { defaultValue: [] });
+    } catch { /* logging should never crash the caller */ }
+  }
 }
 
 /** Flush buffered log entries to disk. Call during graceful shutdown to drain the buffer. */
@@ -2877,7 +2905,10 @@ function createThrottleTracker({ label, baseBackoffMs = 60000, maxBackoffMs = 32
     const waitMs = (retryAfterMs > 0) ? retryAfterMs : state.backoffMs;
     state.throttled = true;
     state.retryAfter = Date.now() + waitMs;
-    log('warn', `[${label}] Throttled — retry after ${Math.round(waitMs / 1000)}s, consecutive hits: ${state.consecutiveHits}`);
+    // Throttle retries are deterministic backoff math — info, not warn.
+    // Operator already sees rate-limit signals via the underlying API errors
+    // upstream (which still log at warn). The retry-after restate is housekeeping.
+    log('info', `[${label}] Throttled — retry after ${Math.round(waitMs / 1000)}s, consecutive hits: ${state.consecutiveHits}`);
   }
 
   function recordSuccess() {

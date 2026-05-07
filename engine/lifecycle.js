@@ -1956,7 +1956,10 @@ function checkForLearnings(agentId, agentInfo, taskDesc) {
     log('info', `${agentInfo?.name || agentId} wrote ${agentFiles.length} finding(s) to inbox`);
     return;
   }
-  log('warn', `${agentInfo?.name || agentId} didn't write learnings — no follow-up queued`);
+  // Info, not warn: not writing learnings is a soft signal (the agent finished
+  // and the engine continues fine). Operators don't need to act on it; keeping
+  // it at warn floods log.json (~50 entries/day) with non-actionable noise.
+  log('info', `${agentInfo?.name || agentId} didn't write learnings — no follow-up queued`);
 }
 
 function skillWriteTargets(runtimeName, project = null) {
@@ -3043,7 +3046,14 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         }
       }
     } catch (err) {
-      log('warn', `Post-completion worktree cleanup error: ${err.message}`);
+      // ENOENT = worktree root doesn't exist yet (no worktrees ever created
+      // for this project, or already cleaned up). That's not a failure — there
+      // is simply nothing to clean. Other errors still warn.
+      if (err && err.code === 'ENOENT') {
+        log('debug', `Post-completion worktree cleanup: no worktree root yet (${err.message})`);
+      } else {
+        log('warn', `Post-completion worktree cleanup error: ${err.message}`);
+      }
     }
   }
 

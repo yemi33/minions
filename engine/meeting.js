@@ -33,6 +33,18 @@ function isTerminalMeetingStatus(status) {
   return TERMINAL_MEETING_STATUSES.has(String(status || '').toLowerCase());
 }
 
+// Process-scoped dedup so a stuck meeting (missing agenda) logs the warning
+// once per id rather than every tick (~1/min). Module-scoped lifetime is
+// intentional: a fresh process should re-warn at startup so the operator sees
+// the issue, but the same engine run shouldn't spam.
+const _warnedMissingAgendaIds = new Set();
+function _warnOnceMissingAgenda(meetingId) {
+  if (!meetingId || _warnedMissingAgendaIds.has(meetingId)) return;
+  _warnedMissingAgendaIds.add(meetingId);
+  log('warn', `Meeting ${meetingId}: skipping discovery — agenda is missing or empty (will not be re-logged this process)`);
+}
+function _resetMissingAgendaWarnings() { _warnedMissingAgendaIds.clear(); }
+
 function expectedMeetingStatusForRound(roundName) {
   return ROUND_STATUS_BY_NAME[String(roundName || '').toLowerCase()] || null;
 }
@@ -444,6 +456,16 @@ function discoverMeetingWork(config) {
     const roundName = meeting.status; // investigating, debating, concluding
     if (!ACTIVE_MEETING_STATUSES.has(roundName)) continue;
     const agents = config.agents || {};
+
+    // Pre-flight validation: meetings missing required template vars (agenda)
+    // would otherwise fail playbook rendering on every tick (~1/min), spamming
+    // log.json with the same "missing required template variables: agenda"
+    // error. Skip them silently here; emit one structured warning per meeting
+    // ID per process so the operator still has signal without the spam.
+    if (!meeting.agenda || !String(meeting.agenda).trim()) {
+      _warnOnceMissingAgenda(meeting.id);
+      continue;
+    }
 
     if (roundName === 'concluding') {
       // Only one agent should conclude — skip if already concluded or any conclude dispatch is active
@@ -902,4 +924,5 @@ module.exports = {
   collectMeetingTakeaways,
   collectMeetingNextSteps,
   buildTimedOutMeetingConclusion,
+  _resetMissingAgendaWarnings, // exported for testing only
 };

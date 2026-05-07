@@ -109,9 +109,13 @@ function recordSlugFailure(slug) {
   const backoffMs = Math.min(GH_POLL_BACKOFF_BASE_MS * Math.pow(2, failures - 1), GH_POLL_BACKOFF_MAX_MS);
   _ghPollBackoff.set(slug, { failures, backoffUntil: Date.now() + backoffMs });
   if (failures === 1) {
+    // First failure is genuinely actionable — surface it.
     log('warn', `GitHub poll: repo ${slug} failed — will retry in ${Math.round(backoffMs / 1000)}s`);
   } else {
-    log('warn', `GitHub poll: repo ${slug} failed ${failures} times — backoff ${Math.round(backoffMs / 1000)}s`);
+    // Subsequent escalations are deterministic backoff math — info, not warn.
+    // We already warned on the first failure; spamming the same operator
+    // with 12 escalation lines per outage adds no signal.
+    log('info', `GitHub poll: repo ${slug} failed ${failures} times — backoff ${Math.round(backoffMs / 1000)}s`);
   }
 }
 
