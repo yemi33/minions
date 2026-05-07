@@ -57732,6 +57732,111 @@ async function testEngineHelperCoverage() {
     engine.removeStaleIndexLock(bogus);
   });
 
+  // ── syncReusedWorktree ──
+  // Regression: every retry of a WI whose first attempt died before pushing
+  // produced a "couldn't find remote ref" warn pair on every subsequent
+  // worktree reuse (engine.js:592-596). The helper probes ls-remote first to
+  // skip silently when the branch is local-only.
+
+  // Helper: build a real local repo with a bare origin remote. Returns
+  // { rootDir, remoteDir }. Caller can then create branches with/without
+  // pushing them to verify behavior.
+  function _setupLocalRepoWithOrigin() {
+    const { execSync } = require('child_process');
+    const remoteDir = createTmpDir();
+    const rootDir = createTmpDir();
+    const gitOpts = { stdio: 'pipe', windowsHide: true };
+    execSync(`git init --bare --initial-branch=master "${remoteDir}"`, gitOpts);
+    execSync(`git init --initial-branch=master "${rootDir}"`, gitOpts);
+    execSync(`git -C "${rootDir}" config user.email a@b.c`, gitOpts);
+    execSync(`git -C "${rootDir}" config user.name test`, gitOpts);
+    execSync(`git -C "${rootDir}" config commit.gpgsign false`, gitOpts);
+    fs.writeFileSync(path.join(rootDir, 'README.md'), 'init\n');
+    execSync(`git -C "${rootDir}" add README.md`, gitOpts);
+    execSync(`git -C "${rootDir}" commit -m init`, gitOpts);
+    execSync(`git -C "${rootDir}" remote add origin "${remoteDir}"`, gitOpts);
+    execSync(`git -C "${rootDir}" push -u origin master`, gitOpts);
+    return { rootDir, remoteDir };
+  }
+
+  await test('syncReusedWorktree skips fetch+pull silently when branch is not on origin', async () => {
+    const { execSync } = require('child_process');
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      const s = require('../engine/shared');
+      const { rootDir } = _setupLocalRepoWithOrigin();
+      // Create a local-only branch — never pushed
+      const localOnlyBranch = 'work/W-test-never-pushed';
+      execSync(`git -C "${rootDir}" branch "${localOnlyBranch}" master`, { stdio: 'pipe', windowsHide: true });
+
+      // Drain any prior buffered log entries so our assertion sees only this call's output
+      s.flushLogs();
+      const logPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'log.json');
+      const beforeLen = JSON.parse(fs.readFileSync(logPath, 'utf8')).length;
+
+      const result = await e.syncReusedWorktree(rootDir, rootDir, localOnlyBranch);
+
+      assert.strictEqual(result.skipped, true, 'should skip when branch is not on origin');
+      assert.strictEqual(result.reason, 'no-upstream', 'should report no-upstream as the reason');
+
+      s.flushLogs();
+      const after = JSON.parse(fs.readFileSync(logPath, 'utf8')).slice(beforeLen);
+      const noisyWarn = after.find(e => e.level === 'warn' && /couldn't find remote ref/.test(e.message || ''));
+      assert.ok(!noisyWarn, `must NOT log warn-level "couldn't find remote ref" for local-only branch (got: ${JSON.stringify(noisyWarn)})`);
+      const skipInfo = after.find(e => e.level === 'info' && /not on origin yet/.test(e.message || ''));
+      assert.ok(skipInfo, 'should log an info message explaining the skip');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('syncReusedWorktree runs fetch+pull when branch IS on origin', async () => {
+    const { execSync } = require('child_process');
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      const s = require('../engine/shared');
+      const { rootDir } = _setupLocalRepoWithOrigin();
+      // master IS on origin (we pushed -u in setup)
+      s.flushLogs();
+      const logPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'log.json');
+      const beforeLen = JSON.parse(fs.readFileSync(logPath, 'utf8')).length;
+
+      const result = await e.syncReusedWorktree(rootDir, rootDir, 'master');
+
+      assert.strictEqual(result.skipped, false, 'should NOT skip when branch is on origin');
+
+      s.flushLogs();
+      const after = JSON.parse(fs.readFileSync(logPath, 'utf8')).slice(beforeLen);
+      // Genuine sync should not emit "couldn't find remote ref" either, and
+      // shouldn't emit the skip-info message.
+      const noisyWarn = after.find(e => e.level === 'warn' && /couldn't find remote ref/.test(e.message || ''));
+      assert.ok(!noisyWarn, 'no remote-ref warning expected for an existing remote branch');
+      const skipInfo = after.find(e => e.level === 'info' && /not on origin yet/.test(e.message || ''));
+      assert.ok(!skipInfo, 'should not log skip-info when branch IS on origin');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('syncReusedWorktree never throws — dispatch must continue on probe failure', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      // Point at a non-existent directory: every git command will fail. The
+      // helper must still resolve cleanly (the dispatch contract requires it).
+      const bogusRoot = path.join(createTmpDir(), 'nope');
+      const result = await e.syncReusedWorktree(bogusRoot, bogusRoot, 'work/anything');
+      // Not "skipped" — the failure isn't exit-code 2, so we fall through to
+      // the fetch path which also fails and gets logged at warn. The contract
+      // is "never throws"; the return shape is informational only.
+      assert.ok(result && typeof result.skipped === 'boolean', 'must return a structured result');
+    } finally {
+      restore();
+    }
+  });
+
   // ── buildProjectContext ──
 
   const sampleProject = (name, extras = {}) => ({
