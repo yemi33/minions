@@ -56590,12 +56590,20 @@ async function testDashboardPureHelpers() {
 
   await test('modal doc-chat renders dispatch feedback inside the QA thread', () => {
     const qaSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const handledSideEffects = qaSrc.slice(
+      qaSrc.indexOf('function _qaRunHandledActionSideEffects'),
+      qaSrc.indexOf('function _qaBuildActionFeedbackHtml')
+    );
     assert.ok(qaSrc.includes('function _qaBuildActionFeedbackHtml'),
       'modal QA should have a dedicated action-feedback renderer instead of relying on Command Center messages');
     assert.ok(qaSrc.includes('evt.actionFeedback') && qaSrc.includes('_qaBuildActionFeedbackHtml(evt.actionFeedback)'),
       'streaming doc-chat must render backend actionFeedback in the modal thread');
     assert.ok(qaSrc.includes('_qaActionFeedbackHandled(action, actionResult)'),
       'server-executed dispatch actions should not be routed through ccExecuteAction into Command Center');
+    assert.ok(qaSrc.includes('_qaRunHandledActionSideEffects(action, actionResult)'),
+      'handled server-executed dispatch actions must still run wake/refresh side effects');
+    assert.ok(handledSideEffects.includes('wakeEngine()') && handledSideEffects.includes('refresh()'),
+      'handled doc-chat work-item feedback must wake the engine and refresh the dashboard after server dispatch');
   });
 
   await test('dashboard.js no longer exports the regex-based orchestration gate', () => {

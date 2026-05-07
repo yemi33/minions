@@ -278,6 +278,13 @@ function _qaActionFeedbackHandled(action, actionResult) {
   return QA_WORK_ITEM_ACTION_TYPES.has(type) && !!(actionResult?.ok || actionResult?.error);
 }
 
+function _qaRunHandledActionSideEffects(action, actionResult) {
+  const type = String(actionResult?.type || action?.type || '');
+  if (!QA_WORK_ITEM_ACTION_TYPES.has(type)) return;
+  if (typeof wakeEngine === 'function') wakeEngine();
+  if (typeof refresh === 'function') refresh();
+}
+
 function _qaBuildActionFeedbackHtml(actionFeedback) {
   if (!Array.isArray(actionFeedback) || actionFeedback.length === 0) return '';
   return actionFeedback.map(function(item) {
@@ -694,7 +701,10 @@ async function _processQaMessage(message, selection, opts) {
           for (let ai = 0; ai < evt.actions.length; ai++) {
             const action = evt.actions[ai];
             const actionResult = actionResults[ai];
-            if (_qaActionFeedbackHandled(action, actionResult)) continue;
+            if (_qaActionFeedbackHandled(action, actionResult)) {
+              _qaRunHandledActionSideEffects(action, actionResult);
+              continue;
+            }
             await ccExecuteAction(action);
           }
         } else if (evt.actionParseError) {
