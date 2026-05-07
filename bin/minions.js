@@ -8,18 +8,29 @@
  *   minions add <project-dir>        Link a project (interactive)
  *   minions remove <project-dir>     Unlink a project
  *   minions list                     List linked projects
+ *   minions update                   Update to latest version
+ *   minions version                  Show installed and package versions
+ *   minions doctor                   Check prerequisites and runtime health
+ *   minions restart                  Start engine + dashboard
  *   minions start                    Start the engine
  *   minions stop                     Stop the engine
  *   minions status                   Show engine status
  *   minions pause / resume           Pause/resume dispatching
+ *   minions queue                    Show dispatch queue
+ *   minions sources                  Show work source status
  *   minions dash                     Start the dashboard
  *   minions work <title> [opts-json] Add a work item
  *   minions spawn <agent> <prompt>   Manually spawn an agent
  *   minions dispatch                 Force a dispatch cycle
  *   minions discover                 Dry-run work discovery
  *   minions cleanup                  Run cleanup manually
+ *   minions kill                     Kill active agents and reset to pending
+ *   minions complete <dispatch-id>   Mark a dispatch completed
+ *   minions config set-cli <R> [--model M]  Persist default runtime/model
  *   minions plan <file|text> [proj]  Run a plan
- *   minions version                  Show installed and package versions
+ *   minions mcp-sync                 Sync MCP servers from ~/.claude.json
+ *   minions nuke --confirm           Factory reset runtime state/config
+ *   minions uninstall --confirm      Remove Minions and uninstall package
  */
 
 const fs = require('fs');
@@ -642,6 +653,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions plan <file|text> [proj]  Run a plan
     minions kill                     Kill all active agents and reset to pending
     minions complete <dispatch-id>   Manually mark a dispatch as completed
+    minions config set-cli <R> [--model M]
+                                      Persist default runtime/model without starting
+    minions mcp-sync                 Sync MCP servers from ~/.claude.json
     minions cleanup                  Clean temp files, worktrees, zombies
     minions nuke --confirm           Factory reset (delete state, reset config to defaults)
     minions uninstall --confirm      Remove everything + uninstall npm package

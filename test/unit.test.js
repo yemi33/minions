@@ -897,6 +897,43 @@ async function testIsLiveCommandCenterPath() {
     assert.ok(src.includes('shared.renderCcSystemPrompt(raw, { liveRoot: MINIONS_DIR })'),
       'dashboard.js must use shared.renderCcSystemPrompt so prompt and path helper cannot drift');
   });
+
+  await test('dashboard route table serves live-output alias used by steering ack poll', () => {
+    const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const liveStreamSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveStreamSrc.includes('/live-output'),
+      'steering acknowledgement poll should document the live-output endpoint it calls');
+    const routeTable = dashboardSrc.slice(
+      dashboardSrc.indexOf("{ method: 'POST', path: '/api/agents/charter'"),
+      dashboardSrc.indexOf("{ method: 'GET', path: '/api/agent-output'")
+    );
+    assert.ok(routeTable.includes('/live-output') && routeTable.includes('handler: handleAgentLive'),
+      'dashboard route table must map /api/agent/:id/live-output to handleAgentLive');
+  });
+
+  await test('README and package CLI help document supported command surface', () => {
+    const readme = fs.readFileSync(path.join(MINIONS_DIR, 'README.md'), 'utf8');
+    const binSrc = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    const packageHelp = binSrc.slice(0, binSrc.indexOf('const fs = require'));
+    const runtimeHelp = binSrc.slice(binSrc.indexOf('Minions — Central AI dev team manager'), binSrc.indexOf('Runtime root: ${MINIONS_HOME}'));
+    const expectedCommands = [
+      'restart',
+      'queue',
+      'sources',
+      'kill',
+      'complete <dispatch-id>',
+      'doctor',
+      'config set-cli <R> [--model M]',
+      'nuke --confirm',
+      'uninstall --confirm',
+      'mcp-sync',
+    ];
+    for (const command of expectedCommands) {
+      assert.ok(readme.includes('`minions ' + command + '`'), `README must document minions ${command}`);
+      assert.ok(packageHelp.includes('minions ' + command), `package CLI header must document minions ${command}`);
+      assert.ok(runtimeHelp.includes('minions ' + command), `minions help output must document minions ${command}`);
+    }
+  });
 }
 
 async function testValidatePid() {
