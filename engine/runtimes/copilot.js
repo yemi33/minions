@@ -189,6 +189,14 @@ function _readCatalogIds() {
   return ids.size > 0 ? ids : null;
 }
 
+// Indirection so tests can monkey-patch `module.exports._readCatalogIds` to
+// inject a synthetic catalog without writing the shared engine/copilot-models.json
+// cache file (which would pollute other tests).
+function _catalogIds() {
+  const fn = (module.exports && module.exports._readCatalogIds) || _readCatalogIds;
+  return fn();
+}
+
 // Translate Anthropic-style hyphenated `claude-(family)-X-Y[-suffix]` to
 // Copilot's dot form `claude-(family)-X.Y[-suffix]`. Returns the transformed
 // string (or the original when the pattern doesn't match) — a separate catalog
@@ -203,7 +211,7 @@ function resolveModel(input) {
   const mapped = _MINIONS_MODEL_ALIASES[s.toLowerCase()];
   if (mapped) return mapped;
 
-  const catalog = _readCatalogIds();
+  const catalog = _catalogIds();
   if (catalog && catalog.has(s)) return s;
 
   const dotted = _hyphenToDotVersion(s);
@@ -236,7 +244,7 @@ function modelLooksFamiliar(model) {
   if (m.startsWith('claude-')) return true;
   if (m.startsWith('gpt-')) return true;
   if (m.startsWith('o3') || m.startsWith('o4')) return true;
-  const catalog = _readCatalogIds();
+  const catalog = _catalogIds();
   if (catalog && catalog.has(m)) return true;
   return false;
 }
