@@ -11442,6 +11442,138 @@ async function testWorktreeManagement() {
       'Post-merge cleanup should scan worktree directory');
   });
 
+  await test('Post-merge cleanup deletes the tracked merged PR local branch after removing its worktree', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const sharedIsolated = require('../engine/shared');
+      const originalRemove = sharedIsolated.removeWorktree;
+      const originalExecSilent = sharedIsolated.execSilent;
+      const projectRoot = createTmpDir();
+      const wtRoot = path.join(createTmpDir(), 'worktrees');
+      const wtPath = path.join(wtRoot, 'bt-4242');
+      fs.mkdirSync(wtPath, { recursive: true });
+
+      const commands = [];
+      sharedIsolated.removeWorktree = (candidatePath) => candidatePath === wtPath;
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-merged-cleanup"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-merged-cleanup"')) return '';
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const lifecycle = require('../engine/lifecycle');
+        await lifecycle.handlePostMerge(
+          {
+            id: 'github:octo/demo#4242',
+            prNumber: 4242,
+            status: sharedIsolated.PR_STATUS.MERGED,
+            branch: 'feat/W-merged-cleanup',
+            headSha: 'abc123',
+          },
+          { name: 'demo', localPath: projectRoot, mainBranch: 'master' },
+          { projects: [], agents: {}, engine: { worktreeRoot: wtRoot } },
+          sharedIsolated.PR_STATUS.MERGED,
+        );
+      } finally {
+        sharedIsolated.removeWorktree = originalRemove;
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(commands.some(cmd => cmd.includes('branch -d -- "feat/W-merged-cleanup"')),
+        `expected safe local branch delete after worktree removal; commands: ${commands.join(' | ')}`);
+      assert.ok(!commands.some(cmd => cmd.includes('branch -D')),
+        'post-merge cleanup should prefer non-force local branch deletion when possible');
+    } finally { restore(); }
+  });
+
+  await test('Post-merge cleanup force-deletes only when the local branch tip matches merged PR metadata', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cleanup = require('../engine/cleanup');
+      const sharedIsolated = require('../engine/shared');
+      const originalExecSilent = sharedIsolated.execSilent;
+      const commands = [];
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-squash-merged"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-squash-merged"')) throw new Error('not fully merged');
+        if (cmd.includes('branch -D -- "feat/W-squash-merged"')) return '';
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const result = cleanup.cleanupMergedPrLocalBranch(
+          createTmpDir(),
+          { name: 'demo', mainBranch: 'master' },
+          {
+            id: 'github:octo/demo#4243',
+            status: sharedIsolated.PR_STATUS.MERGED,
+            branch: 'feat/W-squash-merged',
+            headSha: 'abc123',
+          },
+        );
+        assert.deepStrictEqual(
+          { deleted: result.deleted, forced: result.forced },
+          { deleted: true, forced: true },
+        );
+      } finally {
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(commands.some(cmd => cmd.includes('branch -D -- "feat/W-squash-merged"')),
+        `expected force delete only after matching PR head proof; commands: ${commands.join(' | ')}`);
+    } finally { restore(); }
+  });
+
+  await test('Post-merge branch cleanup skips unmerged, protected, or unproven branches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const cleanup = require('../engine/cleanup');
+      const sharedIsolated = require('../engine/shared');
+      const originalExecSilent = sharedIsolated.execSilent;
+      const commands = [];
+      sharedIsolated.execSilent = (cmd) => {
+        commands.push(cmd);
+        if (cmd.includes('branch --show-current')) return 'master\n';
+        if (cmd.includes('worktree list --porcelain')) return '';
+        if (cmd.includes('rev-parse --verify "refs/heads/feat/W-unproven"')) return 'abc123\n';
+        if (cmd.includes('branch -d -- "feat/W-unproven"')) throw new Error('not fully merged');
+        throw new Error(`unexpected git command: ${cmd}`);
+      };
+
+      try {
+        const root = createTmpDir();
+        assert.strictEqual(cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.ACTIVE, branch: 'feat/W-open', headSha: 'abc123' },
+        ).deleted, false, 'open PR branch must not be deleted');
+        assert.strictEqual(cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.MERGED, branch: 'master', headSha: 'abc123' },
+        ).deleted, false, 'default branch must not be deleted');
+        const unproven = cleanup.cleanupMergedPrLocalBranch(
+          root,
+          { name: 'demo', mainBranch: 'master' },
+          { status: sharedIsolated.PR_STATUS.MERGED, branch: 'feat/W-unproven', headSha: 'different' },
+        );
+        assert.strictEqual(unproven.deleted, false, 'unproven squash-merge branch must not be force-deleted');
+      } finally {
+        sharedIsolated.execSilent = originalExecSilent;
+      }
+
+      assert.ok(!commands.some(cmd => cmd.includes('branch -D')),
+        `protected/unproven branches must not be force-deleted; commands: ${commands.join(' | ')}`);
+    } finally { restore(); }
+  });
+
   await test('All plan worktrees cleaned on plan completion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Clean up ALL worktrees'),

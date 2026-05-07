@@ -48,6 +48,105 @@ function worktreeMatchesBranch(dirLower, branch, actualBranch = '') {
   return worktreeBranchMatches(actualBranch, branch) || worktreeDirMatchesBranch(dirLower, branch);
 }
 
+function normalizeLocalBranchName(branch) {
+  return String(branch || '').trim().replace(/^refs\/heads\//i, '');
+}
+
+function isSafeLocalBranchName(branch) {
+  if (!branch || branch !== sanitizeBranch(branch)) return false;
+  if (branch.startsWith('-') || branch.includes('..') || branch.includes('@{')) return false;
+  if (branch.endsWith('/') || branch.endsWith('.lock')) return false;
+  return branch.split('/').every(part => part && part !== '.' && part !== '..' && !part.endsWith('.lock'));
+}
+
+function isProtectedLocalBranch(branch, project = {}) {
+  const protectedBranches = new Set(['main', 'master', 'trunk', 'develop', 'development', 'head']);
+  const configuredMain = normalizeLocalBranchName(project.mainBranch);
+  if (configuredMain) protectedBranches.add(configuredMain.toLowerCase());
+  return protectedBranches.has(branch.toLowerCase());
+}
+
+function localBranchWorktreeInUse(root, branch) {
+  try {
+    const out = String(shared.execSilent('git worktree list --porcelain', {
+      cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 10000, windowsHide: true,
+    }) || '');
+    return out.split(/\r?\n/).some(line => line.trim() === `branch refs/heads/${branch}`);
+  } catch {
+    return true;
+  }
+}
+
+function cleanupMergedPrLocalBranch(root, project, pr) {
+  const branch = normalizeLocalBranchName(pr?.branch);
+  const result = { deleted: false, forced: false, skipped: null };
+  if (pr?.status !== shared.PR_STATUS.MERGED) { result.skipped = 'not-merged'; return result; }
+  if (!root || !branch) { result.skipped = 'missing-branch'; return result; }
+  if (!isSafeLocalBranchName(branch)) { result.skipped = 'unsafe-branch-name'; return result; }
+  if (isProtectedLocalBranch(branch, project)) { result.skipped = 'protected-branch'; return result; }
+
+  try {
+    const current = String(shared.execSilent('git branch --show-current', {
+      cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 10000, windowsHide: true,
+    }) || '').trim();
+    if (current === branch) { result.skipped = 'current-branch'; return result; }
+  } catch {
+    result.skipped = 'current-branch-unknown';
+    return result;
+  }
+
+  if (localBranchWorktreeInUse(root, branch)) { result.skipped = 'branch-in-worktree'; return result; }
+
+  let localHead = '';
+  try {
+    localHead = String(shared.execSilent(`git rev-parse --verify "refs/heads/${branch}"`, {
+      cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 10000, windowsHide: true,
+    }) || '').trim();
+  } catch {
+    result.skipped = 'missing-local-branch';
+    return result;
+  }
+
+  try {
+    shared.execSilent(`git branch -d -- "${branch}"`, {
+      cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 15000, windowsHide: true,
+    });
+    log('info', `Post-merge cleanup: deleted local branch ${branch}`);
+    return { deleted: true, forced: false, skipped: null };
+  } catch (deleteErr) {
+    const localHeadLower = localHead.toLowerCase();
+    // Only use -D when the local tip still matches the merged PR head (or its remote-tracking ref);
+    // otherwise a reused local branch could lose unrelated work after the PR merged.
+    const proofHeads = [pr.headSha, pr._adoSourceCommit, pr.sourceCommit]
+      .map(v => String(v || '').trim().toLowerCase())
+      .filter(Boolean);
+    let safeToForce = proofHeads.includes(localHeadLower);
+    if (!safeToForce) {
+      try {
+        const remoteHead = String(shared.execSilent(`git rev-parse --verify "refs/remotes/origin/${branch}"`, {
+          cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 10000, windowsHide: true,
+        }) || '').trim().toLowerCase();
+        safeToForce = !!remoteHead && remoteHead === localHeadLower;
+      } catch { /* no matching remote-tracking branch */ }
+    }
+    if (!safeToForce) {
+      result.skipped = 'unproven-force-delete';
+      return result;
+    }
+    try {
+      shared.execSilent(`git branch -D -- "${branch}"`, {
+        cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 15000, windowsHide: true,
+      });
+      log('info', `Post-merge cleanup: force-deleted local branch ${branch} after merged PR confirmation`);
+      return { deleted: true, forced: true, skipped: null };
+    } catch (forceErr) {
+      log('warn', `Post-merge cleanup: failed to delete local branch ${branch}: ${forceErr.message || deleteErr.message}`);
+      result.skipped = 'delete-failed';
+      return result;
+    }
+  }
+}
+
 /**
  * Sweep leaked test-fixture meetings from a `meetings/` directory.
  *
@@ -342,9 +441,11 @@ async function runCleanup(config, verbose = false) {
         // Check if this worktree's branch is merged/abandoned
         // Prefer actual git branch metadata; compact Windows dirs intentionally omit branch names.
         const dirLower = dir.toLowerCase();
+        let matchedMergedBranch = '';
         for (const branch of mergedBranches) {
           if (worktreeMatchesBranch(dirLower, branch, actualBranch)) {
             shouldClean = true;
+            matchedMergedBranch = branch;
             break;
           }
         }
@@ -392,7 +493,7 @@ async function runCleanup(config, verbose = false) {
           } catch (e) { log('warn', 'check shared-branch protection: ' + e.message); }
         }
 
-        wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected, actualBranch });
+        wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected, actualBranch, matchedMergedBranch });
       }
 
       // Enforce max worktree cap — if over limit, mark oldest unprotected for cleanup
@@ -412,9 +513,13 @@ async function runCleanup(config, verbose = false) {
       // the initial status check and the actual deletion (Bug #15: TOCTOU race)
       const freshPrs = safeJson(projectPrPath(project)) || [];
       const freshMergedBranches = new Set();
+      const freshMergedPrByBranch = new Map();
       for (const pr of freshPrs) {
         if (pr.status === shared.PR_STATUS.MERGED || pr.status === shared.PR_STATUS.ABANDONED || pr.status === shared.PLAN_STATUS.COMPLETED) {
           if (pr.branch) freshMergedBranches.add(pr.branch);
+        }
+        if (pr.status === shared.PR_STATUS.MERGED && pr.branch) {
+          freshMergedPrByBranch.set(sanitizeBranch(normalizeLocalBranchName(pr.branch)).toLowerCase(), pr);
         }
       }
 
@@ -446,6 +551,10 @@ async function runCleanup(config, verbose = false) {
           _killProcessInWorktree(entry.dir, activeProcesses, activeDispatchIds);
           if (shared.removeWorktree(entry.wtPath, root, worktreeRoot)) {
             cleaned.worktrees++;
+            const mergedPr = entry.matchedMergedBranch
+              ? freshMergedPrByBranch.get(sanitizeBranch(normalizeLocalBranchName(entry.matchedMergedBranch)).toLowerCase())
+              : null;
+            if (mergedPr) cleanupMergedPrLocalBranch(root, project, mergedPr);
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
           } else {
             if (verbose) console.log(`  Failed to remove worktree ${entry.wtPath}`);
@@ -935,4 +1044,5 @@ module.exports = {
   worktreeDirMatchesBranch,  // exported for testing
   worktreeMatchesBranch,     // exported for testing
   getWorktreeBranch,         // exported for lifecycle cleanup
+  cleanupMergedPrLocalBranch, // exported for lifecycle cleanup and testing
 };
