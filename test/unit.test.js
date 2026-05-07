@@ -253,6 +253,20 @@ async function testSharedUtilities() {
     assert.strictEqual(shared.safeRead(fp), 'hello world');
   });
 
+  await test('mutateTextFileLocked performs text read-modify-write under a file lock', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'pinned.md');
+    shared.safeWrite(fp, '# Pinned Context');
+    assert.strictEqual(typeof shared.mutateTextFileLocked, 'function',
+      'shared.mutateTextFileLocked should be available for locked markdown/text state updates');
+
+    const result = shared.mutateTextFileLocked(fp, text => text + '\n\n### One\n\nBody');
+
+    assert.strictEqual(result, '# Pinned Context\n\n### One\n\nBody');
+    assert.strictEqual(shared.safeRead(fp), result);
+    assert.ok(!fs.existsSync(fp + '.lock'), 'lock sidecar should be cleaned up after mutation');
+  });
+
   await test('safeWrite creates parent directories', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'a', 'b', 'c', 'deep.json');
@@ -4570,7 +4584,7 @@ async function testRuntimeFleetHelpers() {
       'fleet model validation must compare the adapter-resolved model ID against known model IDs');
     assert.ok(handler.includes('_resolveModelForRuntime(candidate, resolvedCli)') && handler.includes('knownModels.has(runtimeModelStr)'),
       'per-agent model validation must compare adapter-resolved model IDs against known model IDs');
-    assert.ok(handler.includes('config.agents[id].model = candidate') && handler.includes('config.engine.defaultModel = candidate'),
+    assert.ok(handler.includes('config.agents[id].model = candidate') && handler.includes("_setEngineConfig('defaultModel', candidate)"),
       'settings must still store the user-provided model string after validation');
   });
 
@@ -4583,9 +4597,9 @@ async function testRuntimeFleetHelpers() {
     // "Default (CLI chooses)" submits empty string. The handler must DELETE the
     // key from config.engine — leaving the value as an empty string would
     // override the runtime adapter's own default and crash --model "".
-    assert.ok(/delete config\.engine\.defaultModel/.test(handler),
+    assert.ok(/_deleteEngineConfig\('defaultModel'\)/.test(handler),
       'empty-string defaultModel must DELETE the key, not persist as ""');
-    assert.ok(/delete config\.engine\.defaultCli/.test(handler),
+    assert.ok(/_deleteEngineConfig\('defaultCli'\)/.test(handler),
       'empty-string defaultCli must DELETE the key so the runtime falls back to its built-in default');
   });
 
@@ -4614,6 +4628,36 @@ async function testRuntimeFleetHelpers() {
     // numeric-validity check (keeps 0) as a real bug class — see P-3b8e5f1d.
     assert.ok(/n >= 0/.test(handler),
       'maxBudgetUsd validation must allow 0 — `||` would silently drop a literal cap of $0');
+  });
+
+  await test('dashboard settings locked merge preserves concurrent partial engine updates', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    assert.strictEqual(typeof dashboard._mergeSettingsConfigUpdate, 'function',
+      'dashboard.js must export the settings merge helper for regression coverage');
+    const lockedCurrent = {
+      engine: {
+        tickInterval: 10000,
+        maxConcurrent: 7,
+        defaultCli: 'copilot',
+      },
+    };
+    const staleCandidate = {
+      engine: {
+        tickInterval: 20000,
+        maxConcurrent: 3,
+      },
+    };
+    dashboard._mergeSettingsConfigUpdate(
+      lockedCurrent,
+      staleCandidate,
+      { engine: { tickInterval: 20000, defaultCli: '' } },
+      { engine: { set: { tickInterval: 20000 }, delete: new Set(['defaultCli']) } },
+    );
+
+    assert.deepStrictEqual(lockedCurrent.engine, {
+      tickInterval: 20000,
+      maxConcurrent: 7,
+    }, 'partial /api/settings updates must not replace current.engine with a stale pre-lock snapshot');
   });
 
   await test('settings UI Runtime section includes the unified default CLI / Model controls (P-7a5c1f8e)', () => {
@@ -36041,7 +36085,8 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handleProjectsAdd');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
+    assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj') || fnBody.includes('mutateDashboardConfig'),
+      'handleProjectsAdd must null-guard config from safeJson, use safeJsonObj, or route config access through mutateDashboardConfig');
   });
 
   await test('dashboard.js: project git metadata uses shared discovery and add invalidates status cache', () => {
@@ -36261,6 +36306,43 @@ async function testDashboardAuditXss() {
     const remBlock = src.slice(remIdx, remIdx + 1000);
     assert.ok(/invalidateStatusCache\s*\(\s*\{[^}]*includeSlow\s*:\s*true/.test(remBlock),
       'POST /api/pinned/remove must call invalidateStatusCache({ includeSlow: true }) so unpin is immediate');
+  });
+
+  await test('dashboard config and pin state mutations are routed through lock helpers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const scheduleBlock = src.slice(src.indexOf('async function handleSchedulesCreate'), src.indexOf('async function handleSchedulesRunNow'));
+    const projectsBlock = src.slice(src.indexOf('async function handleProjectsAdd'), src.indexOf('async function handleProjectsRemove'));
+    assert.ok(projectsBlock.includes('mutateDashboardConfig'),
+      'project add must mutate config.json via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*(?:configPath|CONFIG_PATH)/.test(projectsBlock),
+      'project add must not bare safeWrite config.json');
+
+    assert.ok(scheduleBlock.includes('mutateDashboardConfig'),
+      'schedule create/update/delete must mutate config.json via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*path\.join\(MINIONS_DIR,\s*'config\.json'\)/.test(scheduleBlock),
+      'schedule handlers must not bare safeWrite config.json');
+
+    const settingsBlock = src.slice(src.indexOf('async function handleSettingsUpdate'), src.indexOf('async function handleSettingsRouting'));
+    assert.ok(settingsBlock.includes('mutateDashboardConfig'),
+      'settings save must merge config updates via the dashboard config lock helper');
+    assert.ok(!/safeWrite\s*\(\s*configPath\s*,/.test(settingsBlock),
+      'settings save must not bare safeWrite config.json');
+
+    const pinnedHelperBlock = src.slice(src.indexOf('function addPinnedEntryLocked'), src.indexOf('function setKbPinsLocked'));
+    const pinnedBlock = src.slice(src.indexOf("'POST', path: '/api/pinned'"), src.indexOf('// KB pin state'));
+    assert.ok(pinnedHelperBlock.includes('mutateTextFileLocked'),
+      'pinned.md add/remove helper must read and write under the text lock helper');
+    assert.ok(pinnedBlock.includes('addPinnedEntryLocked') && pinnedBlock.includes('removePinnedEntryLocked'),
+      'pinned.md routes must delegate to the locked pinned helpers');
+
+    const kbPinsHelperBlock = src.slice(src.indexOf('function setKbPinsLocked'), src.indexOf('function getWorkItemIdFromPrLinkContext'));
+    const kbPinsBlock = src.slice(src.indexOf("'POST', path: '/api/kb-pins'"), src.indexOf('// Notes'));
+    assert.ok(kbPinsHelperBlock.includes('mutateJsonFileLocked'),
+      'KB pin helper must update engine/kb-pins.json through mutateJsonFileLocked');
+    assert.ok(kbPinsBlock.includes('setKbPinsLocked') && kbPinsBlock.includes('toggleKbPinLocked'),
+      'KB pin routes must delegate to the locked KB pin helpers');
+    assert.ok(!/safeWrite\s*\(\s*(?:path\.join\(MINIONS_DIR,\s*'engine',\s*'kb-pins\.json'\)|pinsPath)/.test(kbPinsBlock),
+      'KB pin handlers must not bare safeWrite engine/kb-pins.json');
   });
 
   await test('invalidateStatusCache supports includeSlow option for user mutations of slow-state data', () => {
@@ -47333,9 +47415,9 @@ async function testAdoThrottleTickGuards() {
       'handleSettingsRead should expose prPollStatusEvery from deprecated adoPollStatusEvery');
     assert.ok(dashSrc.includes('e.prPollStatusEvery === undefined && e.adoPollStatusEvery !== undefined'),
       'handleSettingsUpdate should accept deprecated adoPollStatusEvery input');
-    assert.ok(dashSrc.includes('delete config.engine.adoPollStatusEvery'),
+    assert.ok(dashSrc.includes("_deleteEngineConfig('adoPollStatusEvery')"),
       'handleSettingsUpdate should remove deprecated adoPollStatusEvery when saving');
-    assert.ok(dashSrc.includes('delete config.engine.adoPollCommentsEvery'),
+    assert.ok(dashSrc.includes("_deleteEngineConfig('adoPollCommentsEvery')"),
       'handleSettingsUpdate should remove deprecated adoPollCommentsEvery when saving');
   });
 }

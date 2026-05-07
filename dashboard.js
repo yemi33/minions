@@ -34,7 +34,7 @@ const projectDiscovery = require('./engine/project-discovery');
 const features = require('./engine/features');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore, safeUnlink, mutateJsonFileLocked, mutateTextFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -61,6 +61,10 @@ const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);
+const CONFIG_PATH = path.join(MINIONS_DIR, 'config.json');
+const PINNED_PATH = path.join(MINIONS_DIR, 'pinned.md');
+const PINNED_DEFAULT_CONTENT = '# Pinned Context\n\nCritical notes visible to all agents.';
+const KB_PINS_PATH = shared.PINNED_ITEMS_PATH;
 const DASHBOARD_BROWSER_PRESENCE_PATH = path.join(ENGINE_DIR, 'dashboard-browser.json');
 const DASHBOARD_BROWSER_PRESENCE_MAX_AGE_MS = 45000;
 
@@ -92,6 +96,89 @@ function reloadConfig() {
   ensureConfiguredProjectStateFiles();
 }
 ensureConfiguredProjectStateFiles();
+
+function mutateDashboardConfig(mutator) {
+  return mutateJsonFileLocked(CONFIG_PATH, (config) => {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) config = {};
+    const next = mutator(config);
+    return next === undefined ? config : next;
+  }, { defaultValue: { projects: [], agents: {}, engine: {} }, skipWriteIfUnchanged: true });
+}
+
+function mergeSettingsConfigUpdate(current, candidate, body, patch = {}) {
+  if (!current || typeof current !== 'object' || Array.isArray(current)) current = {};
+  if (body.engine) {
+    if (!current.engine || typeof current.engine !== 'object' || Array.isArray(current.engine)) current.engine = {};
+    const enginePatch = patch.engine || {};
+    for (const key of enginePatch.delete || []) delete current.engine[key];
+    for (const [key, value] of Object.entries(enginePatch.set || {})) current.engine[key] = value;
+  }
+  if (body.claude) {
+    if (candidate.claude) current.claude = candidate.claude;
+    else delete current.claude;
+  }
+  if (body.agents) {
+    if (!current.agents || typeof current.agents !== 'object' || Array.isArray(current.agents)) current.agents = {};
+    for (const id of Object.keys(body.agents)) {
+      if (candidate.agents && candidate.agents[id]) current.agents[id] = candidate.agents[id];
+    }
+  }
+  if (body.teams) {
+    if (candidate.teams) current.teams = candidate.teams;
+    else delete current.teams;
+  }
+  if (body.projects && Array.isArray(body.projects)) {
+    if (!Array.isArray(current.projects)) current.projects = [];
+    for (const update of body.projects) {
+      const candidateProject = (candidate.projects || []).find(p => p.name === update.name);
+      const currentProject = current.projects.find(p => p.name === update.name);
+      if (!candidateProject || !currentProject) continue;
+      currentProject.workSources = candidateProject.workSources;
+    }
+  }
+  shared.pruneDefaultClaudeConfig(current);
+  return current;
+}
+
+function addPinnedEntryLocked({ title, content, level }, now = new Date()) {
+  const levelTag = level === 'critical' ? '🔴 ' : level === 'warning' ? '🟡 ' : '';
+  const entry = '\n\n### ' + levelTag + title + '\n\n' + content + '\n\n*Pinned by human on ' + now.toISOString().slice(0, 10) + '*';
+  return mutateTextFileLocked(PINNED_PATH, existing => (existing || PINNED_DEFAULT_CONTENT) + entry, { defaultValue: PINNED_DEFAULT_CONTENT });
+}
+
+function removePinnedEntryLocked(title) {
+  let missing = false;
+  mutateTextFileLocked(PINNED_PATH, content => {
+    if (!content) {
+      missing = true;
+      return content;
+    }
+    const regex = new RegExp('\\n\\n###\\s*(?:🔴\\s*|🟡\\s*)?' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n[\\s\\S]*?(?=\\n\\n###|$)', 'i');
+    return content.replace(regex, '');
+  }, { defaultValue: '', skipWriteIfUnchanged: true });
+  return !missing;
+}
+
+function setKbPinsLocked(pins) {
+  return mutateJsonFileLocked(KB_PINS_PATH, () => pins, { defaultValue: [], skipWriteIfUnchanged: true });
+}
+
+function toggleKbPinLocked(key) {
+  let pinned = false;
+  mutateJsonFileLocked(KB_PINS_PATH, pins => {
+    if (!Array.isArray(pins)) pins = [];
+    const idx = pins.indexOf(key);
+    if (idx >= 0) {
+      pins.splice(idx, 1);
+      pinned = false;
+    } else {
+      pins.unshift(key);
+      pinned = true;
+    }
+    return pins;
+  }, { defaultValue: [], skipWriteIfUnchanged: true });
+  return pinned;
+}
 
 function getWorkItemIdFromPrLinkContext(context, workItemId) {
   if (typeof workItemId === 'string' && workItemId.trim()) return workItemId.trim();
@@ -995,7 +1082,7 @@ function getStatus() {
         });
       })(),
       pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
-      pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
+      pinned: (() => { try { return parsePinnedEntries(safeRead(PINNED_PATH)); } catch { return []; } })(),
       projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
       autoMode: {
         approvePlans: !!CONFIG.engine?.autoApprovePlans,
@@ -5734,13 +5821,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         });
       }
 
-      const configPath = path.join(MINIONS_DIR, 'config.json');
-      const config = safeJsonObj(configPath);
-      if (!config) return jsonReply(res, 500, { error: 'failed to read config' });
-      if (!config.projects) config.projects = [];
-
-      // Check if already linked
-      if (config.projects.find(p => path.resolve(p.localPath) === target)) {
+      // Check if already linked under the config lock so concurrent dashboard
+      // adds cannot both pass the preflight check and then clobber config.json.
+      let alreadyLinked = false;
+      mutateDashboardConfig(config => {
+        if (!Array.isArray(config.projects)) config.projects = [];
+        alreadyLinked = config.projects.some(p => path.resolve(p.localPath) === target);
+        return config;
+      });
+      if (alreadyLinked) {
         return jsonReply(res, 400, { error: 'Project already linked at ' + target });
       }
 
@@ -5779,8 +5868,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // .minions state without leaving repo-local state files behind.
       shared.ensureProjectStateFiles(project, { migrateLegacy: true, removeLegacy: true });
 
-      config.projects.push(project);
-      safeWrite(configPath, config);
+      let duplicate = false;
+      mutateDashboardConfig(config => {
+        if (!Array.isArray(config.projects)) config.projects = [];
+        if (config.projects.some(p => path.resolve(p.localPath) === target)) {
+          duplicate = true;
+          return config;
+        }
+        config.projects.push(project);
+        return config;
+      });
+      if (duplicate) return jsonReply(res, 400, { error: 'Project already linked at ' + target });
       reloadConfig(); // Update in-memory project list immediately
       invalidateStatusCache();
 
@@ -6358,24 +6456,25 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!id) id = 'schedule';
     }
 
+    let sched;
+    mutateDashboardConfig(config => {
+      if (!Array.isArray(config.schedules)) config.schedules = [];
+      // If auto-generated ID collides, append a short numeric suffix
+      let scheduleId = id;
+      if (config.schedules.some(s => s.id === scheduleId)) {
+        let suffix = 2;
+        while (config.schedules.some(s => s.id === `${scheduleId}-${suffix}`)) suffix++;
+        scheduleId = `${scheduleId}-${suffix}`;
+      }
+      sched = { id: scheduleId, cron, title, type: type || 'implement', enabled: enabled !== false };
+      if (project) sched.project = project;
+      if (agent) sched.agent = agent;
+      if (description) sched.description = description;
+      if (priority) sched.priority = priority;
+      config.schedules.push(sched);
+      return config;
+    });
     reloadConfig();
-    if (!CONFIG.schedules) CONFIG.schedules = [];
-
-    // If auto-generated ID collides, append a short numeric suffix
-    if (CONFIG.schedules.some(s => s.id === id)) {
-      let suffix = 2;
-      while (CONFIG.schedules.some(s => s.id === `${id}-${suffix}`)) suffix++;
-      id = `${id}-${suffix}`;
-    }
-
-    const sched = { id, cron, title, type: type || 'implement', enabled: enabled !== false };
-    if (project) sched.project = project;
-    if (agent) sched.agent = agent;
-    if (description) sched.description = description;
-    if (priority) sched.priority = priority;
-
-    CONFIG.schedules.push(sched);
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
     invalidateStatusCache();
     return jsonReply(res, 200, { ok: true, schedule: sched });
   }
@@ -6385,21 +6484,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const { id, cron, title, type, project, agent, description, priority, enabled } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
 
-    reloadConfig();
-    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
-    const sched = CONFIG.schedules.find(s => s.id === id);
+    let missingSchedules = false;
+    let sched = null;
+    mutateDashboardConfig(config => {
+      if (!Array.isArray(config.schedules)) {
+        missingSchedules = true;
+        return config;
+      }
+      sched = config.schedules.find(s => s.id === id);
+      if (!sched) return config;
+      if (cron !== undefined) sched.cron = cron;
+      if (title !== undefined) sched.title = title;
+      if (type !== undefined) sched.type = type;
+      if (project !== undefined) sched.project = project || null;
+      if (agent !== undefined) sched.agent = agent || null;
+      if (description !== undefined) sched.description = description;
+      if (priority !== undefined) sched.priority = priority;
+      if (enabled !== undefined) sched.enabled = enabled;
+      return config;
+    });
+    if (missingSchedules) return jsonReply(res, 404, { error: 'No schedules configured' });
     if (!sched) return jsonReply(res, 404, { error: 'Schedule not found' });
-
-    if (cron !== undefined) sched.cron = cron;
-    if (title !== undefined) sched.title = title;
-    if (type !== undefined) sched.type = type;
-    if (project !== undefined) sched.project = project || null;
-    if (agent !== undefined) sched.agent = agent || null;
-    if (description !== undefined) sched.description = description;
-    if (priority !== undefined) sched.priority = priority;
-    if (enabled !== undefined) sched.enabled = enabled;
-
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
+    reloadConfig();
     invalidateStatusCache();
     return jsonReply(res, 200, { ok: true, schedule: sched });
   }
@@ -6409,13 +6515,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const { id } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
 
+    let missingSchedules = false;
+    let deleted = false;
+    mutateDashboardConfig(config => {
+      if (!Array.isArray(config.schedules)) {
+        missingSchedules = true;
+        return config;
+      }
+      const idx = config.schedules.findIndex(s => s.id === id);
+      if (idx < 0) return config;
+      config.schedules.splice(idx, 1);
+      deleted = true;
+      return config;
+    });
+    if (missingSchedules) return jsonReply(res, 404, { error: 'No schedules configured' });
+    if (!deleted) return jsonReply(res, 404, { error: 'Schedule not found' });
     reloadConfig();
-    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
-    const idx = CONFIG.schedules.findIndex(s => s.id === id);
-    if (idx < 0) return jsonReply(res, 404, { error: 'Schedule not found' });
-
-    CONFIG.schedules.splice(idx, 1);
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
     invalidateStatusCache();
     return jsonReply(res, 200, { ok: true });
   }
@@ -6588,8 +6703,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   async function handleSettingsUpdate(req, res) {
     try {
       const body = await readBody(req);
-      const configPath = path.join(MINIONS_DIR, 'config.json');
-      const config = safeJson(configPath) || {};
+      const config = safeJson(CONFIG_PATH) || {};
       if (!config.engine) config.engine = {};
       if (!config.agents) config.agents = {};
       shared.pruneDefaultClaudeConfig(config);
@@ -6597,6 +6711,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const _clamped = [];
       const _engineModelDiscovery = require('./engine/model-discovery');
       const _engineRuntimes = require('./engine/runtimes');
+      const _configPatch = { engine: { set: {}, delete: new Set() } };
+      function _setEngineConfig(key, value) {
+        config.engine[key] = value;
+        _configPatch.engine.set[key] = value;
+        _configPatch.engine.delete.delete(key);
+      }
+      function _deleteEngineConfig(key) {
+        delete config.engine[key];
+        delete _configPatch.engine.set[key];
+        _configPatch.engine.delete.add(key);
+      }
       function _resolveModelForRuntime(modelStr, runtimeName) {
         try {
           const adapter = _engineRuntimes.resolveRuntime(runtimeName);
@@ -6630,13 +6755,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
             if (val !== raw) _clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
-            config.engine[key] = val;
+            _setEngineConfig(key, val);
           }
         }
-        delete config.engine.adoPollStatusEvery;
-        delete config.engine.adoPollCommentsEvery;
+        _deleteEngineConfig('adoPollStatusEvery');
+        _deleteEngineConfig('adoPollCommentsEvery');
         // String fields
-        if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
+        if (e.worktreeRoot !== undefined) _setEngineConfig('worktreeRoot', String(e.worktreeRoot || D.worktreeRoot));
 
         // ── Runtime fleet (P-7a5c1f8e) ─────────────────────────────────────
         // Empty string clears the override — the dashboard's "Default (CLI
@@ -6653,13 +6778,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           return _registeredCliNames.length === 0 || _registeredCliNames.includes(String(name));
         };
         if (e.defaultCli !== undefined) {
-          if (_isClear(e.defaultCli)) delete config.engine.defaultCli;
-          else if (_validCli(e.defaultCli)) config.engine.defaultCli = String(e.defaultCli);
+          if (_isClear(e.defaultCli)) _deleteEngineConfig('defaultCli');
+          else if (_validCli(e.defaultCli)) _setEngineConfig('defaultCli', String(e.defaultCli));
           else _clamped.push(`defaultCli: "${e.defaultCli}" not registered (kept previous value)`);
         }
         if (e.ccCli !== undefined) {
-          if (_isClear(e.ccCli)) delete config.engine.ccCli;
-          else if (_validCli(e.ccCli)) config.engine.ccCli = String(e.ccCli);
+          if (_isClear(e.ccCli)) _deleteEngineConfig('ccCli');
+          else if (_validCli(e.ccCli)) _setEngineConfig('ccCli', String(e.ccCli));
           else _clamped.push(`ccCli: "${e.ccCli}" not registered (kept previous value)`);
         }
         // Validate fleet-level model assignments against the resolved runtime.
@@ -6695,47 +6820,47 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           return null;
         }
         if (e.defaultModel !== undefined) {
-          if (_isClear(e.defaultModel)) delete config.engine.defaultModel;
+          if (_isClear(e.defaultModel)) _deleteEngineConfig('defaultModel');
           else {
             const candidate = String(e.defaultModel);
             const resolvedCli = config.engine.defaultCli || 'claude';
             const rejection = await _validateFleetModel(candidate, resolvedCli);
             if (rejection) _clamped.push(`engine.defaultModel: "${candidate}" ${rejection} — kept previous value`);
-            else config.engine.defaultModel = candidate;
+            else _setEngineConfig('defaultModel', candidate);
           }
         }
         if (e.ccModel !== undefined) {
-          if (_isClear(e.ccModel)) delete config.engine.ccModel;
+          if (_isClear(e.ccModel)) _deleteEngineConfig('ccModel');
           else {
             const candidate = String(e.ccModel);
             const resolvedCli = config.engine.ccCli || config.engine.defaultCli || 'claude';
             const rejection = await _validateFleetModel(candidate, resolvedCli);
             if (rejection) _clamped.push(`engine.ccModel: "${candidate}" ${rejection} — kept previous value`);
-            else config.engine.ccModel = candidate;
+            else _setEngineConfig('ccModel', candidate);
           }
         }
         if (e.claudeFallbackModel !== undefined) {
-          if (_isClear(e.claudeFallbackModel)) delete config.engine.claudeFallbackModel;
-          else config.engine.claudeFallbackModel = String(e.claudeFallbackModel);
+          if (_isClear(e.claudeFallbackModel)) _deleteEngineConfig('claudeFallbackModel');
+          else _setEngineConfig('claudeFallbackModel', String(e.claudeFallbackModel));
         }
         if (e.copilotStreamMode !== undefined) {
           const valid = ['on', 'off'];
-          if (_isClear(e.copilotStreamMode)) delete config.engine.copilotStreamMode;
-          else if (valid.includes(e.copilotStreamMode)) config.engine.copilotStreamMode = e.copilotStreamMode;
+          if (_isClear(e.copilotStreamMode)) _deleteEngineConfig('copilotStreamMode');
+          else if (valid.includes(e.copilotStreamMode)) _setEngineConfig('copilotStreamMode', e.copilotStreamMode);
           else _clamped.push(`copilotStreamMode: "${e.copilotStreamMode}" not in [on, off] (kept previous value)`);
         }
         // maxBudgetUsd uses ?? semantics — 0 is a valid cap (read-only / dry-run agents).
         if (e.maxBudgetUsd !== undefined) {
-          if (_isClear(e.maxBudgetUsd)) delete config.engine.maxBudgetUsd;
+          if (_isClear(e.maxBudgetUsd)) _deleteEngineConfig('maxBudgetUsd');
           else {
             const n = Number(e.maxBudgetUsd);
-            if (Number.isFinite(n) && n >= 0) config.engine.maxBudgetUsd = n;
+            if (Number.isFinite(n) && n >= 0) _setEngineConfig('maxBudgetUsd', n);
             else _clamped.push(`maxBudgetUsd: "${e.maxBudgetUsd}" must be ≥ 0 (kept previous value)`);
           }
         }
         if (e.ccEffort !== undefined) {
           const valid = [null, 'low', 'medium', 'high'];
-          config.engine.ccEffort = valid.includes(e.ccEffort) ? e.ccEffort : null;
+          _setEngineConfig('ccEffort', valid.includes(e.ccEffort) ? e.ccEffort : null);
         }
         // Per-type max turns
         if (e.maxTurnsByType !== undefined && typeof e.maxTurnsByType === 'object') {
@@ -6744,18 +6869,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             const n = Number(val);
             if (n && n >= 5 && n <= 500) mbt[type] = n;
           }
-          config.engine.maxTurnsByType = mbt;
+          _setEngineConfig('maxTurnsByType', mbt);
         }
         // Boolean fields
         const booleanFields = Object.keys(shared.ENGINE_DEFAULTS).filter(k => typeof shared.ENGINE_DEFAULTS[k] === 'boolean');
         for (const key of booleanFields) {
-          if (e[key] !== undefined) config.engine[key] = !!e[key];
+          if (e[key] !== undefined) _setEngineConfig(key, !!e[key]);
         }
         // Eval loop settings
-        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
-        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        if (e.evalMaxIterations !== undefined) _setEngineConfig('evalMaxIterations', Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations)));
+        if (e.evalMaxCost !== undefined) _setEngineConfig('evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0));
         if (e.ignoredCommentAuthors !== undefined) {
-          config.engine.ignoredCommentAuthors = String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+          _setEngineConfig('ignoredCommentAuthors', String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
         }
       }
 
@@ -6892,7 +7017,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       shared.pruneDefaultClaudeConfig(config);
-      safeWrite(configPath, config);
+      mutateDashboardConfig(current => mergeSettingsConfigUpdate(current, config, body, _configPatch));
       // Refresh in-memory CONFIG so subsequent reads see the update
       reloadConfig();
       invalidateStatusCache();
@@ -6915,11 +7040,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleSettingsReset(req, res) {
     try {
-      const config = queries.getConfig();
-      config.engine = { ...shared.ENGINE_DEFAULTS };
-      delete config.claude;
-      config.agents = { ...shared.DEFAULT_AGENTS };
-      safeWrite(path.join(MINIONS_DIR, 'config.json'), config);
+      mutateDashboardConfig(config => {
+        config.engine = { ...shared.ENGINE_DEFAULTS };
+        delete config.claude;
+        config.agents = { ...shared.DEFAULT_AGENTS };
+        return config;
+      });
       reloadConfig();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
@@ -7189,18 +7315,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Pinned notes
     { method: 'GET', path: '/api/pinned', desc: 'Get pinned notes', handler: async (req, res) => {
-      const content = safeRead(path.join(MINIONS_DIR, 'pinned.md'));
+      const content = safeRead(PINNED_PATH);
       return jsonReply(res, 200, { content, entries: parsePinnedEntries(content) });
     }},
     { method: 'POST', path: '/api/pinned', desc: 'Add a pinned note', params: 'title, content, level?', handler: async (req, res) => {
       const body = await readBody(req);
       const { title, content, level } = body;
       if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
-      const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
-      const existing = safeRead(pinnedPath);
-      const levelTag = level === 'critical' ? '🔴 ' : level === 'warning' ? '🟡 ' : '';
-      const entry = '\n\n### ' + levelTag + title + '\n\n' + content + '\n\n*Pinned by human on ' + new Date().toISOString().slice(0, 10) + '*';
-      safeWrite(pinnedPath, (existing || '# Pinned Context\n\nCritical notes visible to all agents.') + entry);
+      addPinnedEntryLocked({ title, content, level });
       // pinned.md is in slow-state cache — opt-in invalidation so the new entry is visible immediately (closes #1295)
       invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
@@ -7209,12 +7331,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { title } = body;
       if (!title) return jsonReply(res, 400, { error: 'title required' });
-      const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
-      let content = safeRead(pinnedPath);
-      if (!content) return jsonReply(res, 404, { error: 'No pinned notes' });
-      const regex = new RegExp('\\n\\n###\\s*(?:🔴\\s*|🟡\\s*)?' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n[\\s\\S]*?(?=\\n\\n###|$)', 'i');
-      content = content.replace(regex, '');
-      safeWrite(pinnedPath, content);
+      if (!removePinnedEntryLocked(title)) return jsonReply(res, 404, { error: 'No pinned notes' });
       // pinned.md is in slow-state cache — opt-in invalidation so the unpin is visible immediately
       invalidateStatusCache({ includeSlow: true });
       return jsonReply(res, 200, { ok: true });
@@ -7222,24 +7339,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // KB pin state (server-side so CC can pin items)
     { method: 'GET', path: '/api/kb-pins', desc: 'Get pinned KB item keys', handler: async (req, res) => {
-      const pins = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'kb-pins.json')) || [];
+      const pins = shared.safeJson(KB_PINS_PATH) || [];
       return jsonReply(res, 200, { pins });
     }},
     { method: 'POST', path: '/api/kb-pins', desc: 'Set pinned KB item keys', params: 'pins[]', handler: async (req, res) => {
       const body = await readBody(req);
       if (!Array.isArray(body.pins)) return jsonReply(res, 400, { error: 'pins array required' });
-      safeWrite(path.join(MINIONS_DIR, 'engine', 'kb-pins.json'), body.pins);
+      setKbPinsLocked(body.pins);
       return jsonReply(res, 200, { ok: true });
     }},
     { method: 'POST', path: '/api/kb-pins/toggle', desc: 'Toggle a single KB pin', params: 'key', handler: async (req, res) => {
       const body = await readBody(req);
       if (!body.key) return jsonReply(res, 400, { error: 'key required' });
-      const pinsPath = path.join(MINIONS_DIR, 'engine', 'kb-pins.json');
-      const pins = shared.safeJson(pinsPath) || [];
-      const idx = pins.indexOf(body.key);
-      if (idx >= 0) pins.splice(idx, 1); else pins.unshift(body.key);
-      safeWrite(pinsPath, pins);
-      return jsonReply(res, 200, { ok: true, pinned: idx < 0 });
+      const pinned = toggleKbPinLocked(body.key);
+      return jsonReply(res, 200, { ok: true, pinned });
     }},
 
     // Notes
@@ -7916,6 +8029,7 @@ module.exports = {
   _formatCcCliCommandsIndex,
   _resetPreambleCache,
   _installCrashHandlers,
+  _mergeSettingsConfigUpdate: mergeSettingsConfigUpdate,
 };
 
 // Start the HTTP server only when run directly (node dashboard.js).
