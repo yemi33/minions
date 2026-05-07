@@ -2675,23 +2675,19 @@ function _formatDocChatContext({ document, title, filePath, selection, canEdit, 
   return context;
 }
 
-// Map errorClass codes from the runtime adapter to actionable user-facing messages.
+// Map runtime failures to user-facing messages.
 // sessionPreserved=true means ccCall preserved the session — user can retry immediately.
 // toolUses=[] from result.toolUses lets the message warn that tools may have already
 // modified files/state before the failure — the user shouldn't assume nothing happened.
-// errorMessage is the runtime adapter's own remediation string (from parseError) —
-// authoritative because it knows whether the runtime is Claude, Copilot, or another;
-// dashboard falls back to generic copy only when the adapter didn't supply one.
+// errorMessage is the runtime adapter's own text from parseError; when present it
+// is authoritative and is shown directly rather than replaced with dashboard copy.
 function _docChatErrorMessage(errorClass, sessionPreserved = false, toolUses = [], errorMessage = null) {
   const tools = Array.isArray(toolUses) ? toolUses : [];
   const toolHint = tools.length > 0
     ? ` (${tools.length} tool${tools.length === 1 ? '' : 's'} ran before the failure: ${tools.slice(0, 5).map(t => t.name).join(', ')}${tools.length > 5 ? '…' : ''} — files or state may have been modified.)`
     : '';
-  if (errorClass === 'auth-failure') return (errorMessage || 'Runtime authentication failed — check your CLI auth or API key, then try again.') + toolHint;
-  if (errorClass === 'context-limit') return 'Session context is too long. Click "Clear" to start a fresh conversation.' + toolHint;
-  if (errorClass === 'budget-exceeded') return (errorMessage || 'Runtime budget exceeded — check your account or quota.') + toolHint;
-  if (errorClass === 'crash') return (errorMessage || 'Runtime crashed unexpectedly. Try again.') + toolHint;
-  if (errorClass === 'unknown-model') return (errorMessage || 'Configured model is not valid for the active runtime. Update engine.ccModel or engine.defaultModel.') + toolHint;
+  const directError = typeof errorMessage === 'string' ? errorMessage.trim() : '';
+  if (directError) return directError + toolHint;
   if (sessionPreserved) return 'Temporary connection issue — your conversation is intact, send your message again.' + toolHint;
   if (tools.length > 0) return 'The agent stopped responding before producing a final answer.' + toolHint;
   return 'Failed to process request. Try again.';
@@ -2700,12 +2696,23 @@ function _docChatErrorMessage(errorClass, sessionPreserved = false, toolUses = [
 // Secondary note rendered alongside a recovered partial answer — distinct from the
 // hard-failure message because the answer/actions/document-edit DID land. The user
 // just needs to know the run wasn't clean.
-function _docChatPartialWarning(errorClass) {
-  if (errorClass === 'auth-failure') return 'Note: auth failed — answer recovered from partial output, but follow-up turns may not work.';
-  if (errorClass === 'context-limit') return 'Note: session context was too long — answer recovered. Click "Clear" before continuing.';
-  if (errorClass === 'budget-exceeded') return 'Note: runtime budget exceeded — answer recovered, but further calls may fail.';
-  if (errorClass === 'crash') return 'Note: runtime crashed before clean exit, but a complete response was recovered.';
+function _docChatPartialWarning(errorClass, errorMessage = null) {
+  const directError = typeof errorMessage === 'string' ? errorMessage.trim() : '';
+  if (directError) return `Note: ${directError}`;
   return 'Note: the agent exited unexpectedly. A complete response was recovered — verify any saved files or dispatched actions.';
+}
+
+function _docChatResultHasVisibleError(result) {
+  if (!result) return false;
+  if (result.errorClass) return true;
+  if (typeof result.errorMessage === 'string' && result.errorMessage.trim()) return true;
+  if (typeof result.stderr === 'string' && result.stderr.trim()) return true;
+  return false;
+}
+
+function _docChatResultLooksSuccessful(result) {
+  if (!result || !result.text) return false;
+  return result.code === 0 || !_docChatResultHasVisibleError(result);
 }
 
 // Build the doc-chat extraContext for a single ccCall pass — refreshed on retry
@@ -2784,7 +2791,7 @@ function _recoverPartialDocChatResponse(result, sessionKey) {
   return {
     ...parsed,
     partial: true,
-    warning: _docChatPartialWarning(result.errorClass),
+    warning: _docChatPartialWarning(result.errorClass, result.errorMessage || result.stderr || null),
     toolUses: Array.isArray(result.toolUses) ? result.toolUses : [],
     // Recovery path still attaches the raw runtime failure — the answer landed
     // despite a non-zero exit; users still benefit from seeing why.
@@ -2979,7 +2986,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // bleed into future interactions under the same key.
     docSessions.delete(sessionKey);
     schedulePersistDocSessions();
-  } else if (result.code === 0 && result.sessionId) {
+  } else if (_docChatResultLooksSuccessful(result) && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = initialPass.docHash;
@@ -2989,7 +2996,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
   }
 
-  if (result.code !== 0 || !result.text) {
+  if (!_docChatResultLooksSuccessful(result)) {
     // Try to salvage a parseable answer / action / document edit before failing.
     const recovered = _recoverPartialDocChatResponse(result, sessionKey);
     if (recovered) return recovered;
@@ -3040,7 +3047,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
     schedulePersistDocSessions();
-  } else if (result.code === 0 && result.sessionId) {
+  } else if (_docChatResultLooksSuccessful(result) && result.sessionId) {
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = initialPass.docHash;
   }
@@ -3049,7 +3056,7 @@ async function ccDocCallStreaming({ message, document, title, filePath, selectio
     return { answer: result.text || result.stderr || 'Minions runtime is not installed or configured.', content: null, actions: [] };
   }
 
-  if (result.code !== 0 || !result.text) {
+  if (!_docChatResultLooksSuccessful(result)) {
     const recovered = _recoverPartialDocChatResponse(result, sessionKey);
     if (recovered) return recovered;
     const sessionPreserved = !!(resolveSession('doc', sessionKey)?.sessionId);
@@ -7706,6 +7713,8 @@ module.exports = {
   _docChatPartialWarning,
   _docChatFailureResponse,
   _recoverPartialDocChatResponse,
+  _docChatResultHasVisibleError,
+  _docChatResultLooksSuccessful,
   _shouldSuppressDocChatPostPatchError,
   _buildDocChatResponsePayload,
   _linkPullRequestForTracking: linkPullRequestForTracking,

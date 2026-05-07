@@ -665,7 +665,6 @@ function _collectErrorSignal(rawOutput) {
     if (!isErrorEvent) continue;
 
     for (const value of [
-      subtype,
       obj.error,
       obj.message,
       obj.stderr,
@@ -675,6 +674,7 @@ function _collectErrorSignal(rawOutput) {
       obj.data?.stderr,
       obj.event?.error,
       obj.event?.message,
+      subtype,
     ]) {
       if (typeof value === 'string' && value.trim()) signals.push(value.trim());
     }
@@ -692,19 +692,19 @@ function parseError(rawOutput) {
   const hasExplicitAuthFailure = /not authenticated|copilot login|please.*log.*in|\bunauthorized\b/i.test(text);
   const hasAuthStatusCode = /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s+code)?|statuscode|response(?:\s+status)?|api(?:\s+(?:error|response|status))?)\s*[:=]?\s*(?:401|403)\b|\b(?:401\s+unauthorized|403\s+forbidden)\b/i.test(text);
   if (hasExplicitAuthFailure || hasAuthStatusCode) {
-    return { message: 'Copilot/GitHub authentication failed. Run `gh auth login` or provide GH_TOKEN/COPILOT_GITHUB_TOKEN with Copilot access.', code: 'auth-failure', retriable: false };
+    return { message: text, code: 'auth-failure', retriable: false };
   }
   if (/rate limit|too many requests|\b429\b/i.test(text)) {
-    return { message: 'Copilot rate limit hit', code: 'rate-limit', retriable: true };
+    return { message: text, code: 'rate-limit', retriable: true };
   }
   if (/unknown model|model not found|model.*invalid|invalid model/i.test(text)) {
-    return { message: 'Copilot rejected the requested model', code: 'unknown-model', retriable: false };
+    return { message: text, code: 'unknown-model', retriable: false };
   }
   if (/budget.*exceed|premium.*limit.*reach|quota.*exceed/i.test(lower)) {
-    return { message: 'Copilot premium-request budget exceeded — check your GitHub Copilot quota.', code: 'budget-exceeded', retriable: false };
+    return { message: text, code: 'budget-exceeded', retriable: false };
   }
   if (/internal error|panic|uncaught|copilot.*crashed|fatal: copilot/i.test(lower)) {
-    return { message: 'Copilot CLI crashed unexpectedly. Try again.', code: 'crash', retriable: true };
+    return { message: text, code: 'crash', retriable: true };
   }
   return { message: '', code: null, retriable: true };
 }
