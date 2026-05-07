@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1768 (2026-05-07)
+
+### Fixes
+- stamp dispatchItem.started_at locally so updateMetrics sees it (#2158)
+- stop test fixtures leaking into live engine/log.json (#2154)
+
+### Other
+- test(engine): add unit tests for PR branch/cause resolution helpers (#2160)
+- test(dispatch): add unit tests for dedup/lock-key + retry-classification helpers (#2159)
+
 ## 0.1.1765 (2026-05-07)
 
 ### Features
