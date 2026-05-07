@@ -33,7 +33,7 @@ const projectDiscovery = require('./engine/project-discovery');
 const features = require('./engine/features');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore, safeUnlink, mutateJsonFileLocked, mutateControl, mutateCooldowns, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, WORK_TYPE, reopenWorkItem } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -66,7 +66,17 @@ function ensureConfiguredProjectStateFiles() {
     const root = p.localPath ? path.resolve(p.localPath) : null;
     if (!root || !fs.existsSync(root)) continue;
     try {
-      shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+      const state = shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
+      if (state.migrated.length > 0 || state.removedLegacy.length > 0 || state.legacyDirRemoved) {
+        const parts = [];
+        if (state.migrated.length > 0) parts.push(`merged ${state.migrated.join(', ')}`);
+        if (state.removedLegacy.length > 0) parts.push(`removed ${state.removedLegacy.join(', ')}`);
+        if (state.legacyDirRemoved) parts.push(`removed legacy .minions dir`);
+        console.log(`[dashboard] migrated project state for "${p.name}" → projects/${p.name} (${parts.join('; ')})`);
+      }
+      if (state.legacyDirRemoveError) {
+        console.warn(`[dashboard] failed to remove legacy .minions dir for "${p.name}": ${state.legacyDirRemoveError}`);
+      }
     } catch (e) {
       console.warn(`[dashboard] project state migration failed for "${p.name}": ${e.message}`);
     }
@@ -3220,7 +3230,11 @@ const server = http.createServer(async (req, res) => {
 
       const config = queries.getConfig();
       const project = PROJECTS.find(p => {
-        const plan = safeJson(activePath) || safeJson(prdPath);
+        // safeJsonNoRestore — never resurrect an archived PRD's .backup
+        // sidecar during project resolution (W-mouptdh1000h9f39). The
+        // active-from-archive write above (mutateJsonFileLocked) already
+        // created activePath when needed.
+        const plan = safeJsonNoRestore(activePath) || safeJsonNoRestore(prdPath);
         return plan && p.name?.toLowerCase() === (plan.project || '').toLowerCase();
       }) || PROJECTS[0] || null;
 
@@ -3300,9 +3314,13 @@ const server = http.createServer(async (req, res) => {
         const prdFile = body.prdFile;
         if (!prdFile) return jsonReply(res, 404, { error: 'work item not found in any source' });
 
-        // Look up PRD item to create a new work item on-demand
+        // Look up PRD item to create a new work item on-demand.
+        // safeJsonNoRestore — PRDs are terminal artifacts; a stale .backup
+        // sidecar from an archived PRD must not resurrect the active PRD
+        // just because a user clicked retry on a stray work item
+        // (W-mouptdh1000h9f39).
         const prdPath = path.join(PRD_DIR, prdFile);
-        const plan = shared.safeJson(prdPath);
+        const plan = shared.safeJsonNoRestore(prdPath);
         if (!plan?.missing_features) return jsonReply(res, 404, { error: 'PRD file not found or invalid' });
         const prdItem = plan.missing_features.find(f => f.id === id);
         if (!prdItem) return jsonReply(res, 404, { error: 'PRD item not found in ' + prdFile });

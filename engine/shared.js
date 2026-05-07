@@ -298,6 +298,40 @@ function safeJsonObj(p) { return safeJson(p) || {}; }
 function safeJsonArr(p) { return safeJson(p) || []; }
 
 /**
+ * Sibling of safeJson for terminal-artifact reads (PRDs in `prd/`, archived
+ * plans, anything where a missing primary should NOT auto-restore from a
+ * stale `.backup` sidecar). Returns the parsed JSON on success, or null when
+ * the primary is missing or unparseable.
+ *
+ * Why a separate primitive: safeJson's restore-on-miss is correct for live
+ * state files (work-items.json, dispatch.json, pull-requests.json, etc.) but
+ * actively harmful for terminal artifacts. Archived PRDs leave a `.backup`
+ * sidecar in `prd/`; if any caller reads the active path with safeJson, the
+ * .backup is silently restored and the dashboard sees a phantom "active" PRD
+ * (W-mouptdh1000h9f39). PRDs are end-state — no automatic resurrection.
+ *
+ * Parse errors are logged so silent corruption still surfaces (mirrors
+ * safeJson's contract). Read errors other than ENOENT are also logged.
+ */
+function safeJsonNoRestore(p) {
+  let raw;
+  try {
+    raw = fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') {
+      console.warn(`[safeJsonNoRestore] read failed for ${path.basename(p)}: ${e.message}`);
+    }
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (parseErr) {
+    console.error(`[safeJsonNoRestore] parse failure for ${path.basename(p)}: ${parseErr.message}`);
+    return null;
+  }
+}
+
+/**
  * Monotonic counter for generating unique temp file names within this process.
  * Assumes single-thread execution (no worker_threads). If worker_threads are
  * introduced, this must be replaced with an atomic or thread-safe counter to
@@ -1628,12 +1662,15 @@ function sameResolvedPath(a, b) {
 
 function removeLegacyProjectStateDir(project) {
   const dir = legacyProjectStateDir(project);
-  if (!dir) return false;
-  if (sameResolvedPath(dir, MINIONS_DIR)) return false;
+  if (!dir) return { removed: false, error: null };
+  if (sameResolvedPath(dir, MINIONS_DIR)) return { removed: false, error: null };
+  if (!fs.existsSync(dir)) return { removed: false, error: null };
   try {
     fs.rmSync(dir, { recursive: true, force: true });
-    return true;
-  } catch { return false; }
+    return { removed: true, error: null };
+  } catch (err) {
+    return { removed: false, error: err && err.message ? err.message : String(err) };
+  }
 }
 
 function ensureProjectStateFiles(project, options = {}) {
@@ -1643,7 +1680,7 @@ function ensureProjectStateFiles(project, options = {}) {
     { name: 'pull-requests.json', centralPath: projectPrPath(project) },
     { name: 'work-items.json', centralPath: projectWorkItemsPath(project) },
   ];
-  const result = { created: [], migrated: [], removedLegacy: [], legacyDirRemoved: false };
+  const result = { created: [], migrated: [], removedLegacy: [], legacyDirRemoved: false, legacyDirRemoveError: null };
 
   projectStateDirEnsure(project);
   for (const file of files) {
@@ -1676,7 +1713,11 @@ function ensureProjectStateFiles(project, options = {}) {
     }
   }
 
-  if (removeLegacy) result.legacyDirRemoved = removeLegacyProjectStateDir(project);
+  if (removeLegacy) {
+    const res = removeLegacyProjectStateDir(project);
+    result.legacyDirRemoved = res.removed;
+    result.legacyDirRemoveError = res.error;
+  }
   return result;
 }
 
@@ -2977,7 +3018,7 @@ module.exports = {
   log,
   safeRead,
   safeReadDir,
-  safeJson, safeJsonObj, safeJsonArr,
+  safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore,
   safeWrite,
   safeUnlink,
   neutralizeJsonBackupSidecar,

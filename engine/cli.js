@@ -431,8 +431,16 @@ const commands = {
       } else {
         try {
           const state = shared.ensureProjectStateFiles(p, { migrateLegacy: true, removeLegacy: true });
-          if (state.migrated.length > 0 || state.removedLegacy.length > 0) {
-            e.log('info', `Migrated project state for "${p.name}" to projects/${p.name}`);
+          if (state.migrated.length > 0 || state.removedLegacy.length > 0 || state.legacyDirRemoved) {
+            const parts = [];
+            if (state.migrated.length > 0) parts.push(`merged ${state.migrated.join(', ')}`);
+            if (state.removedLegacy.length > 0) parts.push(`removed ${state.removedLegacy.join(', ')}`);
+            if (state.legacyDirRemoved) parts.push(`removed legacy .minions dir`);
+            e.log('info', `Migrated project state for "${p.name}" → projects/${p.name} (${parts.join('; ')})`);
+          }
+          if (state.legacyDirRemoveError) {
+            e.log('warn', `Failed to remove legacy .minions dir for "${p.name}": ${state.legacyDirRemoveError}`);
+            console.log(`  WARNING: legacy .minions dir for "${p.name}" could not be removed: ${state.legacyDirRemoveError}`);
           }
         } catch (err) {
           e.log('warn', `Project state migration failed for "${p.name}": ${err.message}`);

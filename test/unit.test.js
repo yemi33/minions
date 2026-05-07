@@ -14576,6 +14576,8 @@ async function testProjectPathHelpers() {
       assert.ok(!fs.existsSync(path.join(repo, '.minions')), 'project-local .minions must not be created');
       assert.ok(result.created.includes('work-items.json'));
       assert.ok(result.created.includes('pull-requests.json'));
+      assert.strictEqual(result.legacyDirRemoved, false, 'no legacy dir → no removal');
+      assert.strictEqual(result.legacyDirRemoveError, null, 'no error when nothing to remove');
     } finally { restore(); }
   });
 
@@ -14606,6 +14608,7 @@ async function testProjectPathHelpers() {
       assert.ok(result.migrated.includes('work-items.json'));
       assert.ok(result.migrated.includes('pull-requests.json'));
       assert.strictEqual(result.legacyDirRemoved, true, 'legacy project-local .minions dir should be removed');
+      assert.strictEqual(result.legacyDirRemoveError, null, 'no error on successful removal');
       assert.ok(!fs.existsSync(legacyDir), 'legacy project-local .minions dir should be removed after known files move');
     } finally { restore(); }
   });
@@ -14901,6 +14904,59 @@ async function testSafeWriteBackupRestore() {
     assert.deepStrictEqual(result, { valid: true }, 'should return backup data even when restore write fails');
     // Cleanup
     fs.rmdirSync(fp);
+  });
+
+  // ─── safeJsonNoRestore (W-mouptdh1000h9f39) ───────────────────────────────
+  // Sibling of safeJson for terminal-artifact reads (PRDs, archived plans)
+  // where restore-on-miss is actively harmful — see comment in shared.js.
+
+  await test('safeJsonNoRestore returns parsed JSON when primary exists', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'live.json');
+    fs.writeFileSync(fp, JSON.stringify({ ok: true, n: 42 }));
+    const result = shared.safeJsonNoRestore(fp);
+    assert.deepStrictEqual(result, { ok: true, n: 42 });
+  });
+
+  await test('safeJsonNoRestore returns null when primary is missing (no backup restore)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'gone.json');
+    // Plant a valid .backup — safeJson would restore from it, safeJsonNoRestore must not.
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ resurrected: true }));
+    const result = shared.safeJsonNoRestore(fp);
+    assert.strictEqual(result, null,
+      'safeJsonNoRestore must return null instead of restoring from .backup');
+    assert.ok(!fs.existsSync(fp),
+      'safeJsonNoRestore must NOT recreate the primary file from .backup');
+  });
+
+  await test('safeJsonNoRestore returns null on corrupt primary (no backup restore)', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupt.json');
+    fs.writeFileSync(fp, 'NOT JSON{{{');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ resurrected: true }));
+    const origErr = console.error;
+    let result;
+    try { console.error = () => {}; result = shared.safeJsonNoRestore(fp); }
+    finally { console.error = origErr; }
+    assert.strictEqual(result, null);
+    // Primary should remain corrupt — safeJsonNoRestore must NOT overwrite it from .backup
+    const after = fs.readFileSync(fp, 'utf8');
+    assert.strictEqual(after, 'NOT JSON{{{',
+      'safeJsonNoRestore must not rewrite the primary from .backup');
+  });
+
+  await test('safeJson restore-on-miss is preserved for live state files (regression guard)', () => {
+    // Confirms the W-mouptdh1000h9f39 fix did NOT change safeJson's restore-on-miss
+    // behavior — live state files (work-items.json, dispatch.json, etc.) still rely
+    // on it and should keep working.
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'live-state.json');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ live: true }));
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { live: true },
+      'safeJson must still auto-restore live state from .backup');
+    assert.ok(fs.existsSync(fp), 'safeJson must still recreate the primary from .backup');
   });
 
   await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
@@ -20536,6 +20592,7 @@ async function testCheckPlanCompletionIdempotency() {
   // Cleanup helper — removes all test artifacts
   function cleanup() {
     try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(path.join(prdDir, testPlanFile + '.backup')); } catch {}
     try { fs.unlinkSync(path.join(prdArchiveDir, testPlanFile)); } catch {}
     try { fs.unlinkSync(path.join(projectStateDir, 'work-items.json')); } catch {}
     try { fs.unlinkSync(path.join(projectStateDir, 'pull-requests.json')); } catch {}
@@ -20763,6 +20820,77 @@ async function testCheckPlanCompletionIdempotency() {
     assert.ok(prItems[0].description.includes('Untitled'),
       'Shared-branch PR WI description should contain "Untitled" fallback');
   }, cleanup);
+
+  // ── Regression (W-mouptdh1000h9f39): archived PRD must not be resurrected ──
+  // Mechanism: archived PRDs leave a `.backup` sidecar in `prd/`. When a stray
+  // completed work item still carries `sourcePlan: <archived-prd>.json`, the
+  // engine tick eventually calls checkPlanCompletion → safeJson(prd/<file>.json).
+  // The OLD safeJson auto-restored the .backup, recreating the active PRD and
+  // making it visible in the dashboard until the next 10-tick orphan sweep.
+  //
+  // Fix: PRD reads must NOT auto-restore from .backup — PRDs are terminal
+  // artifacts, restore-on-miss is appropriate only for live state files.
+  await test('checkPlanCompletion does NOT resurrect archived PRD from stale .backup sidecar (W-mouptdh1000h9f39)', () => {
+    cleanup();
+    // Set up the landmine: archived PRD lives in prd/archive/, .backup sidecar
+    // still sits in prd/ (pre-neutralize-era residue), no active prd/<file>.json.
+    const archivedPrd = makePrd({
+      status: 'completed',
+      _completionNotified: true,
+      archivedAt: '2026-01-01T00:00:00Z',
+    });
+    shared.safeWrite(path.join(prdArchiveDir, testPlanFile), archivedPrd);
+    fs.writeFileSync(path.join(prdDir, testPlanFile + '.backup'), JSON.stringify(archivedPrd));
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+    assert.ok(!fs.existsSync(path.join(prdDir, testPlanFile)),
+      'Pre-condition: no active PRD in prd/ before the call');
+
+    // Act: call checkPlanCompletion the same way the tick + lifecycle do.
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // Assert: PRIMARY assertion — the active PRD must NOT have been resurrected.
+    assert.ok(!fs.existsSync(path.join(prdDir, testPlanFile)),
+      'checkPlanCompletion must NOT auto-restore prd/<file>.json from .backup sidecar');
+  }, cleanup);
+
+  // ── Stale .backup sweep (W-mouptdh1000h9f39) ──
+  // Independent of MINIONS_TEST_DIR — the helper takes prdDir/prdArchiveDir
+  // as args and operates only on those, so we drive it with a throw-away dir.
+  await test('sweepStaleArchivedPrdBackups deletes .backup when archive exists and active is missing (W-mouptdh1000h9f39)', () => {
+    const engine = require('../engine.js');
+    const tmp = createTmpDir();
+    const prdDirT = path.join(tmp, 'prd');
+    const archDirT = path.join(prdDirT, 'archive');
+    fs.mkdirSync(archDirT, { recursive: true });
+
+    // Three archived PRDs to cover all three branches:
+    //  - foo  : active missing + .backup present  → MUST delete .backup
+    //  - bar  : active missing + no .backup       → no-op (nothing to clean)
+    //  - baz  : active present + .backup present  → MUST keep .backup
+    fs.writeFileSync(path.join(archDirT, 'foo.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'foo.json.backup'), '{}');
+    fs.writeFileSync(path.join(archDirT, 'bar.json'), '{}');
+    fs.writeFileSync(path.join(archDirT, 'baz.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'baz.json'), '{}');
+    fs.writeFileSync(path.join(prdDirT, 'baz.json.backup'), '{}');
+
+    const purged = engine.sweepStaleArchivedPrdBackups(prdDirT, archDirT);
+    assert.strictEqual(purged, 1, 'Exactly one .backup (foo) should be purged');
+    assert.ok(!fs.existsSync(path.join(prdDirT, 'foo.json.backup')),
+      'foo.json.backup must be deleted (active missing, archive exists)');
+    assert.ok(fs.existsSync(path.join(prdDirT, 'baz.json.backup')),
+      'baz.json.backup must NOT be deleted (active still exists — Pass 2 owns that case)');
+  });
+
+  await test('sweepStaleArchivedPrdBackups is idempotent and a no-op when archive dir is missing', () => {
+    const engine = require('../engine.js');
+    const tmp = createTmpDir();
+    const prdDirT = path.join(tmp, 'prd');
+    fs.mkdirSync(prdDirT, { recursive: true });
+    // No prd/archive/ at all
+    const purged = engine.sweepStaleArchivedPrdBackups(prdDirT, path.join(prdDirT, 'archive'));
+    assert.strictEqual(purged, 0, 'Missing archive dir → 0 purges, no throw');
+  });
 
   restore();
 }
@@ -22593,6 +22721,131 @@ async function testSessionResume() {
 
     assert.strictEqual(sessionId, null,
       'stale-by-age path must keep working alongside runtime-mismatch path');
+  });
+
+  // Stale-resume-target invalidation (W-mouugzow00068741): when session.json
+  // points at a UUID whose ~/.claude/projects/<cwd-hash>/<uuid>.jsonl was never
+  // written (agent died before checkpoint), --resume X always fails with "No
+  // conversation found", burning every retry slot. The pre-spawn resume path
+  // must detect the missing jsonl and clear session.json so the next dispatch
+  // starts fresh. Claude-only — Copilot manages its own session storage.
+  await test('claude.getResumeSessionId clears session.json when conversation jsonl missing', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const fakeHome = createTmpDir();
+    const fakeCwd = createTmpDir(); // arbitrary path; Claude derives the project hash dir from this
+    const agentId = 'lambert';
+    const branch = 'work/W-mouugzow00068741';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: '00000000-1111-2222-3333-deadbeefcafe',
+      dispatchId: 'd-stale',
+      savedAt: new Date().toISOString(),  // fresh — only missing jsonl should invalidate
+      branch,
+      runtime: 'claude',
+    }));
+    // Note: deliberately do NOT create ~/.claude/projects/<hash>/<sessionId>.jsonl
+
+    const logs = [];
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      cwd: fakeCwd,
+      homeDir: fakeHome,
+      logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]) },
+    });
+
+    assert.strictEqual(sessionId, null,
+      'getResumeSessionId must return null when the conversation jsonl is missing');
+    assert.strictEqual(fs.existsSync(sessionPath), false,
+      'session.json must be cleared so subsequent retries start fresh (otherwise the stale UUID loops forever)');
+    const staleLog = logs.find(([, m]) => /no conversation jsonl|conversation not persisted|stale resume target/i.test(m));
+    assert.ok(staleLog,
+      'a log line must explain the stale-jsonl reason (distinguishable from age/runtime-mismatch)');
+  });
+
+  await test('claude.getResumeSessionId resumes when conversation jsonl exists', () => {
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const fakeHome = createTmpDir();
+    const fakeCwd = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    const goodSessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: goodSessionId,
+      dispatchId: 'd-good',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+    // Create the conversation jsonl that Claude would have persisted on checkpoint
+    const projectHashDir = path.join(fakeHome, '.claude', 'projects', fakeCwd.replace(/[^a-zA-Z0-9-]/g, '-'));
+    fs.mkdirSync(projectHashDir, { recursive: true });
+    fs.writeFileSync(path.join(projectHashDir, `${goodSessionId}.jsonl`), '{"type":"checkpoint"}\n');
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      cwd: fakeCwd,
+      homeDir: fakeHome,
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, goodSessionId,
+      'happy path: when the jsonl exists, --resume must still be passed so multi-turn workflows keep working');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'session.json must NOT be cleared on the happy path');
+  });
+
+  await test('claude.getResumeSessionId leaves session.json alone when cwd not provided (back-compat)', () => {
+    // Callers that don't yet supply cwd (e.g. older test paths) should keep the
+    // pre-fix behavior — runtime/age checks only, no jsonl probe.
+    const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
+    const dir = createTmpDir();
+    const agentId = 'ripley';
+    const branch = 'work/W-test';
+    fs.mkdirSync(path.join(dir, agentId), { recursive: true });
+    const sessionPath = path.join(dir, agentId, 'session.json');
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      sessionId: 'sess-legacy-no-cwd',
+      dispatchId: 'd-legacy',
+      savedAt: new Date().toISOString(),
+      branch,
+      runtime: 'claude',
+    }));
+
+    const sessionId = claude.getResumeSessionId({
+      agentId,
+      branchName: branch,
+      agentsDir: dir,
+      // cwd intentionally omitted
+      logger: { info() {}, warn() {} },
+    });
+
+    assert.strictEqual(sessionId, 'sess-legacy-no-cwd',
+      'when cwd is not provided, the jsonl probe is skipped and the old behavior is preserved');
+    assert.strictEqual(fs.existsSync(sessionPath), true,
+      'session.json must NOT be cleared when cwd is not provided');
+  });
+
+  await test('engine.js passes cwd into runtime.getResumeSessionId so the jsonl probe runs in production', () => {
+    // Source-level guard: the wiring at engine.js around the spawnAgent resume
+    // lookup must include `cwd` (and ideally `homeDir`) in the call so the
+    // adapter can probe ~/.claude/projects/<hash>/<id>.jsonl. Without this, the
+    // adapter-level fix is dead code in production.
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const resumeCallMatch = engineSrc.match(/runtime\.getResumeSessionId\(\s*\{[\s\S]*?\}\s*\)/);
+    assert.ok(resumeCallMatch,
+      'engine.js must call runtime.getResumeSessionId with an options object');
+    const callBody = resumeCallMatch[0];
+    assert.ok(/\bcwd\b/.test(callBody),
+      'engine.js must pass cwd into runtime.getResumeSessionId so claude.js can probe the conversation jsonl');
   });
 }
 
@@ -28459,11 +28712,26 @@ async function testMeetingInternalHelpers() {
 async function testMeetingsIsolatedGaps() {
   console.log('\n── meeting.js — Gap Coverage (W-mo79lrbnkc71) ──');
 
-  // Non-isolated: exercise the real module; use unique IDs + finally cleanup.
+  // Read-only handle for tests that don't touch disk (EMPTY_OUTPUT_PATTERNS
+  // shape assertions). Anything that calls saveMeeting/advanceMeetingRound/
+  // addMeetingNote/collectMeetingFindings/discoverMeetingWork must run inside
+  // withIsolatedGap() — those writers go through mutateJsonFileLocked which
+  // creates a `<id>.json.backup` sidecar that the previous cleanupReal()
+  // never unlinked, leaking 5 .backup files into the live D:/squad/meetings/
+  // tree on every test run (W-mouto77c).
   const meetingModReal = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
-  const realMeetingsDir = meetingModReal.MEETINGS_DIR;
-  function cleanupReal(id) {
-    try { fs.unlinkSync(path.join(realMeetingsDir, id + '.json')); } catch {}
+
+  // Run a meeting GAP test against a fresh MINIONS_TEST_DIR so the writer
+  // can create + back up the meeting file inside the tmp tree the harness
+  // tears down. Mirrors withIsolatedMeeting() in testMeetingsExtendedBehavioral.
+  function withIsolatedGap(fn) {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      return fn(meetingMod);
+    } finally {
+      restore();
+    }
   }
 
   // ── EMPTY_OUTPUT_PATTERNS ──
@@ -28494,81 +28762,75 @@ async function testMeetingsIsolatedGaps() {
       'real findings that quote placeholder strings should not be in the reject set');
     // And the real behavior: a legitimate finding that includes the
     // phrase as a substring is accepted by collectMeetingFindings.
-    const testId = 'TEST-GAP-pattern-substring-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Substring', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-pattern-substring-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Substring', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
       const output = JSON.stringify({ type: 'result', result: 'Notes about (no output) handling and fallback paths' });
-      meetingModReal.collectMeetingFindings(testId, 'alice', 'investigate', output);
-      const m = meetingModReal.getMeeting(testId);
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', output);
+      const m = meetingMod.getMeeting(testId);
       assert.ok(m.findings.alice, 'real finding that merely mentions a placeholder must be recorded');
       assert.ok(m.findings.alice.content.includes('(no output)'),
         'full content should be preserved verbatim');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── advanceMeetingRound — archived + no-change branches ──
 
   await test('advanceMeetingRound returns null for archived meeting', () => {
-    const testId = 'TEST-GAP-adv-arch-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Archived', status: 'archived', round: 3,
-      participants: ['alice'], findings: {}, debate: {},
-      conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
-      roundStartedAt: new Date().toISOString(),
-      archivedAt: new Date().toISOString(),
-    });
-    try {
-      const result = meetingModReal.advanceMeetingRound(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-adv-arch-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Archived', status: 'archived', round: 3,
+        participants: ['alice'], findings: {}, debate: {},
+        conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
+        roundStartedAt: new Date().toISOString(),
+        archivedAt: new Date().toISOString(),
+      });
+      const result = meetingMod.advanceMeetingRound(testId);
       assert.strictEqual(result, null, 'archived meeting should not advance');
-      const onDisk = meetingModReal.getMeeting(testId);
+      const onDisk = meetingMod.getMeeting(testId);
       assert.strictEqual(onDisk.status, 'archived', 'status must remain archived');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   await test('advanceMeetingRound on unknown status returns meeting unchanged', () => {
     // The "else return meeting" branch: any status not in the known set
     // should short-circuit without touching roundStartedAt or round.
-    const testId = 'TEST-GAP-adv-unknown-' + Date.now();
-    const startedAt = new Date(Date.now() - 5000).toISOString();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Unknown Status', status: 'paused', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: startedAt,
-    });
-    try {
-      const result = meetingModReal.advanceMeetingRound(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-adv-unknown-' + Date.now();
+      const startedAt = new Date(Date.now() - 5000).toISOString();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Unknown Status', status: 'paused', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: startedAt,
+      });
+      const result = meetingMod.advanceMeetingRound(testId);
       assert.ok(result, 'non-terminal unknown status should still return the meeting');
       assert.strictEqual(result.status, 'paused', 'status should be untouched');
       assert.strictEqual(result.round, 1, 'round should be untouched');
       assert.strictEqual(result.roundStartedAt, startedAt,
         'roundStartedAt should NOT be rewritten on the no-change branch');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── addMeetingNote — ordering + existing notes preserved ──
 
   await test('addMeetingNote appends multiple notes in call order', () => {
-    const testId = 'TEST-GAP-note-order-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Note Order', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
-      meetingModReal.addMeetingNote(testId, 'first');
-      meetingModReal.addMeetingNote(testId, 'second');
-      meetingModReal.addMeetingNote(testId, 'third');
-      const m = meetingModReal.getMeeting(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-note-order-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Note Order', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
+      meetingMod.addMeetingNote(testId, 'first');
+      meetingMod.addMeetingNote(testId, 'second');
+      meetingMod.addMeetingNote(testId, 'third');
+      const m = meetingMod.getMeeting(testId);
       assert.deepStrictEqual(m.humanNotes, ['first', 'second', 'third'],
         'notes must be persisted in call order');
       // Every note also appends a transcript entry.
@@ -28576,27 +28838,23 @@ async function testMeetingsIsolatedGaps() {
       assert.strictEqual(noteEntries.length, 3, 'each note adds one transcript entry');
       assert.deepStrictEqual(noteEntries.map(t => t.content),
         ['first', 'second', 'third'], 'transcript order must match humanNotes order');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   await test('addMeetingNote preserves pre-existing human notes', () => {
-    const testId = 'TEST-GAP-note-preserve-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {},
-      humanNotes: ['seeded-1', 'seeded-2'],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
-      const result = meetingModReal.addMeetingNote(testId, 'new-note');
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-note-preserve-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {},
+        humanNotes: ['seeded-1', 'seeded-2'],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
+      const result = meetingMod.addMeetingNote(testId, 'new-note');
       assert.deepStrictEqual(result.humanNotes,
         ['seeded-1', 'seeded-2', 'new-note'],
         'existing humanNotes must be preserved before appending');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
@@ -28631,49 +28889,45 @@ async function testMeetingsIsolatedGaps() {
   // ── collectMeetingFindings — unknown roundName ──
 
   await test('collectMeetingFindings is a no-op for unknown roundName', () => {
-    const testId = 'TEST-GAP-unknown-round-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-unknown-round-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
       const output = JSON.stringify({ type: 'result', result: 'legit content' });
       // Should not throw and should not mutate findings/debate/conclusion.
-      meetingModReal.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
-      const m = meetingModReal.getMeeting(testId);
+      meetingMod.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
+      const m = meetingMod.getMeeting(testId);
       assert.deepStrictEqual(m.findings, {}, 'findings must not be touched');
       assert.deepStrictEqual(m.debate, {}, 'debate must not be touched');
       assert.strictEqual(m.conclusion, null, 'conclusion must not be set');
       assert.strictEqual(m.status, 'investigating', 'status must not change');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── discoverMeetingWork — no work when all submitted ──
 
   await test('discoverMeetingWork returns no items when every participant submitted findings', () => {
-    const testId = 'TEST-GAP-inv-all-done-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
-      round: 1, participants: ['alice', 'bob'],
-      findings: {
-        alice: { content: 'A-content' },
-        bob: { content: 'B-content' },
-      },
-      debate: {}, humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-inv-all-done-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
+        round: 1, participants: ['alice', 'bob'],
+        findings: {
+          alice: { content: 'A-content' },
+          bob: { content: 'B-content' },
+        },
+        debate: {}, humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date().toISOString(),
+      });
       const config = { agents: { alice: { name: 'A' }, bob: { name: 'B' } } };
-      const work = meetingModReal.discoverMeetingWork(config);
+      const work = meetingMod.discoverMeetingWork(config);
       const forThis = work.filter(w => w.meta?.meetingId === testId);
       assert.strictEqual(forThis.length, 0,
         'no new work when all participants already submitted — the engine waits for the status advance instead');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── MINIONS_TEST_DIR isolation — MEETINGS_DIR path refactor verification ──
@@ -43714,6 +43968,57 @@ async function testIsolationVerification() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes('shared.MINIONS_DIR'), 'Should not hardcode path');
   });
+
+  // ── End-of-run leak guard (W-mouto77c) ─────────────────────────────────────
+  // Catches future regressions of the pipeline/meeting CRUD-test isolation work
+  // (#2140 + #2142 + W-mouto77c). Any test that writes _test_*, TEST-*, or
+  // test-* into the live MINIONS_DIR fails the suite here. Looks at both the
+  // primary state files and their .json.backup sidecars (the latter were the
+  // genuine miss before this guard — cleanupReal() only unlinked the .json).
+  // Pattern is anchored on filename start to avoid false positives like
+  // "daily-test-coverage.json".
+  await test('REGRESSION GUARD: no _test_/TEST-/test- leaks in real pipelines/, meetings/, or pipeline-runs.json', () => {
+    // Mirror engine/shared.js MINIONS_DIR resolution so this guard checks the
+    // SAME root the production code writes to. MINIONS_HOME is what makes
+    // worktree-run tests still leak into D:/squad — without honoring it here
+    // the guard is blind to the real leak.
+    const realDir = process.env.MINIONS_HOME
+      ? path.resolve(process.env.MINIONS_HOME)
+      : path.resolve(__dirname, '..');
+    const leakRe = /^(?:_test_|TEST-|test-)/;
+    const leaks = [];
+
+    // 1. pipelines/<id>.json + sidecars
+    const pipelinesDir = path.join(realDir, 'pipelines');
+    if (fs.existsSync(pipelinesDir)) {
+      for (const f of fs.readdirSync(pipelinesDir)) {
+        if (leakRe.test(f)) leaks.push(`pipelines/${f}`);
+      }
+    }
+
+    // 2. meetings/<id>.json + sidecars (the cleanupReal-leak path)
+    const meetingsDir = path.join(realDir, 'meetings');
+    if (fs.existsSync(meetingsDir)) {
+      for (const f of fs.readdirSync(meetingsDir)) {
+        if (leakRe.test(f)) leaks.push(`meetings/${f}`);
+      }
+    }
+
+    // 3. engine/pipeline-runs.json keyed by pipelineId at top level
+    const runsPath = path.join(realDir, 'engine', 'pipeline-runs.json');
+    if (fs.existsSync(runsPath)) {
+      try {
+        const runs = JSON.parse(fs.readFileSync(runsPath, 'utf8'));
+        for (const k of Object.keys(runs || {})) {
+          if (leakRe.test(k)) leaks.push(`engine/pipeline-runs.json key: ${k}`);
+        }
+      } catch { /* malformed file — not this guard's concern */ }
+    }
+
+    assert.strictEqual(leaks.length, 0,
+      'Tests leaked into live state — isolate writers via createTestMinionsDir() or scrub sidecars in finally:\n  ' +
+      leaks.join('\n  '));
+  });
 }
 
 // ─── Session 2026-04-08: slugify, formatTranscriptEntry, pipeline reconciliation ──
@@ -54308,9 +54613,16 @@ async function testPipelineBehavioral() {
   // ── Full run lifecycle: start → update → complete ──
 
   await test('full run lifecycle: start → update stages → complete', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_lifecycle_' + Date.now();
+    // Isolated: under MINIONS_HOME=D:/squad, the pipeline module's
+    // PIPELINE_RUNS_PATH resolves to the live engine/pipeline-runs.json
+    // while the prior cleanup read from MINIONS_DIR (the worktree) — the
+    // mismatch made the cleanup a no-op and leaked _test_lifecycle_* keys
+    // (W-mouto77c). createTestMinionsDir() points pipeline writes at the
+    // tmp tree where the harness's tmp-dir teardown cleans up.
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_lifecycle_' + Date.now();
       const pipelineDef = {
         id: testPipelineId,
         stages: [
@@ -54355,12 +54667,7 @@ async function testPipelineBehavioral() {
       assert.strictEqual(finalRun.stages.test.status, 'completed');
       assert.strictEqual(finalRun.stages.test.output, 'Tests passed');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
@@ -57611,6 +57918,111 @@ async function testEngineHelperCoverage() {
     const bogus = path.join(createTmpDir(), 'does', 'not', 'exist');
     // fs.existsSync on missing nested dir returns false → no-op, must not throw
     engine.removeStaleIndexLock(bogus);
+  });
+
+  // ── syncReusedWorktree ──
+  // Regression: every retry of a WI whose first attempt died before pushing
+  // produced a "couldn't find remote ref" warn pair on every subsequent
+  // worktree reuse (engine.js:592-596). The helper probes ls-remote first to
+  // skip silently when the branch is local-only.
+
+  // Helper: build a real local repo with a bare origin remote. Returns
+  // { rootDir, remoteDir }. Caller can then create branches with/without
+  // pushing them to verify behavior.
+  function _setupLocalRepoWithOrigin() {
+    const { execSync } = require('child_process');
+    const remoteDir = createTmpDir();
+    const rootDir = createTmpDir();
+    const gitOpts = { stdio: 'pipe', windowsHide: true };
+    execSync(`git init --bare --initial-branch=master "${remoteDir}"`, gitOpts);
+    execSync(`git init --initial-branch=master "${rootDir}"`, gitOpts);
+    execSync(`git -C "${rootDir}" config user.email a@b.c`, gitOpts);
+    execSync(`git -C "${rootDir}" config user.name test`, gitOpts);
+    execSync(`git -C "${rootDir}" config commit.gpgsign false`, gitOpts);
+    fs.writeFileSync(path.join(rootDir, 'README.md'), 'init\n');
+    execSync(`git -C "${rootDir}" add README.md`, gitOpts);
+    execSync(`git -C "${rootDir}" commit -m init`, gitOpts);
+    execSync(`git -C "${rootDir}" remote add origin "${remoteDir}"`, gitOpts);
+    execSync(`git -C "${rootDir}" push -u origin master`, gitOpts);
+    return { rootDir, remoteDir };
+  }
+
+  await test('syncReusedWorktree skips fetch+pull silently when branch is not on origin', async () => {
+    const { execSync } = require('child_process');
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      const s = require('../engine/shared');
+      const { rootDir } = _setupLocalRepoWithOrigin();
+      // Create a local-only branch — never pushed
+      const localOnlyBranch = 'work/W-test-never-pushed';
+      execSync(`git -C "${rootDir}" branch "${localOnlyBranch}" master`, { stdio: 'pipe', windowsHide: true });
+
+      // Drain any prior buffered log entries so our assertion sees only this call's output
+      s.flushLogs();
+      const logPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'log.json');
+      const beforeLen = JSON.parse(fs.readFileSync(logPath, 'utf8')).length;
+
+      const result = await e.syncReusedWorktree(rootDir, rootDir, localOnlyBranch);
+
+      assert.strictEqual(result.skipped, true, 'should skip when branch is not on origin');
+      assert.strictEqual(result.reason, 'no-upstream', 'should report no-upstream as the reason');
+
+      s.flushLogs();
+      const after = JSON.parse(fs.readFileSync(logPath, 'utf8')).slice(beforeLen);
+      const noisyWarn = after.find(e => e.level === 'warn' && /couldn't find remote ref/.test(e.message || ''));
+      assert.ok(!noisyWarn, `must NOT log warn-level "couldn't find remote ref" for local-only branch (got: ${JSON.stringify(noisyWarn)})`);
+      const skipInfo = after.find(e => e.level === 'info' && /not on origin yet/.test(e.message || ''));
+      assert.ok(skipInfo, 'should log an info message explaining the skip');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('syncReusedWorktree runs fetch+pull when branch IS on origin', async () => {
+    const { execSync } = require('child_process');
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      const s = require('../engine/shared');
+      const { rootDir } = _setupLocalRepoWithOrigin();
+      // master IS on origin (we pushed -u in setup)
+      s.flushLogs();
+      const logPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'log.json');
+      const beforeLen = JSON.parse(fs.readFileSync(logPath, 'utf8')).length;
+
+      const result = await e.syncReusedWorktree(rootDir, rootDir, 'master');
+
+      assert.strictEqual(result.skipped, false, 'should NOT skip when branch is on origin');
+
+      s.flushLogs();
+      const after = JSON.parse(fs.readFileSync(logPath, 'utf8')).slice(beforeLen);
+      // Genuine sync should not emit "couldn't find remote ref" either, and
+      // shouldn't emit the skip-info message.
+      const noisyWarn = after.find(e => e.level === 'warn' && /couldn't find remote ref/.test(e.message || ''));
+      assert.ok(!noisyWarn, 'no remote-ref warning expected for an existing remote branch');
+      const skipInfo = after.find(e => e.level === 'info' && /not on origin yet/.test(e.message || ''));
+      assert.ok(!skipInfo, 'should not log skip-info when branch IS on origin');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('syncReusedWorktree never throws — dispatch must continue on probe failure', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const e = require('../engine.js');
+      // Point at a non-existent directory: every git command will fail. The
+      // helper must still resolve cleanly (the dispatch contract requires it).
+      const bogusRoot = path.join(createTmpDir(), 'nope');
+      const result = await e.syncReusedWorktree(bogusRoot, bogusRoot, 'work/anything');
+      // Not "skipped" — the failure isn't exit-code 2, so we fall through to
+      // the fetch path which also fails and gets logged at warn. The contract
+      // is "never throws"; the return shape is informational only.
+      assert.ok(result && typeof result.skipped === 'boolean', 'must return a structured result');
+    } finally {
+      restore();
+    }
   });
 
   // ── buildProjectContext ──
