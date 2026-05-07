@@ -2300,6 +2300,50 @@ function updateSession(store, key, sessionId, existing) {
   }
 }
 
+// Pre-flight check: when the resolved runtime publishes a model catalog, reject
+// configs whose model isn't in it BEFORE spawning. Without this guard, Copilot
+// crashes mid-call ("Copilot rejected the requested model"), which empties the
+// stream, drops the doc-chat session, and surfaces as a confusing
+// "agent exited unexpectedly" banner with no actionable cause. We pull the
+// adapter via llm._resolveRuntimeFor + llm._resolveModelForRuntime so the same
+// resolution path llm.callLLM uses produces the same final model string.
+// Returns a structured error result ({code, errorClass, errorMessage}) on
+// rejection, or null when the call should proceed. Catalog-less runtimes
+// (Claude) always proceed — no opinion.
+async function _preflightModelCheck({ runtime: cliOverride, model: modelOverride, engineConfig }) {
+  let adapter;
+  try {
+    adapter = llm._resolveRuntimeFor({ cli: cliOverride, engineConfig });
+  } catch { return null; }
+  if (!adapter) return null;
+  const resolvedModel = llm._resolveModelForRuntime(adapter, { model: modelOverride, engineConfig });
+  if (!resolvedModel) return null;
+  if (!adapter.capabilities || adapter.capabilities.modelDiscovery !== true) return null;
+
+  let list;
+  try {
+    const md = require('./engine/model-discovery');
+    list = await md.getRuntimeModels(adapter.name, { config: { engine: engineConfig || {} } });
+  } catch { return null; }
+  if (!list || !Array.isArray(list.models) || list.models.length === 0) return null;
+
+  const known = new Set(list.models.map(m => m && (m.id || m.name)).filter(Boolean));
+  if (known.has(resolvedModel)) return null;
+
+  const sample = [...known].slice(0, 4).join(', ') + (known.size > 4 ? '…' : '');
+  return {
+    text: null,
+    code: 1,
+    errorClass: 'unknown-model',
+    errorMessage: `Configured model "${resolvedModel}" is not valid for runtime "${adapter.name}" (known: ${sample}). Update engine.ccModel or engine.defaultModel.`,
+    runtime: adapter.name,
+    sessionId: null,
+    usage: null,
+    stderr: '',
+    toolUses: [],
+  };
+}
+
 /**
  * Core LLM call — shared by CC panel and doc modals.
  * @param {string} message - User message
@@ -2316,6 +2360,13 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
+
+  const preflight = await _preflightModelCheck({ model, engineConfig: CONFIG.engine });
+  if (preflight) {
+    console.warn(`[${label}] Pre-flight rejected: ${preflight.errorMessage}`);
+    return preflight;
+  }
+
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
@@ -2405,6 +2456,13 @@ async function ccCallStreaming(message, { store = 'cc', sessionKey, extraContext
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
+
+  const preflight = await _preflightModelCheck({ model, engineConfig: CONFIG.engine });
+  if (preflight) {
+    console.warn(`[${label}] Pre-flight rejected: ${preflight.errorMessage}`);
+    return preflight;
+  }
+
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
@@ -2574,6 +2632,7 @@ function _docChatErrorMessage(errorClass, sessionPreserved = false, toolUses = [
   if (errorClass === 'context-limit') return 'Session context is too long. Click "Clear" to start a fresh conversation.' + toolHint;
   if (errorClass === 'budget-exceeded') return (errorMessage || 'Runtime budget exceeded — check your account or quota.') + toolHint;
   if (errorClass === 'crash') return (errorMessage || 'Runtime crashed unexpectedly. Try again.') + toolHint;
+  if (errorClass === 'unknown-model') return (errorMessage || 'Configured model is not valid for the active runtime. Update engine.ccModel or engine.defaultModel.') + toolHint;
   if (sessionPreserved) return 'Temporary connection issue — your conversation is intact, send your message again.' + toolHint;
   if (tools.length > 0) return 'The agent stopped responding before producing a final answer.' + toolHint;
   return 'Failed to process request. Try again.';

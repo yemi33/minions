@@ -158,6 +158,15 @@ function resolveBinary({ env = process.env } = {}) {
 // adapter maps those aliases to Copilot model IDs while passing all other input
 // through verbatim. The capability remains false: Copilot CLI does not accept
 // these aliases directly.
+//
+// `resolveModel` ALSO normalizes Anthropic-style hyphenated IDs that callers may
+// have inherited from a Claude-runtime config. `claude-opus-4-7` and
+// `claude-opus-4-7-1m` are passed through verbatim by Claude (which has no
+// catalog), so when a user runs `minions config set-cli copilot` without
+// updating `defaultModel` the hyphenated ID lands in Copilot's --model arg and
+// the CLI rejects it. We translate the inter-version hyphen to a dot and fall
+// through to catalog matching when one is cached, which is the common case for
+// installs that have run model discovery at least once.
 
 const _MINIONS_MODEL_ALIASES = {
   haiku: 'claude-haiku-4.5',
@@ -165,12 +174,71 @@ const _MINIONS_MODEL_ALIASES = {
   opus: 'claude-opus-4.5',
 };
 
+// Read the cached catalog (engine/copilot-models.json) and return a Set of IDs.
+// Returns null when the cache is missing/empty so callers can fall through to
+// passthrough behavior — never throws, never reaches the network.
+function _readCatalogIds() {
+  const cached = _safeJson(MODELS_CACHE);
+  const list = cached && Array.isArray(cached.models) ? cached.models : null;
+  if (!list || list.length === 0) return null;
+  const ids = new Set();
+  for (const m of list) {
+    const id = m && (m.id || m.name);
+    if (id) ids.add(String(id));
+  }
+  return ids.size > 0 ? ids : null;
+}
+
+// Translate Anthropic-style hyphenated `claude-(family)-X-Y[-suffix]` to
+// Copilot's dot form `claude-(family)-X.Y[-suffix]`. Returns the transformed
+// string (or the original when the pattern doesn't match) — a separate catalog
+// match check then decides whether the result is usable.
+function _hyphenToDotVersion(s) {
+  return s.replace(/^(claude-(?:opus|sonnet|haiku))-(\d+)-(\d+)(.*)$/i, '$1-$2.$3$4');
+}
+
 function resolveModel(input) {
   if (input == null || input === '') return undefined;
   const s = String(input);
   const mapped = _MINIONS_MODEL_ALIASES[s.toLowerCase()];
   if (mapped) return mapped;
-  return s;
+
+  const catalog = _readCatalogIds();
+  if (catalog && catalog.has(s)) return s;
+
+  const dotted = _hyphenToDotVersion(s);
+  if (dotted !== s && catalog) {
+    if (catalog.has(dotted)) return dotted;
+    // `-1m` Anthropic suffix maps to Copilot's `-1m-internal` variant when
+    // present in the catalog. Other suffixes pass through unchanged.
+    if (/-1m$/i.test(dotted) && catalog.has(`${dotted}-internal`)) {
+      return `${dotted}-internal`;
+    }
+  }
+  // No catalog (test env, no token) OR no match — passthrough so the original
+  // input still reaches the CLI for an authoritative reject. Hyphen→dot is
+  // applied even without a catalog, since the dot form is universally what
+  // Copilot expects and the alternative is a guaranteed reject.
+  return dotted !== s && !catalog ? dotted : s;
+}
+
+// Heuristic: does `model` look like a Copilot-namespace identifier? Mirrors
+// engine/runtimes/claude.js#modelLooksFamiliar so engine/cli.js#_modelLooksIncompatible
+// can warn when a fleet/CC switch strands an incompatible model. Accepts the
+// three Minions short aliases (`sonnet`/`opus`/`haiku`) since the adapter
+// translates them to valid Copilot IDs at argv-build time. Returning false
+// means "this looks wrong for Copilot" — anything outside Anthropic / OpenAI /
+// catalog membership is flagged.
+function modelLooksFamiliar(model) {
+  if (!model) return true;
+  const m = String(model).toLowerCase();
+  if (m === 'sonnet' || m === 'opus' || m === 'haiku') return true;
+  if (m.startsWith('claude-')) return true;
+  if (m.startsWith('gpt-')) return true;
+  if (m.startsWith('o3') || m.startsWith('o4')) return true;
+  const catalog = _readCatalogIds();
+  if (catalog && catalog.has(m)) return true;
+  return false;
 }
 
 /**
@@ -872,6 +940,7 @@ module.exports = {
   usesSystemPromptFile,
   classifyFailure,
   resolveModel,
+  modelLooksFamiliar,
   parseOutput,
   parseStreamChunk,
   parseError,
@@ -881,5 +950,7 @@ module.exports = {
   _MINIONS_MODEL_ALIASES,
   _mapEffort,
   _copilotAssistantMessageHasTools,
+  _readCatalogIds,
+  _hyphenToDotVersion,
   KNOWN_EVENT_TYPES,
 };

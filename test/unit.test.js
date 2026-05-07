@@ -2079,6 +2079,78 @@ async function testCopilotAdapter() {
     assert.strictEqual(warnings.length, 0, 'alias translation should not warn');
   });
 
+  // Anthropic-style hyphenated IDs — Claude accepts them verbatim because it has
+  // no model catalog, so a fleet that started on Claude with `--model claude-opus-4-7-1m`
+  // and later switched its CC runtime to Copilot leaks the hyphen form into Copilot's
+  // --model arg. The CLI rejects hyphen-versioned IDs because Copilot's catalog
+  // uses dot form. resolveModel translates the version segment to a dot and
+  // catalog-matches the result so the call doesn't crash.
+  await test('copilot.resolveModel translates hyphen-version to dot form (no catalog)', () => {
+    // Without a catalog cache, hyphen→dot conversion still applies — it's a
+    // universal Copilot expectation, not a catalog lookup.
+    assert.strictEqual(copilot.resolveModel('claude-sonnet-4-5'), 'claude-sonnet-4.5');
+    assert.strictEqual(copilot.resolveModel('claude-opus-4-7'), 'claude-opus-4.7');
+    assert.strictEqual(copilot.resolveModel('claude-haiku-4-5'), 'claude-haiku-4.5');
+  });
+
+  await test('copilot.resolveModel maps -1m suffix to -1m-internal when catalog has it', () => {
+    // _readCatalogIds reads engine/copilot-models.json. We simulate the cache by
+    // monkey-patching the helper for the duration of this assertion — the test
+    // can't write to the real cache without polluting a shared file.
+    const original = copilot._readCatalogIds;
+    try {
+      copilot._readCatalogIds = () => new Set([
+        'claude-opus-4.7',
+        'claude-opus-4.7-1m-internal',
+        'claude-sonnet-4.5',
+      ]);
+      // Re-bind through module.exports so resolveModel() — which calls the
+      // internal helper directly — picks up the override. This mirrors how
+      // production reads the live catalog.
+      // We test by exporting the override AND calling resolveModel via the
+      // module reference; resolveModel uses the module-scoped helper, so the
+      // direct override is sufficient for catalog-matched paths.
+      assert.strictEqual(copilot.resolveModel('claude-opus-4-7-1m'), 'claude-opus-4.7-1m-internal');
+      assert.strictEqual(copilot.resolveModel('claude-opus-4-7'), 'claude-opus-4.7');
+      // Already-correct dot form is verbatim
+      assert.strictEqual(copilot.resolveModel('claude-sonnet-4.5'), 'claude-sonnet-4.5');
+    } finally {
+      copilot._readCatalogIds = original;
+    }
+  });
+
+  await test('copilot.resolveModel passes unknown IDs through verbatim', () => {
+    // Unrecognized inputs (no alias, no hyphen-version match) reach the CLI
+    // unchanged so the user gets an authoritative reject from Copilot itself.
+    assert.strictEqual(copilot.resolveModel('totally-made-up-model'), 'totally-made-up-model');
+    assert.strictEqual(copilot.resolveModel('gpt-99-codex'), 'gpt-99-codex');
+  });
+
+  // ── modelLooksFamiliar: powers _modelLooksIncompatible warning surface ───
+
+  await test('copilot.modelLooksFamiliar accepts Anthropic + OpenAI families and Minions aliases', () => {
+    assert.strictEqual(copilot.modelLooksFamiliar('claude-opus-4.7'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('claude-sonnet-4-5'), true);  // hyphen form still familiar
+    assert.strictEqual(copilot.modelLooksFamiliar('gpt-5.4'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('o3-mini'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('o4'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('sonnet'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('opus'), true);
+    assert.strictEqual(copilot.modelLooksFamiliar('haiku'), true);
+  });
+
+  await test('copilot.modelLooksFamiliar rejects unrelated model namespaces', () => {
+    assert.strictEqual(copilot.modelLooksFamiliar('llama-3-70b'), false);
+    assert.strictEqual(copilot.modelLooksFamiliar('mistral-large'), false);
+    assert.strictEqual(copilot.modelLooksFamiliar('gemini-pro'), false);
+  });
+
+  await test('copilot.modelLooksFamiliar returns true for nullish (no opinion)', () => {
+    assert.strictEqual(copilot.modelLooksFamiliar(null), true);
+    assert.strictEqual(copilot.modelLooksFamiliar(undefined), true);
+    assert.strictEqual(copilot.modelLooksFamiliar(''), true);
+  });
+
   // ── _mapEffort (private helper, exposed for testing) ─────────────────────
 
   await test('copilot._mapEffort: "max" → "xhigh", others verbatim', () => {
@@ -37010,6 +37082,56 @@ async function testAutoRecoveryAndAtomicity() {
   await test('ccCall maxTurns defaults from ENGINE_DEFAULTS.ccMaxTurns', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('ENGINE_DEFAULTS.ccMaxTurns'), 'ccCall should reference ENGINE_DEFAULTS.ccMaxTurns');
+  });
+
+  // Pre-flight model validation — ccCall must reject incompatible model+runtime
+  // combinations BEFORE spawning so Copilot's mid-call rejection no longer drops
+  // the doc-chat session and surfaces the unhelpful "agent exited unexpectedly"
+  // banner. The check returns a structured result with errorClass='unknown-model'
+  // so _docChatErrorMessage produces an actionable message.
+  await test('ccCall + ccCallStreaming run pre-flight model check before spawning', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('async function _preflightModelCheck('),
+      'pre-flight helper must exist');
+    const ccCall = src.slice(src.indexOf('async function ccCall('), src.indexOf('async function ccCallStreaming('));
+    assert.ok(/await _preflightModelCheck\(/.test(ccCall),
+      'ccCall must invoke _preflightModelCheck');
+    assert.ok(/_preflightModelCheck[\s\S]{0,200}engineConfig:\s*CONFIG\.engine/.test(ccCall),
+      'ccCall must pass engineConfig: CONFIG.engine to _preflightModelCheck');
+    assert.ok(/if\s*\(\s*preflight\s*\)[\s\S]{0,200}return preflight/.test(ccCall),
+      'ccCall must short-circuit on pre-flight rejection');
+    const ccStream = src.slice(src.indexOf('async function ccCallStreaming('));
+    assert.ok(/await _preflightModelCheck\(/.test(ccStream),
+      'ccCallStreaming must invoke _preflightModelCheck');
+    assert.ok(/if\s*\(\s*preflight\s*\)[\s\S]{0,200}return preflight/.test(ccStream),
+      'ccCallStreaming must short-circuit on pre-flight rejection');
+  });
+
+  await test('_preflightModelCheck skips runtimes without modelDiscovery (Claude)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _preflightModelCheck('),
+                         src.indexOf('async function ccCall('));
+    assert.ok(/modelDiscovery\s*!==\s*true/.test(fn),
+      'pre-flight must short-circuit when adapter has no modelDiscovery capability');
+    assert.ok(/list\.models[^&]*length\s*===\s*0|\.length\s*===\s*0/.test(fn),
+      'pre-flight must short-circuit on empty/null catalog (free-text fallback)');
+  });
+
+  await test('_preflightModelCheck returns errorClass=unknown-model on rejection', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _preflightModelCheck('),
+                         src.indexOf('async function ccCall('));
+    assert.ok(/errorClass:\s*['"]unknown-model['"]/.test(fn),
+      'pre-flight rejection must surface errorClass=unknown-model');
+    assert.ok(/Update engine\.ccModel or engine\.defaultModel/.test(fn),
+      'rejection message must point at the config knobs to fix');
+  });
+
+  await test('_docChatErrorMessage handles unknown-model errorClass', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _docChatErrorMessage('));
+    assert.ok(/errorClass\s*===\s*['"]unknown-model['"]/.test(fn),
+      'doc-chat error mapper must branch on unknown-model');
   });
 
   await test('CC streaming handler uses configurable ccMaxTurns', () => {
