@@ -5,9 +5,58 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 
-const MINIONS_DIR = process.env.MINIONS_TEST_DIR || (process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : path.resolve(__dirname, '..'));
+const PACKAGE_ROOT = path.resolve(__dirname, '..');
+const DEFAULT_MINIONS_HOME = path.join(os.homedir(), '.minions');
+const ROOT_POINTER_PATH = path.join(os.homedir(), '.minions-root');
+
+function isInstalledRoot(dir) {
+  if (!dir) return false;
+  return fs.existsSync(path.join(dir, 'engine.js')) &&
+    fs.existsSync(path.join(dir, 'dashboard.js')) &&
+    fs.existsSync(path.join(dir, 'minions.js'));
+}
+
+function isSourceCheckoutRoot(dir) {
+  return !!dir && fs.existsSync(path.join(dir, '.git'));
+}
+
+function readMinionsRootPointer() {
+  try {
+    const p = fs.readFileSync(ROOT_POINTER_PATH, 'utf8').trim();
+    return p ? path.resolve(p) : null;
+  } catch { return null; }
+}
+
+function saveMinionsRootPointer(root) {
+  try { fs.writeFileSync(ROOT_POINTER_PATH, path.resolve(root)); } catch {}
+}
+
+function resolveMinionsHome(forInit = false, options = {}) {
+  const envHome = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : null;
+  if (envHome) return envHome;
+
+  if (forInit) return DEFAULT_MINIONS_HOME;
+
+  const packageRoot = options.packageRoot ? path.resolve(options.packageRoot) : PACKAGE_ROOT;
+  if (options.preferSourceCheckout && isSourceCheckoutRoot(packageRoot)) return packageRoot;
+
+  const pointerRoot = readMinionsRootPointer();
+  if (isInstalledRoot(pointerRoot)) return pointerRoot;
+
+  if (isInstalledRoot(DEFAULT_MINIONS_HOME)) return DEFAULT_MINIONS_HOME;
+
+  if (options.allowPackageRootFallback && isInstalledRoot(packageRoot)) return packageRoot;
+
+  return DEFAULT_MINIONS_HOME;
+}
+
+const MINIONS_DIR = process.env.MINIONS_TEST_DIR || resolveMinionsHome(false, {
+  allowPackageRootFallback: true,
+  preferSourceCheckout: true,
+});
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const CONTROL_PATH = path.join(ENGINE_DIR, 'control.json');
 const COOLDOWNS_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
@@ -3055,6 +3104,8 @@ module.exports = {
   safeJson, safeJsonObj, safeJsonArr, safeJsonNoRestore,
   safeWrite,
   safeUnlink,
+  resolveMinionsHome,
+  saveMinionsRootPointer,
   neutralizeJsonBackupSidecar,
   PROMPT_CONTEXTS_DIR,
   dispatchPromptSidecarPath,
