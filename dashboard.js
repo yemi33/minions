@@ -1664,6 +1664,19 @@ function _extractActionsJson(segment) {
   return null;
 }
 
+const CC_DISPATCH_ACTION_ALIASES = new Set(['fix', 'implement', 'explore', 'review', 'test']);
+
+function normalizeCCAction(action) {
+  if (!action || typeof action !== 'object') return action;
+  if (typeof action.type !== 'string') return action;
+  const type = action.type.trim().toLowerCase();
+  if (type === 'dispatch') {
+    return action.type === 'dispatch' ? action : { ...action, type: 'dispatch' };
+  }
+  if (!CC_DISPATCH_ACTION_ALIASES.has(type)) return action;
+  return { ...action, type: 'dispatch', workType: action.workType || type };
+}
+
 function parseCCActions(text) {
   let actions = [];
   let displayText = stripCCActionsForDisplay(text);
@@ -1704,6 +1717,7 @@ function parseCCActions(text) {
       parseError = null; // legacy fallback recovered actions
     }
   }
+  actions = actions.map(normalizeCCAction);
   const result = { text: displayText, actions };
   if (parseError && actions.length === 0) {
     result._actionParseError = parseError;
@@ -2099,7 +2113,8 @@ function _ccValidateAction(action) {
 
 async function executeCCActions(actions) {
   const results = [];
-  for (const action of actions) {
+  for (const rawAction of actions) {
+    const action = normalizeCCAction(rawAction);
     const validationError = _ccValidateAction(action);
     if (validationError) {
       results.push({ type: action?.type || 'unknown', error: validationError });
@@ -2108,7 +2123,7 @@ async function executeCCActions(actions) {
     try {
       switch (action.type) {
         case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {
-          const workType = routing.normalizeWorkType(action.workType || (action.type !== 'dispatch' ? action.type : WORK_TYPE.IMPLEMENT), WORK_TYPE.IMPLEMENT);
+          const workType = routing.normalizeWorkType(action.workType || WORK_TYPE.IMPLEMENT, WORK_TYPE.IMPLEMENT);
           const id = 'W-' + shared.uid();
           const project = action.project || '';
           const prRef = getWorkItemPrRef(action);
