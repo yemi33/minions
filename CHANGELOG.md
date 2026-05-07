@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1776 (2026-05-07)
+
+### Fixes
+- refuse worktree paths nested in any project root
+
 ## 0.1.1774 (2026-05-07)
 
 ### Features
