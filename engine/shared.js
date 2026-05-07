@@ -168,12 +168,26 @@ function log(level, msg, meta = {}) {
  * That leaked test pollution into the live engine log (e.g. `_test/backoff-*`,
  * `this-playbook-does-not-exist-xyz`, `TEST-EXT-*` meeting IDs).
  *
- * Lazy resolution honors the *current* `MINIONS_TEST_DIR` at flush time, so
- * even unbussed dependents write to the test dir while the test owns it.
+ * Resolution order:
+ *   1. `MINIONS_TEST_DIR` — per-test isolation root (regression tests rely
+ *      on this — log goes to `<tmpdir>/engine/log.json`).
+ *   2. `MINIONS_LOG_PATH` — default test log target. Set at the top of
+ *      `test/unit.test.js` so tests that exercise log() without explicit
+ *      isolation (e.g. github backoff helpers, cooldown helpers) still land
+ *      in a benign tmp file instead of the live `D:/squad/engine/log.json`.
+ *   3. `MINIONS_HOME` / repo root fallback — production behavior.
+ *
+ * Lazy resolution honors the *current* env at flush time, so even unbussed
+ * dependents write to the test dir while the test owns it.
  */
 function _currentLogPath() {
-  const root = process.env.MINIONS_TEST_DIR
-    || (process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : path.resolve(__dirname, '..'));
+  if (process.env.MINIONS_TEST_DIR) {
+    return path.join(path.resolve(process.env.MINIONS_TEST_DIR), 'engine', 'log.json');
+  }
+  if (process.env.MINIONS_LOG_PATH) {
+    return path.resolve(process.env.MINIONS_LOG_PATH);
+  }
+  const root = process.env.MINIONS_HOME ? path.resolve(process.env.MINIONS_HOME) : path.resolve(__dirname, '..');
   return path.join(root, 'engine', 'log.json');
 }
 
