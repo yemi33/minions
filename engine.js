@@ -1016,6 +1016,10 @@ async function spawnAgent(dispatchItem, config) {
       agentId,
       branchName,
       agentsDir: AGENTS_DIR,
+      // Pass the working directory so the Claude adapter can probe for the
+      // conversation jsonl and avoid `--resume <dead-uuid>` retry loops when
+      // the agent died before checkpoint (W-mouugzow00068741).
+      cwd,
       logger: _runtimeLogger(),
     });
   }
