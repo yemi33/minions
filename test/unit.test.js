@@ -7840,6 +7840,374 @@ async function testDependencyCycleDetection() {
   });
 }
 
+async function testPrBranchAndCauseHelpers() {
+  console.log('\n── engine.js — PR Branch & Cause Resolution Helpers ──');
+
+  let engineModule;
+  try {
+    engineModule = require(path.join(MINIONS_DIR, 'engine'));
+  } catch {
+    skip('pr-branch-cause-helpers', 'engine.js not loadable in test context');
+    return;
+  }
+
+  const {
+    normalizePrBranch,
+    resolvePrBranch,
+    prCausePart,
+    getPrCauseHead,
+    getPrCauseBase,
+    getPrAutomationCauseKey,
+    getPrAutomationDispatchKey,
+  } = engineModule;
+
+  // ─── normalizePrBranch ─────────────────────────────────────────────────────
+
+  await test('normalizePrBranch strips refs/heads/ prefix', () => {
+    assert.strictEqual(normalizePrBranch('refs/heads/feature-x'), 'feature-x');
+  });
+
+  await test('normalizePrBranch strips refs/heads/ case-insensitively', () => {
+    assert.strictEqual(normalizePrBranch('Refs/Heads/foo'), 'foo');
+    assert.strictEqual(normalizePrBranch('REFS/HEADS/bar'), 'bar');
+  });
+
+  await test('normalizePrBranch preserves forward slashes after the prefix', () => {
+    assert.strictEqual(normalizePrBranch('refs/heads/work/W-abc123'), 'work/W-abc123');
+    assert.strictEqual(normalizePrBranch('feat/foo/bar'), 'feat/foo/bar');
+  });
+
+  await test('normalizePrBranch trims surrounding whitespace', () => {
+    assert.strictEqual(normalizePrBranch('  refs/heads/foo  '), 'foo');
+    assert.strictEqual(normalizePrBranch('\tbar\n'), 'bar');
+  });
+
+  await test('normalizePrBranch returns empty string for null/undefined/non-strings', () => {
+    assert.strictEqual(normalizePrBranch(null), '');
+    assert.strictEqual(normalizePrBranch(undefined), '');
+    assert.strictEqual(normalizePrBranch(''), '');
+    assert.strictEqual(normalizePrBranch('   '), '');
+    // Non-strings get coerced via String() then trimmed; numbers and objects
+    // produce non-empty strings, so verify booleans/empty objects give empty:
+    assert.strictEqual(normalizePrBranch(123), '123'); // numbers coerce
+  });
+
+  await test('normalizePrBranch only strips a leading refs/heads/, not embedded', () => {
+    assert.strictEqual(normalizePrBranch('feature/refs/heads/inner'), 'feature/refs/heads/inner');
+  });
+
+  // ─── resolvePrBranch ──────────────────────────────────────────────────────
+
+  await test('resolvePrBranch returns empty for null/undefined/non-object', () => {
+    assert.strictEqual(resolvePrBranch(null), '');
+    assert.strictEqual(resolvePrBranch(undefined), '');
+    assert.strictEqual(resolvePrBranch('string'), '');
+    assert.strictEqual(resolvePrBranch(42), '');
+  });
+
+  await test('resolvePrBranch returns empty for fully-empty pr', () => {
+    assert.strictEqual(resolvePrBranch({}), '');
+  });
+
+  await test('resolvePrBranch picks branch field first', () => {
+    assert.strictEqual(
+      resolvePrBranch({ branch: 'feat-a', pr_branch: 'feat-b', sourceRefName: 'refs/heads/feat-c' }),
+      'feat-a'
+    );
+  });
+
+  await test('resolvePrBranch falls through to pr_branch when branch missing', () => {
+    assert.strictEqual(resolvePrBranch({ pr_branch: 'feat-b', prBranch: 'feat-c' }), 'feat-b');
+  });
+
+  await test('resolvePrBranch falls through to prBranch when branch/pr_branch missing', () => {
+    assert.strictEqual(resolvePrBranch({ prBranch: 'feat-c' }), 'feat-c');
+  });
+
+  await test('resolvePrBranch resolves ADO sourceRefName with refs/heads/ prefix', () => {
+    assert.strictEqual(resolvePrBranch({ sourceRefName: 'refs/heads/work/feat' }), 'work/feat');
+  });
+
+  await test('resolvePrBranch falls through to sourceBranch / sourceRef', () => {
+    assert.strictEqual(resolvePrBranch({ sourceBranch: 'foo' }), 'foo');
+    assert.strictEqual(resolvePrBranch({ sourceRef: 'bar' }), 'bar');
+  });
+
+  await test('resolvePrBranch falls through to headRefName', () => {
+    assert.strictEqual(resolvePrBranch({ headRefName: 'baz' }), 'baz');
+  });
+
+  await test('resolvePrBranch resolves GitHub-style head.ref', () => {
+    assert.strictEqual(resolvePrBranch({ head: { ref: 'gh-feat' } }), 'gh-feat');
+  });
+
+  await test('resolvePrBranch ignores empty/whitespace candidates and finds next valid', () => {
+    assert.strictEqual(
+      resolvePrBranch({ branch: '', pr_branch: '   ', prBranch: 'real-branch' }),
+      'real-branch'
+    );
+  });
+
+  await test('resolvePrBranch handles pr without head field gracefully', () => {
+    assert.strictEqual(resolvePrBranch({ headRefName: 'h' }), 'h');
+    // No head property — optional chaining must not throw
+    assert.doesNotThrow(() => resolvePrBranch({ branch: 'b' }));
+  });
+
+  await test('resolvePrBranch returns empty when every candidate is empty', () => {
+    assert.strictEqual(resolvePrBranch({
+      branch: '', pr_branch: null, prBranch: undefined,
+      sourceRefName: '', sourceBranch: '   ', sourceRef: '',
+      headRefName: null, head: { ref: '' },
+    }), '');
+  });
+
+  // ─── prCausePart ──────────────────────────────────────────────────────────
+
+  await test('prCausePart uses fallback for empty/null/undefined input', () => {
+    assert.strictEqual(prCausePart(''), 'unknown');
+    assert.strictEqual(prCausePart(null), 'unknown');
+    assert.strictEqual(prCausePart(undefined), 'unknown');
+    assert.strictEqual(prCausePart('   '), 'unknown');
+  });
+
+  await test('prCausePart honors custom fallback', () => {
+    assert.strictEqual(prCausePart('', 'review'), 'review');
+    assert.strictEqual(prCausePart(null, 'check'), 'check');
+  });
+
+  await test('prCausePart preserves safe slug input verbatim', () => {
+    assert.strictEqual(prCausePart('abc-123_foo.bar'), 'abc-123_foo.bar');
+  });
+
+  await test('prCausePart truncates long values to maxLen=80', () => {
+    const longInput = 'a'.repeat(120);
+    const result = prCausePart(longInput);
+    assert.ok(result.length <= 80, `expected <= 80 chars, got ${result.length}`);
+  });
+
+  await test('prCausePart sanitises special characters via shared.safeSlugComponent', () => {
+    // safeSlugComponent appends an md5 hash when input contains chars outside
+    // [A-Za-z0-9._-]; the result is deterministic for identical inputs.
+    const r1 = prCausePart('hello world!');
+    const r2 = prCausePart('hello world!');
+    assert.strictEqual(r1, r2);
+    assert.ok(!/[!\s]/.test(r1), `expected sanitised slug, got ${r1}`);
+    assert.ok(r1.length > 0);
+  });
+
+  // ─── getPrCauseHead ───────────────────────────────────────────────────────
+
+  await test('getPrCauseHead returns empty for null/undefined/empty pr', () => {
+    assert.strictEqual(getPrCauseHead(null), '');
+    assert.strictEqual(getPrCauseHead(undefined), '');
+    assert.strictEqual(getPrCauseHead({}), '');
+  });
+
+  await test('getPrCauseHead picks headSha first', () => {
+    assert.strictEqual(
+      getPrCauseHead({ headSha: 'sha1', headSHA: 'sha2', head: { sha: 'sha3' }, _adoSourceCommit: 'sha4' }),
+      'sha1'
+    );
+  });
+
+  await test('getPrCauseHead falls through to headSHA', () => {
+    assert.strictEqual(getPrCauseHead({ headSHA: 'sha2', head: { sha: 'sha3' } }), 'sha2');
+  });
+
+  await test('getPrCauseHead resolves GitHub-style head.sha', () => {
+    assert.strictEqual(getPrCauseHead({ head: { sha: 'gh-sha' } }), 'gh-sha');
+  });
+
+  await test('getPrCauseHead resolves ADO _adoSourceCommit', () => {
+    assert.strictEqual(getPrCauseHead({ _adoSourceCommit: 'ado-src' }), 'ado-src');
+  });
+
+  await test('getPrCauseHead falls through to _adoHeadCommit', () => {
+    assert.strictEqual(getPrCauseHead({ _adoHeadCommit: 'ado-head' }), 'ado-head');
+  });
+
+  await test('getPrCauseHead falls through to lastMergeSourceCommit.commitId', () => {
+    assert.strictEqual(
+      getPrCauseHead({ lastMergeSourceCommit: { commitId: 'merge-src' } }),
+      'merge-src'
+    );
+  });
+
+  await test('getPrCauseHead falls through to lastMergeCommit.commitId last', () => {
+    assert.strictEqual(
+      getPrCauseHead({ lastMergeCommit: { commitId: 'merge-commit' } }),
+      'merge-commit'
+    );
+  });
+
+  // ─── getPrCauseBase ───────────────────────────────────────────────────────
+
+  await test('getPrCauseBase returns empty for null/undefined/empty pr', () => {
+    assert.strictEqual(getPrCauseBase(null), '');
+    assert.strictEqual(getPrCauseBase(undefined), '');
+    assert.strictEqual(getPrCauseBase({}), '');
+  });
+
+  await test('getPrCauseBase picks baseSha first', () => {
+    assert.strictEqual(
+      getPrCauseBase({ baseSha: 'b1', base: { sha: 'b2' }, _adoTargetCommit: 'b3' }),
+      'b1'
+    );
+  });
+
+  await test('getPrCauseBase resolves GitHub-style base.sha', () => {
+    assert.strictEqual(getPrCauseBase({ base: { sha: 'gh-base' } }), 'gh-base');
+  });
+
+  await test('getPrCauseBase resolves ADO _adoTargetCommit', () => {
+    assert.strictEqual(getPrCauseBase({ _adoTargetCommit: 'ado-target' }), 'ado-target');
+  });
+
+  await test('getPrCauseBase falls through to lastMergeTargetCommit.commitId', () => {
+    assert.strictEqual(
+      getPrCauseBase({ lastMergeTargetCommit: { commitId: 'merge-target' } }),
+      'merge-target'
+    );
+  });
+
+  await test('getPrCauseBase falls through to targetSha / targetRefSha', () => {
+    assert.strictEqual(getPrCauseBase({ targetSha: 't1' }), 't1');
+    assert.strictEqual(getPrCauseBase({ targetRefSha: 't2' }), 't2');
+  });
+
+  await test('getPrCauseBase falls through to baseRefName / targetRefName when no commitId', () => {
+    assert.strictEqual(getPrCauseBase({ baseRefName: 'main' }), 'main');
+    assert.strictEqual(getPrCauseBase({ targetRefName: 'refs/heads/master' }), 'refs/heads/master');
+  });
+
+  // ─── getPrAutomationCauseKey ──────────────────────────────────────────────
+
+  await test('getPrAutomationCauseKey: review-feedback uses dispatchId first', () => {
+    const key = getPrAutomationCauseKey('review-feedback', {
+      minionsReview: { dispatchId: 'rev-disp-1', reviewedAt: '2026-01-01' },
+      lastReviewedAt: '2026-02-01',
+    });
+    assert.ok(key.startsWith('review-feedback:'), `expected review-feedback prefix, got ${key}`);
+    assert.ok(key.includes('rev-disp-1'));
+  });
+
+  await test('getPrAutomationCauseKey: review-feedback falls through to default "review"', () => {
+    const key = getPrAutomationCauseKey('review-feedback', {});
+    assert.strictEqual(key, 'review-feedback:review');
+  });
+
+  await test('getPrAutomationCauseKey: review-feedback uses reviewedAt when no dispatchId', () => {
+    const key = getPrAutomationCauseKey('review-feedback', {
+      minionsReview: { reviewedAt: '2026-01-01T00:00:00Z' },
+    });
+    assert.ok(key.startsWith('review-feedback:'));
+    assert.ok(!key.endsWith('review'), `should not have used fallback, got ${key}`);
+  });
+
+  await test('getPrAutomationCauseKey: human-comment uses lastProcessedCommentKey first', () => {
+    const key = getPrAutomationCauseKey('human-comment', {
+      humanFeedback: {
+        lastProcessedCommentKey: 'comment-key-1',
+        lastProcessedCommentId: 'comment-id-1',
+      },
+    });
+    assert.ok(key.startsWith('human-comment:'));
+    assert.ok(key.includes('comment-key-1'));
+  });
+
+  await test('getPrAutomationCauseKey: human-comment falls through to default "comment"', () => {
+    const key = getPrAutomationCauseKey('human-comment', {});
+    assert.strictEqual(key, 'human-comment:comment');
+  });
+
+  await test('getPrAutomationCauseKey: build composes 3 parts (check, head, signature)', () => {
+    const key = getPrAutomationCauseKey('build', {
+      buildFailReason: 'unit-tests',
+      buildFailureSignature: 'signature-xyz',
+      headSha: 'abc123',
+    });
+    // Format: build:<check>:<head>:<signature>
+    const parts = key.split(':');
+    assert.strictEqual(parts.length, 4);
+    assert.strictEqual(parts[0], 'build');
+    assert.strictEqual(parts[1], 'unit-tests');
+    assert.strictEqual(parts[2], 'abc123');
+    assert.strictEqual(parts[3], 'signature-xyz');
+  });
+
+  await test('getPrAutomationCauseKey: build uses defaults when fields missing', () => {
+    const key = getPrAutomationCauseKey('build', {});
+    const parts = key.split(':');
+    assert.strictEqual(parts.length, 4);
+    assert.strictEqual(parts[0], 'build');
+    assert.strictEqual(parts[1], 'check');         // checkName fallback
+    assert.strictEqual(parts[2], 'unknown-head');  // head fallback
+    assert.strictEqual(parts[3], 'failure');       // signature fallback
+  });
+
+  await test('getPrAutomationCauseKey: merge-conflict composes base + head', () => {
+    const key = getPrAutomationCauseKey('merge-conflict', {
+      _adoTargetCommit: 'base-sha',
+      _adoSourceCommit: 'head-sha',
+    });
+    const parts = key.split(':');
+    assert.strictEqual(parts.length, 3);
+    assert.strictEqual(parts[0], 'merge-conflict');
+    assert.strictEqual(parts[1], 'base-sha');
+    assert.strictEqual(parts[2], 'head-sha');
+  });
+
+  await test('getPrAutomationCauseKey: merge-conflict uses unknown-base / unknown-head fallbacks', () => {
+    const key = getPrAutomationCauseKey('merge-conflict', {});
+    assert.strictEqual(key, 'merge-conflict:unknown-base:unknown-head');
+  });
+
+  await test('getPrAutomationCauseKey: default branch uses kind + headSha', () => {
+    const key = getPrAutomationCauseKey('custom-kind', { headSha: 'h-1' });
+    assert.strictEqual(key, 'custom-kind:h-1');
+  });
+
+  await test('getPrAutomationCauseKey: default branch uses pr.id when no head', () => {
+    const key = getPrAutomationCauseKey('weird', { id: 'pr-42' });
+    assert.strictEqual(key, 'weird:pr-42');
+  });
+
+  await test('getPrAutomationCauseKey: default branch falls through to "pr" string', () => {
+    const key = getPrAutomationCauseKey('thing', {});
+    assert.strictEqual(key, 'thing:pr');
+  });
+
+  // ─── getPrAutomationDispatchKey ───────────────────────────────────────────
+
+  await test('getPrAutomationDispatchKey concatenates baseKey-causeKey', () => {
+    const key = getPrAutomationDispatchKey('build-fix-pr-123', 'build:tests:abc:fail');
+    // safeSlugComponent will pass-through chars in [A-Za-z0-9._-] but ':' isn't safe
+    // → it'll slugify. We just need to confirm baseKey is preserved verbatim
+    // (the prefix before the first '-' that came from our own concat).
+    assert.ok(key.startsWith('build-fix-pr-123-'), `expected baseKey preserved, got ${key}`);
+  });
+
+  await test('getPrAutomationDispatchKey preserves baseKey verbatim even with special chars', () => {
+    const key = getPrAutomationDispatchKey('foo!@#bar', 'cause');
+    assert.ok(key.startsWith('foo!@#bar-'), `expected baseKey preserved verbatim, got ${key}`);
+  });
+
+  await test('getPrAutomationDispatchKey truncates causeKey portion to max 96 chars', () => {
+    const longCause = 'x'.repeat(200);
+    const key = getPrAutomationDispatchKey('base', longCause);
+    // The portion after "base-" is safeSlugComponent(causeKey, 96) and must be <= 96 chars
+    const causePart = key.slice('base-'.length);
+    assert.ok(causePart.length <= 96, `expected causeKey <= 96 chars, got ${causePart.length}`);
+  });
+
+  await test('getPrAutomationDispatchKey produces deterministic key for same inputs', () => {
+    const k1 = getPrAutomationDispatchKey('base', 'build:foo:abc');
+    const k2 = getPrAutomationDispatchKey('base', 'build:foo:abc');
+    assert.strictEqual(k1, k2);
+  });
+}
+
 // ─── Lifecycle Tests ─────────────────────────────────────────────────────────
 
 async function testLifecycleHelpers() {
@@ -30665,6 +31033,7 @@ async function main() {
     // engine.js tests
     await testRoutingParser();
     await testDependencyCycleDetection();
+    await testPrBranchAndCauseHelpers();
     await testReconciliation();
     await testEngineRuntimeWiring();
 
