@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1775 (2026-05-07)
+
+### Features
+-  Improve dashboard API route metadata
+- suppress stale doc-chat model errors
+
+### Fixes
+- yemi33/minions#2168
+-  honor central plan work item project
+-  restore canonical-home shared helpers
+- yemi33/minions#2170
+
 ## 0.1.1772 (2026-05-07)
 
 ### Features
