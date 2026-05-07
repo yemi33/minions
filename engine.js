@@ -1094,10 +1094,17 @@ async function spawnAgent(dispatchItem, config) {
 
   let proc;
   try {
+    // `detached: true` puts the agent in its own process group (POSIX) / job
+    // object (Windows), so when the engine dies — gracefully via stop, abruptly
+    // via taskkill, or because of a crash — the agent keeps running and can be
+    // re-attached on next start via PID file + live-output.log. We do NOT call
+    // proc.unref(): the engine still tracks exit while it's alive; detached
+    // only kicks in when the engine itself goes away.
     proc = runFile(process.execPath, spawnArgs, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
+      detached: true,
     });
   } catch (spawnErr) {
     // Synchronous spawn failure — record it to the (already-stamped) log so the
@@ -1308,10 +1315,12 @@ async function spawnAgent(dispatchItem, config) {
       }
       let resumeProc;
       try {
+        // detached so the resumed steering session also survives engine death (matches initial spawn)
         resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {
           cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           env: childEnv,
+          detached: true,
         });
       } catch (e) {
         log('warn', `Steering: spawn failed for ${agentId}: ${e.message}`);
