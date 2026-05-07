@@ -4668,6 +4668,7 @@ module.exports = {
   parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
   isWorktreeRetryableError, removeStaleIndexLock, // exported for testing
   _maxTurnsForType, buildProjectContext, normalizeAc, _buildAgentSpawnFlags, _classifyAgentFailure, // exported for testing
+  normalizePrBranch, resolvePrBranch, prCausePart, getPrCauseHead, getPrCauseBase, getPrAutomationCauseKey, getPrAutomationDispatchKey, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
