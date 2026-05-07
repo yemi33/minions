@@ -2378,11 +2378,33 @@ async function testCopilotAdapter() {
       const r = copilot.parseError(c);
       assert.strictEqual(r.code, 'auth-failure', `case "${c}" should map to auth-failure`);
       assert.strictEqual(r.retriable, false);
-      assert.ok(/gh auth login|GH_TOKEN|COPILOT_GITHUB_TOKEN/.test(r.message),
-        'Copilot auth failure guidance should point to GitHub/Copilot auth');
+      assert.strictEqual(r.message, c,
+        'Copilot auth failures should surface the runtime error text directly');
       assert.ok(!/az|azureauth/i.test(r.message),
         'Copilot auth failure guidance must not mention Azure auth tools');
     }
+  });
+
+  await test('copilot.parseError ignores benign JSONL assistant answers that mention auth/model terms', () => {
+    const raw = [
+      JSON.stringify({ type: 'assistant.message', data: { content: 'A GitHub 403 Forbidden response usually means an authorization policy denied the request.' } }),
+      JSON.stringify({ type: 'assistant.message', data: { content: 'The phrase "unknown model" can refer to a catalog mismatch, but this is just explanatory Q&A.' } }),
+      JSON.stringify({ type: 'result', sessionId: 'sess-benign', usage: {} }),
+    ].join('\n');
+
+    const r = copilot.parseError(raw);
+    assert.strictEqual(r.code, null, 'assistant answer text in JSONL stdout must not be classified as a runtime failure');
+    assert.strictEqual(r.retriable, true);
+  });
+
+  await test('copilot.parseError still detects structured JSONL runtime error events', () => {
+    const auth = copilot.parseError(JSON.stringify({ type: 'error', message: 'HTTP 401 Unauthorized' }));
+    assert.strictEqual(auth.code, 'auth-failure');
+    assert.strictEqual(auth.message, 'HTTP 401 Unauthorized');
+
+    const model = copilot.parseError(JSON.stringify({ type: 'error', data: { error: 'Unknown model: banana' } }));
+    assert.strictEqual(model.code, 'unknown-model');
+    assert.strictEqual(model.message, 'Unknown model: banana');
   });
 
   await test('copilot.parseError detects rate-limit (retriable)', () => {
@@ -2398,6 +2420,8 @@ async function testCopilotAdapter() {
       const r = copilot.parseError(c);
       assert.strictEqual(r.code, 'unknown-model', `case "${c}" should map to unknown-model`);
       assert.strictEqual(r.retriable, false);
+      assert.strictEqual(r.message, c,
+        'Copilot model failures should surface the runtime error text directly');
     }
   });
 
@@ -34500,6 +34524,56 @@ async function testDashboardBugFixes() {
     assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
     assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
   });
+
+  await test('doc-chat successful edit suppresses stale Copilot unknown-model raw error', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const payload = dashboard._buildDocChatResponsePayload({
+      answer: 'Copilot rejected the requested model.',
+      actions: [],
+      ccError: {
+        code: 1,
+        stderr: 'Copilot rejected the requested model',
+        errorClass: 'unknown-model',
+        errorMessage: 'Copilot rejected the requested model',
+        runtime: 'copilot',
+      },
+      partial: false,
+      warning: undefined,
+      toolUses: [{ name: 'Edit' }],
+      finalize: { edited: true, content: '# patched', answerSuffix: '' },
+    });
+
+    assert.strictEqual(payload.ok, true, 'saved doc-chat edits should be reported as successful');
+    assert.strictEqual(payload.error, undefined, 'stale Copilot unknown-model raw error must not be surfaced after a saved edit');
+    assert.strictEqual(payload.partial, undefined, 'suppressed stale errors should not force an orange partial state');
+    assert.strictEqual(payload.answer, 'Updated the document.', 'hard-failure copy should be replaced with success copy');
+    assert.strictEqual(payload.edited, true);
+    assert.strictEqual(payload.content, '# patched');
+  });
+
+  await test('doc-chat does not suppress Copilot unknown-model error when no edit was saved', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard.js'));
+    const ccError = {
+      code: 1,
+      stderr: 'Copilot rejected the requested model',
+      errorClass: 'unknown-model',
+      errorMessage: 'Copilot rejected the requested model',
+      runtime: 'copilot',
+    };
+    const payload = dashboard._buildDocChatResponsePayload({
+      answer: 'Copilot rejected the requested model.',
+      actions: [],
+      ccError,
+      partial: false,
+      warning: undefined,
+      toolUses: [],
+      finalize: { edited: false, content: null, answerSuffix: '' },
+    });
+
+    assert.strictEqual(payload.ok, false);
+    assert.strictEqual(payload.error, ccError, 'model errors before any edit should remain visible and actionable');
+    assert.strictEqual(payload.answer, 'Copilot rejected the requested model.');
+  });
 }
 
 // ─── P-c1read-7b3c: readBody overflow guard (aborted flag + req.destroy()) ──
@@ -38146,11 +38220,15 @@ async function testAutoRecoveryAndAtomicity() {
       'rejection message must point at the config knobs to fix');
   });
 
-  await test('_docChatErrorMessage handles unknown-model errorClass', () => {
+  await test('_docChatErrorMessage surfaces unknown-model runtime text directly', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function _docChatErrorMessage('));
-    assert.ok(/errorClass\s*===\s*['"]unknown-model['"]/.test(fn),
-      'doc-chat error mapper must branch on unknown-model');
+    const helperStart = src.indexOf('function _docChatErrorMessage');
+    const helperEnd = src.indexOf('\n}\n', helperStart) + 2;
+    const helperSrc = src.slice(helperStart, helperEnd);
+    assert.ok(!/Configured model is not valid|rejected the requested model/i.test(helperSrc),
+      'doc-chat error mapper must not replace model failures with hardcoded copy');
+    const fn = new Function(`${helperSrc}\nreturn _docChatErrorMessage;`)();
+    assert.strictEqual(fn('unknown-model', false, [], 'Unknown model: banana'), 'Unknown model: banana');
   });
 
   await test('CC streaming handler uses configurable ccMaxTurns', () => {
@@ -39397,15 +39475,14 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   // ── Doc-chat error class surfacing (W-mot9v0et0006b327) ──────────────────────
-  await test('ccDocCall surfaces actionable errorClass messages instead of generic failure', () => {
+  await test('ccDocCall surfaces runtime error text instead of hardcoded class copy', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('function _docChatErrorMessage'), 'Should define _docChatErrorMessage helper');
     const helperStart = src.indexOf('function _docChatErrorMessage');
     const helperFn = src.slice(helperStart, helperStart + 2000);
-    assert.ok(helperFn.includes('auth-failure'), '_docChatErrorMessage should handle auth-failure');
-    assert.ok(helperFn.includes('context-limit'), '_docChatErrorMessage should handle context-limit');
-    assert.ok(helperFn.includes('budget-exceeded'), '_docChatErrorMessage should handle budget-exceeded');
-    assert.ok(helperFn.includes('crash'), '_docChatErrorMessage should handle crash');
+    assert.ok(helperFn.includes('directError'), '_docChatErrorMessage should prefer supplied runtime error text');
+    assert.ok(!/auth failed|authentication failed|rejected the requested model/i.test(helperFn),
+      '_docChatErrorMessage must not replace runtime errors with hardcoded auth/model copy');
     assert.ok(helperFn.includes('sessionPreserved'), '_docChatErrorMessage should differentiate preserved-session failures');
   });
 
@@ -39419,11 +39496,11 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(!/runtime\s*===\s*['"]copilot['"]/.test(helperSrc), 'helper must not branch on runtime === "copilot"');
     assert.ok(!/runtime\s*===\s*['"]claude['"]/.test(helperSrc), 'helper must not branch on runtime === "claude"');
     const fn = new Function(`${helperSrc}\nreturn _docChatErrorMessage;`)();
-    // When adapter supplies a message it wins for the runtime-specific codes.
-    const copilotAuth = fn('auth-failure', false, [], 'GitHub Copilot authentication failed — run `gh auth login`.');
-    const claudeAuth = fn('auth-failure', false, [], 'Claude authentication failed — run `claude auth` or check your API key, then try again.');
-    assert.ok(copilotAuth.startsWith('GitHub Copilot authentication failed'), 'Copilot adapter message should be surfaced verbatim');
-    assert.ok(claudeAuth.startsWith('Claude authentication failed'), 'Claude adapter message should be surfaced verbatim');
+    // When adapter supplies a message it wins for runtime-specific codes.
+    const copilotAuth = fn('auth-failure', false, [], 'HTTP 403 Forbidden');
+    const claudeAuth = fn('auth-failure', false, [], 'Error 401 Unauthorized');
+    assert.strictEqual(copilotAuth, 'HTTP 403 Forbidden', 'Copilot adapter message should be surfaced verbatim');
+    assert.strictEqual(claudeAuth, 'Error 401 Unauthorized', 'Claude adapter message should be surfaced verbatim');
     // Tool hint is appended regardless of source.
     const withTools = fn('auth-failure', false, [{ name: 'Edit' }], 'Some auth message.');
     assert.ok(/tool/i.test(withTools), 'tool hint should still append');
@@ -39453,6 +39530,8 @@ async function testAutoRecoveryAndAtomicity() {
     const warnSrc = src.slice(warnStart, warnEnd);
     assert.ok(!/['"`]Claude['"`]|['"`]Copilot['"`]/.test(warnSrc),
       '_docChatPartialWarning must not hardcode runtime names');
+    assert.ok(!/auth failed|budget exceeded|crashed/i.test(warnSrc),
+      '_docChatPartialWarning must not replace runtime error text with class-specific copy');
   });
 
   await test('engine/llm.js plumbs errInfo.message through as result.errorMessage', () => {
@@ -39502,20 +39581,22 @@ async function testAutoRecoveryAndAtomicity() {
       'done handler should call _qaBuildRawErrorHtml with evt.error');
   });
 
-  await test('runtime adapters return remediation strings in parseError', () => {
+  await test('runtime adapters expose parseError messages to doc-chat', () => {
     // Load via require so we exercise the actual exported parseError.
     const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude.js'));
     const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot.js'));
     const claudeAuth = claude.parseError('Error 401 Unauthorized');
     assert.equal(claudeAuth.code, 'auth-failure');
     assert.ok(/claude auth/i.test(claudeAuth.message), 'claude auth-failure message should include `claude auth` remediation');
-    const copilotAuth = copilot.parseError('not authenticated');
+    const copilotAuth = copilot.parseError('HTTP 403 Forbidden');
     assert.equal(copilotAuth.code, 'auth-failure');
-    assert.ok(/gh auth login/i.test(copilotAuth.message), 'copilot auth-failure message should include `gh auth login` remediation');
+    assert.strictEqual(copilotAuth.message, 'HTTP 403 Forbidden',
+      'copilot auth-failure message should surface runtime text directly');
     const claudeBudget = claude.parseError('budget exceeded');
     assert.ok(/account|spending|limit/i.test(claudeBudget.message), 'claude budget message should mention account/spending');
     const copilotBudget = copilot.parseError('quota exceeded');
-    assert.ok(/quota|copilot/i.test(copilotBudget.message), 'copilot budget message should mention Copilot quota');
+    assert.strictEqual(copilotBudget.message, 'quota exceeded',
+      'copilot budget failure should surface runtime text directly');
   });
 
   await test('ccDocCall passes errorClass and sessionPreserved to _docChatErrorMessage', () => {
@@ -56741,6 +56822,7 @@ async function testDashboardPureHelpers() {
           _formatDocChatContext,
           _docChatErrorMessage, _docChatPartialWarning,
           _docChatFailureResponse, _recoverPartialDocChatResponse,
+          _docChatResultHasVisibleError, _docChatResultLooksSuccessful,
           _resolveSkillReadPath, DOC_CHAT_DOCUMENT_DELIMITER } = dashboard;
   const queriesMod = require(path.join(MINIONS_DIR, 'engine', 'queries'));
   const osMod = require('os');
@@ -56903,13 +56985,49 @@ async function testDashboardPureHelpers() {
   await test('_recoverPartialDocChatResponse recovers ===ACTIONS=== on non-zero exit (audit fix A)', () => {
     const result = {
       text: 'I will dispatch a fix.\n\n===ACTIONS===\n[{"type":"dispatch","title":"Fix bug","workType":"fix"}]',
-      code: 1, errorClass: null, toolUses: [],
+      code: 1, errorClass: null, stderr: 'runtime stopped after emitting actions', toolUses: [],
     };
     const recovered = _recoverPartialDocChatResponse(result);
     assert.ok(recovered, 'partial recovery should succeed when actions parse');
     assert.strictEqual(recovered.partial, true);
     assert.strictEqual(recovered.actions.length, 1, 'parsed action must survive non-zero exit');
     assert.strictEqual(recovered.actions[0].type, 'dispatch');
+  });
+
+  await test('doc-chat treats non-zero parseable output without error text as success', () => {
+    const benign = {
+      text: 'A GitHub 403 can happen for many reasons; this answer is just Q&A.',
+      code: 1,
+      errorClass: null,
+      errorMessage: null,
+      stderr: '',
+    };
+    assert.strictEqual(_docChatResultHasVisibleError(benign), false);
+    assert.strictEqual(_docChatResultLooksSuccessful(benign), true,
+      'non-zero Copilot exits with answer text and no error signal should not render a failure');
+
+    const stderrOnly = {
+      text: 'The answer completed successfully despite a noisy runtime exit.',
+      code: 1,
+      errorClass: null,
+      errorMessage: null,
+      stderr: 'non-actionable runtime diagnostic',
+    };
+    assert.strictEqual(_docChatResultHasVisibleError(stderrOnly), false,
+      'unclassified stderr by itself is too noisy to show on recovered answers');
+    assert.strictEqual(_docChatResultLooksSuccessful(stderrOnly), true,
+      'parseable answers with only unclassified stderr should not render a partial warning');
+
+    const realError = {
+      text: 'Partial answer landed before failure.',
+      code: 1,
+      errorClass: 'auth-failure',
+      errorMessage: 'HTTP 403 Forbidden',
+      stderr: '',
+    };
+    assert.strictEqual(_docChatResultHasVisibleError(realError), true);
+    assert.strictEqual(_docChatResultLooksSuccessful(realError), false,
+      'classified runtime failures should still surface even when partial text exists');
   });
 
   await test('_recoverPartialDocChatResponse recovers ---DOCUMENT--- content on non-zero exit (audit fix A)', () => {
@@ -56950,12 +57068,13 @@ async function testDashboardPureHelpers() {
     assert.strictEqual(_docChatErrorMessage(null, false, []), 'Failed to process request. Try again.');
   });
 
-  await test('_docChatPartialWarning produces a distinct note for each errorClass', () => {
-    const w1 = _docChatPartialWarning('crash');
-    const w2 = _docChatPartialWarning('budget-exceeded');
+  await test('_docChatPartialWarning surfaces runtime text when available', () => {
+    const w1 = _docChatPartialWarning('crash', 'fatal: copilot died');
+    const w2 = _docChatPartialWarning('budget-exceeded', 'quota exceeded for this request');
     const w3 = _docChatPartialWarning(null);
-    assert.notStrictEqual(w1, w2, 'partial-warning text should differ per errorClass');
-    assert.notStrictEqual(w2, w3, 'partial-warning text should differ for null vs known errorClass');
+    assert.strictEqual(w1, 'Note: fatal: copilot died');
+    assert.strictEqual(w2, 'Note: quota exceeded for this request');
+    assert.notStrictEqual(w2, w3, 'fallback warning should differ when runtime text is unavailable');
     for (const w of [w1, w2, w3]) {
       assert.ok(w.startsWith('Note:'), 'partial warnings should be framed as a "Note:" so the user knows the answer landed');
       assert.ok(w.length > 20, 'partial warning must be substantive, not a placeholder');
@@ -56984,10 +57103,12 @@ async function testDashboardPureHelpers() {
     const handlerBlock = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
     assert.ok(/partial,\s*warning,\s*toolUses/.test(handlerBlock),
       'doc-chat handlers must destructure partial/warning/toolUses from ccDocCall result');
-    assert.ok(handlerBlock.includes("partial: true, warning"),
-      'baseReply / donePayload must spread partial+warning when partial is set');
-    assert.ok(/toolUses\?\.length|toolUses\.length/.test(handlerBlock),
-      'handlers must conditionally include toolUses in the reply');
+    assert.ok(handlerBlock.includes('_buildDocChatResponsePayload'),
+      'doc-chat handlers must build replies through the shared response payload helper');
+    assert.ok(src.includes("partial && !suppressPostPatchError ? { partial: true, warning } : {}"),
+      'response payload helper must spread partial+warning when partial is set');
+    assert.ok(src.includes('Array.isArray(toolUses) && toolUses.length'),
+      'response payload helper must conditionally include toolUses in the reply');
   });
 
   await test('ccDocCall and ccDocCallStreaming attempt partial recovery before returning failure (audit fix A)', () => {
