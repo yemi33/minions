@@ -1386,7 +1386,10 @@ function _routeDestructive(route, pathTemplate, readOnly) {
 function _routeGenericFallback(route, pathTemplate) {
   if (typeof route.genericFallback === 'boolean') return route.genericFallback;
   if (!pathTemplate || !pathTemplate.startsWith('/api/')) return false;
-  return String(route.method || '').toUpperCase() === 'POST';
+  if (String(route.method || '').toUpperCase() !== 'POST') return false;
+  const haystack = `${pathTemplate} ${route.desc || ''}`.toLowerCase();
+  if (haystack.includes('sse') || /\bstreaming\b/.test(haystack) || /\/stream(?:$|[/?#])/.test(pathTemplate)) return false;
+  return true;
 }
 
 function _routesAsMeta(routes) {

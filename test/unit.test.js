@@ -33615,6 +33615,27 @@ async function testApiRoutesInCcPreamble() {
     ]);
   });
 
+  await test('_routesAsMeta does not mark SSE streaming POST endpoints as generic fallback suitable', () => {
+    const routes = dashboard._routesAsMeta([
+      {
+        method: 'POST',
+        path: '/api/doc-chat/stream',
+        desc: 'Streaming doc chat — SSE with text chunks and tool progress',
+        params: 'message, document',
+      },
+      {
+        method: 'POST',
+        path: '/api/command-center/stream',
+        desc: 'Streaming CC — SSE with text chunks as they arrive',
+        params: 'message, tabId?',
+      },
+    ]);
+    assert.deepStrictEqual(routes.map(r => ({ path: r.path, genericFallback: r.genericFallback })), [
+      { path: '/api/doc-chat/stream', genericFallback: false },
+      { path: '/api/command-center/stream', genericFallback: false },
+    ]);
+  });
+
   await test('_formatCcCliCommandsIndex renders the CLI fleet from CLI_COMMAND_DOCS', () => {
     const out = dashboard._formatCcCliCommandsIndex();
     assert.ok(out.includes('minions start'),
