@@ -435,7 +435,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   }
 
   if (skipScan) {
-    console.log('  Run "minions scan" or "minions add <dir>" to link projects.\n');
+    console.log('  Run "minions scan" or "minions add <dir>" to link projects.');
     rl.close();
   } else {
     // Offer to scan for repos (optional)
