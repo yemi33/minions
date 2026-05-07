@@ -39580,6 +39580,28 @@ async function testAutoRecoveryAndAtomicity() {
       'Streaming doc-chat route should emit a final done event');
   });
 
+  await test('doc-chat handlers pass browser transcript through to resume context', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const nonStream = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChatStream'));
+    const stream = src.slice(src.indexOf('async function handleDocChatStream'), src.indexOf('async function handleInboxPersist'));
+    assert.ok(nonStream.includes('transcript: body.transcript'),
+      'non-stream doc-chat should thread the persisted browser transcript to ccDocCall');
+    assert.ok(stream.includes('transcript: body.transcript'),
+      'streaming doc-chat should thread the persisted browser transcript to ccDocCallStreaming');
+  });
+
+  await test('doc-chat frontend sends persisted history transcript and records action results', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes('function _qaBuildTranscript'),
+      'doc-chat frontend should build a plain transcript from persisted history');
+    const requestBody = src.slice(src.indexOf("fetch('/api/doc-chat/stream'"), src.indexOf("fetch('/api/doc-chat/stream'") + 900);
+    assert.ok(requestBody.includes('transcript: _qaBuildTranscript(runtime.history, message)'),
+      'doc-chat stream request should send prior persisted history before the current message');
+    const doneBlock = src.slice(src.indexOf("evt.type === 'done'"), src.indexOf("if (evt.type === 'error'"));
+    assert.ok(doneBlock.includes("role: 'action'") && doneBlock.includes('_qaSummarizeActionContext'),
+      'doc-chat done handler should persist emitted action results into history for the next turn');
+  });
+
   await test('handleDocChatStream validates editable file paths before opening SSE stream', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const fnStart = src.indexOf('async function handleDocChatStream');
@@ -44433,6 +44455,53 @@ async function testCCMultiTab() {
       'current user message should be appended once by the caller, not duplicated in carryover');
   });
 
+  await test('transcript carryover includes server action results after the assistant turn', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+    const carryover = dashboard._buildTranscriptCarryover([
+      { role: 'user', text: 'Dispatch a fix for issue 123.' },
+      { role: 'assistant', text: 'I created a fix work item for that issue.' },
+      { role: 'action', text: '✓ fix: W-resume123' },
+      { role: 'user', text: 'what did you just do?' },
+    ], { currentMessage: 'what did you just do?' });
+    const assistantIdx = carryover.indexOf('Assistant: I created a fix work item');
+    const actionIdx = carryover.indexOf('Action result: ✓ fix: W-resume123');
+    assert.ok(assistantIdx >= 0, 'previous assistant response should be carried over');
+    assert.ok(actionIdx > assistantIdx, 'server action result should follow the assistant response in order');
+    assert.ok(!carryover.includes('what did you just do?'),
+      'current follow-up should still be omitted from carryover');
+  });
+
+  await test('out-of-band carryover can send action results without duplicating native assistant history', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+    const carryover = dashboard._buildTranscriptCarryover([
+      { role: 'user', text: 'Dispatch a docs task.' },
+      { role: 'assistant', text: 'I will dispatch that now.' },
+      { role: 'action', text: '✓ dispatch: W-doc123' },
+    ], { outOfBandOnly: true });
+    assert.ok(!carryover.includes('User: Dispatch a docs task.'),
+      'out-of-band mode should not duplicate native user turns');
+    assert.ok(!carryover.includes('Assistant: I will dispatch that now.'),
+      'out-of-band mode should not duplicate native assistant turns');
+    assert.ok(carryover.includes('Action result: ✓ dispatch: W-doc123'),
+      'out-of-band mode should still inject server/UI action results');
+  });
+
+  await test('doc-chat carryover preserves immediately preceding answer and action result', () => {
+    const dashboard = require(path.join(MINIONS_DIR, 'dashboard'));
+    const carryover = dashboard._buildTranscriptCarryover([
+      { role: 'user', text: 'Create a plan from this document.' },
+      { role: 'assistant', text: 'I created a plan work item from the document.' },
+      { role: 'action', text: 'plan W-docchat123 completed' },
+      { role: 'user', text: 'what did you just do?' },
+    ], { currentMessage: 'what did you just do?' });
+    const assistantIdx = carryover.indexOf('Assistant: I created a plan work item');
+    const actionIdx = carryover.indexOf('Action result: plan W-docchat123 completed');
+    assert.ok(assistantIdx >= 0, 'doc-chat assistant answer should be available to the follow-up turn');
+    assert.ok(actionIdx > assistantIdx, 'doc-chat action result should follow the assistant answer in order');
+    assert.ok(!carryover.includes('User: what did you just do?'),
+      'current doc-chat follow-up should not be duplicated in carryover');
+  });
+
   await test('Copilot CC resume requests prepend same-tab transcript carryover', () => {
     const copilot = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'copilot'));
     const claude = require(path.join(MINIONS_DIR, 'engine', 'runtimes', 'claude'));
@@ -44452,6 +44521,25 @@ async function testCCMultiTab() {
       'shared non-streaming CC call helpers should include carryover on runtimes that need it');
   });
 
+  await test('non-streaming CC handler forwards browser transcript into ccCall', () => {
+    const handler = dashSrc.slice(
+      dashSrc.indexOf('async function handleCommandCenter(req, res)'),
+      dashSrc.indexOf('function _lightToolInput')
+    );
+    assert.ok(handler.includes("ccCall(body.message, { store: 'cc', transcript: body.transcript })"),
+      '/api/command-center should preserve immediate prior browser context on follow-up turns');
+  });
+
+  await test('CC transcript builder preserves action rows for immediate follow-up context', () => {
+    const fnStart = ccSrc.indexOf('function _ccBuildTranscript');
+    const fnEnd = ccSrc.indexOf('function _ccMergeStreamText', fnStart);
+    const fnBody = ccSrc.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes("m.role !== 'action'"),
+      'frontend transcript builder should include action rows, not drop server action results');
+    assert.ok(fnBody.includes("role: m.role"),
+      'action rows should retain their role so the server can label them as action results');
+  });
+
   await test('CC stream resume uses persisted tab session over request sessionId', () => {
     const streamHandler = dashSrc.slice(
       dashSrc.indexOf('async function handleCommandCenterStream('),
@@ -44466,6 +44554,8 @@ async function testCCMultiTab() {
       'Frontend should build a transcript helper');
     assert.ok(ccSrc.includes('transcript: _ccBuildTranscript'),
       'Initial stream request should include transcript');
+    assert.ok(ccSrc.includes("transcript: _ccBuildTranscript(activeTab) }, false)"),
+      '429 retry stream request should keep the transcript instead of dropping immediate context');
     assert.ok(ccSrc.includes("evt.sessionResetReason === 'runtimeChanged'"),
       'Frontend should branch on runtimeChanged reset reason');
     assert.ok(ccSrc.includes('CC_TRANSCRIPT_MAX_TURNS'),
