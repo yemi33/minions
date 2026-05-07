@@ -658,4 +658,11 @@ module.exports = {
   cancelPendingDispatchesForPr,
   cleanDispatchEntries,
   cancelPendingWorkItems,
+  // exported for testing
+  getDispatchProjectKey,
+  getPrDispatchTargetKey,
+  getBranchDispatchLockKey,
+  findActivePrOrBranchLock,
+  normalizeRetryableDecision,
+  isCompletedWorkItemForFailure,
 };
