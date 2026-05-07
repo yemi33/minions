@@ -280,12 +280,23 @@ function createWorkItemWithDedup(wiPath, item, options = {}) {
   return result || { created: false, item: null };
 }
 
+function formatUnknownProjectError(projectName, projects = []) {
+  const known = projects.map(p => p.name).filter(Boolean).join(', ') || '(none configured)';
+  return `Project "${projectName}" not found. Known projects: ${known}`;
+}
+
+function findProjectByName(projects, projectName) {
+  const name = String(projectName || '').trim().toLowerCase();
+  if (!name) return null;
+  return projects.find(p => p.name?.toLowerCase() === name) || null;
+}
+
 function resolveWorkItemsCreateTarget(projectName, projects = PROJECTS) {
   const project = String(projectName || '').trim();
   let targetProject = null;
   if (project) {
-    targetProject = projects.find(p => p.name === project) || (projects.length > 0 ? projects[0] : null);
-    if (!targetProject) return { error: 'No projects configured' };
+    targetProject = findProjectByName(projects, project);
+    if (!targetProject) return { error: formatUnknownProjectError(project, projects) };
   } else if (projects.length === 1) {
     targetProject = projects[0];
   }
@@ -325,7 +336,13 @@ function linkPullRequestForTracking({ url, title, project: projectName, autoObse
     throw err;
   }
   const projects = shared.getProjects(config);
-  const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
+  const explicitProjectName = String(projectName || '').trim();
+  const targetProject = explicitProjectName ? findProjectByName(projects, explicitProjectName) : (projects[0] || null);
+  if (explicitProjectName && !targetProject) {
+    const err = new Error(formatUnknownProjectError(explicitProjectName, projects));
+    err.statusCode = 400;
+    throw err;
+  }
   const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
 
   const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
@@ -7083,6 +7100,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!url) return jsonReply(res, 400, { error: 'url required' });
 
       reloadConfig();
+      const explicitProjectName = String(body.project || '').trim();
+      if (explicitProjectName) {
+        const projects = shared.getProjects(CONFIG);
+        if (!findProjectByName(projects, explicitProjectName)) {
+          return jsonReply(res, 400, { error: formatUnknownProjectError(explicitProjectName, projects) }, req);
+        }
+      }
       const adoTarget = parseAdoPrMetadataTarget(url);
       let initialPrData = null;
       if (adoTarget) {
@@ -7092,7 +7116,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           shared.log('warn', `ADO PR link metadata fetch failed for ${url}: ${e.message}`);
         }
       }
-      const { id: prId, prPath, prNum, created, linked } = linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData });
+      let linkResult;
+      try {
+        linkResult = linkPullRequestForTracking(body, CONFIG, { metadata: initialPrData });
+      } catch (e) {
+        return jsonReply(res, e.statusCode || 400, { error: e.message }, req);
+      }
+      const { id: prId, prPath, prNum, created, linked } = linkResult;
       invalidateStatusCache();
       jsonReply(res, 200, { ok: true, id: prId, created, linked });
 
