@@ -28325,11 +28325,26 @@ async function testMeetingInternalHelpers() {
 async function testMeetingsIsolatedGaps() {
   console.log('\n── meeting.js — Gap Coverage (W-mo79lrbnkc71) ──');
 
-  // Non-isolated: exercise the real module; use unique IDs + finally cleanup.
+  // Read-only handle for tests that don't touch disk (EMPTY_OUTPUT_PATTERNS
+  // shape assertions). Anything that calls saveMeeting/advanceMeetingRound/
+  // addMeetingNote/collectMeetingFindings/discoverMeetingWork must run inside
+  // withIsolatedGap() — those writers go through mutateJsonFileLocked which
+  // creates a `<id>.json.backup` sidecar that the previous cleanupReal()
+  // never unlinked, leaking 5 .backup files into the live D:/squad/meetings/
+  // tree on every test run (W-mouto77c).
   const meetingModReal = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
-  const realMeetingsDir = meetingModReal.MEETINGS_DIR;
-  function cleanupReal(id) {
-    try { fs.unlinkSync(path.join(realMeetingsDir, id + '.json')); } catch {}
+
+  // Run a meeting GAP test against a fresh MINIONS_TEST_DIR so the writer
+  // can create + back up the meeting file inside the tmp tree the harness
+  // tears down. Mirrors withIsolatedMeeting() in testMeetingsExtendedBehavioral.
+  function withIsolatedGap(fn) {
+    const restore = createTestMinionsDir();
+    try {
+      const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+      return fn(meetingMod);
+    } finally {
+      restore();
+    }
   }
 
   // ── EMPTY_OUTPUT_PATTERNS ──
@@ -28360,81 +28375,75 @@ async function testMeetingsIsolatedGaps() {
       'real findings that quote placeholder strings should not be in the reject set');
     // And the real behavior: a legitimate finding that includes the
     // phrase as a substring is accepted by collectMeetingFindings.
-    const testId = 'TEST-GAP-pattern-substring-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Substring', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-pattern-substring-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Substring', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
       const output = JSON.stringify({ type: 'result', result: 'Notes about (no output) handling and fallback paths' });
-      meetingModReal.collectMeetingFindings(testId, 'alice', 'investigate', output);
-      const m = meetingModReal.getMeeting(testId);
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', output);
+      const m = meetingMod.getMeeting(testId);
       assert.ok(m.findings.alice, 'real finding that merely mentions a placeholder must be recorded');
       assert.ok(m.findings.alice.content.includes('(no output)'),
         'full content should be preserved verbatim');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── advanceMeetingRound — archived + no-change branches ──
 
   await test('advanceMeetingRound returns null for archived meeting', () => {
-    const testId = 'TEST-GAP-adv-arch-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Archived', status: 'archived', round: 3,
-      participants: ['alice'], findings: {}, debate: {},
-      conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
-      roundStartedAt: new Date().toISOString(),
-      archivedAt: new Date().toISOString(),
-    });
-    try {
-      const result = meetingModReal.advanceMeetingRound(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-adv-arch-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Archived', status: 'archived', round: 3,
+        participants: ['alice'], findings: {}, debate: {},
+        conclusion: { content: 'Done' }, humanNotes: [], transcript: [],
+        roundStartedAt: new Date().toISOString(),
+        archivedAt: new Date().toISOString(),
+      });
+      const result = meetingMod.advanceMeetingRound(testId);
       assert.strictEqual(result, null, 'archived meeting should not advance');
-      const onDisk = meetingModReal.getMeeting(testId);
+      const onDisk = meetingMod.getMeeting(testId);
       assert.strictEqual(onDisk.status, 'archived', 'status must remain archived');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   await test('advanceMeetingRound on unknown status returns meeting unchanged', () => {
     // The "else return meeting" branch: any status not in the known set
     // should short-circuit without touching roundStartedAt or round.
-    const testId = 'TEST-GAP-adv-unknown-' + Date.now();
-    const startedAt = new Date(Date.now() - 5000).toISOString();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Unknown Status', status: 'paused', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: startedAt,
-    });
-    try {
-      const result = meetingModReal.advanceMeetingRound(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-adv-unknown-' + Date.now();
+      const startedAt = new Date(Date.now() - 5000).toISOString();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Unknown Status', status: 'paused', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: startedAt,
+      });
+      const result = meetingMod.advanceMeetingRound(testId);
       assert.ok(result, 'non-terminal unknown status should still return the meeting');
       assert.strictEqual(result.status, 'paused', 'status should be untouched');
       assert.strictEqual(result.round, 1, 'round should be untouched');
       assert.strictEqual(result.roundStartedAt, startedAt,
         'roundStartedAt should NOT be rewritten on the no-change branch');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── addMeetingNote — ordering + existing notes preserved ──
 
   await test('addMeetingNote appends multiple notes in call order', () => {
-    const testId = 'TEST-GAP-note-order-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Note Order', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
-      meetingModReal.addMeetingNote(testId, 'first');
-      meetingModReal.addMeetingNote(testId, 'second');
-      meetingModReal.addMeetingNote(testId, 'third');
-      const m = meetingModReal.getMeeting(testId);
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-note-order-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Note Order', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
+      meetingMod.addMeetingNote(testId, 'first');
+      meetingMod.addMeetingNote(testId, 'second');
+      meetingMod.addMeetingNote(testId, 'third');
+      const m = meetingMod.getMeeting(testId);
       assert.deepStrictEqual(m.humanNotes, ['first', 'second', 'third'],
         'notes must be persisted in call order');
       // Every note also appends a transcript entry.
@@ -28442,27 +28451,23 @@ async function testMeetingsIsolatedGaps() {
       assert.strictEqual(noteEntries.length, 3, 'each note adds one transcript entry');
       assert.deepStrictEqual(noteEntries.map(t => t.content),
         ['first', 'second', 'third'], 'transcript order must match humanNotes order');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   await test('addMeetingNote preserves pre-existing human notes', () => {
-    const testId = 'TEST-GAP-note-preserve-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {},
-      humanNotes: ['seeded-1', 'seeded-2'],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
-      const result = meetingModReal.addMeetingNote(testId, 'new-note');
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-note-preserve-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Preserve Notes', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {},
+        humanNotes: ['seeded-1', 'seeded-2'],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
+      const result = meetingMod.addMeetingNote(testId, 'new-note');
       assert.deepStrictEqual(result.humanNotes,
         ['seeded-1', 'seeded-2', 'new-note'],
         'existing humanNotes must be preserved before appending');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── checkMeetingTimeouts — missing roundStartedAt no-op ──
@@ -28497,49 +28502,45 @@ async function testMeetingsIsolatedGaps() {
   // ── collectMeetingFindings — unknown roundName ──
 
   await test('collectMeetingFindings is a no-op for unknown roundName', () => {
-    const testId = 'TEST-GAP-unknown-round-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
-      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
-      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-unknown-round-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'Unknown Round', status: 'investigating', round: 1,
+        participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+        conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+      });
       const output = JSON.stringify({ type: 'result', result: 'legit content' });
       // Should not throw and should not mutate findings/debate/conclusion.
-      meetingModReal.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
-      const m = meetingModReal.getMeeting(testId);
+      meetingMod.collectMeetingFindings(testId, 'alice', 'bogus-round', output);
+      const m = meetingMod.getMeeting(testId);
       assert.deepStrictEqual(m.findings, {}, 'findings must not be touched');
       assert.deepStrictEqual(m.debate, {}, 'debate must not be touched');
       assert.strictEqual(m.conclusion, null, 'conclusion must not be set');
       assert.strictEqual(m.status, 'investigating', 'status must not change');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── discoverMeetingWork — no work when all submitted ──
 
   await test('discoverMeetingWork returns no items when every participant submitted findings', () => {
-    const testId = 'TEST-GAP-inv-all-done-' + Date.now();
-    meetingModReal.saveMeeting({
-      id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
-      round: 1, participants: ['alice', 'bob'],
-      findings: {
-        alice: { content: 'A-content' },
-        bob: { content: 'B-content' },
-      },
-      debate: {}, humanNotes: [], conclusion: null, transcript: [],
-      roundStartedAt: new Date().toISOString(),
-    });
-    try {
+    withIsolatedGap((meetingMod) => {
+      const testId = 'TEST-GAP-inv-all-done-' + Date.now();
+      meetingMod.saveMeeting({
+        id: testId, title: 'All Submitted', agenda: 'x', status: 'investigating',
+        round: 1, participants: ['alice', 'bob'],
+        findings: {
+          alice: { content: 'A-content' },
+          bob: { content: 'B-content' },
+        },
+        debate: {}, humanNotes: [], conclusion: null, transcript: [],
+        roundStartedAt: new Date().toISOString(),
+      });
       const config = { agents: { alice: { name: 'A' }, bob: { name: 'B' } } };
-      const work = meetingModReal.discoverMeetingWork(config);
+      const work = meetingMod.discoverMeetingWork(config);
       const forThis = work.filter(w => w.meta?.meetingId === testId);
       assert.strictEqual(forThis.length, 0,
         'no new work when all participants already submitted — the engine waits for the status advance instead');
-    } finally {
-      cleanupReal(testId);
-    }
+    });
   });
 
   // ── MINIONS_TEST_DIR isolation — MEETINGS_DIR path refactor verification ──
@@ -43580,6 +43581,57 @@ async function testIsolationVerification() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes('shared.MINIONS_DIR'), 'Should not hardcode path');
   });
+
+  // ── End-of-run leak guard (W-mouto77c) ─────────────────────────────────────
+  // Catches future regressions of the pipeline/meeting CRUD-test isolation work
+  // (#2140 + #2142 + W-mouto77c). Any test that writes _test_*, TEST-*, or
+  // test-* into the live MINIONS_DIR fails the suite here. Looks at both the
+  // primary state files and their .json.backup sidecars (the latter were the
+  // genuine miss before this guard — cleanupReal() only unlinked the .json).
+  // Pattern is anchored on filename start to avoid false positives like
+  // "daily-test-coverage.json".
+  await test('REGRESSION GUARD: no _test_/TEST-/test- leaks in real pipelines/, meetings/, or pipeline-runs.json', () => {
+    // Mirror engine/shared.js MINIONS_DIR resolution so this guard checks the
+    // SAME root the production code writes to. MINIONS_HOME is what makes
+    // worktree-run tests still leak into D:/squad — without honoring it here
+    // the guard is blind to the real leak.
+    const realDir = process.env.MINIONS_HOME
+      ? path.resolve(process.env.MINIONS_HOME)
+      : path.resolve(__dirname, '..');
+    const leakRe = /^(?:_test_|TEST-|test-)/;
+    const leaks = [];
+
+    // 1. pipelines/<id>.json + sidecars
+    const pipelinesDir = path.join(realDir, 'pipelines');
+    if (fs.existsSync(pipelinesDir)) {
+      for (const f of fs.readdirSync(pipelinesDir)) {
+        if (leakRe.test(f)) leaks.push(`pipelines/${f}`);
+      }
+    }
+
+    // 2. meetings/<id>.json + sidecars (the cleanupReal-leak path)
+    const meetingsDir = path.join(realDir, 'meetings');
+    if (fs.existsSync(meetingsDir)) {
+      for (const f of fs.readdirSync(meetingsDir)) {
+        if (leakRe.test(f)) leaks.push(`meetings/${f}`);
+      }
+    }
+
+    // 3. engine/pipeline-runs.json keyed by pipelineId at top level
+    const runsPath = path.join(realDir, 'engine', 'pipeline-runs.json');
+    if (fs.existsSync(runsPath)) {
+      try {
+        const runs = JSON.parse(fs.readFileSync(runsPath, 'utf8'));
+        for (const k of Object.keys(runs || {})) {
+          if (leakRe.test(k)) leaks.push(`engine/pipeline-runs.json key: ${k}`);
+        }
+      } catch { /* malformed file — not this guard's concern */ }
+    }
+
+    assert.strictEqual(leaks.length, 0,
+      'Tests leaked into live state — isolate writers via createTestMinionsDir() or scrub sidecars in finally:\n  ' +
+      leaks.join('\n  '));
+  });
 }
 
 // ─── Session 2026-04-08: slugify, formatTranscriptEntry, pipeline reconciliation ──
@@ -54174,9 +54226,16 @@ async function testPipelineBehavioral() {
   // ── Full run lifecycle: start → update → complete ──
 
   await test('full run lifecycle: start → update stages → complete', () => {
-    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
-    const testPipelineId = '_test_lifecycle_' + Date.now();
+    // Isolated: under MINIONS_HOME=D:/squad, the pipeline module's
+    // PIPELINE_RUNS_PATH resolves to the live engine/pipeline-runs.json
+    // while the prior cleanup read from MINIONS_DIR (the worktree) — the
+    // mismatch made the cleanup a no-op and leaked _test_lifecycle_* keys
+    // (W-mouto77c). createTestMinionsDir() points pipeline writes at the
+    // tmp tree where the harness's tmp-dir teardown cleans up.
+    const restore = createTestMinionsDir();
     try {
+      const pipeline = require('../engine/pipeline');
+      const testPipelineId = '_test_lifecycle_' + Date.now();
       const pipelineDef = {
         id: testPipelineId,
         stages: [
@@ -54221,12 +54280,7 @@ async function testPipelineBehavioral() {
       assert.strictEqual(finalRun.stages.test.status, 'completed');
       assert.strictEqual(finalRun.stages.test.output, 'Tests passed');
     } finally {
-      try {
-        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
-        delete runs[testPipelineId];
-        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
-      } catch {}
-      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+      restore();
     }
   });
 
