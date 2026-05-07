@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks,
+const { safeRead, safeJson, safeJsonNoRestore, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
@@ -24,7 +24,11 @@ function checkPlanCompletion(meta, config) {
   const planFile = meta.item?.sourcePlan;
   if (!planFile) return;
   const planPath = path.join(PRD_DIR, planFile);
-  const plan = safeJson(planPath);
+  // Use safeJsonNoRestore — if the active PRD has been archived, the .backup
+  // sidecar may still be sitting in prd/. safeJson would auto-restore it and
+  // resurrect the archived PRD as active (W-mouptdh1000h9f39). PRDs are
+  // terminal artifacts; missing primary means "gone", not "needs recovery".
+  const plan = safeJsonNoRestore(planPath);
   if (!plan?.missing_features) return;
   if (plan.status === PLAN_STATUS.COMPLETED) {
     if (plan._completionNotified) return;
@@ -570,7 +574,9 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
       // Lock-free peek: most PRDs won't contain the ID, so skip the lock cost.
-      const plan = safeJson(fpath);
+      // safeJsonNoRestore so an archived PRD's .backup sidecar can't resurrect
+      // the active PRD just because a done WI still references it.
+      const plan = safeJsonNoRestore(fpath);
       const feature = plan?.missing_features?.find(f => f.id === itemId);
       if (!feature || feature.status === status) continue;
       let updated = false;
