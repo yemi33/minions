@@ -46,6 +46,40 @@ function killByPort(port) {
   } catch {}
 }
 
+/**
+ * Read the engine's recorded PID from engine/control.json. Returns null if
+ * the file is missing/corrupt or the PID isn't a positive integer.
+ */
+function readEnginePid(minionsHome) {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(minionsHome, 'engine', 'control.json'), 'utf8'));
+    const pid = Number(data && data.pid);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch { return null; }
+}
+
+/**
+ * Force-kill a process and its descendants by PID. The /T flag on taskkill
+ * recurses into the process tree on Windows, which `process.kill()` does not.
+ * On POSIX, walk pgrep first so spawned children die before the parent.
+ */
+function killPidTree(pid) {
+  if (!pid || pid === process.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true });
+    } else {
+      try {
+        const out = execSync(`pgrep -P ${pid}`, { encoding: 'utf8', timeout: 3000 });
+        for (const c of out.split(/\r?\n/).map(s => Number(s.trim())).filter(n => Number.isInteger(n) && n > 0)) {
+          try { process.kill(c, 'SIGKILL'); } catch {}
+        }
+      } catch {}
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+  } catch {}
+}
+
 /** Kill minions processes by command-line pattern matching (wmic on Windows, pkill on Unix). */
 function killMinionsProcesses(patterns) {
   try {
@@ -330,14 +364,12 @@ function init() {
     printPreflight(results, { label: 'Preflight checks' });
   } catch {}
 
-  if (isUpgrade && skipStart) {
-    console.log(`\n  Upgrade complete (${pkgVersion}). Restart skipped by caller.\n`);
-    return;
-  }
+  // Update flow passes --skip-start so it can perform a single visible restart afterwards.
+  if (isUpgrade && skipStart) return;
 
   // Auto-start on fresh install; direct force-upgrade restarts automatically.
   if (isUpgrade) {
-    try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
+    try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000, windowsHide: true }); } catch {}
   }
   console.log(isUpgrade
     ? `\n  Upgrade complete (${pkgVersion}). Restarting engine and dashboard...\n`
@@ -422,11 +454,6 @@ function showChangelog(fromVersion) {
   console.log(`    cat ${changelogPath}\n`);
 }
 
-function writeCommandOutput(stream, output) {
-  if (!output) return;
-  stream.write(Buffer.isBuffer(output) ? output.toString('utf8') : String(output));
-}
-
 function formatPackageCliCommand(args) {
   const initScript = path.join(PKG_ROOT, 'bin', 'minions.js');
   return `node "${initScript}" ${args.join(' ')}`;
@@ -434,17 +461,13 @@ function formatPackageCliCommand(args) {
 
 function runPackageCli(args, timeout) {
   const initScript = path.join(PKG_ROOT, 'bin', 'minions.js');
-  const result = spawnSync(process.execPath, [initScript, ...args], {
+  return spawnSync(process.execPath, [initScript, ...args], {
     cwd: process.cwd(),
     env: { ...process.env, MINIONS_HOME },
-    encoding: 'utf8',
+    stdio: 'inherit',
     timeout,
     windowsHide: true,
   });
-
-  writeCommandOutput(process.stdout, result.stdout);
-  writeCommandOutput(process.stderr, result.stderr);
-  return result;
 }
 
 function runPostUpdateInit() {
@@ -615,10 +638,17 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   // `--cli` / `--model` flags forward to `engine.js start` so the runtime
   // fleet flips before the daemon spawns (P-6b3f9c2e AC: works on restart).
   ensureInstalled();
-  // Stop engine if running (graceful attempt)
-  try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
-  // Kill all existing engine/dashboard processes — handles crashed engines and orphan dashboards
+  // Layered kill — each step is best-effort, layered so the next still runs if
+  // one fails. Goal: the old engine is gone before we spawn a new one, even if
+  // PowerShell is unavailable, the engine is hung, or its cmdline doesn't match.
+  const oldEnginePid = readEnginePid(MINIONS_HOME);
+  // 1. Graceful stop — short timeout so a hung engine can't block what follows.
+  try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000, windowsHide: true }); } catch {}
+  // 2. Force-kill the recorded engine PID and its tree (most reliable — independent of cmdline matching).
+  killPidTree(oldEnginePid);
+  // 3. Free dashboard port (catches orphan dashboards with no recorded PID).
   killByPort(7331);
+  // 4. Belt-and-suspenders cmdline match for anything still alive.
   killMinionsProcesses(['engine.js', 'dashboard.js']);
   const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start', ...rest], {
     cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true

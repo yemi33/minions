@@ -11162,8 +11162,8 @@ async function testConfigAndPlaybooks() {
       'update should run init in copy/sync-only mode so init does not auto-start engine/dashboard');
     assert.ok(updateBlock.includes('runPostUpdateRestart()'),
       'update should perform the single controlled restart after code sync');
-    assert.ok(src.includes('skipStart') && src.includes('Restart skipped by caller'),
-      'init should support an internal skip-start mode for update while preserving direct init --force restart behavior');
+    assert.ok(src.includes('isUpgrade && skipStart') && /isUpgrade && skipStart\)\s*return/.test(src),
+      'init should support an internal skip-start mode (early return) for update while preserving direct init --force restart behavior');
   });
 
   await test('bin/minions update handles post-update init timeout without raw shell shim failure', () => {
