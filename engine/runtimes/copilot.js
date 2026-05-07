@@ -203,7 +203,10 @@ function resolveModel(input) {
   const mapped = _MINIONS_MODEL_ALIASES[s.toLowerCase()];
   if (mapped) return mapped;
 
-  const catalog = _readCatalogIds();
+  // Call through module.exports so tests can monkey-patch _readCatalogIds
+  // without writing to the live engine/copilot-models.json cache. Same
+  // runtime behavior as a direct call when the export hasn't been replaced.
+  const catalog = module.exports._readCatalogIds();
   if (catalog && catalog.has(s)) return s;
 
   const dotted = _hyphenToDotVersion(s);
@@ -236,7 +239,9 @@ function modelLooksFamiliar(model) {
   if (m.startsWith('claude-')) return true;
   if (m.startsWith('gpt-')) return true;
   if (m.startsWith('o3') || m.startsWith('o4')) return true;
-  const catalog = _readCatalogIds();
+  // Mirror resolveModel: route through module.exports so test monkey-patching
+  // of _readCatalogIds reaches this call site too.
+  const catalog = module.exports._readCatalogIds();
   if (catalog && catalog.has(m)) return true;
   return false;
 }
