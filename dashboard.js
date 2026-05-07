@@ -2232,6 +2232,31 @@ async function executeDocChatActions(actions) {
   return executeCCActions(actions);
 }
 
+const DOC_CHAT_WORK_ITEM_ACTION_TYPES = new Set(['dispatch', 'fix', 'implement', 'explore', 'review', 'test']);
+
+function _buildDocChatActionFeedback(actions, actionResults) {
+  if (!Array.isArray(actions) || !Array.isArray(actionResults)) return [];
+  const feedback = [];
+  for (let i = 0; i < actions.length && i < actionResults.length; i++) {
+    const action = actions[i] || {};
+    const result = actionResults[i] || {};
+    const type = String(result.type || action.type || '').trim();
+    if (!DOC_CHAT_WORK_ITEM_ACTION_TYPES.has(type)) continue;
+    if (result.error) {
+      feedback.push({ type, error: String(result.error) });
+      continue;
+    }
+    const id = result.id || result.duplicateOf;
+    if (!result.ok || !id) continue;
+    const item = { type, id: String(id), ok: true };
+    if (result.duplicate) item.duplicate = true;
+    if (result.duplicateOf) item.duplicateOf = String(result.duplicateOf);
+    if (result.warning) item.warning = String(result.warning);
+    feedback.push(item);
+  }
+  return feedback;
+}
+
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk.
@@ -5151,6 +5176,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         onAbortReady: (abort) => { _docAbort = abort; },
       });
       const actionResults = await executeDocChatActions(actions);
+      const actionFeedback = _buildDocChatActionFeedback(actions, actionResults);
       const finalize = _finalizeDocChatEdit({
         filePath: body.filePath, fullPath, isJson, canEdit,
         originalContent: currentContent, delimiterContent: content,
@@ -5162,6 +5188,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         answer: finalAnswer,
         actions,
         ...(actionResults ? { actionResults } : {}),
+        ...(actionFeedback.length ? { actionFeedback } : {}),
         ...(actionParseError ? { actionParseError } : {}),
         ...(ccError ? { error: ccError } : {}),
         ...(partial ? { partial: true, warning } : {}),
@@ -5253,6 +5280,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onRetry: (attempt) => { writeDocEvent({ type: 'progress', attempt }); },
         });
         const actionResults = await executeDocChatActions(actions);
+        const actionFeedback = _buildDocChatActionFeedback(actions, actionResults);
         const finalize = _finalizeDocChatEdit({
           filePath: body.filePath, fullPath, isJson, canEdit,
           originalContent: currentContent, delimiterContent: content,
@@ -5263,6 +5291,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           text: finalAnswer,
           actions,
           ...(actionResults ? { actionResults } : {}),
+          ...(actionFeedback.length ? { actionFeedback } : {}),
           ...(actionParseError ? { actionParseError } : {}),
           ...(ccError ? { error: ccError } : {}),
           ...(partial ? { partial: true, warning } : {}),
@@ -7676,6 +7705,7 @@ module.exports = {
   _meetingParticipantsFromAction: meetingParticipantsFromAction,
   parsePinnedEntries,
   _parseDocChatResultText,
+  _buildDocChatActionFeedback,
   _formatDocChatContext,
   _isCompletedMeetingJson,
   _finalizeDocChatEdit,
