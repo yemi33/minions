@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1760 (2026-05-07)
+
+### Fixes
+- reliable engine kill + visible restart output
+
 ## 0.1.1757 (2026-05-06)
 
 ### Other
